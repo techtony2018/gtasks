@@ -111,6 +111,11 @@ class TaskParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(DomainValidationError, "status"):
             Task.from_page(task_page("tasks/bad-status", status="someday"))
 
+    def test_parses_waiting_as_a_legacy_compatible_status(self) -> None:
+        task = Task.from_page(task_page("tasks/legacy-waiting", status="waiting"))
+
+        self.assertEqual(task.status, "waiting")
+
     def test_rejects_unknown_priority(self) -> None:
         with self.assertRaisesRegex(DomainValidationError, "priority"):
             Task.from_page(task_page("tasks/bad-priority", priority="critical"))
@@ -229,8 +234,7 @@ class NewInboxTaskTests(unittest.TestCase):
 
 class GoalTests(unittest.TestCase):
     def test_parses_the_live_goal_contract(self) -> None:
-        goal = Goal.from_page(
-            {
+        page = {
                 "slug": "goals/engineering-manager-job",
                 "type": "goal",
                 "title": "Secure an Engineering Manager job in high tech",
@@ -246,10 +250,20 @@ class GoalTests(unittest.TestCase):
                     "collection": GOALS_ROOT,
                 },
             }
+        goal = Goal.from_page(
+            page,
+            edges=[
+                {
+                    "from_slug": page["slug"],
+                    "to_slug": "tasks/apply-to-company",
+                    "link_type": "advanced_by",
+                }
+            ],
         )
 
         self.assertEqual(goal.target_day, date(2026, 9, 30))
         self.assertEqual(goal.review_cadence, "weekly")
+        self.assertEqual(goal.advanced_by, ("tasks/apply-to-company",))
 
     def test_rejects_goal_outside_tonys_goals_collection(self) -> None:
         with self.assertRaisesRegex(DomainValidationError, "collection"):

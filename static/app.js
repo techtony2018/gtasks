@@ -3,6 +3,7 @@ const state = {
   activeView: "today",
   selectedSlug: null,
   selectedKind: null,
+  boardMove: null,
   loading: true,
 };
 
@@ -53,6 +54,9 @@ const elements = {
   syncLabel: document.querySelector("#sync-label"),
   refreshButton: document.querySelector("#refresh-button"),
   issueNotice: document.querySelector("#issue-notice"),
+  boardStatusAlert: document.querySelector("#board-status-alert"),
+  boardStatusMessage: document.querySelector("#board-status-message"),
+  boardStatusRetry: document.querySelector("#board-status-retry"),
   storeDot: document.querySelector("#store-dot"),
   storeLabel: document.querySelector("#store-label"),
   quickAddButton: document.querySelector("#quick-add-button"),
@@ -94,6 +98,7 @@ const elements = {
   goalProgressLabel: document.querySelector("#goal-progress-label"),
   goalProgressCount: document.querySelector("#goal-progress-count"),
   goalProgressBar: document.querySelector("#goal-progress-bar"),
+  goalRelationshipNotice: document.querySelector("#goal-relationship-notice"),
   goalActiveTasks: document.querySelector("#goal-active-tasks"),
   goalCompletedTasks: document.querySelector("#goal-completed-tasks"),
   goalGbrainLink: document.querySelector("#goal-gbrain-link"),
@@ -136,6 +141,10 @@ function relativeDue(task) {
     return { label: formatDay(task.due_day), className: "is-overdue" };
   }
   return { label: formatDay(task.due_day), className: "" };
+}
+
+function taskUiStatus(task) {
+  return task.status === "waiting" ? "blocked" : task.status;
 }
 
 function showToast(message) {
@@ -192,7 +201,7 @@ function taskRow(task) {
   button.classList.toggle("is-selected", state.selectedSlug === task.slug);
 
   const titleWrap = node("span", "task-title-wrap");
-  const dot = node("span", `task-state-dot ${task.status}`);
+  const dot = node("span", `task-state-dot ${taskUiStatus(task)}`);
   dot.setAttribute("aria-hidden", "true");
   const titleText = node("span");
   titleText.append(
@@ -248,7 +257,7 @@ function emptyActionState() {
     node(
       "p",
       "",
-      "There are no started, due-today, waiting, blocked, or overdue tasks. Add what matters now, or choose something from the Inbox.",
+      "There are no started, due-today, blocked, or overdue tasks. Add what matters now, or choose something from the Inbox.",
     ),
   );
   const actions = node("div", "inline-actions");
@@ -327,9 +336,9 @@ function renderToday() {
       "No unstarted task is scheduled or due today.",
     ),
     section(
-      "Waiting and Blocked",
+      "Blocked",
       groups.waiting_and_blocked,
-      "Nothing is waiting on someone or something else.",
+      "Nothing is blocked.",
     ),
     section(
       "Overdue",
@@ -368,34 +377,47 @@ function renderListView(view) {
 const boardColumns = [
   {
     title: "Planned",
-    statuses: ["planned"],
+    status: "planned",
     empty: "No planned tasks.",
   },
   {
     title: "In Progress",
-    statuses: ["active"],
+    status: "active",
     empty: "No task is in progress.",
   },
   {
-    title: "Waiting / Blocked",
-    statuses: ["waiting", "blocked"],
-    empty: "Nothing is waiting or blocked.",
+    title: "Blocked",
+    status: "blocked",
+    empty: "Nothing is blocked.",
   },
   {
-    title: "Completed / Cancelled",
-    statuses: ["completed", "cancelled"],
-    empty: "No finished tasks are shown.",
+    title: "Completed",
+    status: "completed",
+    empty: "No completed tasks.",
+  },
+  {
+    title: "Cancelled",
+    status: "cancelled",
+    empty: "No cancelled tasks.",
   },
 ];
 
 function boardCard(task) {
   const button = node("button", "board-card");
   button.type = "button";
+  button.draggable = true;
   button.dataset.slug = task.slug;
+  button.dataset.status = taskUiStatus(task);
   button.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  const isSaving =
+    state.boardMove?.phase === "saving" &&
+    state.boardMove.taskSlug === task.slug;
+  button.classList.toggle("is-saving", isSaving);
+  button.disabled = isSaving;
+  button.setAttribute("aria-grabbed", "false");
   const heading = node("span", "board-card-heading");
   heading.append(
-    node("span", `task-state-dot ${task.status}`),
+    node("span", `task-state-dot ${taskUiStatus(task)}`),
     node("strong", "", task.title || task.summary),
   );
   const meta = node("span", "board-card-meta");
@@ -409,8 +431,44 @@ function boardCard(task) {
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
+  if (isSaving) button.append(node("span", "board-card-saving", "Saving in GBrain…"));
   button.addEventListener("click", () => selectTask(task.slug));
+  button.addEventListener("dragstart", (event) => {
+    if (!event.dataTransfer || isSaving) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", task.slug);
+    button.classList.add("is-dragging");
+    button.setAttribute("aria-grabbed", "true");
+  });
+  button.addEventListener("dragend", () => {
+    button.classList.remove("is-dragging");
+    button.setAttribute("aria-grabbed", "false");
+    document
+      .querySelectorAll(".board-column.is-drop-target")
+      .forEach((column) => column.classList.remove("is-drop-target"));
+  });
   return button;
+}
+
+function updateBoardStatus() {
+  const move = state.boardMove;
+  if (!move) {
+    elements.boardStatusAlert.classList.add("is-hidden");
+    elements.boardStatusRetry.classList.add("is-hidden");
+    return;
+  }
+  elements.boardStatusAlert.classList.remove("is-hidden");
+  if (move.phase === "saving") {
+    elements.boardStatusMessage.textContent =
+      `Saving ${move.taskTitle} as ${move.statusLabel} in GBrain…`;
+    elements.boardStatusRetry.classList.add("is-hidden");
+    return;
+  }
+  elements.boardStatusMessage.textContent = move.message;
+  elements.boardStatusRetry.classList.remove("is-hidden");
 }
 
 function renderBoard() {
@@ -418,8 +476,10 @@ function renderBoard() {
   board.setAttribute("aria-label", "Task status board");
   boardColumns.forEach((definition) => {
     const tasks = state.snapshot.tasks.filter((task) =>
-      definition.statuses.includes(task.status));
+      taskUiStatus(task) === definition.status);
     const column = node("section", "board-column");
+    column.dataset.status = definition.status;
+    column.setAttribute("aria-label", `${definition.title} status lane`);
     const heading = node("div", "board-column-heading");
     heading.append(
       node("h2", "", definition.title),
@@ -433,6 +493,22 @@ function renderBoard() {
     } else {
       column.append(node("div", "board-empty", definition.empty));
     }
+    column.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      column.classList.add("is-drop-target");
+    });
+    column.addEventListener("dragleave", (event) => {
+      if (!column.contains(event.relatedTarget)) {
+        column.classList.remove("is-drop-target");
+      }
+    });
+    column.addEventListener("drop", (event) => {
+      event.preventDefault();
+      column.classList.remove("is-drop-target");
+      const taskSlug = event.dataTransfer?.getData("text/plain");
+      if (taskSlug) moveBoardTask(taskSlug, definition.status);
+    });
     board.append(column);
   });
   return board;
@@ -474,6 +550,7 @@ function renderGoalsView() {
 
 function render() {
   renderNavigation();
+  updateBoardStatus();
   elements.viewTitle.textContent = viewMeta[state.activeView].title;
   if (state.loading) return;
   if (!state.snapshot) return;
@@ -506,9 +583,10 @@ function selectTask(slug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
-  elements.taskStatusSelect.value = task.status;
+  elements.taskStatusSelect.value = taskUiStatus(task);
   elements.taskStatusSelect.dataset.currentStatus = task.status;
-  elements.taskStatusSave.disabled = true;
+  elements.taskStatusSave.disabled =
+    elements.taskStatusSelect.value === task.status;
   elements.taskStatusError.classList.add("is-hidden");
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
@@ -559,6 +637,78 @@ function goalTaskLinks(container, tasks, emptyCopy) {
   });
 }
 
+function renderGoalRelationshipTasks(goal, reciprocalTaskSlugs) {
+  const reciprocal = new Set(reciprocalTaskSlugs);
+  const explicitTasks = state.snapshot.tasks.filter((task) =>
+    reciprocal.has(task.slug));
+  const legacyOneWayTasks = state.snapshot.tasks.filter(
+    (task) => task.goal === goal.slug && !reciprocal.has(task.slug));
+  const linked = [];
+  const seen = new Set();
+  [...explicitTasks, ...legacyOneWayTasks].forEach((task) => {
+    if (!seen.has(task.slug)) {
+      seen.add(task.slug);
+      linked.push(task);
+    }
+  });
+  const active = linked.filter(
+    (task) => !["completed", "cancelled"].includes(task.status));
+  const completed = linked.filter((task) => task.status === "completed");
+  const percent = linked.length
+    ? Math.round((completed.length / linked.length) * 100)
+    : 0;
+  elements.goalProgressLabel.textContent = `${percent}% task completion`;
+  elements.goalProgressCount.textContent =
+    `${completed.length} completed · ${active.length} active`;
+  elements.goalProgressBar.style.width = `${percent}%`;
+  goalTaskLinks(
+    elements.goalActiveTasks,
+    active,
+    "No active task advances this goal yet.",
+  );
+  goalTaskLinks(
+    elements.goalCompletedTasks,
+    completed,
+    "No completed task advances this goal yet.",
+  );
+  goal.legacy_one_way_tasks = legacyOneWayTasks;
+  if (legacyOneWayTasks.length) {
+    const count = legacyOneWayTasks.length;
+    elements.goalRelationshipNotice.textContent =
+      `${count} legacy one-way task link${count === 1 ? "" : "s"} remains visible. ` +
+      "Open a task below and Save its current goal to repair both relationship directions.";
+    elements.goalRelationshipNotice.classList.remove("is-hidden");
+  } else {
+    elements.goalRelationshipNotice.classList.add("is-hidden");
+  }
+}
+
+async function hydrateGoalRelationships(goal) {
+  elements.goalRelationshipNotice.textContent =
+    "Reading explicit reciprocal task links from GBrain…";
+  elements.goalRelationshipNotice.classList.remove("is-hidden");
+  try {
+    const response = await fetch(
+      `/api/goals/${encodeURIComponent(goal.slug)}/relationships`,
+      {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || "Goal relationships could not be read.");
+    }
+    if (state.selectedKind !== "goal" || state.selectedSlug !== goal.slug) return;
+    renderGoalRelationshipTasks(goal, result.task_slugs);
+  } catch (error) {
+    if (state.selectedKind !== "goal" || state.selectedSlug !== goal.slug) return;
+    elements.goalRelationshipNotice.textContent =
+      `Could not verify reciprocal goal links. ${error.message}`;
+    elements.goalRelationshipNotice.classList.remove("is-hidden");
+  }
+}
+
 function selectGoal(slug) {
   const goal = state.snapshot?.goals.find((item) => item.slug === slug);
   if (!goal) return;
@@ -593,6 +743,7 @@ function selectGoal(slug) {
     `http://127.0.0.1:8788/?slug=${encodeURIComponent(goal.slug)}`;
   elements.goalDetailSlug.textContent = goal.slug;
   render();
+  hydrateGoalRelationships(goal);
 }
 
 function closeDetails() {
@@ -638,6 +789,66 @@ async function saveTaskGoal() {
   }
 }
 
+async function requestTaskStatus(taskSlug, status) {
+  const response = await fetch(
+    `/api/tasks/${encodeURIComponent(taskSlug)}/status`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ status }),
+    },
+  );
+  const result = await response.json();
+  if (!response.ok) {
+    const error = new Error(result.error || "Task status could not be saved.");
+    error.code = result.code;
+    error.slug = result.slug;
+    throw error;
+  }
+  return result;
+}
+
+function statusErrorMessage(error) {
+  if (error.code === "partial_write" && error.slug) {
+    return `${error.message} Do not retry yet; inspect ${error.slug} first.`;
+  }
+  return error.message;
+}
+
+async function moveBoardTask(taskSlug, status) {
+  const task = state.snapshot?.tasks.find((item) => item.slug === taskSlug);
+  const definition = boardColumns.find((column) => column.status === status);
+  if (!task || !definition || state.boardMove?.phase === "saving") return;
+  const move = {
+    taskSlug,
+    taskTitle: task.title || task.summary,
+    status,
+    statusLabel: definition.title,
+    phase: "saving",
+  };
+  state.boardMove = move;
+  render();
+  try {
+    await requestTaskStatus(taskSlug, status);
+    showToast(`${move.taskTitle} saved as ${move.statusLabel} in GBrain.`);
+    state.boardMove = null;
+    await loadTasks();
+    if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+      selectTask(taskSlug);
+    }
+  } catch (error) {
+    state.boardMove = {
+      ...move,
+      phase: "error",
+      message: `${move.taskTitle} stayed in its original lane. ${statusErrorMessage(error)}`,
+    };
+    render();
+  }
+}
+
 async function saveTaskStatus() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
   const taskSlug = state.selectedSlug;
@@ -646,33 +857,12 @@ async function saveTaskStatus() {
   elements.taskStatusSave.disabled = true;
   elements.taskStatusSave.textContent = "Saving…";
   try {
-    const response = await fetch(
-      `/api/tasks/${encodeURIComponent(taskSlug)}/status`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ status }),
-      },
-    );
-    const result = await response.json();
-    if (!response.ok) {
-      const error = new Error(result.error || "Task status could not be saved.");
-      error.code = result.code;
-      error.slug = result.slug;
-      throw error;
-    }
+    await requestTaskStatus(taskSlug, status);
     showToast(`Status saved as ${status} in GBrain.`);
     await loadTasks();
     selectTask(taskSlug);
   } catch (error) {
-    let message = error.message;
-    if (error.code === "partial_write" && error.slug) {
-      message = `${message} Do not retry yet; inspect ${error.slug} first.`;
-    }
-    elements.taskStatusError.textContent = message;
+    elements.taskStatusError.textContent = statusErrorMessage(error);
     elements.taskStatusError.classList.remove("is-hidden");
   } finally {
     elements.taskStatusSave.textContent = "Save";
@@ -821,6 +1011,10 @@ elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskGoalSave.addEventListener("click", saveTaskGoal);
 elements.taskStatusSave.addEventListener("click", saveTaskStatus);
+elements.boardStatusRetry.addEventListener("click", () => {
+  const move = state.boardMove;
+  if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
+});
 elements.taskStatusSelect.addEventListener("change", () => {
   elements.taskStatusError.classList.add("is-hidden");
   elements.taskStatusSave.disabled =

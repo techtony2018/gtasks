@@ -16,6 +16,9 @@ LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 TASK_STATUSES = frozenset(
     {"planned", "active", "waiting", "blocked", "completed", "cancelled"}
 )
+EDITABLE_TASK_STATUSES = frozenset(
+    {"planned", "active", "blocked", "completed", "cancelled"}
+)
 TASK_PRIORITIES = frozenset({"low", "normal", "high", "urgent"})
 TASK_RELATIONSHIPS = frozenset(
     {"member_of", "child_of", "depends_on", "blocked_by", "advances_goal"}
@@ -331,9 +334,14 @@ class Goal:
     strategy: str
     review_cadence: str
     constraints: str
+    advanced_by: tuple[str, ...] = ()
 
     @classmethod
-    def from_page(cls, page: Mapping[str, Any]) -> "Goal":
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "Goal":
         slug = page.get("slug")
         if not isinstance(slug, str) or not slug.startswith("goals/"):
             raise DomainValidationError("goal slug must start with goals/")
@@ -371,6 +379,16 @@ class Goal:
         title = page.get("title")
         if not isinstance(title, str) or not title.strip():
             title = required_text["outcome"].rstrip(".")
+        advanced_by = tuple(
+            dict.fromkeys(
+                str(edge["to_slug"])
+                for edge in edges
+                if edge.get("from_slug") == slug
+                and edge.get("link_type") == "advanced_by"
+                and isinstance(edge.get("to_slug"), str)
+                and str(edge["to_slug"]).startswith("tasks/")
+            )
+        )
 
         return cls(
             slug=slug,
@@ -382,6 +400,7 @@ class Goal:
             strategy=required_text["strategy"],
             review_cadence=required_text["review_cadence"],
             constraints=required_text["constraints"],
+            advanced_by=advanced_by,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -395,6 +414,7 @@ class Goal:
             "strategy": self.strategy,
             "review_cadence": self.review_cadence,
             "constraints": self.constraints,
+            "advanced_by": list(self.advanced_by),
         }
 
 

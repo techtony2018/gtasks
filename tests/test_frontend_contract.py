@@ -17,16 +17,56 @@ class FrontendContractTests(unittest.TestCase):
         for status in (
             "planned",
             "active",
-            "waiting",
             "blocked",
             "completed",
             "cancelled",
         ):
             self.assertIn(f'<option value="{status}">', html)
+        self.assertNotIn('<option value="waiting">', html)
 
         self.assertIn("function renderBoard()", javascript)
         self.assertIn("/status`", javascript)
         self.assertIn("renderBoard()", javascript)
+
+    def test_board_has_five_exact_drop_destinations_and_retry(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        board_definition = javascript[javascript.index("const boardColumns") :]
+
+        lane_titles = [
+            board_definition.index('title: "Planned"'),
+            board_definition.index('title: "In Progress"'),
+            board_definition.index('title: "Blocked"'),
+            board_definition.index('title: "Completed"'),
+            board_definition.index('title: "Cancelled"'),
+        ]
+        self.assertEqual(lane_titles, sorted(lane_titles))
+        self.assertIn('status: "blocked"', javascript)
+        self.assertIn('task.status === "waiting" ? "blocked"', javascript)
+        self.assertIn(
+            '`task-state-dot ${taskUiStatus(task)}`',
+            javascript,
+        )
+        self.assertIn("button.draggable = true", javascript)
+        for event_name in ("dragstart", "dragend", "dragover", "dragleave", "drop"):
+            self.assertIn(f'addEventListener("{event_name}"', javascript)
+        self.assertIn('id="board-status-alert"', html)
+        self.assertIn('id="board-status-retry"', html)
+        self.assertIn("requestTaskStatus(", javascript)
+
+    def test_goal_details_explain_bidirectional_links_and_explicit_repair(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn('id="goal-relationship-notice"', html)
+        self.assertIn("<code>advances_goal</code>", html)
+        self.assertIn("<code>advanced_by</code>", html)
+        self.assertIn("legacy_one_way_tasks", javascript)
+        self.assertIn("Save its current goal", javascript)
+        self.assertIn("/relationships`", javascript)
+        self.assertIn("advanced_by", readme)
+        self.assertIn("Saving the current goal selection", readme)
 
 
 if __name__ == "__main__":

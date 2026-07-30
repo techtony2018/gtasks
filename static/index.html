@@ -93,6 +93,12 @@
         </header>
 
         <div class="notice is-hidden" id="issue-notice" role="status"></div>
+        <div class="board-status-alert is-hidden" id="board-status-alert" role="status">
+          <span id="board-status-message"></span>
+          <button class="secondary-button is-hidden" id="board-status-retry" type="button">
+            Retry
+          </button>
+        </div>
         <div class="view-surface" id="view-surface" aria-live="polite">
           <div class="loading-state" aria-label="Loading task list">
             <span></span>
@@ -115,7 +121,6 @@
               <select id="task-status-select">
                 <option value="planned">Planned</option>
                 <option value="active">Active</option>
-                <option value="waiting">Waiting</option>
                 <option value="blocked">Blocked</option>
                 <option value="completed">Completed</option>
                 <option value="cancelled">Cancelled</option>
@@ -153,7 +158,10 @@
               </select>
               <button class="secondary-button" id="task-goal-save" type="button">Save</button>
             </div>
-            <p>Stored as one typed <code>advances_goal</code> relationship in GBrain.</p>
+            <p>
+              Stored as paired <code>advances_goal</code> and
+              <code>advanced_by</code> relationships in GBrain.
+            </p>
             <p class="form-error is-hidden" id="task-goal-error" role="alert"></p>
             <button class="goal-nav-button is-hidden" id="task-goal-nav" type="button"></button>
           </div>
@@ -192,6 +200,11 @@
               <dd id="goal-detail-success"></dd>
             </div>
           </dl>
+          <p
+            class="goal-relationship-notice is-hidden"
+            id="goal-relationship-notice"
+            role="status"
+          ></p>
           <section class="goal-task-section">
             <h3>Active tasks</h3>
             <div id="goal-active-tasks"></div>

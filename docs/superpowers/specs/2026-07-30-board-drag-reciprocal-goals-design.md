@@ -61,8 +61,9 @@ it attempts a compensating rollback to the pre-mutation edge set and reports
 whether rollback readback was verified. Final success requires exact readback
 from both the task and goal.
 
-Goal reads load outgoing `advanced_by` edges. Goal detail uses those explicit
-edges as its primary task list, then unions legacy tasks whose outgoing
+Goal detail lazily loads outgoing `advanced_by` edges so the already-expensive
+home snapshot does not add one relationship call per goal. Goal detail uses
+those explicit edges as its primary task list, then unions legacy tasks whose outgoing
 `advances_goal` edge points to the goal. Legacy one-way tasks are marked as
 needing reconciliation rather than hidden.
 

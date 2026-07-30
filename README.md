@@ -95,10 +95,17 @@ The server invokes documented GBrain tools through argument arrays, never throug
 
 A creation is reported as successful only when the task page and membership edge both read back. If the page exists but relationship verification fails, the API returns a `partial_write` result with the exact slug and does not delete, retry, or conceal the partial state.
 
-Changing a task's goal is also explicit and verified. GTasks proves both nodes are under the approved roots, writes an `advances_goal` edge, verifies it, removes the prior goal edge when needed, and performs final readback. Clearing the selection removes only `advances_goal`.
+Changing a task's goal is also explicit and verified. GTasks proves both nodes
+are under the approved roots, writes the task-to-goal `advances_goal` edge and
+the reciprocal goal-to-task `advanced_by` edge, then verifies both before
+removing any prior pair. Clearing the selection removes both directions.
+Saving the current goal selection is an idempotent repair action for legacy
+one-way links; deployment never performs a bulk relationship migration.
 
 Changing status is explicit and verified too. The detail editor supports
-`planned`, `active`, `waiting`, `blocked`, `completed`, and `cancelled`.
+`planned`, `active`, `blocked`, `completed`, and `cancelled`. Existing
+`waiting` pages remain readable and display as Blocked, but `waiting` is not
+offered as a new workflow status and no bulk normalization occurs.
 Completion records Tony's local completion time and keeps the active collection
 edge until Tony's Tasks applies its next-Monday archive rule. Reopening an
 already archived task moves the same task identity back to the active root.
@@ -107,8 +114,8 @@ Loading the app, Board, refreshing, running the test suite, and browser verifica
 
 ## Views
 
-- Today: In Progress (maximum three), Today's Actions, Waiting and Blocked, Overdue
-- Board: Planned, In Progress, Waiting / Blocked, Completed / Cancelled
+- Today: In Progress (maximum three), Today's Actions, Blocked, Overdue
+- Board: Planned, In Progress, Blocked, Completed, Cancelled
 - Inbox
 - Upcoming
 - Blocked

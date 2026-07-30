@@ -11,10 +11,10 @@ from .domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
     DomainValidationError,
+    EDITABLE_TASK_STATUSES,
     GOALS_ROOT,
     Goal,
     Task,
-    TASK_STATUSES,
 )
 
 
@@ -126,16 +126,32 @@ class GoalRead:
 
 
 @dataclass(frozen=True, slots=True)
+class GoalRelationshipRead:
+    goal_slug: str
+    task_slugs: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal_slug": self.goal_slug,
+            "task_slugs": list(self.task_slugs),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class GoalLinkReceipt:
     task_slug: str
     goal_slug: str | None
     verified: bool
+    reciprocal_verified: bool = True
+    reconciled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_slug": self.task_slug,
             "goal_slug": self.goal_slug,
             "verified": self.verified,
+            "reciprocal_verified": self.reciprocal_verified,
+            "reconciled": self.reconciled,
         }
 
 
@@ -353,6 +369,19 @@ class GBrainAdapter:
                 issues.append(CollectionIssue(slug=slug, message=str(exc)))
         return GoalRead(goals=tuple(goals), issues=tuple(issues))
 
+    def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
+        page = self.runner.run("get_page", {"slug": goal_slug})
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError("goal get_page did not return an object")
+        edges = self.runner.run("get_links", {"slug": goal_slug})
+        if not isinstance(edges, list):
+            raise GBrainProtocolError("goal get_links did not return a list")
+        goal = Goal.from_page(page, edges=edges)
+        return GoalRelationshipRead(
+            goal_slug=goal.slug,
+            task_slugs=goal.advanced_by,
+        )
+
     def create_inbox(self, task: Task) -> MutationReceipt:
         if task.lifecycle_root != ACTIVE_ROOT:
             raise ValueError("Inbox task must belong to the active GTasks root")
@@ -439,9 +468,9 @@ class GBrainAdapter:
         status: str,
         now: datetime,
     ) -> StatusMutationReceipt:
-        if status not in TASK_STATUSES:
+        if status not in EDITABLE_TASK_STATUSES:
             raise ValueError(
-                f"status must be one of {', '.join(sorted(TASK_STATUSES))}"
+                f"status must be one of {', '.join(sorted(EDITABLE_TASK_STATUSES))}"
             )
         if now.tzinfo is None:
             raise ValueError("status update time must include Tony's local timezone")
@@ -594,87 +623,149 @@ class GBrainAdapter:
         goal_slug: str | None,
     ) -> GoalLinkReceipt:
         task = self._approved_task(task_slug)
-        if goal_slug is not None:
-            approved_goal_slugs = {goal.slug for goal in self.list_goals().goals}
-            if goal_slug not in approved_goal_slugs:
-                raise ValueError("goal is not a member of Tony's Goals")
-        if task.goal == goal_slug:
-            return GoalLinkReceipt(
-                task_slug=task_slug,
-                goal_slug=goal_slug,
-                verified=True,
-            )
+        goal_read = self.list_goals()
+        approved_goals = {goal.slug: goal for goal in goal_read.goals}
+        if goal_slug is not None and goal_slug not in approved_goals:
+            raise ValueError("goal is not a member of Tony's Goals")
+        if task.goal is not None and task.goal not in approved_goals:
+            raise ValueError("current goal is not a member of Tony's Goals")
 
-        links_after_add: list[object] | None = None
-        if goal_slug is not None:
-            self.runner.run(
-                "add_link",
-                {
-                    "from": task_slug,
-                    "to": goal_slug,
-                    "link_type": "advances_goal",
-                    "context": "This task advances the linked Tony goal.",
-                    "link_source": "gtasks",
-                },
-            )
-            try:
-                raw_links_after_add = self.runner.run("get_links", {"slug": task_slug})
-                links_after_add = (
-                    raw_links_after_add if isinstance(raw_links_after_add, list) else None
+        pre_forward = {task.goal} if task.goal else set()
+        desired = {goal_slug} if goal_slug else set()
+        relevant = pre_forward | desired
+        pre_reverse: set[str] = set()
+        for selected in [
+            goal.slug for goal in goal_read.goals if goal.slug in relevant
+        ]:
+            raw_goal_links = self.runner.run("get_links", {"slug": selected})
+            if not isinstance(raw_goal_links, list):
+                raise GBrainProtocolError(
+                    "goal reciprocal relationship snapshot was not a list"
                 )
-                if not isinstance(links_after_add, list) or not any(
-                    isinstance(link, Mapping)
-                    and link.get("from_slug") == task_slug
-                    and link.get("to_slug") == goal_slug
-                    and link.get("link_type") == "advances_goal"
-                    for link in links_after_add
-                ):
-                    raise GBrainProtocolError("new advances_goal edge was not found")
-            except GBrainError as exc:
-                raise PartialMutationError(
-                    task_slug,
-                    f"Goal edge write was not verified: {exc}",
-                ) from exc
+            if any(
+                isinstance(link, Mapping)
+                and link.get("from_slug") == selected
+                and link.get("to_slug") == task_slug
+                and link.get("link_type") == "advanced_by"
+                for link in raw_goal_links
+            ):
+                pre_reverse.add(selected)
+        involved = [
+            goal.slug
+            for goal in goal_read.goals
+            if goal.slug in pre_reverse | desired | pre_forward
+        ]
 
-        if task.goal is not None:
-            self.runner.run(
-                "remove_link",
-                {
-                    "from": task_slug,
-                    "to": task.goal,
-                    "link_type": "advances_goal",
-                },
-            )
+        forward_descriptor = lambda selected: {
+            "from": task_slug,
+            "to": selected,
+            "link_type": "advances_goal",
+            "context": "This task advances the linked Tony goal.",
+            "link_source": "gtasks",
+        }
+        reverse_descriptor = lambda selected: {
+            "from": selected,
+            "to": task_slug,
+            "link_type": "advanced_by",
+            "context": "This goal is advanced by the linked GTasks task.",
+            "link_source": "gtasks",
+        }
+        journal: list[tuple[str, dict[str, Any]]] = []
 
-        try:
-            final_links = (
-                links_after_add
-                if task.goal is None and goal_slug is not None
-                else self.runner.run("get_links", {"slug": task_slug})
-            )
-            if not isinstance(final_links, list):
-                raise GBrainProtocolError("final get_links did not return a list")
-            final_goals = {
+        def apply(action: str, descriptor: dict[str, Any]) -> None:
+            params = dict(descriptor)
+            if action == "remove_link":
+                params.pop("context", None)
+                params.pop("link_source", None)
+            self.runner.run(action, params)
+            journal.append((action, descriptor))
+
+        def read_state() -> tuple[set[str], set[str]]:
+            raw_task_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(raw_task_links, list):
+                raise GBrainProtocolError(
+                    "task goal relationship readback was not a list"
+                )
+            forward = {
                 str(link["to_slug"])
-                for link in final_links
+                for link in raw_task_links
                 if isinstance(link, Mapping)
                 and link.get("from_slug") == task_slug
                 and link.get("link_type") == "advances_goal"
                 and isinstance(link.get("to_slug"), str)
             }
-            expected_goals = {goal_slug} if goal_slug else set()
-            if final_goals != expected_goals:
+            reverse: set[str] = set()
+            for selected in involved:
+                raw_goal_links = self.runner.run(
+                    "get_links",
+                    {"slug": selected},
+                )
+                if not isinstance(raw_goal_links, list):
+                    raise GBrainProtocolError(
+                        "goal reciprocal relationship readback was not a list"
+                    )
+                if any(
+                    isinstance(link, Mapping)
+                    and link.get("from_slug") == selected
+                    and link.get("to_slug") == task_slug
+                    and link.get("link_type") == "advanced_by"
+                    for link in raw_goal_links
+                ):
+                    reverse.add(selected)
+            return forward, reverse
+
+        try:
+            for selected in desired - pre_forward:
+                apply("add_link", forward_descriptor(selected))
+            for selected in desired - pre_reverse:
+                apply("add_link", reverse_descriptor(selected))
+            for selected in pre_forward - desired:
+                apply("remove_link", forward_descriptor(selected))
+            for selected in pre_reverse - desired:
+                apply("remove_link", reverse_descriptor(selected))
+
+            final_forward, final_reverse = read_state()
+            if final_forward != desired or final_reverse != desired:
                 raise GBrainProtocolError(
-                    "final advances_goal readback did not match selection"
+                    "final bidirectional goal readback did not match selection"
                 )
         except GBrainError as exc:
+            rollback_commands_ok = True
+            for action, descriptor in reversed(journal):
+                inverse = "remove_link" if action == "add_link" else "add_link"
+                params = dict(descriptor)
+                if inverse == "remove_link":
+                    params.pop("context", None)
+                    params.pop("link_source", None)
+                try:
+                    self.runner.run(inverse, params)
+                except GBrainError:
+                    rollback_commands_ok = False
+            rollback_verified = False
+            if rollback_commands_ok:
+                try:
+                    rollback_forward, rollback_reverse = read_state()
+                    rollback_verified = (
+                        rollback_forward == pre_forward
+                        and rollback_reverse == pre_reverse
+                    )
+                except GBrainError:
+                    rollback_verified = False
+            rollback_message = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified."
+            )
             raise PartialMutationError(
                 task_slug,
-                f"Goal relationship final readback failed: {exc}",
+                f"Bidirectional goal relationship write failed: {exc} "
+                f"{rollback_message}",
             ) from exc
 
         return GoalLinkReceipt(
             task_slug=task_slug,
             goal_slug=goal_slug,
             verified=True,
+            reciprocal_verified=True,
+            reconciled=(task.goal == goal_slug and bool(journal)),
         )

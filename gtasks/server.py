@@ -17,9 +17,9 @@ from .domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
     DomainValidationError,
+    EDITABLE_TASK_STATUSES,
     GOALS_ROOT,
     Task,
-    TASK_STATUSES,
     group_today,
     new_inbox_task,
 )
@@ -72,6 +72,8 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         goal_progress.append(
             {
                 **goal.to_dict(),
+                "legacy_one_way_tasks": [],
+                "relationship_warning": False,
                 "active_tasks": [task.to_dict() for task in active_goal_tasks],
                 "completed_tasks": [
                     task.to_dict() for task in completed_goal_tasks
@@ -111,7 +113,9 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
                 and task.status not in {"completed", "cancelled"}
             ],
             "blocked": [
-                task.to_dict() for task in active if task.status == "blocked"
+                task.to_dict()
+                for task in active
+                if task.status in {"waiting", "blocked"}
             ],
             "projects": [
                 task.to_dict() for task in active if task.project is not None
@@ -212,6 +216,26 @@ def _handler_class(
                     )
                     return
                 self._json(HTTPStatus.OK, payload)
+                return
+            goal_prefix = "/api/goals/"
+            goal_suffix = "/relationships"
+            if path.startswith(goal_prefix) and path.endswith(goal_suffix):
+                goal_slug = unquote(path[len(goal_prefix) : -len(goal_suffix)])
+                try:
+                    relationship_read = adapter.read_goal_relationships(goal_slug)
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_goal"},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, relationship_read.to_dict())
                 return
             self._serve_static(path)
 
@@ -322,14 +346,14 @@ def _handler_class(
                 requested_status = payload.get("status")
                 if (
                     not isinstance(requested_status, str)
-                    or requested_status not in TASK_STATUSES
+                    or requested_status not in EDITABLE_TASK_STATUSES
                 ):
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
                             "error": (
                                 "status must be one of "
-                                + ", ".join(sorted(TASK_STATUSES))
+                                + ", ".join(sorted(EDITABLE_TASK_STATUSES))
                                 + "."
                             ),
                             "code": "invalid_status",

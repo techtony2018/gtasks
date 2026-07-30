@@ -17,6 +17,7 @@ from gtasks.gbrain import (
     CollectionRead,
     GoalLinkReceipt,
     GoalRead,
+    GoalRelationshipRead,
     MutationReceipt,
     PartialMutationError,
     StatusMutationReceipt,
@@ -52,6 +53,13 @@ class FakeAdapter:
     def set_task_goal(self, task_slug: str, goal_slug: str | None) -> GoalLinkReceipt:
         self.goal_links.append((task_slug, goal_slug))
         return GoalLinkReceipt(task_slug=task_slug, goal_slug=goal_slug, verified=True)
+
+    def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
+        goal = next(goal for goal in self.goals if goal.slug == goal_slug)
+        return GoalRelationshipRead(
+            goal_slug=goal_slug,
+            task_slugs=goal.advanced_by,
+        )
 
     def set_task_status(
         self,
@@ -182,6 +190,25 @@ class TasksApiTests(unittest.TestCase):
             [future_task.slug],
         )
 
+    def test_legacy_waiting_tasks_are_visible_in_the_blocked_view(self) -> None:
+        waiting_task = replace(
+            new_inbox_task(
+                "Wait for an external reply",
+                datetime(2026, 7, 30, 9, 15).astimezone(),
+                "a1b2c3",
+            ),
+            status="waiting",
+        )
+        harness = ServerHarness(self, FakeAdapter(active=(waiting_task,)))
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [task["slug"] for task in payload["views"]["blocked"]],
+            [waiting_task.slug],
+        )
+
     def test_goal_progress_links_active_and_completed_tasks(self) -> None:
         goal = sample_goal()
         task = replace(
@@ -214,6 +241,49 @@ class TasksApiTests(unittest.TestCase):
         )
         self.assertEqual(progress["progress"]["completed"], 1)
         self.assertEqual(progress["progress"]["linked"], 2)
+
+    def test_goal_progress_keeps_legacy_forward_links_until_detail_hydration(self) -> None:
+        goal = sample_goal()
+        explicit = new_inbox_task(
+            "Explicit reciprocal task",
+            datetime(2026, 7, 30, 9, 15).astimezone(),
+            "a1b2c3",
+        )
+        legacy = replace(
+            explicit,
+            slug="tasks/legacy-one-way",
+            title="Legacy one-way task",
+            summary="Legacy one-way task",
+            goal=goal.slug,
+        )
+        harness = ServerHarness(
+            self,
+            FakeAdapter(active=(explicit, legacy), goals=(goal,)),
+        )
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        progress = payload["goals"][0]
+        self.assertEqual(
+            [item["slug"] for item in progress["active_tasks"]],
+            [legacy.slug],
+        )
+
+
+class GoalRelationshipApiTests(unittest.TestCase):
+    def test_reads_explicit_reciprocal_tasks_for_one_goal(self) -> None:
+        goal = replace(sample_goal(), advanced_by=("tasks/explicit",))
+        harness = ServerHarness(self, FakeAdapter(goals=(goal,)))
+
+        status, payload, _ = harness.request(
+            "GET",
+            "/api/goals/goals%2Fship-product/relationships",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["goal_slug"], goal.slug)
+        self.assertEqual(payload["task_slugs"], ["tasks/explicit"])
 
 
 class QuickAddApiTests(unittest.TestCase):
@@ -320,6 +390,20 @@ class TaskStatusApiTests(unittest.TestCase):
             "PATCH",
             "/api/tasks/tasks%2Fship-gtasks/status",
             {"status": "someday"},
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_status")
+        self.assertEqual(adapter.status_updates, [])
+
+    def test_rejects_legacy_waiting_as_a_current_ui_status(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Flegacy-waiting/status",
+            {"status": "waiting"},
         )
 
         self.assertEqual(status, 422)

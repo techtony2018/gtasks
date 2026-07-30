@@ -9,6 +9,7 @@ from unittest.mock import patch
 from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, GOALS_ROOT, new_inbox_task
 from gtasks.gbrain import (
     GBrainAdapter,
+    GBrainCommandError,
     PartialMutationError,
     SubprocessCommandRunner,
 )
@@ -61,7 +62,10 @@ class FakeRunner:
 
     def run(self, tool: str, params: dict) -> object:
         self.calls.append((tool, params))
-        return self.responses[tool].pop(0)
+        result = self.responses[tool].pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class CollectionReadTests(unittest.TestCase):
@@ -184,6 +188,34 @@ class GoalReadTests(unittest.TestCase):
         )
         self.assertNotIn("list_pages", [tool for tool, _ in runner.calls])
 
+    def test_reads_reciprocal_task_slugs_only_for_selected_goal_detail(self) -> None:
+        goal = stored_goal("goals/one", "First goal")
+        runner = FakeRunner(
+            {
+                "get_page": [goal],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": "tasks/first",
+                            "link_type": "advanced_by",
+                        }
+                    ]
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).read_goal_relationships(goal["slug"])
+
+        self.assertEqual(result.task_slugs, ("tasks/first",))
+        self.assertEqual(
+            runner.calls,
+            [
+                ("get_page", {"slug": goal["slug"]}),
+                ("get_links", {"slug": goal["slug"]}),
+            ],
+        )
+
 
 class InboxMutationTests(unittest.TestCase):
     def test_writes_page_and_edge_then_verifies_both(self) -> None:
@@ -253,7 +285,7 @@ class InboxMutationTests(unittest.TestCase):
 
 
 class GoalLinkMutationTests(unittest.TestCase):
-    def test_adds_and_verifies_advances_goal_for_approved_nodes(self) -> None:
+    def test_adds_and_verifies_both_goal_edges_for_approved_nodes(self) -> None:
         task = new_inbox_task(
             "Create the launch brief",
             datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
@@ -264,6 +296,12 @@ class GoalLinkMutationTests(unittest.TestCase):
             "from_slug": task.slug,
             "to_slug": goal["slug"],
             "link_type": "advances_goal",
+            "link_source": "gtasks",
+        }
+        reciprocal_edge = {
+            "from_slug": goal["slug"],
+            "to_slug": task.slug,
+            "link_type": "advanced_by",
             "link_source": "gtasks",
         }
         runner = FakeRunner(
@@ -285,14 +323,15 @@ class GoalLinkMutationTests(unittest.TestCase):
                     ],
                 ],
                 "get_page": [stored_page(task), goal],
-                "get_links": [[], [goal_edge]],
-                "add_link": [goal_edge],
+                "get_links": [[], [], [goal_edge], [reciprocal_edge]],
+                "add_link": [goal_edge, reciprocal_edge],
             }
         )
 
         receipt = GBrainAdapter(runner).set_task_goal(task.slug, goal["slug"])
 
         self.assertTrue(receipt.verified)
+        self.assertTrue(receipt.reciprocal_verified)
         self.assertEqual(receipt.goal_slug, goal["slug"])
         self.assertIn(
             (
@@ -307,17 +346,36 @@ class GoalLinkMutationTests(unittest.TestCase):
             ),
             runner.calls,
         )
+        self.assertIn(
+            (
+                "add_link",
+                {
+                    "from": goal["slug"],
+                    "to": task.slug,
+                    "link_type": "advanced_by",
+                    "context": "This goal is advanced by the linked GTasks task.",
+                    "link_source": "gtasks",
+                },
+            ),
+            runner.calls,
+        )
 
-    def test_clears_only_advances_goal_and_verifies_removal(self) -> None:
+    def test_unchanged_selection_repairs_a_missing_reciprocal_edge(self) -> None:
         task = new_inbox_task(
             "Create the launch brief",
             datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
             "a1b2c3",
         )
-        goal_edge = {
+        goal = stored_goal("goals/ship-product", "Ship the product")
+        forward = {
             "from_slug": task.slug,
-            "to_slug": "goals/ship-product",
+            "to_slug": goal["slug"],
             "link_type": "advances_goal",
+        }
+        reverse = {
+            "from_slug": goal["slug"],
+            "to_slug": task.slug,
+            "link_type": "advanced_by",
         }
         runner = FakeRunner(
             {
@@ -328,11 +386,78 @@ class GoalLinkMutationTests(unittest.TestCase):
                             "to_slug": ACTIVE_ROOT,
                             "link_type": "member_of",
                         }
-                    ]
+                    ],
+                    [
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "",
+                        }
+                    ],
                 ],
-                "get_page": [stored_page(task)],
-                "get_links": [[goal_edge], []],
-                "remove_link": [{}],
+                "get_page": [stored_page(task), goal],
+                "get_links": [[forward], [], [forward], [reverse]],
+                "add_link": [reverse],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_goal(task.slug, goal["slug"])
+
+        self.assertTrue(receipt.reconciled)
+        self.assertEqual(
+            [call for call in runner.calls if call[0] == "add_link"],
+            [
+                (
+                    "add_link",
+                    {
+                        "from": goal["slug"],
+                        "to": task.slug,
+                        "link_type": "advanced_by",
+                        "context": "This goal is advanced by the linked GTasks task.",
+                        "link_source": "gtasks",
+                    },
+                )
+            ],
+        )
+
+    def test_clears_both_relationship_directions_and_verifies_removal(self) -> None:
+        task = new_inbox_task(
+            "Create the launch brief",
+            datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        goal_edge = {
+            "from_slug": task.slug,
+            "to_slug": "goals/ship-product",
+            "link_type": "advances_goal",
+        }
+        goal = stored_goal("goals/ship-product", "Ship the product")
+        reciprocal_edge = {
+            "from_slug": goal["slug"],
+            "to_slug": task.slug,
+            "link_type": "advanced_by",
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ],
+                    [
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "",
+                        }
+                    ],
+                ],
+                "get_page": [stored_page(task), goal],
+                "get_links": [[goal_edge], [reciprocal_edge], [], []],
+                "remove_link": [{}, {}],
             }
         )
 
@@ -351,9 +476,159 @@ class GoalLinkMutationTests(unittest.TestCase):
             ),
             runner.calls,
         )
+        self.assertIn(
+            (
+                "remove_link",
+                {
+                    "from": goal["slug"],
+                    "to": task.slug,
+                    "link_type": "advanced_by",
+                },
+            ),
+            runner.calls,
+        )
+
+    def test_replaces_both_directions_after_new_pair_is_added(self) -> None:
+        task = new_inbox_task(
+            "Create the launch brief",
+            datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        old_goal = stored_goal("goals/old", "Old goal")
+        new_goal = stored_goal("goals/new", "New goal")
+        old_forward = {
+            "from_slug": task.slug,
+            "to_slug": old_goal["slug"],
+            "link_type": "advances_goal",
+        }
+        old_reverse = {
+            "from_slug": old_goal["slug"],
+            "to_slug": task.slug,
+            "link_type": "advanced_by",
+        }
+        new_forward = {
+            "from_slug": task.slug,
+            "to_slug": new_goal["slug"],
+            "link_type": "advances_goal",
+        }
+        new_reverse = {
+            "from_slug": new_goal["slug"],
+            "to_slug": task.slug,
+            "link_type": "advanced_by",
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ],
+                    [
+                        {
+                            "from_slug": old_goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "",
+                        },
+                        {
+                            "from_slug": new_goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "",
+                        },
+                    ],
+                ],
+                "get_page": [stored_page(task), old_goal, new_goal],
+                "get_links": [
+                    [old_forward],
+                    [old_reverse],
+                    [],
+                    [new_forward],
+                    [],
+                    [new_reverse],
+                ],
+                "add_link": [new_forward, new_reverse],
+                "remove_link": [{}, {}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_goal(task.slug, new_goal["slug"])
+
+        self.assertEqual(receipt.goal_slug, new_goal["slug"])
+        mutation_tools = [
+            tool for tool, _ in runner.calls if tool in {"add_link", "remove_link"}
+        ]
+        self.assertEqual(
+            mutation_tools,
+            ["add_link", "add_link", "remove_link", "remove_link"],
+        )
+
+    def test_rolls_back_a_partial_pair_add_and_reports_verification(self) -> None:
+        task = new_inbox_task(
+            "Create the launch brief",
+            datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        goal = stored_goal("goals/ship-product", "Ship the product")
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ],
+                    [
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "",
+                        }
+                    ],
+                ],
+                "get_page": [stored_page(task), goal],
+                "get_links": [[], [], [], []],
+                "add_link": [
+                    {},
+                    GBrainCommandError("reciprocal write failed"),
+                ],
+                "remove_link": [{}],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).set_task_goal(task.slug, goal["slug"])
+
+        self.assertIn("Rollback verified", str(raised.exception))
+        self.assertIn(
+            (
+                "remove_link",
+                {
+                    "from": task.slug,
+                    "to": goal["slug"],
+                    "link_type": "advances_goal",
+                },
+            ),
+            runner.calls,
+        )
 
 
 class TaskStatusMutationTests(unittest.TestCase):
+    def test_rejects_legacy_waiting_as_a_new_status_update(self) -> None:
+        runner = FakeRunner({})
+
+        with self.assertRaisesRegex(ValueError, "status must be one of"):
+            GBrainAdapter(runner).set_task_status(
+                "tasks/legacy-waiting",
+                "waiting",
+                datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(runner.calls, [])
+
     def test_completion_sets_local_timestamp_and_keeps_active_membership(self) -> None:
         now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))
         task = new_inbox_task("Finish GTasks", now, "a1b2c3")
