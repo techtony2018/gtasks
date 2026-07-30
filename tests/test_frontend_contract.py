@@ -204,7 +204,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function openCreateTask", javascript)
         self.assertIn("function openDuplicateTask", javascript)
         self.assertIn("function updateTaskMetricPreview", javascript)
-        self.assertIn('fetch("/api/tasks"', javascript)
+        self.assertIn('"/api/tasks"', javascript)
         self.assertIn("/duplicate`", javascript)
         self.assertIn('elements.taskMetricCurrent.value = "0"', javascript)
         self.assertIn("event_binding", javascript)
@@ -269,7 +269,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("default_goal_slugs", javascript)
         self.assertIn("Open agent profile", javascript)
 
-    def test_full_task_creation_has_explicit_agent_assignment_without_changing_quick_add(
+    def test_full_task_creation_is_the_only_visible_creation_flow(
         self,
     ) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -283,11 +283,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("creates one authorized, queued agent work item", html)
         self.assertIn("assignee_slug", javascript)
         self.assertIn("result.task.owner_agent", javascript)
-        quick_add = html[
-            html.index('id="quick-add-dialog"')
-            : html.index('id="task-editor-dialog"')
-        ]
-        self.assertNotIn("task-editor-assignee", quick_add)
+        self.assertNotIn('id="quick-add-button"', html)
+        self.assertNotIn('id="quick-add-dialog"', html)
+        self.assertNotIn("openQuickAdd", javascript)
+        self.assertNotIn("submitQuickAdd", javascript)
+        self.assertIn('id="create-task-button"', html)
+        self.assertIn("function creationEntry", javascript)
+        self.assertIn('creationEntry("today")', javascript)
+        self.assertIn('creationEntry("inbox")', javascript)
+        self.assertIn('openCreateTask();', javascript)
 
     def test_agent_board_cards_have_owner_badges_and_safe_status_controls(
         self,

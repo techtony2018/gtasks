@@ -48,7 +48,7 @@ const viewMeta = {
   inbox: {
     title: "Inbox",
     emptyTitle: "Your inbox is clear",
-    emptyCopy: "Quick Add puts a title here first, with today as its due date unless you choose another.",
+    emptyCopy: "Create Task opens the full canonical task form, including due date, assignee, and optional progress tracking.",
   },
   today: {
     title: "Today’s Action List",
@@ -103,15 +103,6 @@ const elements = {
   boardStatusRetry: document.querySelector("#board-status-retry"),
   storeDot: document.querySelector("#store-dot"),
   storeLabel: document.querySelector("#store-label"),
-  quickAddButton: document.querySelector("#quick-add-button"),
-  quickAddDialog: document.querySelector("#quick-add-dialog"),
-  quickAddForm: document.querySelector("#quick-add-form"),
-  quickAddSubmit: document.querySelector("#quick-add-submit"),
-  quickAddClose: document.querySelector("#quick-add-close"),
-  quickAddError: document.querySelector("#quick-add-error"),
-  taskTitle: document.querySelector("#task-title"),
-  taskDueDay: document.querySelector("#task-due-day"),
-  dueDefaultCopy: document.querySelector("#due-default-copy"),
   createTaskButton: document.querySelector("#create-task-button"),
   taskEditorDialog: document.querySelector("#task-editor-dialog"),
   taskEditorForm: document.querySelector("#task-editor-form"),
@@ -790,9 +781,9 @@ function emptyActionState() {
     ),
   );
   const actions = node("div", "inline-actions");
-  const addButton = node("button", "submit-button", "Create a task");
+  const addButton = node("button", "submit-button", "Create Task");
   addButton.type = "button";
-  addButton.addEventListener("click", openQuickAdd);
+  addButton.addEventListener("click", openCreateTask);
   const inboxButton = node("button", "secondary-button", "Choose from Inbox");
   inboxButton.type = "button";
   inboxButton.addEventListener("click", () => setView("inbox"));
@@ -800,6 +791,24 @@ function emptyActionState() {
   copy.append(actions);
   wrapper.append(copy, node("div", "empty-orbit"));
   return wrapper;
+}
+
+function creationEntry(view) {
+  const entry = node("section", "create-task-entry");
+  entry.append(
+    node(
+      "p",
+      "",
+      view === "today"
+        ? "Create a task with its due date, assignee, and optional progress tracking."
+        : "Create a canonical task with its due date, assignee, and optional progress tracking.",
+    ),
+  );
+  const button = node("button", "submit-button", "Create Task");
+  button.type = "button";
+  button.addEventListener("click", openCreateTask);
+  entry.append(button);
+  return entry;
 }
 
 function goalProgressText(goal) {
@@ -853,6 +862,7 @@ function goalsHomeSection() {
 function renderToday() {
   const fragment = document.createDocumentFragment();
   const groups = state.snapshot.today;
+  fragment.append(creationEntry("today"));
   if (!allTodayTasks().length) fragment.append(emptyActionState());
   fragment.append(
     section(
@@ -889,9 +899,9 @@ function simpleEmpty(meta) {
     node("h2", "", meta.emptyTitle),
     node("p", "", meta.emptyCopy),
   );
-  const addButton = node("button", "submit-button", "Quick Add");
+  const addButton = node("button", "submit-button", "Create Task");
   addButton.type = "button";
-  addButton.addEventListener("click", openQuickAdd);
+  addButton.addEventListener("click", openCreateTask);
   content.append(addButton);
   wrapper.append(content);
   return wrapper;
@@ -899,8 +909,14 @@ function simpleEmpty(meta) {
 
 function renderListView(view) {
   const tasks = state.snapshot.views[view] || [];
-  if (!tasks.length) return simpleEmpty(viewMeta[view]);
+  if (!tasks.length) {
+    const fragment = document.createDocumentFragment();
+    if (view === "inbox") fragment.append(creationEntry("inbox"));
+    fragment.append(simpleEmpty(viewMeta[view]));
+    return fragment;
+  }
   const fragment = document.createDocumentFragment();
+  if (view === "inbox") fragment.append(creationEntry("inbox"));
   fragment.append(section(viewMeta[view].title, tasks, ""));
   return fragment;
 }
@@ -3199,70 +3215,10 @@ async function submitTaskEditor(event) {
   }
 }
 
-function openQuickAdd() {
-  elements.quickAddForm.reset();
-  elements.quickAddError.classList.add("is-hidden");
-  const today = state.snapshot?.as_of;
-  elements.dueDefaultCopy.textContent = today
-    ? `Leave blank and GTasks will use today, ${formatDay(today, "long")}.`
-    : "Leave blank and GTasks will use Tony’s local creation day.";
-  elements.quickAddDialog.showModal();
-  window.setTimeout(() => elements.taskTitle.focus(), 0);
-}
-
-async function submitQuickAdd(event) {
-  event.preventDefault();
-  elements.quickAddError.classList.add("is-hidden");
-  elements.quickAddSubmit.disabled = true;
-  elements.quickAddSubmit.textContent = "Adding…";
-
-  const payload = { title: elements.taskTitle.value };
-  if (elements.taskDueDay.value) payload.due_day = elements.taskDueDay.value;
-
-  try {
-    const response = await fetch("/api/tasks", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok) {
-      const error = new Error(result.error || "Task could not be added.");
-      error.code = result.code;
-      error.slug = result.slug;
-      throw error;
-    }
-    elements.quickAddDialog.close();
-    const dueCopy =
-      result.due_day_source === "task_creation_day"
-        ? `due today (${formatDay(result.task.due_day)})`
-        : `due ${formatDay(result.task.due_day)}`;
-    showToast(`Added “${result.task.title}” to GBrain, ${dueCopy}.`);
-    await loadTasks();
-    selectTask(result.task.slug);
-  } catch (error) {
-    let message = error.message;
-    if (error.code === "partial_write" && error.slug) {
-      message = `${message} Do not retry yet; inspect ${error.slug} first.`;
-    }
-    elements.quickAddError.textContent = message;
-    elements.quickAddError.classList.remove("is-hidden");
-  } finally {
-    elements.quickAddSubmit.disabled = false;
-    elements.quickAddSubmit.textContent = "Add to Inbox";
-  }
-}
-
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
-elements.quickAddButton.addEventListener("click", openQuickAdd);
 elements.createTaskButton.addEventListener("click", openCreateTask);
-elements.quickAddClose.addEventListener("click", () => elements.quickAddDialog.close());
-elements.quickAddForm.addEventListener("submit", submitQuickAdd);
 elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
@@ -3458,7 +3414,7 @@ document.addEventListener("keydown", (event) => {
     event.target instanceof HTMLSelectElement;
   if (!editing && event.key.toLowerCase() === "n" && !event.metaKey && !event.ctrlKey) {
     event.preventDefault();
-    openQuickAdd();
+    openCreateTask();
   }
 });
 

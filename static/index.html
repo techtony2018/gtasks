@@ -20,11 +20,6 @@
           </span>
         </a>
 
-        <button class="quick-add-button" id="quick-add-button" type="button">
-          <span aria-hidden="true">+</span>
-          Quick Add
-          <kbd>N</kbd>
-        </button>
         <button class="create-task-button" id="create-task-button" type="button">
           Create Task
         </button>
@@ -311,43 +306,6 @@
         </div>
       </aside>
     </div>
-
-    <dialog class="quick-add-dialog" id="quick-add-dialog">
-      <form method="dialog" class="quick-add-form" id="quick-add-form">
-        <div class="dialog-heading">
-          <div>
-            <p>New inbox task</p>
-            <h2>What needs your attention?</h2>
-          </div>
-          <button class="icon-button" id="quick-add-close" type="button" aria-label="Close Quick Add">×</button>
-        </div>
-
-        <label for="task-title">Task title</label>
-        <input
-          id="task-title"
-          name="title"
-          type="text"
-          maxlength="160"
-          autocomplete="off"
-          placeholder="e.g. Send the revised proposal"
-          required
-        >
-
-        <div class="due-field">
-          <label for="task-due-day">Due date <span>optional to enter</span></label>
-          <input id="task-due-day" name="due_day" type="date">
-          <p id="due-default-copy">Leave blank and GTasks will use today.</p>
-        </div>
-
-        <p class="form-error is-hidden" id="quick-add-error" role="alert"></p>
-        <div class="dialog-footer">
-          <p>Creates one real GBrain task in Tony’s Tasks.</p>
-          <button class="submit-button" id="quick-add-submit" type="submit">
-            Add to Inbox
-          </button>
-        </div>
-      </form>
-    </dialog>
 
     <dialog class="task-editor-dialog" id="task-editor-dialog" aria-labelledby="task-editor-heading">
       <form method="dialog" class="task-editor-form" id="task-editor-form">

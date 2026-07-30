@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.12",
+  "current_version": "V0.0.13",
   "releases": [
     {
       "version": "V0.0.1",
@@ -72,6 +72,12 @@
       "date": "2026-07-30",
       "title": "Explicit agent task assignment",
       "summary": "Full Create Task now defaults to Tony but can create one verified queued work item for Toddy, Timmy, or Tammy with exact typed collection membership and assigned_to ownership, no duplicate Tony task or proposal; agent cards retain owner avatars and support authoritative status updates."
+    },
+    {
+      "version": "V0.0.13",
+      "date": "2026-07-30",
+      "title": "One full Create Task flow",
+      "summary": "Removed the reduced Quick Add interface. Create Task is now the only visible task-creation action in the sidebar and at the top of Today and Inbox; all three open the same full form with due date, assignee, project, goal, and optional metric support, and the N shortcut opens that full form."
     }
   ]
 }

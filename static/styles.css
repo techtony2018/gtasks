@@ -123,46 +123,15 @@ a:focus-visible {
   font-size: 11px;
 }
 
-.quick-add-button {
-  width: 100%;
-  margin: 26px 0 18px;
-  min-height: 42px;
-  display: grid;
-  grid-template-columns: 20px 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 10px;
-  color: white;
-  background: var(--accent);
-  box-shadow: 0 7px 18px rgba(47, 107, 79, 0.2);
-  cursor: pointer;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 680;
-}
-
-.quick-add-button:hover {
-  background: var(--accent-dark);
-}
-
-.quick-add-button:active,
 .submit-button:active,
 .refresh-button:active {
   transform: translateY(1px);
 }
 
-.quick-add-button > span {
-  font-size: 22px;
-  font-weight: 400;
-  line-height: 1;
-}
-
 .create-task-button {
   width: 100%;
   min-height: 36px;
-  margin: -10px 0 18px;
+  margin: 26px 0 18px;
   border: 1px solid #bad0c0;
   border-radius: 9px;
   color: var(--accent-dark);
@@ -175,6 +144,23 @@ a:focus-visible {
 .create-task-button:hover {
   border-color: var(--accent);
   background: #e7f2e9;
+}
+
+.create-task-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.create-task-entry p {
+  margin: 0;
+  color: var(--muted);
 }
 
 kbd {
@@ -2537,24 +2523,20 @@ kbd {
     display: inline-flex;
   }
 
-  .quick-add-button {
-    position: absolute;
-    top: 13px;
-    right: 16px;
-    width: auto;
-    min-width: 118px;
-    margin: 0;
-  }
-
-  .quick-add-button kbd {
-    display: none;
-  }
-
   .create-task-button {
     width: auto;
     min-height: 32px;
     margin: 14px 0 0;
     padding: 0 12px;
+  }
+
+  .create-task-entry {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .create-task-entry .submit-button {
+    width: 100%;
   }
 
   .nav-list {

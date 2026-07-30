@@ -145,13 +145,15 @@ empty state.
 
 ## Task creation contract
 
-Quick Add is title-first and creates a real Inbox task only after the user submits the form. Every new task has a due date:
+Create Task is the sole visible task-creation flow. The same full dialog opens
+from the sidebar, the top of Today, and the top of Inbox. Every new task has a
+due date:
 
 - If the user chooses a date, GTasks preserves it.
 - If the user leaves the date blank, GTasks uses the task creation day in the server's local timezone (Tony's local date).
 
-The separate full Create Task form adds detail, priority, Next Action,
-project, goal, and optional progress tracking. A count metric has a
+The full Create Task form adds detail, priority, Next Action, project, goal,
+and optional progress tracking. A count metric has a
 user-facing label, positive target, and current value from zero through the
 target. Unmetered tasks are unchanged. A manual metric does not complete a task
 merely because its initial current value equals its target.
@@ -170,8 +172,8 @@ queued, never falsely in progress—with:
 
 The `assigned_to` relation is individual work ownership and is intentionally
 different from an agent profile's goal-level `default_agent_for` relation.
-Quick Add remains Tony-only and unchanged. Reassignment is a separate later
-workflow and is not implied by this creation contract.
+Reassignment is a separate later workflow and is not implied by this creation
+contract.
 
 The first automatic binding is the daily job-application quota. Its canonical
 contract is intentionally exact:
@@ -266,7 +268,7 @@ already archived task moves the same task identity back to the active root.
 
 Loading the app, Board, refreshing, opening Create or Duplicate, running the
 test suite, and browser verification are read-only. Only an explicit submitted
-creation/duplicate, Quick Add, goal Save, status Save, Next Action Save, metric
+Create Task/duplicate, goal Save, status Save, Next Action Save, metric
 configuration, or relationship repair mutates GBrain.
 
 ## Views
