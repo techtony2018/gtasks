@@ -3,17 +3,20 @@ import subprocess
 import unittest
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from gtasks.domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
+    EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    ProgressMetric,
     new_goal,
     new_inbox_task,
     new_project,
+    new_task,
 )
 from gtasks.gbrain import (
     GBrainAdapter,
@@ -110,6 +113,37 @@ class FakeRunner:
         if isinstance(result, Exception):
             raise result
         return result
+
+
+class StatefulTaskRunner:
+    def __init__(self, page: dict, links: list[dict]) -> None:
+        self.page = deepcopy(page)
+        self.links = deepcopy(links)
+        self.calls: list[tuple[str, dict]] = []
+
+    def run(self, tool: str, params: dict) -> object:
+        self.calls.append((tool, deepcopy(params)))
+        if tool == "get_page":
+            return deepcopy(self.page)
+        if tool == "get_links":
+            return deepcopy(self.links)
+        if tool == "put_page":
+            content = params["content"]
+            lines = content.splitlines()
+            end = lines.index("---", 1)
+            frontmatter = {}
+            for line in lines[1:end]:
+                key, raw = line.split(": ", 1)
+                frontmatter[json.loads(key)] = json.loads(raw)
+            self.page = {
+                **self.page,
+                "type": frontmatter.get("type"),
+                "title": frontmatter.get("title", self.page.get("title")),
+                "frontmatter": frontmatter,
+                "compiled_truth": "\n".join(lines[end + 1 :]).lstrip(),
+            }
+            return {"slug": params["slug"]}
+        raise AssertionError(f"unexpected tool: {tool}")
 
 
 class CollectionReadTests(unittest.TestCase):
@@ -881,6 +915,131 @@ class GoalReadTests(unittest.TestCase):
 
 
 class InboxMutationTests(unittest.TestCase):
+    def test_verified_full_task_creation_path_is_available(self) -> None:
+        self.assertTrue(
+            callable(getattr(GBrainAdapter(FakeRunner({})), "create_task", None))
+        )
+
+    def test_verified_duplicate_creation_path_is_available(self) -> None:
+        self.assertTrue(
+            callable(getattr(GBrainAdapter(FakeRunner({})), "duplicate_task", None))
+        )
+
+    def test_full_creation_serializes_and_reads_back_optional_metric(self) -> None:
+        metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 2,
+                "event_binding": None,
+                "auto_complete": False,
+                "task_day": None,
+                "timezone": None,
+            }
+        )
+        task = new_task(
+            title="Apply for five companies",
+            progress_metric=metric,
+            now=datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            identity="metric1",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["progress_metric"] = metric.to_dict()
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": task.slug}],
+                "get_page": [page, page],
+                "add_link": [edge],
+                "get_links": [[edge], [edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).create_task(task)
+
+        self.assertTrue(receipt.verified)
+        content = runner.calls[0][1]["content"]
+        self.assertIn("progress_metric:", content)
+        self.assertIn('"label": "Job applications"', content)
+        self.assertIn('"unit": "job_application"', content)
+        self.assertIn('"current": 2', content)
+        self.assertIn("event_progress: null", content)
+
+    def test_full_creation_verifies_project_and_bidirectional_goal_links(self) -> None:
+        project = new_project(
+            "Job Search",
+            datetime(2026, 7, 30, 9, tzinfo=timezone.utc),
+            "project1",
+        )
+        goal_page = stored_goal("goals/get-a-job", "Get a job")
+        task = new_task(
+            title="Apply for five companies",
+            project=project.slug,
+            goal=goal_page["slug"],
+            now=datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            identity="linked1",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["project"] = project.slug
+        page["frontmatter"]["links"].append(
+            {"to": project.slug, "type": "member_of"}
+        )
+
+        class CreationRunner:
+            def __init__(self) -> None:
+                self.calls = []
+                self.links = {
+                    (project.slug, PROJECTS_ROOT, "member_of"),
+                }
+
+            def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, params))
+                if tool == "put_page":
+                    return {"slug": task.slug}
+                if tool == "get_page":
+                    if params["slug"] == project.slug:
+                        return stored_project(project)
+                    if params["slug"] == goal_page["slug"]:
+                        return goal_page
+                    if params["slug"] == task.slug:
+                        return page
+                if tool == "add_link":
+                    self.links.add(
+                        (
+                            params["from"],
+                            params["to"],
+                            params["link_type"],
+                        )
+                    )
+                    return {}
+                if tool == "get_links":
+                    slug = params["slug"]
+                    return [
+                        {
+                            "from_slug": source,
+                            "to_slug": target,
+                            "link_type": link_type,
+                        }
+                        for source, target, link_type in sorted(self.links)
+                        if source == slug or target == slug
+                    ]
+                raise AssertionError(f"unexpected {tool}: {params}")
+
+        runner = CreationRunner()
+
+        receipt = GBrainAdapter(runner).create_task(task)
+
+        self.assertTrue(receipt.verified)
+        self.assertIn((task.slug, project.slug, "member_of"), runner.links)
+        self.assertIn((task.slug, goal_page["slug"], "advances_goal"), runner.links)
+        self.assertIn((goal_page["slug"], task.slug, "advanced_by"), runner.links)
+
     def test_writes_page_and_edge_then_verifies_both(self) -> None:
         task = new_inbox_task(
             "Create the launch brief",
@@ -1599,6 +1758,209 @@ class TaskNextActionMutationTests(unittest.TestCase):
         self.assertEqual(
             [tool for tool, _params in runner.calls].count("put_page"),
             2,
+        )
+
+
+class TaskProgressMetricMutationTests(unittest.TestCase):
+    def test_verified_metric_mutation_path_is_available(self) -> None:
+        adapter = GBrainAdapter(FakeRunner({}))
+
+        self.assertTrue(
+            callable(getattr(adapter, "set_task_progress_metric", None))
+        )
+
+    def test_event_progress_mutation_path_is_available(self) -> None:
+        adapter = GBrainAdapter(FakeRunner({}))
+
+        self.assertTrue(
+            callable(getattr(adapter, "apply_task_progress_event", None))
+        )
+
+    def test_sets_metric_with_exact_readback_and_preserves_task_identity(self) -> None:
+        now = datetime(
+            2026,
+            7,
+            30,
+            14,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        task = new_inbox_task("Apply for five companies", now, "a1b2c3")
+        page = stored_page(task)
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = StatefulTaskRunner(page, [edge])
+        metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 0,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-30",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+        event_progress = EventProgress()
+
+        receipt = GBrainAdapter(runner).set_task_progress_metric(
+            task.slug,
+            metric,
+            event_progress,
+            now,
+        )
+
+        self.assertIsNotNone(receipt)
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.progress_metric, metric)
+        self.assertEqual(receipt.task.event_progress, event_progress)
+        self.assertEqual(runner.page["type"], "task")
+        self.assertEqual(runner.page["frontmatter"]["links"], page["frontmatter"]["links"])
+        self.assertEqual(
+            runner.links,
+            [edge],
+        )
+
+    def test_rejects_event_metric_for_a_different_task_day_before_write(
+        self,
+    ) -> None:
+        now = datetime(
+            2026,
+            7,
+            30,
+            14,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        task = new_task(
+            title="Apply for five companies",
+            due_day=date(2026, 7, 30),
+            now=now,
+            identity="a1b2c3",
+        )
+        page = stored_page(task)
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = StatefulTaskRunner(page, [edge])
+        metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 0,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-31",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "must match the task due day"):
+            GBrainAdapter(runner).set_task_progress_metric(
+                task.slug,
+                metric,
+                EventProgress(),
+                now,
+            )
+
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("put_page"),
+            0,
+        )
+
+    def test_five_distinct_events_increment_once_and_then_complete(self) -> None:
+        now = datetime(
+            2026,
+            7,
+            30,
+            14,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 0,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-30",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+        task = new_task(
+            title="Apply for five companies",
+            progress_metric=metric,
+            event_progress=EventProgress(),
+            now=now,
+            identity="a1b2c3",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["progress_metric"] = metric.to_dict()
+        page["frontmatter"]["event_progress"] = EventProgress().to_dict()
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = StatefulTaskRunner(page, [edge])
+        adapter = GBrainAdapter(runner)
+
+        for index in range(1, 5):
+            receipt = adapter.apply_task_progress_event(
+                task.slug,
+                event_binding="job_applied",
+                evidence_slug=f"applications/{index}",
+                receipt_id=f"evt-{index}",
+                now=now + timedelta(minutes=index),
+            )
+            self.assertIsNotNone(receipt)
+            self.assertEqual(receipt.task.progress_metric.current, index)
+            self.assertEqual(receipt.task.status, "planned")
+
+        writes_before_duplicate = len(
+            [tool for tool, _params in runner.calls if tool == "put_page"]
+        )
+        duplicate = adapter.apply_task_progress_event(
+            task.slug,
+            event_binding="job_applied",
+            evidence_slug="applications/4",
+            receipt_id="evt-4",
+            now=now + timedelta(minutes=5),
+        )
+        writes_after_duplicate = len(
+            [tool for tool, _params in runner.calls if tool == "put_page"]
+        )
+        self.assertTrue(duplicate.duplicate)
+        self.assertEqual(writes_before_duplicate, writes_after_duplicate)
+
+        completed = adapter.apply_task_progress_event(
+            task.slug,
+            event_binding="job_applied",
+            evidence_slug="applications/5",
+            receipt_id="evt-5",
+            now=now + timedelta(minutes=6),
+        )
+
+        self.assertTrue(completed.verified)
+        self.assertFalse(completed.duplicate)
+        self.assertEqual(completed.task.progress_metric.current, 5)
+        self.assertEqual(completed.task.status, "completed")
+        self.assertIsNotNone(completed.task.completed_at)
+        self.assertEqual(
+            completed.task.event_progress.receipt_ids,
+            ("evt-1", "evt-2", "evt-3", "evt-4", "evt-5"),
         )
 
 

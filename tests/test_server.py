@@ -10,12 +10,15 @@ from pathlib import Path
 from gtasks.domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
+    EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
     Goal,
+    ProgressMetric,
     Project,
     Task,
     new_inbox_task,
+    new_task,
 )
 from gtasks.gbrain import (
     CollectionRead,
@@ -28,6 +31,7 @@ from gtasks.gbrain import (
     NextActionMutationReceipt,
     PartialMutationError,
     StatusMutationReceipt,
+    TaskProgressMetricReceipt,
     MembershipRepairReceipt,
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
@@ -51,6 +55,7 @@ class FakeAdapter:
         self.goals = goals
         self.projects = projects
         self.created: list[Task] = []
+        self.duplicated_from: list[str] = []
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
         self.next_action_updates: list[tuple[str, str, datetime]] = []
@@ -70,6 +75,17 @@ class FakeAdapter:
     def create_inbox(self, task: Task) -> MutationReceipt:
         self.created.append(task)
         return MutationReceipt(slug=task.slug, verified=True)
+
+    def create_task(self, task: Task) -> MutationReceipt:
+        return self.create_inbox(task)
+
+    def duplicate_task(
+        self,
+        source_slug: str,
+        task: Task,
+    ) -> MutationReceipt:
+        self.duplicated_from.append(source_slug)
+        return self.create_task(task)
 
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
@@ -172,6 +188,36 @@ class FakeAdapter:
     def repair_active_membership(self, task_slug: str) -> MembershipRepairReceipt:
         self.membership_repairs.append(task_slug)
         return MembershipRepairReceipt(task_slug=task_slug, verified=True)
+
+    def set_task_progress_metric(
+        self,
+        task_slug: str,
+        progress_metric: ProgressMetric | None,
+        event_progress: EventProgress | None,
+        now: datetime,
+    ) -> TaskProgressMetricReceipt:
+        existing = next(
+            task
+            for task in (*self.active, *self.completed)
+            if task.slug == task_slug
+        )
+        updated = replace(
+            existing,
+            progress_metric=progress_metric,
+            event_progress=event_progress,
+            updated_at=now,
+        )
+        self.active = tuple(
+            updated if task.slug == task_slug else task for task in self.active
+        )
+        self.completed = tuple(
+            updated if task.slug == task_slug else task for task in self.completed
+        )
+        return TaskProgressMetricReceipt(
+            task_slug=task_slug,
+            task=updated,
+            verified=True,
+        )
 
 
 def sample_goal(slug: str = "goals/ship-product") -> Goal:
@@ -289,7 +335,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
         self.assertEqual(payload["operational_logs"], "privacy_safe_read_only")
         self.assertEqual(payload["queue_reader_dependency"], "optional")
-        self.assertEqual(payload["version"], "V0.0.8")
+        self.assertEqual(payload["version"], "V0.0.9")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -297,15 +343,22 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.8")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.8")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.7")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.6")
-        self.assertEqual(payload["releases"][3]["version"], "V0.0.5")
-        self.assertEqual(payload["releases"][4]["version"], "V0.0.4")
-        self.assertEqual(payload["releases"][5]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][6]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][7]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.9")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.9")
+        self.assertEqual(
+            [release["version"] for release in payload["releases"]],
+            [
+                "V0.0.9",
+                "V0.0.8",
+                "V0.0.7",
+                "V0.0.6",
+                "V0.0.5",
+                "V0.0.4",
+                "V0.0.3",
+                "V0.0.2",
+                "V0.0.1",
+            ],
+        )
 
 
 class LogsApiTests(unittest.TestCase):
@@ -859,6 +912,118 @@ class QuickAddApiTests(unittest.TestCase):
         self.assertEqual(payload["error"], "Request body must be valid JSON.")
 
 
+class FullTaskCreationApiTests(unittest.TestCase):
+    def test_creates_an_optional_manual_metric_without_auto_completion(self) -> None:
+        adapter = FakeAdapter(
+            projects=(sample_project(),),
+            goals=(sample_goal(),),
+        )
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Apply for five companies",
+                "detail": "Use the approved resume.",
+                "priority": "high",
+                "next_action": "Choose the next company",
+                "due_day": "2026-07-31",
+                "project_slug": "projects/ship-product",
+                "goal_slug": "goals/ship-product",
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 5,
+                    "current": 5,
+                },
+            },
+        )
+
+        self.assertEqual(status, 201)
+        created = adapter.created[0]
+        self.assertEqual(created.status, "planned")
+        self.assertIsNone(created.completed_at)
+        self.assertEqual(created.project, "projects/ship-product")
+        self.assertEqual(created.goal, "goals/ship-product")
+        self.assertEqual(created.progress_metric.label, "Job applications")
+        self.assertEqual(created.progress_metric.current, 5)
+        self.assertIsNone(created.event_progress)
+        self.assertEqual(payload["task"]["progress_metric"]["current"], 5)
+
+    def test_duplicate_review_resets_bound_progress_and_historical_receipts(self) -> None:
+        source_metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 4,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-30",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+        source = replace(
+            new_task(
+                title="Apply for five companies",
+                due_day=date(2026, 7, 30),
+                progress_metric=source_metric,
+                event_progress=EventProgress(
+                    evidence_slugs=(
+                        "applications/one",
+                        "applications/two",
+                        "applications/three",
+                        "applications/four",
+                    ),
+                    receipt_ids=("evt-1", "evt-2", "evt-3", "evt-4"),
+                ),
+                now=datetime(2026, 7, 30, 9, 15).astimezone(),
+                identity="source1",
+            ),
+            status="active",
+            inbox=False,
+        )
+        adapter = FakeAdapter(active=(source,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            f"/api/tasks/{source.slug.replace('/', '%2F')}/duplicate",
+            {
+                "title": "Apply for five companies",
+                "detail": source.detail,
+                "priority": source.priority,
+                "next_action": source.next_action,
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 5,
+                    "current": 0,
+                    "event_binding": "job_applied",
+                    "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 201)
+        duplicate = adapter.created[0]
+        self.assertEqual(adapter.duplicated_from, [source.slug])
+        self.assertNotEqual(duplicate.slug, source.slug)
+        self.assertEqual(duplicate.status, "planned")
+        self.assertIsNone(duplicate.completed_at)
+        self.assertEqual(duplicate.due_day, date(2026, 7, 31))
+        self.assertEqual(duplicate.progress_metric.current, 0)
+        self.assertEqual(duplicate.progress_metric.task_day, date(2026, 7, 31))
+        self.assertEqual(duplicate.event_progress.evidence_slugs, ())
+        self.assertEqual(duplicate.event_progress.receipt_ids, ())
+        self.assertTrue(payload["receipt"]["verified"])
+
+
 class GoalLinkApiTests(unittest.TestCase):
     def test_links_a_task_to_an_approved_goal(self) -> None:
         adapter = FakeAdapter(goals=(sample_goal(),))
@@ -1027,6 +1192,91 @@ class TaskNextActionApiTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "partial_write")
         self.assertEqual(payload["slug"], "tasks/ship-gtasks")
+
+
+class TaskProgressMetricApiTests(unittest.TestCase):
+    def test_sets_daily_job_application_metric_with_verified_empty_evidence(
+        self,
+    ) -> None:
+        now = datetime.fromisoformat("2026-07-30T09:00:00-07:00")
+        task = new_task(
+            title="Apply for five more companies",
+            detail="Submit five strong applications.",
+            priority="high",
+            next_action="Submit the next application",
+            due_day=date(2026, 7, 30),
+            project=None,
+            goal=None,
+            progress_metric=None,
+            event_progress=None,
+            now=now,
+            identity="metric01",
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{task.slug.replace('/', '%2F')}/progress-metric",
+            {
+                "task_day": "2026-07-30",
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 5,
+                    "current": 0,
+                    "event_binding": "job_applied",
+                    "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        receipt = payload["receipt"]
+        self.assertTrue(receipt["verified"])
+        self.assertEqual(
+            receipt["task"]["progress_metric"],
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 5,
+                "current": 0,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-30",
+                "timezone": "America/Los_Angeles",
+            },
+        )
+        self.assertEqual(
+            receipt["task"]["event_progress"],
+            {"evidence_slugs": [], "receipt_ids": []},
+        )
+
+    def test_rejects_event_metric_without_explicit_task_day(self) -> None:
+        now = datetime.fromisoformat("2026-07-30T09:00:00-07:00")
+        task = new_inbox_task("Apply for five more companies", now, "metric02")
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{task.slug.replace('/', '%2F')}/progress-metric",
+            {
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 5,
+                    "current": 0,
+                    "event_binding": "job_applied",
+                    "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_progress_metric")
+        self.assertIsNone(adapter.active[0].progress_metric)
 
 
 class ProjectApiTests(unittest.TestCase):

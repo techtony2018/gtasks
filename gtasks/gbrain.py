@@ -14,10 +14,12 @@ from .domain import (
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
+    EventProgress,
     GOALS_ROOT,
     Goal,
     LIFECYCLE_ROOTS,
     PROJECTS_ROOT,
+    ProgressMetric,
     Project,
     Task,
 )
@@ -234,6 +236,36 @@ class NextActionMutationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskProgressMetricReceipt:
+    task_slug: str
+    task: Task
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "task": self.task.to_dict(),
+            "verified": self.verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProgressEventReceipt:
+    task_slug: str
+    task: Task
+    duplicate: bool
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "task": self.task.to_dict(),
+            "duplicate": self.duplicate,
+            "verified": self.verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectMutationReceipt:
     project_slug: str
     verified: bool
@@ -357,6 +389,20 @@ def render_task_page(task: Task) -> str:
         ),
         f"created_at: {_yaml_scalar(task.created_at.isoformat() if task.created_at else None)}",
         f"updated_at: {_yaml_scalar(task.updated_at.isoformat() if task.updated_at else None)}",
+        (
+            "progress_metric: "
+            + json.dumps(
+                task.progress_metric.to_dict() if task.progress_metric else None,
+                ensure_ascii=False,
+            )
+        ),
+        (
+            "event_progress: "
+            + json.dumps(
+                task.event_progress.to_dict() if task.event_progress else None,
+                ensure_ascii=False,
+            )
+        ),
         "links:",
     ]
     for link in links:
@@ -1355,6 +1401,186 @@ class GBrainAdapter:
 
         return MutationReceipt(slug=task.slug, verified=True)
 
+    def create_task(self, task: Task) -> MutationReceipt:
+        if task.project:
+            project_page = self.runner.run("get_page", {"slug": task.project})
+            project_links = self.runner.run("get_links", {"slug": task.project})
+            if not isinstance(project_page, Mapping) or not isinstance(
+                project_links, list
+            ):
+                raise ValueError("selected project could not be verified")
+            try:
+                Project.from_page(project_page, edges=project_links)
+            except DomainValidationError as exc:
+                raise ValueError(
+                    "project is not a durable member of Tony's Projects"
+                ) from exc
+        if task.goal:
+            goal_page = self.runner.run("get_page", {"slug": task.goal})
+            if not isinstance(goal_page, Mapping):
+                raise ValueError("selected goal could not be verified")
+            try:
+                Goal.from_page(goal_page)
+            except DomainValidationError as exc:
+                raise ValueError("goal is not a member of Tony's Goals") from exc
+
+        receipt = self.create_inbox(task)
+        try:
+            if task.project:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.slug,
+                        "to": task.project,
+                        "link_type": "member_of",
+                        "context": "GTasks project membership.",
+                        "link_source": "gtasks",
+                    },
+                )
+            if task.goal:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.slug,
+                        "to": task.goal,
+                        "link_type": "advances_goal",
+                        "context": "This task advances the linked Tony goal.",
+                        "link_source": "gtasks",
+                    },
+                )
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.goal,
+                        "to": task.slug,
+                        "link_type": "advanced_by",
+                        "context": "This goal is advanced by the linked GTasks task.",
+                        "link_source": "gtasks",
+                    },
+                )
+
+            stored_page = self.runner.run("get_page", {"slug": task.slug})
+            stored_links = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(
+                stored_links, list
+            ):
+                raise GBrainProtocolError(
+                    "full task creation readback was not structured"
+                )
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            expected = (
+                task.summary,
+                task.detail,
+                task.status,
+                task.priority,
+                task.next_action,
+                task.due_day,
+                task.inbox,
+                task.lifecycle_root,
+                task.project,
+                task.goal,
+                task.progress_metric,
+                task.event_progress,
+            )
+            actual = (
+                stored_task.summary,
+                stored_task.detail,
+                stored_task.status,
+                stored_task.priority,
+                stored_task.next_action,
+                stored_task.due_day,
+                stored_task.inbox,
+                stored_task.lifecycle_root,
+                stored_task.project,
+                stored_task.goal,
+                stored_task.progress_metric,
+                stored_task.event_progress,
+            )
+            if actual != expected:
+                raise GBrainProtocolError(
+                    "full task page readback did not match the requested task"
+                )
+            typed_edges = {
+                (
+                    edge.get("from_slug"),
+                    edge.get("to_slug"),
+                    edge.get("link_type"),
+                )
+                for edge in stored_links
+                if isinstance(edge, Mapping)
+            }
+            if (
+                task.project
+                and (task.slug, task.project, "member_of") not in typed_edges
+            ):
+                raise GBrainProtocolError(
+                    "task project relationship readback was not verified"
+                )
+            if task.goal:
+                if (
+                    task.slug,
+                    task.goal,
+                    "advances_goal",
+                ) not in typed_edges:
+                    raise GBrainProtocolError(
+                        "task goal relationship readback was not verified"
+                    )
+                goal_links = self.runner.run("get_links", {"slug": task.goal})
+                if not isinstance(goal_links, list) or not any(
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == task.goal
+                    and edge.get("to_slug") == task.slug
+                    and edge.get("link_type") == "advanced_by"
+                    for edge in goal_links
+                ):
+                    raise GBrainProtocolError(
+                        "goal reciprocal relationship readback was not verified"
+                    )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                task.slug,
+                (
+                    "Task creation relationships were not fully verified. "
+                    f"Inspect this task before retrying: {exc}"
+                ),
+            ) from exc
+        return receipt
+
+    def duplicate_task(
+        self,
+        source_slug: str,
+        task: Task,
+    ) -> MutationReceipt:
+        self._approved_task(source_slug)
+        if task.slug == source_slug:
+            raise ValueError("duplicate task must receive a new identity")
+        if (
+            task.status != "planned"
+            or not task.inbox
+            or task.completed_at is not None
+            or task.lifecycle_root != ACTIVE_ROOT
+        ):
+            raise ValueError(
+                "duplicate task must start planned in the active Inbox "
+                "without completion history"
+            )
+        if task.event_progress and (
+            task.event_progress.evidence_slugs
+            or task.event_progress.receipt_ids
+        ):
+            raise ValueError(
+                "duplicate task may not copy event evidence or receipts"
+            )
+        if (
+            task.progress_metric
+            and task.progress_metric.event_binding
+            and task.progress_metric.current != 0
+        ):
+            raise ValueError(
+                "duplicate event-bound task progress must start at 0"
+            )
+        return self.create_task(task)
+
     def repair_active_membership(
         self,
         task_slug: str,
@@ -1854,6 +2080,314 @@ class GBrainAdapter:
         return NextActionMutationReceipt(
             task_slug=task_slug,
             next_action=normalized_action,
+            verified=True,
+        )
+
+    def set_task_progress_metric(
+        self,
+        task_slug: str,
+        progress_metric: ProgressMetric | None,
+        event_progress: EventProgress | None,
+        now: datetime,
+    ) -> TaskProgressMetricReceipt:
+        if now.tzinfo is None:
+            raise ValueError("progress metric update time must include timezone")
+        if progress_metric is None and event_progress is not None:
+            raise ValueError("event progress requires a progress metric")
+        if progress_metric and progress_metric.event_binding:
+            if (
+                event_progress is None
+                or progress_metric.current != len(event_progress.receipt_ids)
+            ):
+                raise ValueError(
+                    "event-bound metric current must match unique event evidence"
+                )
+        elif event_progress is not None:
+            raise ValueError(
+                "event progress requires an event-bound progress metric"
+            )
+
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("task metric snapshot was not structured")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}"
+            )
+        lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if len(lifecycle_edges) != 1:
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+        lifecycle_root = str(lifecycle_edges[0]["to_slug"])
+        normalized_page, normalized_links, _warnings = _normalize_collection_task(
+            raw_page,
+            raw_links,
+            lifecycle_root,
+            legacy_untyped_backlink=False,
+        )
+        try:
+            task = Task.from_page(normalized_page, edges=normalized_links)
+        except DomainValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        if (
+            progress_metric
+            and progress_metric.event_binding
+            and progress_metric.task_day != task.due_day
+        ):
+            raise ValueError(
+                "event-bound progress metric task_day must match the task due day"
+            )
+        if (
+            task.progress_metric == progress_metric
+            and task.event_progress == event_progress
+        ):
+            return TaskProgressMetricReceipt(
+                task_slug=task_slug,
+                task=task,
+                verified=True,
+            )
+
+        raw_frontmatter = normalized_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("task page has no frontmatter")
+        original_frontmatter = deepcopy(dict(raw_frontmatter))
+        original_frontmatter["type"] = "task"
+        desired_frontmatter = deepcopy(original_frontmatter)
+        desired_frontmatter["progress_metric"] = (
+            progress_metric.to_dict() if progress_metric else None
+        )
+        desired_frontmatter["event_progress"] = (
+            event_progress.to_dict() if event_progress else None
+        )
+        desired_frontmatter["updated_at"] = now.isoformat()
+        original_content = _render_preserved_page(
+            raw_page,
+            original_frontmatter,
+        )
+        desired_content = _render_preserved_page(
+            raw_page,
+            desired_frontmatter,
+        )
+
+        write_succeeded = False
+        try:
+            self.runner.run(
+                "put_page",
+                {"slug": task_slug, "content": desired_content},
+            )
+            write_succeeded = True
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if (
+                not isinstance(stored_page, Mapping)
+                or stored_page.get("type") != "task"
+                or not isinstance(stored_links, list)
+            ):
+                raise GBrainProtocolError(
+                    "task metric readback was not structured"
+                )
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            stored_lifecycle = _lifecycle_edges(task_slug, stored_links)
+            if (
+                stored_task.progress_metric != progress_metric
+                or stored_task.event_progress != event_progress
+                or stored_task.lifecycle_root != lifecycle_root
+                or len(stored_lifecycle) != 1
+                or stored_lifecycle[0].get("to_slug") != lifecycle_root
+            ):
+                raise GBrainProtocolError(
+                    "task metric page and lifecycle readback did not match"
+                )
+            for expected in raw_links:
+                if not isinstance(expected, Mapping):
+                    continue
+                if not any(
+                    isinstance(actual, Mapping)
+                    and actual.get("from_slug") == expected.get("from_slug")
+                    and actual.get("to_slug") == expected.get("to_slug")
+                    and actual.get("link_type") == expected.get("link_type")
+                    for actual in stored_links
+                ):
+                    raise GBrainProtocolError(
+                        "an existing task relationship was missing after metric update"
+                    )
+        except (DomainValidationError, GBrainError) as exc:
+            if not write_succeeded:
+                raise
+            rollback_verified = False
+            try:
+                self.runner.run(
+                    "put_page",
+                    {"slug": task_slug, "content": original_content},
+                )
+                rollback_page = self.runner.run(
+                    "get_page",
+                    {"slug": task_slug},
+                )
+                rollback_links = self.runner.run(
+                    "get_links",
+                    {"slug": task_slug},
+                )
+                if isinstance(rollback_page, Mapping) and isinstance(
+                    rollback_links, list
+                ):
+                    rollback_task = Task.from_page(
+                        rollback_page,
+                        edges=rollback_links,
+                    )
+                    rollback_verified = (
+                        rollback_page.get("type") == "task"
+                        and rollback_task.progress_metric
+                        == task.progress_metric
+                        and rollback_task.event_progress
+                        == task.event_progress
+                    )
+            except (DomainValidationError, GBrainError):
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the task before retrying."
+            )
+            raise PartialMutationError(
+                task_slug,
+                f"Task progress metric write was not verified. {outcome}",
+            ) from exc
+
+        return TaskProgressMetricReceipt(
+            task_slug=task_slug,
+            task=stored_task,
+            verified=True,
+        )
+
+    def apply_task_progress_event(
+        self,
+        task_slug: str,
+        *,
+        event_binding: str,
+        evidence_slug: str,
+        receipt_id: str,
+        now: datetime,
+    ) -> TaskProgressEventReceipt:
+        if now.tzinfo is None:
+            raise ValueError("progress event time must include timezone")
+        for field_name, value in (
+            ("event_binding", event_binding),
+            ("evidence_slug", evidence_slug),
+            ("receipt_id", receipt_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} is required")
+
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("progress event task snapshot was not structured")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}"
+            )
+        lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if len(lifecycle_edges) != 1:
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+        lifecycle_root = str(lifecycle_edges[0]["to_slug"])
+        normalized_page, normalized_links, _warnings = _normalize_collection_task(
+            raw_page,
+            raw_links,
+            lifecycle_root,
+            legacy_untyped_backlink=False,
+        )
+        try:
+            task = Task.from_page(normalized_page, edges=normalized_links)
+        except DomainValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        metric = task.progress_metric
+        progress = task.event_progress
+        if (
+            metric is None
+            or metric.event_binding != event_binding
+            or progress is None
+        ):
+            raise ValueError("task progress event binding does not match")
+        if metric.task_day != now.date():
+            raise ValueError("task progress event does not match task_day")
+
+        evidence_present = evidence_slug in progress.evidence_slugs
+        receipt_present = receipt_id in progress.receipt_ids
+        if evidence_present != receipt_present:
+            raise ValueError(
+                "progress event conflicts with existing evidence or receipt"
+            )
+        if evidence_present and receipt_present:
+            if (
+                progress.evidence_slugs.index(evidence_slug)
+                != progress.receipt_ids.index(receipt_id)
+            ):
+                raise ValueError(
+                    "progress event evidence and receipt pairing conflicts"
+                )
+            verified_task = task
+            if (
+                metric.current == metric.target
+                and metric.auto_complete
+                and task.status != "completed"
+            ):
+                verified_task = self.set_task_status(
+                    task_slug,
+                    "completed",
+                    now,
+                ).task
+            return TaskProgressEventReceipt(
+                task_slug=task_slug,
+                task=verified_task,
+                duplicate=True,
+                verified=True,
+            )
+        if task.status in {"completed", "cancelled"}:
+            raise ValueError("finished task cannot accept new progress events")
+        if metric.current >= metric.target:
+            raise ValueError("task progress target is already reached")
+
+        updated_progress = EventProgress(
+            evidence_slugs=(*progress.evidence_slugs, evidence_slug),
+            receipt_ids=(*progress.receipt_ids, receipt_id),
+        )
+        updated_metric = deepcopy(metric)
+        updated_metric = ProgressMetric(
+            kind=updated_metric.kind,
+            label=updated_metric.label,
+            unit=updated_metric.unit,
+            target=updated_metric.target,
+            current=updated_metric.current + 1,
+            event_binding=updated_metric.event_binding,
+            auto_complete=updated_metric.auto_complete,
+            task_day=updated_metric.task_day,
+            timezone=updated_metric.timezone,
+        )
+        metric_receipt = self.set_task_progress_metric(
+            task_slug,
+            updated_metric,
+            updated_progress,
+            now,
+        )
+        verified_task = metric_receipt.task
+        if (
+            updated_metric.current == updated_metric.target
+            and updated_metric.auto_complete
+        ):
+            verified_task = self.set_task_status(
+                task_slug,
+                "completed",
+                now,
+            ).task
+        return TaskProgressEventReceipt(
+            task_slug=task_slug,
+            task=verified_task,
+            duplicate=False,
             verified=True,
         )
 

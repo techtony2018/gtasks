@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from calendar import monthrange
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
@@ -82,6 +82,169 @@ def _links_from(frontmatter: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
 
 
 @dataclass(frozen=True, slots=True)
+class ProgressMetric:
+    kind: str
+    label: str | None
+    unit: str
+    target: int
+    current: int
+    event_binding: str | None
+    auto_complete: bool
+    task_day: date | None
+    timezone: str | None
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any]) -> "ProgressMetric":
+        if not isinstance(value, Mapping):
+            raise DomainValidationError("progress_metric must be an object")
+        if value.get("kind") != "count":
+            raise DomainValidationError("progress metric kind must be count")
+        label = value.get("label")
+        if label is not None and (
+            not isinstance(label, str) or not label.strip()
+        ):
+            raise DomainValidationError(
+                "progress metric label must be a nonempty string when present"
+            )
+        if isinstance(label, str) and len(label.strip()) > 160:
+            raise DomainValidationError(
+                "progress metric label must be 160 characters or fewer"
+            )
+        unit = value.get("unit")
+        if (
+            not isinstance(unit, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", unit)
+        ):
+            raise DomainValidationError(
+                "progress metric unit must be a lowercase machine label"
+            )
+        target = value.get("target")
+        if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
+            raise DomainValidationError(
+                "progress metric target must be a positive whole number"
+            )
+        current = value.get("current")
+        if (
+            isinstance(current, bool)
+            or not isinstance(current, int)
+            or current < 0
+            or current > target
+        ):
+            raise DomainValidationError(
+                "progress metric current must be between 0 and target"
+            )
+        event_binding = value.get("event_binding")
+        if event_binding is not None and (
+            not isinstance(event_binding, str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", event_binding)
+        ):
+            raise DomainValidationError(
+                "progress metric event binding must be a lowercase event type"
+            )
+        auto_complete = value.get("auto_complete")
+        if not isinstance(auto_complete, bool):
+            raise DomainValidationError(
+                "progress metric auto_complete must be true or false"
+            )
+        if auto_complete and event_binding is None:
+            raise DomainValidationError(
+                "progress metric automatic completion requires an event binding"
+            )
+        task_day = _optional_date(value.get("task_day"), "progress metric task_day")
+        timezone_name = value.get("timezone")
+        if event_binding is None:
+            if task_day is not None or timezone_name not in (None, "", "none"):
+                raise DomainValidationError(
+                    "manual progress metrics cannot declare event timing"
+                )
+            timezone_name = None
+        else:
+            if task_day is None:
+                raise DomainValidationError(
+                    "event-bound progress metric task_day is required"
+                )
+            if timezone_name != "America/Los_Angeles":
+                raise DomainValidationError(
+                    "event-bound progress metric timezone must be America/Los_Angeles"
+                )
+            if event_binding == "job_applied" and (
+                unit != "job_application"
+                or target != 5
+                or not auto_complete
+            ):
+                raise DomainValidationError(
+                    "job_applied requires unit job_application, target 5, "
+                    "and automatic completion"
+                )
+        return cls(
+            kind="count",
+            label=label.strip() if isinstance(label, str) else None,
+            unit=unit,
+            target=target,
+            current=current,
+            event_binding=event_binding,
+            auto_complete=auto_complete,
+            task_day=task_day,
+            timezone=timezone_name,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "label": self.label,
+            "unit": self.unit,
+            "target": self.target,
+            "current": self.current,
+            "event_binding": self.event_binding,
+            "auto_complete": self.auto_complete,
+            "task_day": self.task_day.isoformat() if self.task_day else None,
+            "timezone": self.timezone,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EventProgress:
+    evidence_slugs: tuple[str, ...] = ()
+    receipt_ids: tuple[str, ...] = ()
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any]) -> "EventProgress":
+        if not isinstance(value, Mapping):
+            raise DomainValidationError("event_progress must be an object")
+        evidence_slugs = value.get("evidence_slugs")
+        receipt_ids = value.get("receipt_ids")
+        for field_name, raw_items in (
+            ("evidence_slugs", evidence_slugs),
+            ("receipt_ids", receipt_ids),
+        ):
+            if (
+                not isinstance(raw_items, list)
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in raw_items
+                )
+                or len(set(raw_items)) != len(raw_items)
+            ):
+                raise DomainValidationError(
+                    f"event progress {field_name} must contain unique text values"
+                )
+        if len(evidence_slugs) != len(receipt_ids):
+            raise DomainValidationError(
+                "event progress evidence and receipts must stay paired"
+            )
+        return cls(
+            evidence_slugs=tuple(evidence_slugs),
+            receipt_ids=tuple(receipt_ids),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_slugs": list(self.evidence_slugs),
+            "receipt_ids": list(self.receipt_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Task:
     slug: str
     title: str
@@ -100,6 +263,8 @@ class Task:
     dependencies: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
     goal: str | None = None
+    progress_metric: ProgressMetric | None = None
+    event_progress: EventProgress | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -215,6 +380,35 @@ class Task:
         parsed_due_day = _optional_date(frontmatter.get("due_day"), "due_day")
         if parsed_due_day is None:
             raise DomainValidationError("due_day is required for every task")
+        raw_progress_metric = frontmatter.get("progress_metric")
+        progress_metric = (
+            None
+            if raw_progress_metric is None
+            else ProgressMetric.from_value(raw_progress_metric)
+        )
+        raw_event_progress = frontmatter.get("event_progress")
+        event_progress = (
+            None
+            if raw_event_progress is None
+            else EventProgress.from_value(raw_event_progress)
+        )
+        if progress_metric is None and event_progress is not None:
+            raise DomainValidationError(
+                "event progress requires a configured progress metric"
+            )
+        if progress_metric and progress_metric.event_binding:
+            if event_progress is None:
+                raise DomainValidationError(
+                    "event-bound progress metric requires event_progress"
+                )
+            if progress_metric.current != len(event_progress.receipt_ids):
+                raise DomainValidationError(
+                    "event-bound metric current must match unique event evidence"
+                )
+        elif event_progress is not None:
+            raise DomainValidationError(
+                "manual progress metric cannot contain event progress"
+            )
 
         return cls(
             slug=slug,
@@ -236,6 +430,8 @@ class Task:
             dependencies=dependencies,
             blockers=blockers,
             goal=goals[0] if goals else None,
+            progress_metric=progress_metric,
+            event_progress=event_progress,
             completed_at=_optional_datetime(
                 frontmatter.get("completed_at"), "completed_at"
             ),
@@ -264,6 +460,12 @@ class Task:
             "dependencies": list(self.dependencies),
             "blockers": list(self.blockers),
             "goal": self.goal,
+            "progress_metric": (
+                self.progress_metric.to_dict() if self.progress_metric else None
+            ),
+            "event_progress": (
+                self.event_progress.to_dict() if self.event_progress else None
+            ),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -323,6 +525,119 @@ def _slugify_title(title: str) -> str:
     ascii_title = normalized.encode("ascii", "ignore").decode("ascii").lower()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_title).strip("-")
     return slug[:64].rstrip("-") or "task"
+
+
+def new_task(
+    *,
+    title: str,
+    now: datetime,
+    identity: str,
+    due_day: date | None = None,
+    detail: str = "",
+    priority: str = "normal",
+    next_action: str = "",
+    project: str | None = None,
+    goal: str | None = None,
+    progress_metric: ProgressMetric | None = None,
+    event_progress: EventProgress | None = None,
+) -> Task:
+    summary = title.strip()
+    if not summary:
+        raise DomainValidationError("title is required")
+    if len(summary) > 160:
+        raise DomainValidationError("title must be 160 characters or fewer")
+    if not isinstance(detail, str):
+        raise DomainValidationError("detail must be text")
+    if priority not in TASK_PRIORITIES:
+        raise DomainValidationError(
+            f"priority must be one of {', '.join(sorted(TASK_PRIORITIES))}"
+        )
+    if not isinstance(next_action, str):
+        raise DomainValidationError("next_action must be text")
+    normalized_action = next_action.strip()
+    if len(normalized_action) > 240 or "\n" in normalized_action:
+        raise DomainValidationError(
+            "next_action must be one concise line of 240 characters or fewer"
+        )
+    if project is not None and (
+        not isinstance(project, str) or not project.startswith("projects/")
+    ):
+        raise DomainValidationError("project must be a project slug or none")
+    if goal is not None and (
+        not isinstance(goal, str) or not goal.startswith("goals/")
+    ):
+        raise DomainValidationError("goal must be a goal slug or none")
+    if progress_metric and progress_metric.event_binding:
+        event_progress = event_progress or EventProgress()
+        if progress_metric.current != len(event_progress.receipt_ids):
+            raise DomainValidationError(
+                "event-bound metric current must match unique event evidence"
+            )
+    elif event_progress is not None:
+        raise DomainValidationError(
+            "event progress requires an event-bound progress metric"
+        )
+    safe_identity = re.sub(r"[^a-z0-9]", "", identity.lower())[:12]
+    if len(safe_identity) < 6:
+        raise DomainValidationError(
+            "identity must contain at least 6 letters or numbers"
+        )
+
+    local_day = now.date()
+    return Task(
+        slug=(
+            f"tasks/{local_day.year}/"
+            f"{local_day.isoformat()}-{_slugify_title(summary)}-{safe_identity}"
+        ),
+        title=summary,
+        summary=summary,
+        detail=detail.strip(),
+        status="planned",
+        priority=priority,
+        next_action=normalized_action,
+        due_day=due_day or local_day,
+        due_at=None,
+        scheduled_day=None,
+        inbox=True,
+        lifecycle_root=ACTIVE_ROOT,
+        project=project,
+        goal=goal,
+        progress_metric=progress_metric,
+        event_progress=event_progress,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def duplicate_task(
+    source: Task,
+    *,
+    due_day: date,
+    now: datetime,
+    identity: str,
+) -> Task:
+    metric = (
+        replace(
+            source.progress_metric,
+            current=0,
+            task_day=due_day if source.progress_metric.event_binding else None,
+        )
+        if source.progress_metric
+        else None
+    )
+    return new_task(
+        title=source.title,
+        detail=source.detail,
+        priority=source.priority,
+        next_action=source.next_action,
+        due_day=due_day,
+        project=source.project,
+        goal=source.goal,
+        progress_metric=metric,
+        event_progress=EventProgress() if metric and metric.event_binding else None,
+        now=now,
+        identity=identity,
+    )
 
 
 @dataclass(frozen=True, slots=True)

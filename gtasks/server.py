@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -21,13 +22,16 @@ from .domain import (
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
+    EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    ProgressMetric,
     Task,
     group_today,
     new_goal,
     new_inbox_task,
     new_project,
+    new_task,
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
 from .operational_logs import (
@@ -45,6 +49,68 @@ from .warnings import WarningDismissalStore
 MAX_REQUEST_BYTES = 16 * 1024
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
+
+
+def _manual_metric_unit(label: str) -> str:
+    unit = re.sub(r"[^a-z0-9]+", "_", label.strip().lower()).strip("_")
+    return unit[:64] or "count"
+
+
+def _progress_metric_from_request(
+    raw: object,
+    *,
+    due_day: date,
+) -> tuple[ProgressMetric | None, EventProgress | None]:
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        raise DomainValidationError("progress_metric must be an object")
+    allowed = {
+        "kind",
+        "label",
+        "target",
+        "current",
+        "event_binding",
+        "auto_complete",
+    }
+    if set(raw) - allowed:
+        raise DomainValidationError(
+            "progress_metric contains unsupported fields"
+        )
+    kind = raw.get("kind", "count")
+    label = raw.get("label")
+    target = raw.get("target")
+    current = raw.get("current", 0)
+    binding = raw.get("event_binding")
+    auto_complete = raw.get("auto_complete", binding == "job_applied")
+    if not isinstance(label, str):
+        raise DomainValidationError("progress metric label is required")
+    if binding not in (None, "", "job_applied"):
+        raise DomainValidationError(
+            "job_applied is the only supported automatic event binding"
+        )
+    binding = binding or None
+    if binding == "job_applied" and current != 0:
+        raise DomainValidationError(
+            "job_applied progress must start at 0 without verified event evidence"
+        )
+    value = {
+        "kind": kind,
+        "label": label,
+        "unit": (
+            "job_application"
+            if binding == "job_applied"
+            else _manual_metric_unit(label)
+        ),
+        "target": target,
+        "current": current,
+        "event_binding": binding,
+        "auto_complete": auto_complete if binding else False,
+        "task_day": due_day.isoformat() if binding else None,
+        "timezone": "America/Los_Angeles" if binding else None,
+    }
+    metric = ProgressMetric.from_value(value)
+    return metric, EventProgress() if binding else None
 
 
 def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
@@ -610,6 +676,111 @@ def _handler_class(
                     },
                 )
                 return
+            duplicate_prefix = "/api/tasks/"
+            duplicate_suffix = "/duplicate"
+            if (
+                path.startswith(duplicate_prefix)
+                and path.endswith(duplicate_suffix)
+            ):
+                source_slug = unquote(
+                    path[len(duplicate_prefix) : -len(duplicate_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                allowed_fields = {
+                    "title",
+                    "due_day",
+                    "detail",
+                    "priority",
+                    "next_action",
+                    "project_slug",
+                    "goal_slug",
+                    "progress_metric",
+                }
+                if set(payload) - allowed_fields:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "duplicate task request contains unsupported fields.",
+                            "code": "invalid_task",
+                        },
+                    )
+                    return
+                now = clock()
+                raw_due_day = payload.get("due_day")
+                due_day = now.date()
+                due_source = "task_creation_day"
+                if raw_due_day not in (None, ""):
+                    if not isinstance(raw_due_day, str):
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {"error": "due_day must be YYYY-MM-DD."},
+                        )
+                        return
+                    try:
+                        due_day = date.fromisoformat(raw_due_day)
+                    except ValueError:
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {"error": "due_day must be YYYY-MM-DD."},
+                        )
+                        return
+                    due_source = "explicit"
+                try:
+                    progress_metric, event_progress = (
+                        _progress_metric_from_request(
+                            payload.get("progress_metric"),
+                            due_day=due_day,
+                        )
+                    )
+                    task = new_task(
+                        title=payload.get("title", ""),
+                        detail=payload.get("detail", ""),
+                        priority=payload.get("priority", "normal"),
+                        next_action=payload.get("next_action", ""),
+                        due_day=due_day,
+                        project=payload.get("project_slug") or None,
+                        goal=payload.get("goal_slug") or None,
+                        progress_metric=progress_metric,
+                        event_progress=event_progress,
+                        now=now,
+                        identity=identity_factory(),
+                    )
+                    receipt = adapter.duplicate_task(source_slug, task)
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_task"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(
+                    HTTPStatus.CREATED,
+                    {
+                        "source_slug": source_slug,
+                        "task": task.to_dict(),
+                        "receipt": receipt.to_dict(),
+                        "due_day_source": due_source,
+                    },
+                )
+                return
             if path != "/api/tasks":
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
                 return
@@ -645,15 +816,60 @@ def _handler_class(
                     {"error": "title must be text."},
                 )
                 return
-            try:
-                task = new_inbox_task(
-                    raw_title,
-                    now=now,
-                    identity=identity_factory(),
-                    due_day=due_day,
+            quick_add_fields = {"title", "due_day"}
+            full_task_fields = {
+                *quick_add_fields,
+                "detail",
+                "priority",
+                "next_action",
+                "project_slug",
+                "goal_slug",
+                "progress_metric",
+            }
+            unsupported = set(payload) - full_task_fields
+            if unsupported:
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {
+                        "error": "task request contains unsupported fields.",
+                        "code": "invalid_task",
+                    },
                 )
-                receipt = adapter.create_inbox(task)
-            except DomainValidationError as exc:
+                return
+            is_full_creation = bool(set(payload) - quick_add_fields)
+            try:
+                if is_full_creation:
+                    progress_metric, event_progress = (
+                        _progress_metric_from_request(
+                            payload.get("progress_metric"),
+                            due_day=due_day,
+                        )
+                    )
+                    project_slug = payload.get("project_slug") or None
+                    goal_slug = payload.get("goal_slug") or None
+                    task = new_task(
+                        title=raw_title,
+                        detail=payload.get("detail", ""),
+                        priority=payload.get("priority", "normal"),
+                        next_action=payload.get("next_action", ""),
+                        due_day=due_day,
+                        project=project_slug,
+                        goal=goal_slug,
+                        progress_metric=progress_metric,
+                        event_progress=event_progress,
+                        now=now,
+                        identity=identity_factory(),
+                    )
+                    receipt = adapter.create_task(task)
+                else:
+                    task = new_inbox_task(
+                        raw_title,
+                        now=now,
+                        identity=identity_factory(),
+                        due_day=due_day,
+                    )
+                    receipt = adapter.create_inbox(task)
+            except (DomainValidationError, ValueError) as exc:
                 self._json(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                     {"error": str(exc), "code": "invalid_task"},
@@ -744,6 +960,9 @@ def _handler_class(
             elif path.endswith("/next-action"):
                 action = "next_action"
                 suffix = "/next-action"
+            elif path.endswith("/progress-metric"):
+                action = "progress_metric"
+                suffix = "/progress-metric"
             elif path.endswith("/project"):
                 action = "project"
                 suffix = "/project"
@@ -833,6 +1052,88 @@ def _handler_class(
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {"error": str(exc), "code": "invalid_next_action"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
+            if action == "progress_metric":
+                if set(payload) - {"progress_metric", "task_day"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "Progress metric updates accept only "
+                                "progress_metric and task_day."
+                            ),
+                            "code": "invalid_progress_metric",
+                        },
+                    )
+                    return
+                raw_metric = payload.get("progress_metric")
+                task_day_value = payload.get("task_day")
+                if raw_metric is None:
+                    task_day = clock().date()
+                elif not isinstance(task_day_value, str):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "task_day is required when configuring a "
+                                "progress metric."
+                            ),
+                            "code": "invalid_progress_metric",
+                        },
+                    )
+                    return
+                else:
+                    try:
+                        task_day = date.fromisoformat(task_day_value)
+                    except ValueError:
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {
+                                "error": "task_day must be an ISO calendar date.",
+                                "code": "invalid_progress_metric",
+                            },
+                        )
+                        return
+                try:
+                    progress_metric, event_progress = (
+                        _progress_metric_from_request(
+                            raw_metric,
+                            due_day=task_day,
+                        )
+                    )
+                    receipt = adapter.set_task_progress_metric(
+                        task_slug,
+                        progress_metric,
+                        event_progress,
+                        clock(),
+                    )
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": "invalid_progress_metric",
+                        },
                     )
                     return
                 except PartialMutationError as exc:

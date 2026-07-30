@@ -179,6 +179,48 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("saveTaskNextAction", javascript)
         self.assertIn('event.key === "Enter"', javascript)
 
+    def test_full_create_and_duplicate_offer_optional_progress_metrics(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        for element_id in (
+            "create-task-button",
+            "task-editor-dialog",
+            "task-editor-form",
+            "task-editor-title",
+            "task-track-metric",
+            "task-metric-fields",
+            "task-metric-label",
+            "task-metric-target",
+            "task-metric-current",
+            "task-metric-preview",
+            "task-metric-event-binding",
+            "task-duplicate-button",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        self.assertIn("Track a metric", html)
+        self.assertIn("Count is the initial supported metric type", html)
+        self.assertIn("Current progress starts at 0", html)
+        self.assertIn("function openCreateTask", javascript)
+        self.assertIn("function openDuplicateTask", javascript)
+        self.assertIn("function updateTaskMetricPreview", javascript)
+        self.assertIn('fetch("/api/tasks"', javascript)
+        self.assertIn("/duplicate`", javascript)
+        self.assertIn('elements.taskMetricCurrent.value = "0"', javascript)
+        self.assertIn("event_binding", javascript)
+        self.assertIn("Job applications", javascript)
+
+    def test_metric_progress_is_rendered_on_cards_rows_and_task_detail(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-progress-detail"', html)
+        self.assertIn('id="task-progress-label"', html)
+        self.assertIn('id="task-progress-value"', html)
+        self.assertIn("function taskProgressLabel", javascript)
+        self.assertIn("metric-progress", javascript)
+        self.assertIn("taskProgressLabel(task)", javascript)
+
     def test_auto_refresh_is_visible_coalesced_and_visibility_aware(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

@@ -27,6 +27,8 @@ const state = {
   goalAction: null,
   pendingWarning: null,
   showDismissedWarnings: false,
+  taskEditorMode: "create",
+  taskEditorSourceSlug: null,
 };
 
 const viewMeta = {
@@ -90,6 +92,30 @@ const elements = {
   taskTitle: document.querySelector("#task-title"),
   taskDueDay: document.querySelector("#task-due-day"),
   dueDefaultCopy: document.querySelector("#due-default-copy"),
+  createTaskButton: document.querySelector("#create-task-button"),
+  taskEditorDialog: document.querySelector("#task-editor-dialog"),
+  taskEditorForm: document.querySelector("#task-editor-form"),
+  taskEditorMode: document.querySelector("#task-editor-mode"),
+  taskEditorHeading: document.querySelector("#task-editor-heading"),
+  taskEditorClose: document.querySelector("#task-editor-close"),
+  taskEditorTitle: document.querySelector("#task-editor-title"),
+  taskEditorDetail: document.querySelector("#task-editor-detail"),
+  taskEditorPriority: document.querySelector("#task-editor-priority"),
+  taskEditorDue: document.querySelector("#task-editor-due"),
+  taskEditorNextAction: document.querySelector("#task-editor-next-action"),
+  taskEditorProject: document.querySelector("#task-editor-project"),
+  taskEditorGoal: document.querySelector("#task-editor-goal"),
+  taskTrackMetric: document.querySelector("#task-track-metric"),
+  taskMetricFields: document.querySelector("#task-metric-fields"),
+  taskMetricLabel: document.querySelector("#task-metric-label"),
+  taskMetricTarget: document.querySelector("#task-metric-target"),
+  taskMetricCurrent: document.querySelector("#task-metric-current"),
+  taskMetricEventBinding: document.querySelector("#task-metric-event-binding"),
+  taskMetricBindingCopy: document.querySelector("#task-metric-binding-copy"),
+  taskMetricPreview: document.querySelector("#task-metric-preview"),
+  taskEditorError: document.querySelector("#task-editor-error"),
+  taskEditorSubmit: document.querySelector("#task-editor-submit"),
+  taskEditorSafety: document.querySelector("#task-editor-safety"),
   detailPanel: document.querySelector("#detail-panel"),
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
@@ -101,6 +127,12 @@ const elements = {
   taskNextActionInput: document.querySelector("#task-next-action-input"),
   taskNextActionSave: document.querySelector("#task-next-action-save"),
   taskNextActionError: document.querySelector("#task-next-action-error"),
+  taskDuplicateButton: document.querySelector("#task-duplicate-button"),
+  taskProgressDetail: document.querySelector("#task-progress-detail"),
+  taskProgressLabel: document.querySelector("#task-progress-label"),
+  taskProgressValue: document.querySelector("#task-progress-value"),
+  taskProgressBar: document.querySelector("#task-progress-bar"),
+  taskProgressBinding: document.querySelector("#task-progress-binding"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
   detailPriority: document.querySelector("#detail-priority"),
@@ -205,6 +237,30 @@ function formatDay(value, style = "short") {
     day: "numeric",
     year: style === "long" ? "numeric" : undefined,
   }).format(day);
+}
+
+function taskProgressLabel(task) {
+  const metric = task?.progress_metric;
+  if (!metric) return "";
+  const label = metric.label ||
+    (metric.unit === "job_application" ? "Job applications" : metric.unit);
+  return `${label}: ${metric.current} / ${metric.target}`;
+}
+
+function appendTaskProgress(container, task) {
+  const label = taskProgressLabel(task);
+  if (!label) return;
+  container.append(node("span", "metric-progress", label));
+}
+
+function dayAfter(value) {
+  const day = parseDay(value);
+  if (!day) return "";
+  day.setDate(day.getDate() + 1);
+  const year = day.getFullYear();
+  const month = String(day.getMonth() + 1).padStart(2, "0");
+  const date = String(day.getDate()).padStart(2, "0");
+  return `${year}-${month}-${date}`;
 }
 
 function relativeDue(task) {
@@ -602,6 +658,7 @@ function taskRow(task) {
     "task-next",
     task.next_action || "Next action not set",
   );
+  appendTaskProgress(nextAction, task);
   const end = node("span", "task-end");
   end.append(node("span", `priority-badge ${task.priority}`, task.priority));
   const due = relativeDue(task);
@@ -829,6 +886,7 @@ function boardCard(task) {
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
+  appendTaskProgress(button, task);
   button.addEventListener("click", () => selectTask(task.slug));
 
   const moveControl = node("label", "board-card-move");
@@ -1693,6 +1751,21 @@ function selectTask(slug) {
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
+  const metric = task.progress_metric;
+  elements.taskProgressDetail.classList.toggle("is-hidden", !metric);
+  if (metric) {
+    const metricLabel =
+      metric.label ||
+      (metric.unit === "job_application" ? "Job applications" : metric.unit);
+    const percent = Math.min(100, Math.round((metric.current / metric.target) * 100));
+    elements.taskProgressLabel.textContent = metricLabel;
+    elements.taskProgressValue.textContent = `${metric.current} / ${metric.target}`;
+    elements.taskProgressBar.style.width = `${percent}%`;
+    elements.taskProgressBinding.textContent =
+      metric.event_binding === "job_applied"
+        ? "Updated by distinct verified job-applied events. At 5 / 5, GTasks completes this task after canonical readback."
+        : "Manual count metric. Reaching the target does not automatically change task status.";
+  }
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
   elements.detailSlug.textContent = task.slug;
   elements.taskGoalError.classList.add("is-hidden");
@@ -2208,6 +2281,189 @@ function loadTasks({ reason = "manual" } = {}) {
   return state.tasksLoadPromise;
 }
 
+function populateTaskEditorRelationships(task = null) {
+  elements.taskEditorProject.replaceChildren();
+  const noProject = node("option", "", "No project");
+  noProject.value = "";
+  elements.taskEditorProject.append(noProject);
+  state.projects.forEach((project) => {
+    const option = node("option", "", project.title);
+    option.value = project.slug;
+    elements.taskEditorProject.append(option);
+  });
+  elements.taskEditorProject.value = task?.project || "";
+
+  elements.taskEditorGoal.replaceChildren();
+  const noGoal = node("option", "", "No linked goal");
+  noGoal.value = "";
+  elements.taskEditorGoal.append(noGoal);
+  state.snapshot?.goals
+    .filter((goal) => ["planned", "active"].includes(goal.status) || goal.slug === task?.goal)
+    .forEach((goal) => {
+      const option = node("option", "", goal.title);
+      option.value = goal.slug;
+      elements.taskEditorGoal.append(option);
+    });
+  elements.taskEditorGoal.value = task?.goal || "";
+}
+
+function updateTaskMetricPreview() {
+  const enabled = elements.taskTrackMetric.checked;
+  elements.taskMetricFields.classList.toggle("is-hidden", !enabled);
+  if (!enabled) return;
+  const label = elements.taskMetricLabel.value.trim();
+  const target = Number(elements.taskMetricTarget.value);
+  const current = Number(elements.taskMetricCurrent.value || 0);
+  const binding = elements.taskMetricEventBinding.value;
+  elements.taskMetricBindingCopy.textContent =
+    binding === "job_applied"
+      ? "Only distinct verified job-applied queue events increment this daily 5-application quota. The fifth completes the task after GBrain readback."
+      : "Manual metrics never change task status just because current equals target.";
+  elements.taskMetricPreview.textContent =
+    label && Number.isInteger(target) && target > 0 && Number.isInteger(current)
+      ? `${label}: ${current} / ${target}`
+      : "Add a name and target to preview progress.";
+}
+
+function resetTaskEditorMetric(metric = null) {
+  elements.taskTrackMetric.checked = Boolean(metric);
+  elements.taskMetricLabel.value = metric?.label ||
+    (metric?.unit === "job_application" ? "Job applications" : "");
+  elements.taskMetricTarget.value = metric?.target || "";
+  elements.taskMetricCurrent.value = metric ? "0" : "0";
+  elements.taskMetricEventBinding.value = metric?.event_binding || "";
+  updateTaskMetricPreview();
+}
+
+function openCreateTask() {
+  state.taskEditorMode = "create";
+  state.taskEditorSourceSlug = null;
+  elements.taskEditorForm.reset();
+  elements.taskEditorMode.textContent = "New canonical task";
+  elements.taskEditorHeading.textContent = "Create Task";
+  elements.taskEditorSubmit.textContent = "Create Task";
+  elements.taskEditorSafety.textContent =
+    "GTasks reports success only after exact GBrain page and relationship readback.";
+  elements.taskEditorDue.value = state.snapshot?.as_of || "";
+  elements.taskEditorPriority.value = "normal";
+  populateTaskEditorRelationships();
+  resetTaskEditorMetric();
+  elements.taskEditorError.classList.add("is-hidden");
+  elements.taskEditorDialog.showModal();
+  window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
+}
+
+function openDuplicateTask() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const task = state.snapshot?.tasks.find((item) => item.slug === state.selectedSlug);
+  if (!task) return;
+  state.taskEditorMode = "duplicate";
+  state.taskEditorSourceSlug = task.slug;
+  elements.taskEditorForm.reset();
+  elements.taskEditorMode.textContent = "Review a safe copy";
+  elements.taskEditorHeading.textContent = "Duplicate Task";
+  elements.taskEditorSubmit.textContent = "Create Duplicate";
+  elements.taskEditorSafety.textContent =
+    "The copy starts Planned with no completion time, prior progress, evidence, or event receipts.";
+  elements.taskEditorTitle.value = task.title || task.summary;
+  elements.taskEditorDetail.value = task.detail || "";
+  elements.taskEditorPriority.value = task.priority;
+  elements.taskEditorNextAction.value = task.next_action || "";
+  elements.taskEditorDue.value = dayAfter(state.snapshot?.as_of);
+  populateTaskEditorRelationships(task);
+  resetTaskEditorMetric(task.progress_metric);
+  elements.taskEditorError.classList.add("is-hidden");
+  elements.taskEditorDialog.showModal();
+  window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
+}
+
+function taskEditorMetricPayload() {
+  if (!elements.taskTrackMetric.checked) return null;
+  const label = elements.taskMetricLabel.value.trim();
+  const target = Number(elements.taskMetricTarget.value);
+  const current = Number(elements.taskMetricCurrent.value);
+  const eventBinding = elements.taskMetricEventBinding.value || null;
+  if (!label) throw new Error("Metric name is required.");
+  if (!Number.isInteger(target) || target <= 0) {
+    throw new Error("Metric target must be a whole number greater than 0.");
+  }
+  if (!Number.isInteger(current) || current < 0 || current > target) {
+    throw new Error("Current progress must be a whole number from 0 through the target.");
+  }
+  if (eventBinding === "job_applied" && (target !== 5 || current !== 0)) {
+    throw new Error(
+      "Automatic job-applied tracking requires target 5 and current 0 because only verified queue events count.",
+    );
+  }
+  return {
+    kind: "count",
+    label,
+    target,
+    current,
+    event_binding: eventBinding,
+    auto_complete: eventBinding === "job_applied",
+  };
+}
+
+async function submitTaskEditor(event) {
+  event.preventDefault();
+  elements.taskEditorError.classList.add("is-hidden");
+  elements.taskEditorSubmit.disabled = true;
+  const originalLabel =
+    state.taskEditorMode === "duplicate" ? "Create Duplicate" : "Create Task";
+  elements.taskEditorSubmit.textContent = "Saving in GBrain…";
+  try {
+    const payload = {
+      title: elements.taskEditorTitle.value,
+      detail: elements.taskEditorDetail.value,
+      priority: elements.taskEditorPriority.value,
+      next_action: elements.taskEditorNextAction.value,
+      due_day: elements.taskEditorDue.value,
+      project_slug: elements.taskEditorProject.value || null,
+      goal_slug: elements.taskEditorGoal.value || null,
+      progress_metric: taskEditorMetricPayload(),
+    };
+    const endpoint =
+      state.taskEditorMode === "duplicate"
+        ? `/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}/duplicate`
+        : "/api/tasks";
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.receipt?.verified || !result.task) {
+      const error = new Error(
+        result.error || "Task creation did not include verified GBrain readback.",
+      );
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    elements.taskEditorDialog.close();
+    showToast(
+      state.taskEditorMode === "duplicate"
+        ? `Created a clean copy of “${result.task.title}” in GBrain.`
+        : `Created “${result.task.title}” in GBrain.`,
+    );
+    await loadTasks();
+    selectTask(result.task.slug);
+  } catch (error) {
+    elements.taskEditorError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Do not retry yet; inspect ${error.slug} first.`
+        : error.message;
+    elements.taskEditorError.classList.remove("is-hidden");
+  } finally {
+    elements.taskEditorSubmit.disabled = false;
+    elements.taskEditorSubmit.textContent = originalLabel;
+  }
+}
+
 function openQuickAdd() {
   elements.quickAddForm.reset();
   elements.quickAddError.classList.add("is-hidden");
@@ -2269,8 +2525,29 @@ document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
 elements.quickAddButton.addEventListener("click", openQuickAdd);
+elements.createTaskButton.addEventListener("click", openCreateTask);
 elements.quickAddClose.addEventListener("click", () => elements.quickAddDialog.close());
 elements.quickAddForm.addEventListener("submit", submitQuickAdd);
+elements.taskEditorClose.addEventListener("click", () => {
+  elements.taskEditorDialog.close();
+});
+elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.taskTrackMetric.addEventListener("change", updateTaskMetricPreview);
+[
+  elements.taskMetricLabel,
+  elements.taskMetricTarget,
+  elements.taskMetricCurrent,
+].forEach((input) => input.addEventListener("input", updateTaskMetricPreview));
+elements.taskMetricEventBinding.addEventListener("change", () => {
+  if (elements.taskMetricEventBinding.value === "job_applied") {
+    if (!elements.taskMetricLabel.value.trim()) {
+      elements.taskMetricLabel.value = "Job applications";
+    }
+    elements.taskMetricTarget.value = "5";
+    elements.taskMetricCurrent.value = "0";
+  }
+  updateTaskMetricPreview();
+});
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });
 });
@@ -2279,6 +2556,7 @@ elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskGoalSave.addEventListener("click", saveTaskGoal);
 elements.taskStatusSave.addEventListener("click", saveTaskStatus);
 elements.taskNextActionSave.addEventListener("click", saveTaskNextAction);
+elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);
 elements.taskProjectSave.addEventListener("click", saveTaskProject);
 elements.taskProjectSelect.addEventListener("change", () => {
   elements.taskProjectError.classList.add("is-hidden");

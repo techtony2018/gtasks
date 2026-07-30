@@ -95,6 +95,44 @@ Quick Add is title-first and creates a real Inbox task only after the user submi
 - If the user chooses a date, GTasks preserves it.
 - If the user leaves the date blank, GTasks uses the task creation day in the server's local timezone (Tony's local date).
 
+The separate full Create Task form adds detail, priority, Next Action,
+project, goal, and optional progress tracking. A count metric has a
+user-facing label, positive target, and current value from zero through the
+target. Unmetered tasks are unchanged. A manual metric does not complete a task
+merely because its initial current value equals its target.
+
+The first automatic binding is the daily job-application quota. Its canonical
+contract is intentionally exact:
+
+```yaml
+progress_metric:
+  kind: count
+  label: Job applications
+  unit: job_application
+  target: 5
+  current: 0
+  event_binding: job_applied
+  auto_complete: true
+  task_day: YYYY-MM-DD
+  timezone: America/Los_Angeles
+event_progress:
+  evidence_slugs: []
+  receipt_ids: []
+```
+
+`label` is display-only and may be absent on rollout-era pages; the Queue
+Reader never uses it for selection. For an event-bound metric, `current`
+always equals both unique evidence and receipt counts. GTasks requires
+`task_day` to match the task due day. Only the fifth distinct accepted
+`job_applied` event completes the task, using the same verified canonical
+status mutation as the UI.
+
+Duplicate is a reviewable action in task details. It copies task intent,
+priority, Next Action, project, goal, and metric configuration, while resetting
+status to Planned, current progress to zero, event evidence and receipts to
+empty, and completion time to none. The user reviews and chooses the new due
+day before the new GBrain task is created and read back.
+
 New GTasks task pages use these fields:
 
 ```yaml
@@ -154,7 +192,10 @@ Completion records Tony's local completion time and keeps the active collection
 edge until Tony's Tasks applies its next-Monday archive rule. Reopening an
 already archived task moves the same task identity back to the active root.
 
-Loading the app, Board, refreshing, running the test suite, and browser verification are read-only. Only an explicit Quick Add, goal Save, status Save, Next Action Save, or relationship repair mutates GBrain.
+Loading the app, Board, refreshing, opening Create or Duplicate, running the
+test suite, and browser verification are read-only. Only an explicit submitted
+creation/duplicate, Quick Add, goal Save, status Save, Next Action Save, metric
+configuration, or relationship repair mutates GBrain.
 
 ## Views
 
@@ -167,9 +208,11 @@ Loading the app, Board, refreshing, running the test suite, and browser verifica
 - Goals
 - Completed
 
-Task rows show title, project, priority, next action, and due date. Board cards
-show the same canonical tasks by status. Selecting either opens the shared
-detail panel, where status can be changed without leaving GTasks.
+Task rows show title, project, priority, next action, due date, and configured
+metric progress such as `Job applications: 3 / 5`. Board cards show the same
+canonical tasks by status and progress. Selecting either opens the shared
+detail panel, where status and progress context remain visible without leaving
+GTasks.
 
 All task, project, goal, and relationship warnings are centralized in Inbox's
 Needs Attention area. Other views and detail panels do not repeat them.

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.8",
+  "current_version": "V0.0.9",
   "releases": [
     {
       "version": "V0.0.1",
@@ -48,6 +48,12 @@
       "date": "2026-07-30",
       "title": "Privacy-safe operational Logs",
       "summary": "Added a read-only Logs dialog beside About with newest-first filtering and pagination, fixed-message Event Queue Reader history and health, bounded redacted GTasks events, and graceful queue-unavailable status that never blocks core task workflows."
+    },
+    {
+      "version": "V0.0.9",
+      "date": "2026-07-30",
+      "title": "Optional task progress and safe duplication",
+      "summary": "Full task creation can track an optional count metric with a clear preview, cards and details show verified progress, and Duplicate provides a reviewable clean copy with progress, evidence, receipts, and completion history reset. The job-applied binding uses the exact daily five-application contract and completes only after five distinct accepted events."
     }
   ]
 }

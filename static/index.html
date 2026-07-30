@@ -25,6 +25,9 @@
           Quick Add
           <kbd>N</kbd>
         </button>
+        <button class="create-task-button" id="create-task-button" type="button">
+          Create Task
+        </button>
 
         <nav class="nav-list" aria-label="Task views">
           <button class="nav-item" data-view="inbox" type="button">
@@ -146,6 +149,19 @@
           <p class="form-error task-status-error is-hidden" id="task-status-error" role="alert"></p>
           <h2 id="detail-title"></h2>
           <p class="detail-copy" id="detail-copy"></p>
+          <button class="secondary-button task-duplicate-button" id="task-duplicate-button" type="button">
+            Duplicate
+          </button>
+          <section class="task-progress-detail is-hidden" id="task-progress-detail" aria-labelledby="task-progress-label">
+            <div>
+              <strong id="task-progress-label"></strong>
+              <span id="task-progress-value"></span>
+            </div>
+            <div class="metric-progress-track" aria-hidden="true">
+              <span id="task-progress-bar"></span>
+            </div>
+            <p id="task-progress-binding"></p>
+          </section>
           <section class="next-action-editor" aria-labelledby="task-next-action-label">
             <label id="task-next-action-label" for="task-next-action-input">
               Next action
@@ -303,6 +319,96 @@
           <button class="submit-button" id="quick-add-submit" type="submit">
             Add to Inbox
           </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="task-editor-dialog" id="task-editor-dialog" aria-labelledby="task-editor-heading">
+      <form method="dialog" class="task-editor-form" id="task-editor-form">
+        <div class="dialog-heading">
+          <div>
+            <p id="task-editor-mode">New canonical task</p>
+            <h2 id="task-editor-heading">Create Task</h2>
+          </div>
+          <button class="icon-button" id="task-editor-close" type="button" aria-label="Close task editor">×</button>
+        </div>
+
+        <label for="task-editor-title">Task title</label>
+        <input id="task-editor-title" type="text" maxlength="160" required>
+        <label for="task-editor-detail">Detail</label>
+        <textarea id="task-editor-detail" rows="3"></textarea>
+        <div class="task-editor-grid">
+          <label>
+            Priority
+            <select id="task-editor-priority">
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label>
+            Due date
+            <input id="task-editor-due" type="date" required>
+          </label>
+        </div>
+        <label for="task-editor-next-action">Next action</label>
+        <input id="task-editor-next-action" type="text" maxlength="240" placeholder="One concrete physical or actionable step">
+        <div class="task-editor-grid">
+          <label>
+            Project
+            <select id="task-editor-project">
+              <option value="">No project</option>
+            </select>
+          </label>
+          <label>
+            Goal
+            <select id="task-editor-goal">
+              <option value="">No linked goal</option>
+            </select>
+          </label>
+        </div>
+
+        <section class="metric-editor">
+          <label class="metric-toggle" for="task-track-metric">
+            <input id="task-track-metric" type="checkbox">
+            <span>
+              <strong>Track a metric</strong>
+              <small>Optional. Tasks without a metric work exactly as before.</small>
+            </span>
+          </label>
+          <div class="task-metric-fields is-hidden" id="task-metric-fields">
+            <p>Count is the initial supported metric type. Current progress starts at 0 and is editable for work already underway.</p>
+            <label for="task-metric-label">Metric name or label</label>
+            <input id="task-metric-label" type="text" maxlength="160" placeholder="e.g. Job applications">
+            <div class="task-editor-grid">
+              <label>
+                Target value
+                <input id="task-metric-target" type="number" min="1" step="1" inputmode="numeric">
+              </label>
+              <label>
+                Current progress
+                <input id="task-metric-current" type="number" min="0" step="1" inputmode="numeric" value="0">
+              </label>
+            </div>
+            <label for="task-metric-event-binding">Automatic event updates</label>
+            <select id="task-metric-event-binding">
+              <option value="">None — update manually</option>
+              <option value="job_applied">Job applied — verified queue events</option>
+            </select>
+            <p class="metric-binding-copy" id="task-metric-binding-copy">
+              Manual metrics never change task status just because current equals target.
+            </p>
+            <output class="task-metric-preview" id="task-metric-preview" aria-live="polite">
+              Add a name and target to preview progress.
+            </output>
+          </div>
+        </section>
+
+        <p class="form-error is-hidden" id="task-editor-error" role="alert"></p>
+        <div class="dialog-footer">
+          <p id="task-editor-safety">GTasks reports success only after exact GBrain readback.</p>
+          <button class="submit-button" id="task-editor-submit" type="submit">Create Task</button>
         </div>
       </form>
     </dialog>
