@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f4f5f0">
+    <title>GTasks</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="GTasks navigation">
+        <a class="brand" href="/" aria-label="GTasks Today">
+          <span class="brand-mark" aria-hidden="true">G</span>
+          <span>
+            <strong>GTasks</strong>
+            <small>GBrain tasks</small>
+          </span>
+        </a>
+
+        <button class="quick-add-button" id="quick-add-button" type="button">
+          <span aria-hidden="true">+</span>
+          Quick Add
+          <kbd>N</kbd>
+        </button>
+
+        <nav class="nav-list" aria-label="Task views">
+          <button class="nav-item" data-view="inbox" type="button">
+            <span class="nav-glyph" aria-hidden="true">I</span>
+            <span>Inbox</span>
+            <span class="nav-count" data-count="inbox">0</span>
+          </button>
+          <button class="nav-item is-active" data-view="today" type="button">
+            <span class="nav-glyph" aria-hidden="true">T</span>
+            <span>Today</span>
+            <span class="nav-count" data-count="today">0</span>
+          </button>
+          <button class="nav-item" data-view="upcoming" type="button">
+            <span class="nav-glyph" aria-hidden="true">U</span>
+            <span>Upcoming</span>
+            <span class="nav-count" data-count="upcoming">0</span>
+          </button>
+          <button class="nav-item" data-view="blocked" type="button">
+            <span class="nav-glyph" aria-hidden="true">B</span>
+            <span>Blocked</span>
+            <span class="nav-count" data-count="blocked">0</span>
+          </button>
+          <button class="nav-item" data-view="projects" type="button">
+            <span class="nav-glyph" aria-hidden="true">P</span>
+            <span>Projects</span>
+            <span class="nav-count" data-count="projects">0</span>
+          </button>
+          <button class="nav-item" data-view="goals" type="button">
+            <span class="nav-glyph" aria-hidden="true">G</span>
+            <span>Goals</span>
+            <span class="nav-count" data-count="goals">0</span>
+          </button>
+          <button class="nav-item" data-view="completed" type="button">
+            <span class="nav-glyph" aria-hidden="true">C</span>
+            <span>Completed</span>
+            <span class="nav-count" data-count="completed">0</span>
+          </button>
+        </nav>
+
+        <div class="store-card">
+          <div class="store-status">
+            <span class="status-dot" id="store-dot" aria-hidden="true"></span>
+            <strong id="store-label">Connecting</strong>
+          </div>
+          <p>Every task stays in GBrain. GTasks keeps no separate task database.</p>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="date-label" id="date-label">Today</p>
+            <h1 id="view-title">Today’s Action List</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="sync-label" id="sync-label" role="status">Loading tasks…</span>
+            <button class="refresh-button" id="refresh-button" type="button">
+              Refresh
+            </button>
+          </div>
+        </header>
+
+        <div class="notice is-hidden" id="issue-notice" role="status"></div>
+        <div class="view-surface" id="view-surface" aria-live="polite">
+          <div class="loading-state" aria-label="Loading task list">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </div>
+      </main>
+
+      <aside class="detail-panel" id="detail-panel" aria-label="Task details" aria-hidden="true">
+        <div class="detail-empty" id="detail-empty">
+          <span class="detail-empty-mark" aria-hidden="true">G</span>
+          <h2>Task details</h2>
+          <p>Select a task to see its next action, project, due date, and GBrain identity.</p>
+        </div>
+        <div class="detail-content is-hidden" id="detail-content">
+          <div class="detail-toolbar">
+            <span class="detail-status" id="detail-status"></span>
+            <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
+          </div>
+          <h2 id="detail-title"></h2>
+          <p class="detail-copy" id="detail-copy"></p>
+          <dl class="detail-list">
+            <div>
+              <dt>Project</dt>
+              <dd id="detail-project"></dd>
+            </div>
+            <div>
+              <dt>Priority</dt>
+              <dd id="detail-priority"></dd>
+            </div>
+            <div>
+              <dt>Next action</dt>
+              <dd id="detail-next-action"></dd>
+            </div>
+            <div>
+              <dt>Due</dt>
+              <dd id="detail-due"></dd>
+            </div>
+          </dl>
+          <div class="goal-link-editor">
+            <label for="task-goal-select">Advances goal</label>
+            <div class="goal-link-controls">
+              <select id="task-goal-select">
+                <option value="">No linked goal</option>
+              </select>
+              <button class="secondary-button" id="task-goal-save" type="button">Save</button>
+            </div>
+            <p>Stored as one typed <code>advances_goal</code> relationship in GBrain.</p>
+            <p class="form-error is-hidden" id="task-goal-error" role="alert"></p>
+            <button class="goal-nav-button is-hidden" id="task-goal-nav" type="button"></button>
+          </div>
+          <a class="gbrain-link" id="detail-gbrain-link" target="_blank" rel="noreferrer">
+            Open in Memory Stargraph
+          </a>
+          <code class="slug-label" id="detail-slug"></code>
+        </div>
+        <div class="goal-detail-content is-hidden" id="goal-detail-content">
+          <div class="detail-toolbar">
+            <span class="detail-status" id="goal-detail-status"></span>
+            <button class="icon-button" id="goal-detail-close" type="button" aria-label="Close goal details">×</button>
+          </div>
+          <h2 id="goal-detail-title"></h2>
+          <p class="detail-copy" id="goal-detail-outcome"></p>
+          <div class="goal-progress-summary">
+            <div>
+              <strong id="goal-progress-label"></strong>
+              <span id="goal-progress-count"></span>
+            </div>
+            <div class="goal-progress-track" aria-hidden="true">
+              <span id="goal-progress-bar"></span>
+            </div>
+          </div>
+          <dl class="detail-list">
+            <div>
+              <dt>Target date</dt>
+              <dd id="goal-detail-target"></dd>
+            </div>
+            <div>
+              <dt>Review</dt>
+              <dd id="goal-detail-cadence"></dd>
+            </div>
+            <div>
+              <dt>Success</dt>
+              <dd id="goal-detail-success"></dd>
+            </div>
+          </dl>
+          <section class="goal-task-section">
+            <h3>Active tasks</h3>
+            <div id="goal-active-tasks"></div>
+          </section>
+          <section class="goal-task-section">
+            <h3>Completed tasks</h3>
+            <div id="goal-completed-tasks"></div>
+          </section>
+          <a class="gbrain-link" id="goal-gbrain-link" target="_blank" rel="noreferrer">
+            Open goal in Memory Stargraph
+          </a>
+          <code class="slug-label" id="goal-detail-slug"></code>
+        </div>
+      </aside>
+    </div>
+
+    <dialog class="quick-add-dialog" id="quick-add-dialog">
+      <form method="dialog" class="quick-add-form" id="quick-add-form">
+        <div class="dialog-heading">
+          <div>
+            <p>New inbox task</p>
+            <h2>What needs your attention?</h2>
+          </div>
+          <button class="icon-button" id="quick-add-close" type="button" aria-label="Close Quick Add">×</button>
+        </div>
+
+        <label for="task-title">Task title</label>
+        <input
+          id="task-title"
+          name="title"
+          type="text"
+          maxlength="160"
+          autocomplete="off"
+          placeholder="e.g. Send the revised proposal"
+          required
+        >
+
+        <div class="due-field">
+          <label for="task-due-day">Due date <span>optional to enter</span></label>
+          <input id="task-due-day" name="due_day" type="date">
+          <p id="due-default-copy">Leave blank and GTasks will use today.</p>
+        </div>
+
+        <p class="form-error is-hidden" id="quick-add-error" role="alert"></p>
+        <div class="dialog-footer">
+          <p>Creates one real GBrain task in Tony’s Tasks.</p>
+          <button class="submit-button" id="quick-add-submit" type="submit">
+            Add to Inbox
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast is-hidden" id="toast" role="status"></div>
+  </body>
+</html>

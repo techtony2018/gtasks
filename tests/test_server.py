@@ -1,0 +1,282 @@
+import http.client
+import json
+import threading
+import unittest
+from dataclasses import replace
+from datetime import date, datetime
+
+from gtasks.domain import (
+    ACTIVE_ROOT,
+    COMPLETED_ROOT,
+    GOALS_ROOT,
+    Goal,
+    Task,
+    new_inbox_task,
+)
+from gtasks.gbrain import (
+    CollectionRead,
+    GoalLinkReceipt,
+    GoalRead,
+    MutationReceipt,
+)
+from gtasks.server import build_server
+
+
+class FakeAdapter:
+    def __init__(
+        self,
+        active: tuple[Task, ...] = (),
+        completed: tuple[Task, ...] = (),
+        goals: tuple[Goal, ...] = (),
+    ) -> None:
+        self.active = active
+        self.completed = completed
+        self.goals = goals
+        self.created: list[Task] = []
+        self.goal_links: list[tuple[str, str | None]] = []
+
+    def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+        tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
+        return CollectionRead(root_slug=root_slug, tasks=tasks)
+
+    def create_inbox(self, task: Task) -> MutationReceipt:
+        self.created.append(task)
+        return MutationReceipt(slug=task.slug, verified=True)
+
+    def list_goals(self) -> GoalRead:
+        return GoalRead(goals=self.goals)
+
+    def set_task_goal(self, task_slug: str, goal_slug: str | None) -> GoalLinkReceipt:
+        self.goal_links.append((task_slug, goal_slug))
+        return GoalLinkReceipt(task_slug=task_slug, goal_slug=goal_slug, verified=True)
+
+
+def sample_goal(slug: str = "goals/ship-product") -> Goal:
+    return Goal(
+        slug=slug,
+        title="Ship the product",
+        status="planned",
+        outcome="Ship the product.",
+        success_criteria="V1 is in daily use.",
+        target_day=date(2026, 9, 30),
+        strategy="Deliver the smallest useful loop.",
+        review_cadence="weekly",
+        constraints="GBrain remains canonical.",
+    )
+
+
+class ServerHarness:
+    def __init__(self, test_case: unittest.TestCase, adapter: FakeAdapter) -> None:
+        self.server = build_server(
+            host="127.0.0.1",
+            port=0,
+            adapter=adapter,
+            clock=lambda: datetime(2026, 7, 30, 9, 15).astimezone(),
+            identity_factory=lambda: "a1b2c3",
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        test_case.addCleanup(self.close)
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: dict | str | None = None,
+    ) -> tuple[int, dict, dict[str, str]]:
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=3
+        )
+        headers: dict[str, str] = {}
+        payload = None
+        if isinstance(body, dict):
+            payload = json.dumps(body)
+            headers["Content-Type"] = "application/json"
+        elif isinstance(body, str):
+            payload = body
+            headers["Content-Type"] = "application/json"
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        parsed = json.loads(raw) if raw else {}
+        response_headers = {key: value for key, value in response.getheaders()}
+        connection.close()
+        return response.status, parsed, response_headers
+
+
+class HealthApiTests(unittest.TestCase):
+    def test_health_declares_gbrain_as_canonical_store_and_due_default(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request("GET", "/api/health")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["canonical_store"], "gbrain")
+        self.assertEqual(payload["default_due_day"], "task_creation_day")
+        self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
+        self.assertEqual(payload["mutations"], "explicit_user_actions_only")
+
+
+class TasksApiTests(unittest.TestCase):
+    def test_returns_empty_root_scoped_views_without_sample_tasks(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, headers = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["tasks"], [])
+        self.assertEqual(payload["today"]["in_progress"], [])
+        self.assertEqual(payload["today"]["todays_actions"], [])
+        self.assertEqual(payload["views"]["inbox"], [])
+        self.assertEqual(payload["goals"], [])
+        self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_returns_real_tasks_in_today_and_navigation_views(self) -> None:
+        today_task = new_inbox_task(
+            "Ship GTasks",
+            datetime(2026, 7, 30, 9, 15).astimezone(),
+            "a1b2c3",
+        )
+        future_task = replace(
+            today_task,
+            slug="tasks/future",
+            summary="Prepare follow-up",
+            title="Prepare follow-up",
+            due_day=date(2026, 8, 2),
+            inbox=False,
+        )
+        harness = ServerHarness(self, FakeAdapter(active=(today_task, future_task)))
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [task["slug"] for task in payload["today"]["todays_actions"]],
+            [today_task.slug],
+        )
+        self.assertEqual(
+            [task["slug"] for task in payload["views"]["upcoming"]],
+            [future_task.slug],
+        )
+
+    def test_goal_progress_links_active_and_completed_tasks(self) -> None:
+        goal = sample_goal()
+        task = replace(
+            new_inbox_task(
+                "Ship GTasks",
+                datetime(2026, 7, 30, 9, 15).astimezone(),
+                "a1b2c3",
+            ),
+            goal=goal.slug,
+        )
+        finished = replace(
+            task,
+            slug="tasks/finished",
+            status="completed",
+            lifecycle_root=COMPLETED_ROOT,
+        )
+        harness = ServerHarness(
+            self,
+            FakeAdapter(active=(task,), completed=(finished,), goals=(goal,)),
+        )
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        progress = payload["goals"][0]
+        self.assertEqual([item["slug"] for item in progress["active_tasks"]], [task.slug])
+        self.assertEqual(
+            [item["slug"] for item in progress["completed_tasks"]],
+            [finished.slug],
+        )
+        self.assertEqual(progress["progress"]["completed"], 1)
+        self.assertEqual(progress["progress"]["linked"], 2)
+
+
+class QuickAddApiTests(unittest.TestCase):
+    def test_omitted_due_date_defaults_to_tonys_local_creation_day(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST", "/api/tasks", {"title": "Book the venue"}
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(adapter.created[0].due_day, date(2026, 7, 30))
+        self.assertEqual(payload["due_day_source"], "task_creation_day")
+        self.assertEqual(payload["task"]["due_day"], "2026-07-30")
+
+    def test_explicit_due_date_is_preserved(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {"title": "Book the venue", "due_day": "2026-08-04"},
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(adapter.created[0].due_day, date(2026, 8, 4))
+        self.assertEqual(payload["due_day_source"], "explicit")
+
+    def test_rejects_invalid_due_date(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {"title": "Book the venue", "due_day": "next Tuesday"},
+        )
+
+        self.assertEqual(status, 422)
+        self.assertIn("due_day", payload["error"])
+
+    def test_rejects_invalid_json(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request("POST", "/api/tasks", "{bad json")
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "Request body must be valid JSON.")
+
+
+class GoalLinkApiTests(unittest.TestCase):
+    def test_links_a_task_to_an_approved_goal(self) -> None:
+        adapter = FakeAdapter(goals=(sample_goal(),))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/goal",
+            {"goal_slug": "goals/ship-product"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            adapter.goal_links,
+            [("tasks/ship-gtasks", "goals/ship-product")],
+        )
+        self.assertTrue(payload["receipt"]["verified"])
+
+    def test_rejects_non_string_goal_selection(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/goal",
+            {"goal_slug": 42},
+        )
+
+        self.assertEqual(status, 422)
+        self.assertIn("goal_slug", payload["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()
