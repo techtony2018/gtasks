@@ -14,6 +14,7 @@ from .domain import (
     EDITABLE_TASK_STATUSES,
     GOALS_ROOT,
     Goal,
+    LIFECYCLE_ROOTS,
     Task,
 )
 
@@ -84,9 +85,22 @@ class SubprocessCommandRunner:
 class CollectionIssue:
     slug: str
     message: str
+    severity: str = "error"
+    task_visible: bool = False
+    category: str = "core_data"
+    impact: str = "This task could not be shown until its core data is corrected."
+    repair_action: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"slug": self.slug, "message": self.message}
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "message": self.message,
+            "severity": self.severity,
+            "task_visible": self.task_visible,
+            "category": self.category,
+            "impact": self.impact,
+            "repair_action": self.repair_action,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +124,15 @@ class MutationReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return {"slug": self.slug, "verified": self.verified}
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipRepairReceipt:
+    task_slug: str
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"task_slug": self.task_slug, "verified": self.verified}
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +320,215 @@ def _lifecycle_edges(
     ]
 
 
+def _visible_warning(
+    slug: str,
+    message: str,
+    *,
+    category: str,
+    impact: str,
+    repair_action: str | None = None,
+) -> CollectionIssue:
+    return CollectionIssue(
+        slug=slug,
+        message=message,
+        severity="warning",
+        task_visible=True,
+        category=category,
+        impact=impact,
+        repair_action=repair_action,
+    )
+
+
+def _normalize_collection_task(
+    page: Mapping[str, Any],
+    edges: list[object],
+    root_slug: str,
+    *,
+    legacy_untyped_backlink: bool,
+) -> tuple[Mapping[str, Any], list[Mapping[str, Any]], list[CollectionIssue]]:
+    slug = page.get("slug")
+    if not isinstance(slug, str):
+        return page, [], []
+    raw_frontmatter = page.get("frontmatter")
+    if not isinstance(raw_frontmatter, Mapping):
+        return page, [], []
+
+    normalized_page = deepcopy(dict(page))
+    frontmatter = deepcopy(dict(raw_frontmatter))
+    normalized_page["frontmatter"] = frontmatter
+    warnings: list[CollectionIssue] = []
+
+    raw_links = frontmatter.get("links", [])
+    valid_links: list[dict[str, Any]] = []
+    if isinstance(raw_links, list):
+        for link in raw_links:
+            if (
+                isinstance(link, Mapping)
+                and isinstance(link.get("to"), str)
+                and str(link.get("to")).strip()
+                and isinstance(link.get("type"), str)
+                and str(link.get("type")).strip()
+            ):
+                valid_links.append(deepcopy(dict(link)))
+            else:
+                warnings.append(
+                    _visible_warning(
+                        slug,
+                        "One malformed optional frontmatter relationship was ignored.",
+                        category="optional_relationship",
+                        impact="The task is shown, but the malformed relationship is unavailable.",
+                    )
+                )
+    elif raw_links is not None:
+        warnings.append(
+            _visible_warning(
+                slug,
+                "The optional frontmatter relationship list is invalid and was ignored.",
+                category="optional_relationship",
+                impact="The task is shown using its valid core fields.",
+            )
+        )
+
+    lifecycle_links = [
+        link
+        for link in valid_links
+        if link.get("type") == "member_of"
+        and link.get("to") in LIFECYCLE_ROOTS
+    ]
+    graph_has_typed_membership = any(
+        isinstance(edge, Mapping)
+        and edge.get("from_slug") == slug
+        and edge.get("to_slug") == root_slug
+        and edge.get("link_type") == "member_of"
+        for edge in edges
+    )
+    collection_matches = frontmatter.get("collection") == root_slug
+    if not lifecycle_links and (
+        graph_has_typed_membership
+        or (legacy_untyped_backlink and collection_matches)
+    ):
+        valid_links.append({"to": root_slug, "type": "member_of"})
+        if legacy_untyped_backlink:
+            warnings.append(
+                _visible_warning(
+                    slug,
+                    (
+                        f"Legacy untyped collection membership is being treated as "
+                        f"{root_slug} because the page collection matches exactly."
+                    ),
+                    category="lifecycle_relationship",
+                    impact=(
+                        "The task is shown normally; repairing makes its active "
+                        "membership explicit and typed."
+                    ),
+                    repair_action=(
+                        "repair_active_membership"
+                        if root_slug == ACTIVE_ROOT
+                        else None
+                    ),
+                )
+            )
+        else:
+            warnings.append(
+                _visible_warning(
+                    slug,
+                    "The typed collection edge is missing from task frontmatter.",
+                    category="lifecycle_relationship",
+                    impact="The task is shown from its verified graph membership.",
+                    repair_action=(
+                        "repair_active_membership"
+                        if root_slug == ACTIVE_ROOT
+                        else None
+                    ),
+                )
+            )
+
+    project_links = [
+        link
+        for link in valid_links
+        if link.get("type") == "member_of"
+        and link.get("to") not in LIFECYCLE_ROOTS
+    ]
+    if len({str(link.get("to")) for link in project_links}) > 1:
+        valid_links = [
+            link
+            for link in valid_links
+            if not (
+                link.get("type") == "member_of"
+                and link.get("to") not in LIFECYCLE_ROOTS
+            )
+        ]
+        warnings.append(
+            _visible_warning(
+                slug,
+                "Multiple project relationships are ambiguous and were not selected.",
+                category="optional_relationship",
+                impact="The task is shown without a project until you choose one.",
+            )
+        )
+    frontmatter["links"] = valid_links
+
+    has_verified_task_shape = (
+        slug.startswith("tasks/")
+        and any(
+            link.get("type") == "member_of" and link.get("to") == root_slug
+            for link in valid_links
+        )
+        and all(
+            field in frontmatter
+            for field in ("summary", "detail", "status", "due_day")
+        )
+    )
+    original_type = page.get("type")
+    if original_type != "task" and has_verified_task_shape:
+        normalized_page["type"] = "task"
+        warnings.append(
+            _visible_warning(
+                slug,
+                (
+                    f"The page type is {original_type or 'missing'}, but its task slug, "
+                    "collection membership, and required task fields are valid."
+                ),
+                category="core_metadata",
+                impact=(
+                    "The task is shown using the task contract; repair the page type "
+                    "before relying on broader type-based queries."
+                ),
+            )
+        )
+
+    normalized_edges = [
+        edge for edge in edges if isinstance(edge, Mapping)
+    ]
+    goal_edges = [
+        edge
+        for edge in normalized_edges
+        if edge.get("from_slug") == slug
+        and edge.get("link_type") == "advances_goal"
+        and isinstance(edge.get("to_slug"), str)
+        and str(edge.get("to_slug")).startswith("goals/")
+    ]
+    if len({str(edge.get("to_slug")) for edge in goal_edges}) > 1:
+        normalized_edges = [
+            edge
+            for edge in normalized_edges
+            if not (
+                edge.get("from_slug") == slug
+                and edge.get("link_type") == "advances_goal"
+            )
+        ]
+        warnings.append(
+            _visible_warning(
+                slug,
+                "Multiple goal relationships are ambiguous and were not selected.",
+                category="optional_relationship",
+                impact="The task is shown without a goal until you choose one.",
+            )
+        )
+
+    return normalized_page, normalized_edges, warnings
+
+
 class GBrainAdapter:
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self.runner = runner or SubprocessCommandRunner()
@@ -308,35 +540,81 @@ class GBrainAdapter:
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("get_backlinks did not return a list")
 
-        member_slugs: list[str] = []
+        member_slugs: dict[str, bool] = {}
         for backlink in raw_backlinks:
             if not isinstance(backlink, Mapping):
                 continue
             if (
                 backlink.get("to_slug") == root_slug
-                and backlink.get("link_type") == "member_of"
                 and isinstance(backlink.get("from_slug"), str)
             ):
-                member_slugs.append(str(backlink["from_slug"]))
+                link_type = backlink.get("link_type")
+                if link_type == "member_of":
+                    member_slugs[str(backlink["from_slug"])] = False
+                elif link_type in {"", None}:
+                    member_slugs.setdefault(str(backlink["from_slug"]), True)
 
         tasks: list[Task] = []
         issues: list[CollectionIssue] = []
-        for slug in dict.fromkeys(member_slugs):
+        for slug, legacy_untyped in member_slugs.items():
             try:
                 page = self.runner.run("get_page", {"slug": slug})
                 if not isinstance(page, Mapping):
                     raise GBrainProtocolError("get_page did not return an object")
-                edges = self.runner.run("get_links", {"slug": slug})
-                if not isinstance(edges, list):
-                    raise GBrainProtocolError("get_links did not return a list")
-                task = Task.from_page(page, edges=edges)
+                frontmatter = page.get("frontmatter")
+                if (
+                    legacy_untyped
+                    and (
+                        not isinstance(frontmatter, Mapping)
+                        or frontmatter.get("collection") != root_slug
+                    )
+                ):
+                    continue
+                relationship_warning: CollectionIssue | None = None
+                try:
+                    raw_edges = self.runner.run("get_links", {"slug": slug})
+                    if not isinstance(raw_edges, list):
+                        raise GBrainProtocolError("get_links did not return a list")
+                    edges = raw_edges
+                except GBrainError:
+                    edges = []
+                    relationship_warning = _visible_warning(
+                        slug,
+                        "Optional task relationships could not be read from GBrain.",
+                        category="optional_relationship",
+                        impact=(
+                            "The task is shown from its core fields, but goal, project, "
+                            "dependency, and blocker links may be incomplete."
+                        ),
+                    )
+                normalized_page, normalized_edges, warnings = (
+                    _normalize_collection_task(
+                        page,
+                        edges,
+                        root_slug,
+                        legacy_untyped_backlink=legacy_untyped,
+                    )
+                )
+                task = Task.from_page(normalized_page, edges=normalized_edges)
                 if task.lifecycle_root != root_slug:
                     raise DomainValidationError(
                         "page frontmatter does not match its lifecycle root edge"
                     )
                 tasks.append(task)
+                issues.extend(warnings)
+                if relationship_warning is not None:
+                    issues.append(relationship_warning)
             except (DomainValidationError, GBrainError) as exc:
-                issues.append(CollectionIssue(slug=slug, message=str(exc)))
+                issues.append(
+                    CollectionIssue(
+                        slug=slug,
+                        message=str(exc),
+                        impact=(
+                            "This linked page is not shown because a required task "
+                            "field or lifecycle rule is invalid."
+                        ),
+                    )
+                )
 
         return CollectionRead(
             root_slug=root_slug,
@@ -454,6 +732,163 @@ class GBrainAdapter:
 
         return MutationReceipt(slug=task.slug, verified=True)
 
+    def repair_active_membership(
+        self,
+        task_slug: str,
+    ) -> MembershipRepairReceipt:
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping):
+            raise GBrainProtocolError("membership repair get_page was not an object")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}; "
+                "repair the task type before repairing membership"
+            )
+        raw_frontmatter = raw_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise ValueError("task is not eligible for active membership repair")
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_links, list):
+            raise GBrainProtocolError("membership repair get_links was not a list")
+
+        legacy_edges = [
+            edge
+            for edge in raw_links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == task_slug
+            and edge.get("to_slug") == ACTIVE_ROOT
+            and edge.get("link_type") in {"", None}
+        ]
+        typed_edges = _lifecycle_edges(task_slug, raw_links)
+        if (
+            raw_frontmatter.get("collection") != ACTIVE_ROOT
+            or len(legacy_edges) != 1
+            or typed_edges
+        ):
+            raise ValueError("task is not eligible for active membership repair")
+
+        repaired_frontmatter = deepcopy(dict(raw_frontmatter))
+        repaired_frontmatter["type"] = "task"
+        repaired_links = repaired_frontmatter.get("links")
+        if repaired_links is None:
+            repaired_links = []
+        if not isinstance(repaired_links, list):
+            raise ValueError("task is not eligible for active membership repair")
+        repaired_links = deepcopy(repaired_links)
+        repaired_links.append({"to": ACTIVE_ROOT, "type": "member_of"})
+        repaired_frontmatter["links"] = repaired_links
+
+        original_frontmatter = deepcopy(dict(raw_frontmatter))
+        original_frontmatter["type"] = "task"
+        original_content = _render_preserved_page(raw_page, original_frontmatter)
+        repaired_content = _render_preserved_page(raw_page, repaired_frontmatter)
+        typed_descriptor = {
+            "from": task_slug,
+            "to": ACTIVE_ROOT,
+            "link_type": "member_of",
+            "context": "GTasks active task membership repair.",
+            "link_source": "gtasks",
+        }
+        legacy_descriptor = {
+            "from": task_slug,
+            "to": ACTIVE_ROOT,
+            "link_type": "",
+        }
+        journal: list[str] = []
+        try:
+            self.runner.run(
+                "put_page",
+                {"slug": task_slug, "content": repaired_content},
+            )
+            journal.append("put_page")
+            self.runner.run("add_link", typed_descriptor)
+            journal.append("add_typed")
+            self.runner.run("remove_link", legacy_descriptor)
+            journal.append("remove_legacy")
+
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(
+                stored_links, list
+            ):
+                raise GBrainProtocolError(
+                    "membership repair readback was not structured"
+                )
+            if stored_page.get("type") != "task":
+                raise GBrainProtocolError(
+                    "membership repair changed the page type away from task"
+                )
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            verified_typed = _lifecycle_edges(task_slug, stored_links)
+            if (
+                stored_task.lifecycle_root != ACTIVE_ROOT
+                or len(verified_typed) != 1
+                or any(
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == task_slug
+                    and edge.get("to_slug") == ACTIVE_ROOT
+                    and edge.get("link_type") in {"", None}
+                    for edge in stored_links
+                )
+            ):
+                raise GBrainProtocolError(
+                    "membership repair readback did not match the requested state"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            rollback_verified = False
+            try:
+                if "remove_legacy" in journal:
+                    self.runner.run(
+                        "add_link",
+                        {
+                            **legacy_descriptor,
+                            "context": "Restored legacy GTasks collection link.",
+                            "link_source": "gtasks",
+                        },
+                    )
+                if "add_typed" in journal:
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": task_slug,
+                            "to": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        },
+                    )
+                if "put_page" in journal:
+                    self.runner.run(
+                        "put_page",
+                        {"slug": task_slug, "content": original_content},
+                    )
+                rollback_page = self.runner.run("get_page", {"slug": task_slug})
+                rollback_links = self.runner.run("get_links", {"slug": task_slug})
+                rollback_verified = (
+                    isinstance(rollback_page, Mapping)
+                    and rollback_page.get("type") == "task"
+                    and isinstance(rollback_links, list)
+                    and any(
+                        isinstance(edge, Mapping)
+                        and edge.get("from_slug") == task_slug
+                        and edge.get("to_slug") == ACTIVE_ROOT
+                        and edge.get("link_type") in {"", None}
+                        for edge in rollback_links
+                    )
+                    and not _lifecycle_edges(task_slug, rollback_links)
+                )
+            except GBrainError:
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the task before retrying."
+            )
+            raise PartialMutationError(
+                task_slug,
+                f"Active membership repair was not verified. {outcome}",
+            ) from exc
+
+        return MembershipRepairReceipt(task_slug=task_slug, verified=True)
+
     def _approved_task(self, task_slug: str) -> Task:
         for root_slug in (ACTIVE_ROOT, COMPLETED_ROOT):
             result = self.list_collection_tasks(root_slug)
@@ -478,14 +913,31 @@ class GBrainAdapter:
         raw_page = self.runner.run("get_page", {"slug": task_slug})
         if not isinstance(raw_page, Mapping):
             raise GBrainProtocolError("get_page did not return an object")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}; "
+                "repair the task type before changing status"
+            )
         raw_links = self.runner.run("get_links", {"slug": task_slug})
         if not isinstance(raw_links, list):
             raise GBrainProtocolError("get_links did not return a list")
+        initial_lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if len(initial_lifecycle_edges) != 1:
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+        initial_root = str(initial_lifecycle_edges[0]["to_slug"])
+        normalized_page, normalized_links, _warnings = _normalize_collection_task(
+            raw_page,
+            raw_links,
+            initial_root,
+            legacy_untyped_backlink=False,
+        )
         try:
-            task = Task.from_page(raw_page, edges=raw_links)
+            task = Task.from_page(normalized_page, edges=normalized_links)
         except DomainValidationError as exc:
             raise ValueError(str(exc)) from exc
-        existing_lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        existing_lifecycle_edges = initial_lifecycle_edges
         if (
             len(existing_lifecycle_edges) != 1
             or existing_lifecycle_edges[0].get("to_slug") != task.lifecycle_root
@@ -511,10 +963,11 @@ class GBrainAdapter:
         )
         completed_at = now if status == "completed" else None
 
-        raw_frontmatter = raw_page.get("frontmatter")
+        raw_frontmatter = normalized_page.get("frontmatter")
         if not isinstance(raw_frontmatter, Mapping):
             raise GBrainProtocolError("task page has no frontmatter")
         frontmatter = deepcopy(dict(raw_frontmatter))
+        frontmatter["type"] = "task"
         frontmatter["status"] = status
         frontmatter["completed_at"] = (
             completed_at.isoformat() if completed_at else None
@@ -565,6 +1018,10 @@ class GBrainAdapter:
             stored_page = self.runner.run("get_page", {"slug": task_slug})
             if not isinstance(stored_page, Mapping):
                 raise GBrainProtocolError("status get_page readback was not an object")
+            if stored_page.get("type") != "task":
+                raise GBrainProtocolError(
+                    "status write changed the canonical page type away from task"
+                )
             stored_links = self.runner.run("get_links", {"slug": task_slug})
             if not isinstance(stored_links, list):
                 raise GBrainProtocolError("status get_links readback was not a list")

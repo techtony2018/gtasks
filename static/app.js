@@ -5,6 +5,8 @@ const state = {
   selectedKind: null,
   boardMove: null,
   loading: true,
+  releases: null,
+  aboutReturnFocus: null,
 };
 
 const viewMeta = {
@@ -104,6 +106,12 @@ const elements = {
   goalGbrainLink: document.querySelector("#goal-gbrain-link"),
   goalDetailSlug: document.querySelector("#goal-detail-slug"),
   toast: document.querySelector("#toast"),
+  aboutButton: document.querySelector("#about-button"),
+  sidebarVersion: document.querySelector("#sidebar-version"),
+  aboutDialog: document.querySelector("#about-dialog"),
+  aboutClose: document.querySelector("#about-close"),
+  aboutCurrentVersion: document.querySelector("#about-current-version"),
+  releaseHistory: document.querySelector("#release-history"),
 };
 
 function node(tag, className, text) {
@@ -147,6 +155,20 @@ function taskUiStatus(task) {
   return task.status === "waiting" ? "blocked" : task.status;
 }
 
+function issuesForTask(taskSlug) {
+  return (state.snapshot?.issues || []).filter(
+    (issue) => issue.slug === taskSlug,
+  );
+}
+
+function taskAttentionBadge(taskSlug) {
+  const count = issuesForTask(taskSlug).length;
+  if (!count) return null;
+  const badge = node("span", "attention-badge", "Needs attention");
+  badge.title = `${count} task data issue${count === 1 ? "" : "s"}`;
+  return badge;
+}
+
 function showToast(message) {
   elements.toast.textContent = message;
   elements.toast.classList.remove("is-hidden");
@@ -154,6 +176,55 @@ function showToast(message) {
   showToast.timeout = window.setTimeout(() => {
     elements.toast.classList.add("is-hidden");
   }, 3400);
+}
+
+function renderReleaseHistory() {
+  if (!state.releases) return;
+  elements.sidebarVersion.textContent = state.releases.current_version;
+  elements.aboutCurrentVersion.textContent = state.releases.current_version;
+  const fragment = document.createDocumentFragment();
+  state.releases.releases.forEach((release) => {
+    const article = node("article", "release-entry");
+    const heading = node("div", "release-entry-heading");
+    heading.append(
+      node("strong", "", release.version),
+      node("time", "", formatDay(release.date, "long")),
+    );
+    article.append(
+      heading,
+      node("h3", "", release.title),
+      node("p", "", release.summary),
+    );
+    fragment.append(article);
+  });
+  elements.releaseHistory.replaceChildren(fragment);
+}
+
+async function loadReleases() {
+  try {
+    const response = await fetch("/api/releases", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Release history unavailable.");
+    state.releases = payload;
+    renderReleaseHistory();
+  } catch (_error) {
+    elements.releaseHistory.replaceChildren(
+      node("p", "release-loading", "Release history is temporarily unavailable."),
+    );
+  }
+}
+
+function openAboutDialog() {
+  state.aboutReturnFocus = document.activeElement;
+  elements.aboutDialog.showModal();
+  window.setTimeout(() => elements.aboutClose.focus(), 0);
+}
+
+function closeAboutDialog() {
+  elements.aboutDialog.close();
 }
 
 function allTodayTasks() {
@@ -208,6 +279,8 @@ function taskRow(task) {
     node("span", "task-title", task.title || task.summary),
     node("span", "task-project", task.project || (task.inbox ? "Inbox · No project" : "No project")),
   );
+  const attention = taskAttentionBadge(task.slug);
+  if (attention) titleText.append(attention);
   titleWrap.append(dot, titleText);
 
   const nextAction = node(
@@ -431,6 +504,8 @@ function boardCard(task) {
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
+  const attention = taskAttentionBadge(task.slug);
+  if (attention) button.append(attention);
   if (isSaving) button.append(node("span", "board-card-saving", "Saving in GBrain…"));
   button.addEventListener("click", () => selectTask(task.slug));
   button.addEventListener("dragstart", (event) => {
@@ -548,6 +623,106 @@ function renderGoalsView() {
   return fragment;
 }
 
+async function repairActiveMembership(taskSlug, button) {
+  button.disabled = true;
+  button.textContent = "Repairing…";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/relationships/active-membership`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({}),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Membership repair failed.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    showToast("Active Tony’s Tasks membership repaired and verified in GBrain.");
+    await loadTasks();
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Repair membership";
+    const item = button.closest(".attention-item");
+    const message = item?.querySelector(".attention-repair-error");
+    if (message) {
+      message.textContent =
+        error.code === "partial_write" && error.slug
+          ? `${error.message} Inspect ${error.slug} before retrying.`
+          : error.message;
+      message.classList.remove("is-hidden");
+    }
+  }
+}
+
+function renderNeedsAttention() {
+  const issues = state.snapshot?.issues || [];
+  if (!issues.length) return null;
+  const details = node("details", "needs-attention");
+  const summary = node("summary");
+  summary.append(
+    node("span", "", "Needs Attention"),
+    node("strong", "", String(issues.length)),
+  );
+  details.append(summary);
+  const list = node("div", "attention-list");
+  issues.forEach((issue) => {
+    const item = node("article", "attention-item");
+    const task = state.snapshot.tasks.find(
+      (candidate) => candidate.slug === issue.slug,
+    );
+    const heading = node("div", "attention-item-heading");
+    heading.append(
+      node("strong", "", task?.title || task?.summary || issue.slug),
+      node(
+        "span",
+        `attention-severity ${issue.severity || "error"}`,
+        issue.task_visible ? "Shown" : "Not shown",
+      ),
+    );
+    item.append(
+      heading,
+      node("p", "attention-reason", issue.message),
+      node("p", "attention-impact", issue.impact),
+    );
+    const actions = node("div", "attention-actions");
+    if (issue.repair_action === "repair_active_membership") {
+      const repair = node("button", "secondary-button", "Repair membership");
+      repair.type = "button";
+      repair.addEventListener(
+        "click",
+        () => repairActiveMembership(issue.slug, repair),
+      );
+      actions.append(repair);
+    }
+    if (task) {
+      const open = node("button", "secondary-button", "Open task");
+      open.type = "button";
+      open.addEventListener("click", () => selectTask(task.slug));
+      actions.append(open);
+    } else {
+      const inspect = node("a", "secondary-button", "Inspect in GBrain");
+      inspect.href =
+        `http://127.0.0.1:8788/?slug=${encodeURIComponent(issue.slug)}`;
+      inspect.target = "_blank";
+      inspect.rel = "noreferrer";
+      actions.append(inspect);
+    }
+    item.append(actions);
+    item.append(node("p", "attention-repair-error is-hidden"));
+    list.append(item);
+  });
+  details.append(list);
+  return details;
+}
+
 function render() {
   renderNavigation();
   updateBoardStatus();
@@ -556,14 +731,17 @@ function render() {
   if (!state.snapshot) return;
 
   const view = state.activeView;
-  elements.viewSurface.replaceChildren(
+  const content =
     view === "today"
       ? renderToday()
       : view === "board"
         ? renderBoard()
       : view === "goals"
         ? renderGoalsView()
-        : renderListView(view),
+        : renderListView(view);
+  const attention = renderNeedsAttention();
+  elements.viewSurface.replaceChildren(
+    ...(attention ? [attention, content] : [content]),
   );
   const date = parseDay(state.snapshot.as_of);
   elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
@@ -926,7 +1104,7 @@ async function loadTasks() {
     elements.syncLabel.textContent = `Read ${payload.tasks.length} task${payload.tasks.length === 1 ? "" : "s"}`;
     if (payload.issues.length) {
       elements.issueNotice.textContent =
-        `${payload.issues.length} linked task ${payload.issues.length === 1 ? "needs" : "need"} attention and was not shown.`;
+        `${payload.issues.length} task data ${payload.issues.length === 1 ? "issue needs" : "issues need"} attention. Core-valid tasks remain visible; review details below.`;
       elements.issueNotice.classList.remove("is-hidden");
     } else {
       elements.issueNotice.classList.add("is-hidden");
@@ -1021,8 +1199,21 @@ elements.taskStatusSelect.addEventListener("change", () => {
     elements.taskStatusSelect.value ===
     elements.taskStatusSelect.dataset.currentStatus;
 });
+elements.aboutButton.addEventListener("click", openAboutDialog);
+elements.aboutClose.addEventListener("click", closeAboutDialog);
+elements.aboutDialog.addEventListener("close", () => {
+  if (state.aboutReturnFocus instanceof HTMLElement) {
+    state.aboutReturnFocus.focus();
+  }
+  state.aboutReturnFocus = null;
+});
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && elements.aboutDialog.open) {
+    event.preventDefault();
+    closeAboutDialog();
+    return;
+  }
   const editing =
     event.target instanceof HTMLInputElement ||
     event.target instanceof HTMLTextAreaElement ||
@@ -1033,4 +1224,5 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+loadReleases();
 loadTasks();

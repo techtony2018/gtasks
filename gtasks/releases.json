@@ -1,0 +1,11 @@
+{
+  "current_version": "V0.0.1",
+  "releases": [
+    {
+      "version": "V0.0.1",
+      "date": "2026-07-30",
+      "title": "Initial GTasks baseline",
+      "summary": "Introduced the local GBrain-backed task interface with Today, Inbox, Upcoming, Blocked, Projects, Goals, Completed, Quick Add, and verified task details."
+    }
+  ]
+}

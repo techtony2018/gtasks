@@ -17,6 +17,21 @@ python3 -m gtasks.server
 
 Open [http://127.0.0.1:4179](http://127.0.0.1:4179).
 
+## Versioning and releases
+
+GTasks starts at `V0.0.1`. The canonical current version and complete
+user-facing release history live together in `gtasks/releases.json`; runtime
+health, the sidebar About control, and the About dialog all read that catalog.
+
+- Patch releases (`V0.0.x`) are user-visible fixes that do not add a workflow.
+- Minor releases (`V0.x.0`) add or materially change a user workflow while the
+  product remains pre-1.0.
+
+Every user-visible behavior release must deliberately append one dated,
+plain-language catalog entry and move `current_version` to that entry. A
+restart never changes the version. Tests reject drift between the catalog and
+runtime version.
+
 The server binds to `127.0.0.1` by default. To choose another local port:
 
 ```bash

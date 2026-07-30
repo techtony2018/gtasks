@@ -1,3 +1,6 @@
 """GTasks: a local, GBrain-backed personal task interface."""
 
-__version__ = "0.1.0"
+from .releases import CURRENT_VERSION
+
+
+__version__ = CURRENT_VERSION

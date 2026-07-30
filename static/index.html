@@ -76,6 +76,10 @@
           </div>
           <p>Every task stays in GBrain. GTasks keeps no separate task database.</p>
         </div>
+        <button class="about-button" id="about-button" type="button">
+          <span>About</span>
+          <strong id="sidebar-version">V0.0.1</strong>
+        </button>
       </aside>
 
       <main class="main-content">
@@ -256,6 +260,27 @@
           </button>
         </div>
       </form>
+    </dialog>
+
+    <dialog
+      class="about-dialog"
+      id="about-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="about-title"
+    >
+      <div class="about-dialog-shell">
+        <header class="about-dialog-header">
+          <div>
+            <p>GTasks release history</p>
+            <h2 id="about-title">GTasks <span id="about-current-version">V0.0.1</span></h2>
+          </div>
+          <button class="icon-button" id="about-close" type="button" aria-label="Close About">×</button>
+        </header>
+        <div class="release-history" id="release-history" tabindex="0">
+          <p class="release-loading">Loading release history…</p>
+        </div>
+      </div>
     </dialog>
 
     <div class="toast is-hidden" id="toast" role="status"></div>

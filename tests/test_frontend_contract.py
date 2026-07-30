@@ -68,6 +68,36 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("advanced_by", readme)
         self.assertIn("Saving the current goal selection", readme)
 
+    def test_about_modal_is_beneath_gbrain_status_with_release_history(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        store_end = html.index("</div>", html.index('class="store-card"'))
+        about_button = html.index('id="about-button"')
+        self.assertGreater(about_button, store_end)
+        self.assertIn('id="sidebar-version"', html)
+        self.assertIn('id="about-dialog"', html)
+        self.assertIn('role="dialog"', html)
+        self.assertIn('aria-modal="true"', html)
+        self.assertIn('id="about-close"', html)
+        self.assertIn('id="release-history"', html)
+        self.assertIn('"/api/releases"', javascript)
+        self.assertIn("openAboutDialog", javascript)
+        self.assertIn("closeAboutDialog", javascript)
+        self.assertIn('event.key === "Escape"', javascript)
+        self.assertIn("release-history", javascript)
+
+    def test_needs_attention_keeps_visible_tasks_and_offers_safe_repair(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="issue-notice"', html)
+        self.assertIn("renderNeedsAttention", javascript)
+        self.assertIn("task_visible", javascript)
+        self.assertIn("repair_active_membership", javascript)
+        self.assertIn("/relationships/active-membership", javascript)
+        self.assertIn("Needs Attention", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

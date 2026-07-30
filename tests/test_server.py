@@ -21,6 +21,7 @@ from gtasks.gbrain import (
     MutationReceipt,
     PartialMutationError,
     StatusMutationReceipt,
+    MembershipRepairReceipt,
 )
 from gtasks.server import build_server
 
@@ -38,6 +39,7 @@ class FakeAdapter:
         self.created: list[Task] = []
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
+        self.membership_repairs: list[str] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
@@ -75,6 +77,10 @@ class FakeAdapter:
             completed_at=now if status == "completed" else None,
             verified=True,
         )
+
+    def repair_active_membership(self, task_slug: str) -> MembershipRepairReceipt:
+        self.membership_repairs.append(task_slug)
+        return MembershipRepairReceipt(task_slug=task_slug, verified=True)
 
 
 def sample_goal(slug: str = "goals/ship-product") -> Goal:
@@ -146,6 +152,16 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
+        self.assertEqual(payload["version"], "V0.0.1")
+
+    def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request("GET", "/api/releases")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["current_version"], "V0.0.1")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
@@ -188,6 +204,73 @@ class TasksApiTests(unittest.TestCase):
         self.assertEqual(
             [task["slug"] for task in payload["views"]["upcoming"]],
             [future_task.slug],
+        )
+
+    def test_snapshot_preserves_visible_relationship_warnings(self) -> None:
+        task = new_inbox_task(
+            "Visible despite warning",
+            datetime(2026, 7, 30, 9, 15).astimezone(),
+            "a1b2c3",
+        )
+
+        class WarningAdapter(FakeAdapter):
+            def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+                if root_slug == ACTIVE_ROOT:
+                    from gtasks.gbrain import CollectionIssue
+
+                    return CollectionRead(
+                        root_slug=root_slug,
+                        tasks=(task,),
+                        issues=(
+                            CollectionIssue(
+                                slug=task.slug,
+                                message="Optional relationships were not loaded.",
+                                severity="warning",
+                            ),
+                        ),
+                    )
+                return CollectionRead(root_slug=root_slug, tasks=())
+
+        harness = ServerHarness(self, WarningAdapter())
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        self.assertEqual([item["slug"] for item in payload["tasks"]], [task.slug])
+        self.assertEqual(payload["issues"][0]["severity"], "warning")
+
+    def test_dedupes_collection_tasks_before_today_and_navigation_views(self) -> None:
+        task = new_inbox_task(
+            "Appear once",
+            datetime(2026, 7, 30, 9, 15).astimezone(),
+            "a1b2c3",
+        )
+        upcoming = replace(
+            task,
+            slug="tasks/upcoming-once",
+            due_day=date(2026, 8, 2),
+        )
+        harness = ServerHarness(
+            self,
+            FakeAdapter(
+                active=(task, task, upcoming, upcoming),
+            ),
+        )
+
+        status, payload, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [item["slug"] for item in payload["today"]["todays_actions"]],
+            [task.slug],
+        )
+        self.assertEqual(
+            [item["slug"] for item in payload["views"]["upcoming"]],
+            [upcoming.slug],
+        )
+        self.assertEqual(
+            [item["slug"] for item in payload["tasks"]],
+            [task.slug, upcoming.slug],
         )
 
     def test_legacy_waiting_tasks_are_visible_in_the_blocked_view(self) -> None:
@@ -434,6 +517,22 @@ class TaskStatusApiTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "partial_write")
         self.assertEqual(payload["slug"], "tasks/ship-gtasks")
+
+
+class TaskRelationshipRepairApiTests(unittest.TestCase):
+    def test_repairs_an_unambiguous_active_membership(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Flegacy/relationships/active-membership",
+            {},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(adapter.membership_repairs, ["tasks/legacy"])
+        self.assertTrue(payload["receipt"]["verified"])
 
 
 if __name__ == "__main__":

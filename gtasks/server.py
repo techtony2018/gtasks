@@ -24,6 +24,7 @@ from .domain import (
     new_inbox_task,
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
+from .releases import release_payload
 
 
 MAX_REQUEST_BYTES = 16 * 1024
@@ -45,8 +46,8 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
     active_read = adapter.list_collection_tasks(ACTIVE_ROOT)
     completed_read = adapter.list_collection_tasks(COMPLETED_ROOT)
     goal_read = adapter.list_goals()
-    active = list(active_read.tasks)
-    archived = list(completed_read.tasks)
+    active = _dedupe_tasks(list(active_read.tasks))
+    archived = _dedupe_tasks(list(completed_read.tasks))
     all_tasks = _dedupe_tasks(active + archived)
     completed = [
         task
@@ -206,6 +207,9 @@ def _handler_class(
                     },
                 )
                 return
+            if path == "/api/releases":
+                self._json(HTTPStatus.OK, release_payload())
+                return
             if path == "/api/tasks":
                 try:
                     payload = build_task_snapshot(adapter, clock().date())
@@ -319,7 +323,11 @@ def _handler_class(
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
             prefix = "/api/tasks/"
-            if path.endswith("/goal"):
+            membership_suffix = "/relationships/active-membership"
+            if path.endswith(membership_suffix):
+                action = "active_membership"
+                suffix = membership_suffix
+            elif path.endswith("/goal"):
                 action = "goal"
                 suffix = "/goal"
             elif path.endswith("/status"):
@@ -341,6 +349,42 @@ def _handler_class(
                 return
             payload = self._read_json()
             if payload is None:
+                return
+            if action == "active_membership":
+                if payload:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Active membership repair takes no options.",
+                            "code": "invalid_repair",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.repair_active_membership(task_slug)
+                except ValueError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "repair_not_eligible"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "status":
                 requested_status = payload.get("status")

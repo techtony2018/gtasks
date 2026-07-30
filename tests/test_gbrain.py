@@ -146,9 +146,300 @@ class CollectionReadTests(unittest.TestCase):
         self.assertEqual(result.issues[0].slug, "tasks/missing-due")
         self.assertIn("due_day", result.issues[0].message)
 
+    def test_loads_legacy_untyped_membership_when_collection_matches_root(self) -> None:
+        task = new_inbox_task(
+            "Apply for five more companies",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        page = stored_page(task)
+        page["frontmatter"].pop("links")
+        page["frontmatter"]["collection"] = ACTIVE_ROOT
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "",
+                        }
+                    ]
+                ],
+                "get_page": [page],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "",
+                        }
+                    ]
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertEqual(result.tasks[0].lifecycle_root, ACTIVE_ROOT)
+        self.assertEqual(result.issues[0].severity, "warning")
+        self.assertIn("legacy untyped", result.issues[0].message.lower())
+
+    def test_typed_membership_wins_over_duplicate_legacy_backlinks(self) -> None:
+        task = new_inbox_task(
+            "One canonical task",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "",
+                        },
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        },
+                    ]
+                ],
+                "get_page": [stored_page(task)],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertEqual(result.issues, ())
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("get_page"),
+            1,
+        )
+
+    def test_does_not_accept_untyped_backlink_without_matching_collection(self) -> None:
+        task = new_inbox_task(
+            "Unrelated mention",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "",
+                        }
+                    ]
+                ],
+                "get_page": [stored_page(task)],
+                "get_links": [[]],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual(result.tasks, ())
+        self.assertEqual(result.issues, ())
+
+    def test_shows_task_shaped_legacy_page_with_wrong_type_as_warning(self) -> None:
+        task = new_inbox_task(
+            "Complete the Career Upbeat Project",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        page = stored_page(task)
+        page["type"] = "concept"
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+                "get_page": [page],
+                "get_links": [[]],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertEqual(result.issues[0].severity, "warning")
+        self.assertIn("concept", result.issues[0].message)
+
+    def test_optional_goal_read_failure_does_not_hide_core_valid_task(self) -> None:
+        task = new_inbox_task(
+            "Core-valid task",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+                "get_page": [stored_page(task)],
+                "get_links": [GBrainCommandError("relationship service unavailable")],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertEqual(result.tasks[0].goal, None)
+        self.assertEqual(result.issues[0].severity, "warning")
+        self.assertIn("relationships", result.issues[0].message)
+
+    def test_multiple_optional_goal_edges_warn_and_do_not_hide_task(self) -> None:
+        task = new_inbox_task(
+            "Task with malformed optional goals",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+                "get_page": [stored_page(task)],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": "goals/one",
+                            "link_type": "advances_goal",
+                        },
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": "goals/two",
+                            "link_type": "advances_goal",
+                        },
+                    ]
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertIsNone(result.tasks[0].goal)
+        self.assertEqual(result.issues[0].severity, "warning")
+        self.assertIn("multiple", result.issues[0].message.lower())
+
     def test_rejects_an_unapproved_collection_root(self) -> None:
         with self.assertRaisesRegex(ValueError, "approved"):
             GBrainAdapter(FakeRunner({})).list_collection_tasks("index")
+
+
+class LifecycleRepairTests(unittest.TestCase):
+    def test_repairs_unambiguous_legacy_active_membership_with_readback(self) -> None:
+        task = new_inbox_task(
+            "Repair active membership",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        legacy_page = stored_page(task)
+        legacy_page["frontmatter"].pop("links")
+        legacy_page["frontmatter"]["collection"] = ACTIVE_ROOT
+        legacy_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "",
+        }
+        typed_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [legacy_page, stored_page(task)],
+                "get_links": [[legacy_edge], [typed_edge]],
+                "put_page": [{"slug": task.slug}],
+                "add_link": [typed_edge],
+                "remove_link": [{"removed": True}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).repair_active_membership(task.slug)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task_slug, task.slug)
+        self.assertIn(
+            ("add_link", {
+                "from": task.slug,
+                "to": ACTIVE_ROOT,
+                "link_type": "member_of",
+                "context": "GTasks active task membership repair.",
+                "link_source": "gtasks",
+            }),
+            runner.calls,
+        )
+        written = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"type": "member_of"', written)
+        self.assertIn(ACTIVE_ROOT, written)
+
+    def test_refuses_repair_without_exact_legacy_collection_contract(self) -> None:
+        task = new_inbox_task(
+            "Not eligible",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        runner = FakeRunner(
+            {
+                "get_page": [stored_page(task)],
+                "get_links": [[]],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "not eligible"):
+            GBrainAdapter(runner).repair_active_membership(task.slug)
+
+        self.assertNotIn(
+            "put_page",
+            [tool for tool, _params in runner.calls],
+        )
 
 
 class GoalReadTests(unittest.TestCase):
@@ -658,10 +949,84 @@ class TaskStatusMutationTests(unittest.TestCase):
         self.assertEqual(receipt.lifecycle_root, ACTIVE_ROOT)
         self.assertEqual(receipt.completed_at, now)
         written = runner.calls[2][1]["content"]
+        self.assertIn('"type": "task"', written)
+        self.assertIn('"type": "member_of"', written)
         self.assertIn('"captured_via": "capture-cli"', written)
         self.assertIn("# Finish GTasks", written)
         self.assertNotIn("add_link", [tool for tool, _ in runner.calls])
         self.assertNotIn("remove_link", [tool for tool, _ in runner.calls])
+
+    def test_status_edit_refuses_unexpected_non_task_type_before_write(self) -> None:
+        task = new_inbox_task(
+            "Misclassified task",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        page = stored_page(task)
+        page["type"] = "concept"
+        runner = FakeRunner(
+            {
+                "get_page": [page],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "unexpected page type concept"):
+            GBrainAdapter(runner).set_task_status(
+                task.slug,
+                "active",
+                datetime(2026, 7, 30, 12, tzinfo=timezone.utc),
+            )
+
+        self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
+
+    def test_status_edit_reconstructs_missing_frontmatter_membership(self) -> None:
+        now = datetime(2026, 7, 30, 12, tzinfo=timezone.utc)
+        task = new_inbox_task(
+            "Legacy graph-only membership",
+            now,
+            "a1b2c3",
+        )
+        before = stored_page(task)
+        before["frontmatter"].pop("links")
+        after_task = replace(task, status="active")
+        after = stored_page(after_task)
+        after["frontmatter"]["updated_at"] = now.isoformat()
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [before, after],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_status(
+            task.slug,
+            "active",
+            now,
+        )
+
+        self.assertTrue(receipt.verified)
+        content = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"type": "task"', content)
+        self.assertIn('"type": "member_of"', content)
 
     def test_reopening_an_archived_task_restores_active_membership(self) -> None:
         now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))
