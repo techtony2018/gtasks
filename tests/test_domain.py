@@ -6,6 +6,7 @@ import gtasks.domain as domain
 
 from gtasks.domain import (
     ACTIVE_ROOT,
+    AgentProfile,
     DomainValidationError,
     GOALS_ROOT,
     Goal,
@@ -108,6 +109,36 @@ class TaskParsingTests(unittest.TestCase):
         task = Task.from_page(page)
 
         self.assertIsNone(task.progress_metric.label)
+
+    def test_agent_profile_reads_default_goal_edges_and_safe_avatar_default(
+        self,
+    ) -> None:
+        profile = AgentProfile.from_page(
+            {
+                "slug": "agents/toddy",
+                "type": "agent",
+                "title": "Agent Toddy",
+                "compiled_truth": "# Agent Toddy\n\nCoordinates approved work.",
+                "frontmatter": {},
+            },
+            work_root="collections/toddys-tasks",
+            edges=[
+                {
+                    "from_slug": "agents/toddy",
+                    "to_slug": "goals/happier-and-healthier",
+                    "link_type": "default_agent_for",
+                }
+            ],
+        )
+
+        self.assertEqual(profile.name, "Toddy")
+        self.assertEqual(profile.avatar_kind, "initials")
+        self.assertEqual(profile.avatar_value, "TO")
+        self.assertEqual(
+            profile.default_goal_slugs,
+            ("goals/happier-and-healthier",),
+        )
+        self.assertIsNone(profile.chat_url)
 
     def test_rejects_invalid_progress_metric_contracts(self) -> None:
         valid = {

@@ -88,6 +88,37 @@ It does not use a global `type: task` query. GBrain contains other task nodes fo
 
 The app never reads from or writes to the global GBrain `index` node.
 
+## Agent profiles and work visibility
+
+GTasks recognizes only the three explicitly approved canonical agent scopes:
+
+- `agents/toddy` with `collections/toddys-tasks`
+- `agents/timmy` with `collections/timmys-tasks`
+- `agents/tammy` with `collections/tammys-tasks`
+
+Agent profiles are read from `type: agent` GBrain pages. Goal ownership comes
+from the single typed agent-to-goal `default_agent_for` edge; Goal detail reads
+that edge in reverse without requiring or creating a redundant reciprocal
+edge. A profile may later provide an explicit safe `chat_url` and avatar
+configuration. Until then, GTasks links to the canonical Memory Stargraph
+profile and renders a stable initials placeholder—never an invented photo or
+external image.
+
+Today and Board remain Tony-only by default. Board's client-side **Show agent
+tasks** preference performs no GBrain mutation. When enabled, GTasks reads only
+typed `member_of` backlinks from the three approved agent collections and
+shows each valid work item in its canonical status lane with a visible agent
+name and avatar placeholder. It never imports those items into Tony's Tasks.
+Agent work is currently read-only in GTasks because Tony-task lifecycle
+mutation rules cannot safely be applied to an agent collection. Malformed
+typed members become Inbox-only Needs Attention warnings and never hide
+Tony's tasks.
+
+The Agent Work view is a coordination surface, not another Today list. It
+shows profile-to-goal ownership and reserves the future work states Queued,
+Working, Waiting for Tony, Blocked, Completed, and Failed. It does not imply
+that proposed work is implemented, approved, or permitted to execute.
+
 ## Task creation contract
 
 Quick Add is title-first and creates a real Inbox task only after the user submits the form. Every new task has a due date:

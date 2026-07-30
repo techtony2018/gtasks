@@ -12,6 +12,12 @@ ACTIVE_ROOT = "collections/tonys-tasks"
 COMPLETED_ROOT = "collections/tonys-completed-tasks"
 GOALS_ROOT = "collections/tonys-goals"
 PROJECTS_ROOT = "collections/tonys-projects"
+AGENT_SCOPES = (
+    ("agents/toddy", "collections/toddys-tasks"),
+    ("agents/timmy", "collections/timmys-tasks"),
+    ("agents/tammy", "collections/tammys-tasks"),
+)
+AGENT_WORK_ROOTS = frozenset(root for _agent, root in AGENT_SCOPES)
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 
 TASK_STATUSES = frozenset(
@@ -30,6 +36,105 @@ PROJECT_STATUSES = frozenset({"planned", "active", "paused", "completed", "cance
 
 class DomainValidationError(ValueError):
     """Raised when a GBrain page cannot safely be treated as a GTasks task."""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProfile:
+    slug: str
+    name: str
+    title: str
+    summary: str
+    work_root: str
+    default_goal_slugs: tuple[str, ...]
+    avatar_kind: str = "initials"
+    avatar_value: str = ""
+    chat_url: str | None = None
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        *,
+        work_root: str,
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "AgentProfile":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("agents/"):
+            raise DomainValidationError("agent slug must start with agents/")
+        if page.get("type") != "agent":
+            raise DomainValidationError(f"{slug} is not an agent page")
+        title = page.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise DomainValidationError("agent title is required")
+        name = title.strip()
+        if name.lower().startswith("agent "):
+            name = name[6:].strip()
+        summary = page.get("compiled_truth", "")
+        if not isinstance(summary, str):
+            summary = ""
+        frontmatter = page.get("frontmatter")
+        frontmatter = frontmatter if isinstance(frontmatter, Mapping) else {}
+        chat_url = frontmatter.get("chat_url")
+        if chat_url is not None and (
+            not isinstance(chat_url, str)
+            or not chat_url.startswith(("https://", "http://127.0.0.1:"))
+        ):
+            raise DomainValidationError(
+                "agent chat_url must be an approved HTTP(S) URL when present"
+            )
+        avatar = frontmatter.get("avatar")
+        avatar_kind = "initials"
+        name_parts = [part for part in name.split() if part]
+        avatar_value = (
+            "".join(part[0].upper() for part in name_parts)[:2]
+            if len(name_parts) > 1
+            else name[:2].upper()
+        ) or "A"
+        if isinstance(avatar, Mapping):
+            candidate_kind = avatar.get("kind")
+            candidate_value = avatar.get("value")
+            if candidate_kind in {"initials", "identicon"} and isinstance(
+                candidate_value, str
+            ) and candidate_value.strip():
+                avatar_kind = candidate_kind
+                avatar_value = candidate_value.strip()[:32]
+        goals = tuple(
+            dict.fromkeys(
+                str(edge["to_slug"])
+                for edge in edges
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == slug
+                and edge.get("link_type") == "default_agent_for"
+                and isinstance(edge.get("to_slug"), str)
+                and str(edge["to_slug"]).startswith("goals/")
+            )
+        )
+        return cls(
+            slug=slug,
+            name=name,
+            title=title.strip(),
+            summary=summary.strip(),
+            work_root=work_root,
+            default_goal_slugs=goals,
+            avatar_kind=avatar_kind,
+            avatar_value=avatar_value,
+            chat_url=chat_url,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "name": self.name,
+            "title": self.title,
+            "summary": self.summary,
+            "work_root": self.work_root,
+            "default_goal_slugs": list(self.default_goal_slugs),
+            "avatar": {
+                "kind": self.avatar_kind,
+                "value": self.avatar_value,
+            },
+            "chat_url": self.chat_url,
+        }
 
 
 def _optional_date(value: Any, field_name: str) -> date | None:

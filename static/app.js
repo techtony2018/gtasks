@@ -29,6 +29,13 @@ const state = {
   showDismissedWarnings: false,
   taskEditorMode: "create",
   taskEditorSourceSlug: null,
+  agents: [],
+  agentTasks: [],
+  agentIssues: [],
+  agentWorkLoaded: false,
+  agentWorkLoading: false,
+  agentWorkError: "",
+  showAgentTasks: false,
 };
 
 const viewMeta = {
@@ -42,6 +49,11 @@ const viewMeta = {
   },
   board: {
     title: "Board",
+  },
+  "agent-work": {
+    title: "Agent Work",
+    emptyTitle: "No agent work yet",
+    emptyCopy: "Toddy, Timmy, and Tammy have no typed work items in their GBrain collections.",
   },
   upcoming: {
     title: "Upcoming",
@@ -78,6 +90,8 @@ const elements = {
   syncLabel: document.querySelector("#sync-label"),
   autoRefreshLabel: document.querySelector("#auto-refresh-label"),
   refreshButton: document.querySelector("#refresh-button"),
+  boardAgentFilter: document.querySelector("#board-agent-filter"),
+  showAgentTasks: document.querySelector("#show-agent-tasks"),
   boardStatusAlert: document.querySelector("#board-status-alert"),
   boardStatusMessage: document.querySelector("#board-status-message"),
   boardStatusRetry: document.querySelector("#board-status-retry"),
@@ -150,6 +164,10 @@ const elements = {
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
   goalDetailOutcome: document.querySelector("#goal-detail-outcome"),
+  goalDefaultAgent: document.querySelector("#goal-default-agent"),
+  goalDefaultAgentAvatar: document.querySelector("#goal-default-agent-avatar"),
+  goalDefaultAgentName: document.querySelector("#goal-default-agent-name"),
+  goalDefaultAgentLink: document.querySelector("#goal-default-agent-link"),
   goalDetailTarget: document.querySelector("#goal-detail-target"),
   goalDetailCadence: document.querySelector("#goal-detail-cadence"),
   goalDetailSuccess: document.querySelector("#goal-detail-success"),
@@ -616,6 +634,7 @@ function navCounts() {
     inbox: state.snapshot.views.inbox.length,
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
     board: state.snapshot.tasks.length,
+    "agent-work": state.agentTasks.length,
     upcoming: state.snapshot.views.upcoming.length,
     blocked: state.snapshot.views.blocked.length,
     projects: state.projects.length,
@@ -930,6 +949,56 @@ function boardCard(task) {
   return card;
 }
 
+function agentOwnerBadge(owner) {
+  const badge = node("span", "agent-owner-badge");
+  const avatar = node(
+    "span",
+    `agent-avatar ${owner.avatar?.kind || "initials"}`,
+    owner.avatar?.value || owner.name.slice(0, 1),
+  );
+  avatar.setAttribute("aria-hidden", "true");
+  badge.append(avatar, node("span", "", owner.name));
+  return badge;
+}
+
+function agentBoardCard(task) {
+  const card = node("article", "board-card agent-board-card");
+  card.dataset.slug = task.slug;
+  card.dataset.status = taskUiStatus(task);
+  const link = node("a", "board-card-open");
+  link.href =
+    `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  const heading = node("span", "board-card-heading");
+  heading.append(
+    node("span", `task-state-dot ${taskUiStatus(task)}`),
+    node("strong", "", task.title || task.summary),
+  );
+  const meta = node("span", "board-card-meta");
+  meta.append(
+    node("span", "", task.project || "Agent work"),
+    node("span", `priority-badge ${task.priority}`, task.priority),
+  );
+  link.append(
+    agentOwnerBadge(task.owner),
+    heading,
+    node("span", "board-card-next", task.next_action || "Next action not set"),
+    meta,
+    node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
+  );
+  appendTaskProgress(link, task);
+  card.append(
+    link,
+    node(
+      "span",
+      "agent-read-only",
+      "Read-only in GTasks · status changes stay in the owning agent workflow",
+    ),
+  );
+  return card;
+}
+
 function updateBoardStatus() {
   const move = state.boardMove;
   if (!move) {
@@ -949,23 +1018,45 @@ function updateBoardStatus() {
 }
 
 function renderBoard() {
+  const wrapper = node("section", "agent-board-wrapper");
+  if (state.showAgentTasks) {
+    wrapper.append(
+      node(
+        "p",
+        "agent-board-note",
+        state.agentWorkLoading
+          ? "Reading typed agent task collections…"
+          : state.agentWorkError
+            ? `Agent work is unavailable: ${state.agentWorkError}`
+            : state.agentTasks.length
+              ? "Agent work is visible with an owner badge and remains distinct from Tony’s personal tasks."
+              : "No typed agent work exists yet. Tony’s Board is unchanged.",
+      ),
+    );
+  }
   const board = node("section", "board-grid");
   board.setAttribute("aria-label", "Task status board");
   boardColumns.forEach((definition) => {
     const tasks = state.snapshot.tasks.filter((task) =>
       taskUiStatus(task) === definition.status);
+    const agentTasks = state.showAgentTasks
+      ? state.agentTasks.filter(
+        (task) => taskUiStatus(task) === definition.status,
+      )
+      : [];
     const column = node("section", "board-column");
     column.dataset.status = definition.status;
     column.setAttribute("aria-label", `${definition.title} status lane`);
     const heading = node("div", "board-column-heading");
     heading.append(
       node("h2", "", definition.title),
-      node("span", "", String(tasks.length)),
+      node("span", "", String(tasks.length + agentTasks.length)),
     );
     column.append(heading);
-    if (tasks.length) {
+    if (tasks.length || agentTasks.length) {
       const cards = node("div", "board-card-list");
       tasks.forEach((task) => cards.append(boardCard(task)));
+      agentTasks.forEach((task) => cards.append(agentBoardCard(task)));
       column.append(cards);
     } else {
       column.append(node("div", "board-empty", definition.empty));
@@ -988,7 +1079,87 @@ function renderBoard() {
     });
     board.append(column);
   });
-  return board;
+  wrapper.append(board);
+  return wrapper;
+}
+
+function renderAgentWorkView() {
+  const wrapper = node("section", "agent-work-view");
+  const intro = node("div", "agent-work-intro");
+  intro.append(
+    node("h2", "", "Existing Codex coordinators"),
+    node(
+      "p",
+      "",
+      "Goal ownership is read from typed default_agent_for edges. Work states reserved for later are Queued, Working, Waiting for Tony, Blocked, Completed, and Failed. No proposal or task is auto-approved here.",
+    ),
+  );
+  wrapper.append(intro);
+  if (!state.agents.length) {
+    wrapper.append(
+      node(
+        "div",
+        "section-empty",
+        "No verified GBrain agent profiles are available.",
+      ),
+    );
+    return wrapper;
+  }
+  const grid = node("div", "agent-profile-grid");
+  state.agents.forEach((agent) => {
+    const card = node("article", "agent-profile-card");
+    const heading = node("div", "agent-profile-heading");
+    heading.append(
+      agentOwnerBadge({
+        name: agent.name,
+        avatar: agent.avatar,
+      }),
+      node(
+        "span",
+        "agent-work-count",
+        `${state.agentTasks.filter((task) => task.owner.slug === agent.slug).length} work items`,
+      ),
+    );
+    const goals = agent.default_goal_slugs
+      .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug))
+      .filter(Boolean);
+    const goalList = node("ul", "agent-goal-list");
+    goals.forEach((goal) => {
+      const item = node("li");
+      const button = node("button", "", goal.title);
+      button.type = "button";
+      button.addEventListener("click", () => selectGoal(goal.slug));
+      item.append(button);
+      goalList.append(item);
+    });
+    const profile = node("a", "secondary-button", "Open agent profile");
+    profile.href =
+      `http://127.0.0.1:8788/?slug=${encodeURIComponent(agent.slug)}`;
+    profile.target = "_blank";
+    profile.rel = "noreferrer";
+    card.append(
+      heading,
+      node(
+        "p",
+        "",
+        goals.length
+          ? `${goals.length} default goal${goals.length === 1 ? "" : "s"}`
+          : "No default goals linked",
+      ),
+      goalList,
+      profile,
+    );
+    if (agent.chat_url) {
+      const chat = node("a", "secondary-button", "Open Codex chat");
+      chat.href = agent.chat_url;
+      chat.target = "_blank";
+      chat.rel = "noreferrer";
+      card.append(chat);
+    }
+    grid.append(card);
+  });
+  wrapper.append(grid);
+  return wrapper;
 }
 
 function goalCard(goal) {
@@ -1114,6 +1285,48 @@ function renderProjectsView() {
   });
   fragment.append(grid);
   return fragment;
+}
+
+async function loadAgents() {
+  try {
+    const response = await fetch("/api/agents", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Agent profiles could not be read.");
+    }
+    state.agents = Array.isArray(payload.agents) ? payload.agents : [];
+    render();
+  } catch (_error) {
+    state.agents = [];
+  }
+}
+
+async function loadAgentWork() {
+  if (state.agentWorkLoading) return;
+  state.agentWorkLoading = true;
+  state.agentWorkError = "";
+  render();
+  try {
+    const response = await fetch("/api/agent-work", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Agent work could not be read.");
+    }
+    state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+    state.agentIssues = Array.isArray(payload.issues) ? payload.issues : [];
+    state.agentWorkLoaded = true;
+  } catch (error) {
+    state.agentWorkError = error.message || "Agent work could not be read.";
+  } finally {
+    state.agentWorkLoading = false;
+    render();
+  }
 }
 
 async function loadProjects() {
@@ -1457,8 +1670,12 @@ function renderNeedsAttention() {
     ...issue,
     source: "project",
   }));
+  const agentIssues = state.agentIssues.map((issue) => ({
+    ...issue,
+    source: "agent",
+  }));
   const seen = new Set();
-  const issues = [...taskIssues, ...projectIssues].filter((issue) => {
+  const issues = [...taskIssues, ...projectIssues, ...agentIssues].filter((issue) => {
     const identity =
       issue.fingerprint ||
       `${issue.source}:${issue.slug}:${issue.message}:${issue.impact || ""}`;
@@ -1702,6 +1919,10 @@ function render() {
   renderNavigation();
   updateBoardStatus();
   elements.viewTitle.textContent = viewMeta[state.activeView].title;
+  elements.boardAgentFilter.classList.toggle(
+    "is-hidden",
+    state.activeView !== "board",
+  );
   if (state.loading) return;
   if (!state.snapshot) return;
 
@@ -1711,6 +1932,8 @@ function render() {
       ? renderToday()
       : view === "board"
         ? renderBoard()
+      : view === "agent-work"
+        ? renderAgentWorkView()
       : view === "projects"
         ? renderProjectsView()
       : view === "goals"
@@ -1917,6 +2140,16 @@ function selectGoal(slug) {
   elements.goalActionError.classList.add("is-hidden");
   elements.goalDetailTitle.textContent = goal.title;
   elements.goalDetailOutcome.textContent = goal.outcome;
+  const defaultAgent = state.agents.find((agent) =>
+    agent.default_goal_slugs.includes(goal.slug));
+  elements.goalDefaultAgent.classList.toggle("is-hidden", !defaultAgent);
+  if (defaultAgent) {
+    elements.goalDefaultAgentAvatar.textContent =
+      defaultAgent.avatar?.value || defaultAgent.name.slice(0, 1);
+    elements.goalDefaultAgentName.textContent = defaultAgent.name;
+    elements.goalDefaultAgentLink.href =
+      `http://127.0.0.1:8788/?slug=${encodeURIComponent(defaultAgent.slug)}`;
+  }
   elements.goalDetailTarget.textContent = formatDay(goal.target_day, "long");
   elements.goalDetailCadence.textContent = goal.review_cadence;
   elements.goalDetailSuccess.textContent = goal.success_criteria;
@@ -2139,6 +2372,9 @@ function setView(view) {
   if (!viewMeta[view]) return;
   state.activeView = view;
   render();
+  if (view === "agent-work" && !state.agentWorkLoaded) {
+    loadAgentWork();
+  }
 }
 
 function setConnection(status, label) {
@@ -2550,6 +2786,14 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
 });
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });
+  if (state.agentWorkLoaded || state.showAgentTasks) loadAgentWork();
+});
+elements.showAgentTasks.addEventListener("change", () => {
+  state.showAgentTasks = elements.showAgentTasks.checked;
+  render();
+  if (state.showAgentTasks && !state.agentWorkLoaded) {
+    loadAgentWork();
+  }
 });
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
@@ -2682,3 +2926,4 @@ document.addEventListener("keydown", (event) => {
 loadReleases();
 loadTasks({ reason: "initial" });
 loadProjects();
+loadAgents();

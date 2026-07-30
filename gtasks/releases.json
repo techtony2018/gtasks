@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.9",
+  "current_version": "V0.0.10",
   "releases": [
     {
       "version": "V0.0.1",
@@ -54,6 +54,12 @@
       "date": "2026-07-30",
       "title": "Optional task progress and safe duplication",
       "summary": "Full task creation can track an optional count metric with a clear preview, cards and details show verified progress, and Duplicate provides a reviewable clean copy with progress, evidence, receipts, and completion history reset. The job-applied binding uses the exact daily five-application contract and completes only after five distinct accepted events."
+    },
+    {
+      "version": "V0.0.10",
+      "date": "2026-07-30",
+      "title": "Agent profiles and optional Board work",
+      "summary": "Agent Work now shows Toddy, Timmy, and Tammy with typed default-goal ownership and safe profile links. Board remains Tony-only by default; Show agent tasks reads the three canonical agent collections on demand, adds accessible owner and avatar badges, and keeps agent work visibly read-only and separate from Tony’s obligations."
     }
   ]
 }

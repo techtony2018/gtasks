@@ -1438,6 +1438,136 @@ class GoalLinkMutationTests(unittest.TestCase):
         )
 
 
+class AgentReadTests(unittest.TestCase):
+    def test_reads_profiles_and_typed_agent_work_without_title_guessing(self) -> None:
+        now = datetime(2026, 7, 30, 9, 0, tzinfo=timezone.utc)
+        task = new_task(
+            title="Draft wellbeing check-in",
+            now=now,
+            identity="agent01",
+        )
+        task_page = stored_page(task)
+        task_page["frontmatter"]["links"] = [
+            {"to": "collections/toddys-tasks", "type": "member_of"}
+        ]
+        agent_pages = [
+            {
+                "slug": f"agents/{name}",
+                "type": "agent",
+                "title": f"Agent {name.title()}",
+                "compiled_truth": f"# Agent {name.title()}",
+                "frontmatter": {},
+            }
+            for name in ("toddy", "timmy", "tammy")
+        ]
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    agent_pages[0],
+                    agent_pages[1],
+                    agent_pages[2],
+                    task_page,
+                ],
+                "get_links": [
+                    [
+                        {
+                            "from_slug": "agents/toddy",
+                            "to_slug": "goals/happier-and-healthier",
+                            "link_type": "default_agent_for",
+                        }
+                    ],
+                    [],
+                    [],
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        }
+                    ],
+                ],
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": "tasks/ignored-untyped",
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "",
+                        },
+                    ],
+                    [],
+                    [],
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_agent_work()
+
+        self.assertEqual(len(result.tasks), 1)
+        self.assertEqual(result.tasks[0]["slug"], task.slug)
+        self.assertEqual(result.tasks[0]["owner"]["name"], "Toddy")
+        self.assertEqual(
+            result.tasks[0]["lifecycle_root"],
+            "collections/toddys-tasks",
+        )
+        self.assertTrue(result.tasks[0]["read_only"])
+        self.assertNotIn(
+            "tasks/ignored-untyped",
+            [item["slug"] for item in result.tasks],
+        )
+
+    def test_reports_malformed_typed_agent_member_without_hiding_other_work(
+        self,
+    ) -> None:
+        agent_pages = [
+            {
+                "slug": f"agents/{name}",
+                "type": "agent",
+                "title": f"Agent {name.title()}",
+                "compiled_truth": "",
+                "frontmatter": {},
+            }
+            for name in ("toddy", "timmy", "tammy")
+        ]
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    agent_pages[0],
+                    agent_pages[1],
+                    agent_pages[2],
+                    {
+                        "slug": "notes/not-a-task",
+                        "type": "concept",
+                        "title": "Malformed",
+                        "frontmatter": {},
+                    },
+                ],
+                "get_links": [[], [], [], []],
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": "notes/not-a-task",
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        }
+                    ],
+                    [],
+                    [],
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_agent_work()
+
+        self.assertEqual(result.tasks, ())
+        self.assertEqual(result.issues[0].slug, "notes/not-a-task")
+        self.assertIn("not shown on Board", result.issues[0].impact)
+
+
 class TaskStatusMutationTests(unittest.TestCase):
     def test_rejects_legacy_waiting_as_a_new_status_update(self) -> None:
         runner = FakeRunner({})

@@ -19,6 +19,7 @@ from urllib.parse import unquote
 from . import __version__
 from .domain import (
     ACTIVE_ROOT,
+    AGENT_SCOPES,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -375,11 +376,36 @@ def _handler_class(
                         "warning_dismissals": "user_scoped_local_state",
                         "operational_logs": "privacy_safe_read_only",
                         "queue_reader_dependency": "optional",
+                        "agent_work_roots": [
+                            root for _agent, root in AGENT_SCOPES
+                        ],
                     },
                 )
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            if path == "/api/agents":
+                try:
+                    payload = adapter.list_agent_profiles().to_dict()
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, decorate_issues(payload))
+                return
+            if path == "/api/agent-work":
+                try:
+                    payload = adapter.list_agent_work().to_dict()
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, decorate_issues(payload))
                 return
             if path == "/api/logs":
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)

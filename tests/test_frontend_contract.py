@@ -221,6 +221,35 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("metric-progress", javascript)
         self.assertIn("taskProgressLabel(task)", javascript)
 
+    def test_agent_profiles_and_board_filter_are_read_only_and_default_off(
+        self,
+    ) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="agent-work"', html)
+        self.assertIn('id="show-agent-tasks"', html)
+        self.assertIn("Show agent tasks", html)
+        self.assertIn("showAgentTasks: false", javascript)
+        self.assertIn('fetch("/api/agents"', javascript)
+        self.assertIn('fetch("/api/agent-work"', javascript)
+        self.assertIn("function agentBoardCard", javascript)
+        self.assertIn("agent-owner-badge", javascript)
+        self.assertIn("owner.name", javascript)
+        self.assertIn("owner.avatar", javascript)
+        self.assertIn("read-only", javascript.lower())
+        self.assertNotIn("showAgentTasks", javascript[javascript.index("body: JSON.stringify") : javascript.index("document.querySelectorAll")])
+
+    def test_goal_detail_has_default_agent_profile_link(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="goal-default-agent"', html)
+        self.assertIn('id="goal-default-agent-name"', html)
+        self.assertIn('id="goal-default-agent-link"', html)
+        self.assertIn("default_goal_slugs", javascript)
+        self.assertIn("Open agent profile", javascript)
+
     def test_auto_refresh_is_visible_coalesced_and_visibility_aware(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

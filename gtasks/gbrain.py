@@ -11,6 +11,9 @@ from typing import Any, Mapping, Protocol
 
 from .domain import (
     ACTIVE_ROOT,
+    AGENT_SCOPES,
+    AGENT_WORK_ROOTS,
+    AgentProfile,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -122,6 +125,31 @@ class CollectionRead:
             "root_slug": self.root_slug,
             "tasks": [task.to_dict() for task in self.tasks],
             "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRead:
+    agents: tuple[AgentProfile, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agents": [agent.to_dict() for agent in self.agents],
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentWorkRead:
+    tasks: tuple[dict[str, Any], ...]
+    issues: tuple[CollectionIssue, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tasks": [dict(task) for task in self.tasks],
+            "issues": [issue.to_dict() for issue in self.issues],
+            "roots": [root for _agent, root in AGENT_SCOPES],
         }
 
 
@@ -887,6 +915,180 @@ class GBrainAdapter:
         return CollectionRead(
             root_slug=root_slug,
             tasks=tuple(tasks),
+            issues=tuple(issues),
+        )
+
+    def list_agent_profiles(self) -> AgentRead:
+        def read_agent(
+            scope: tuple[str, str],
+        ) -> tuple[AgentProfile | None, CollectionIssue | None]:
+            agent_slug, work_root = scope
+            try:
+                page = self.runner.run("get_page", {"slug": agent_slug})
+                edges = self.runner.run("get_links", {"slug": agent_slug})
+                if not isinstance(page, Mapping) or not isinstance(edges, list):
+                    raise GBrainProtocolError(
+                        "agent profile readback was not structured"
+                    )
+                return (
+                    AgentProfile.from_page(
+                        page,
+                        work_root=work_root,
+                        edges=edges,
+                    ),
+                    None,
+                )
+            except (DomainValidationError, GBrainError) as exc:
+                return None, CollectionIssue(
+                    slug=agent_slug,
+                    message=str(exc),
+                    impact=(
+                        "This agent profile is unavailable until its canonical "
+                        "GBrain page is repaired."
+                    ),
+                )
+
+        agents: list[AgentProfile] = []
+        issues: list[CollectionIssue] = []
+        for agent, issue in self._bounded_map(read_agent, list(AGENT_SCOPES)):
+            if agent is not None:
+                agents.append(agent)
+            if issue is not None:
+                issues.append(issue)
+        return AgentRead(agents=tuple(agents), issues=tuple(issues))
+
+    def list_agent_work(self) -> AgentWorkRead:
+        profiles = self.list_agent_profiles()
+        tasks: list[dict[str, Any]] = []
+        issues: list[CollectionIssue] = list(profiles.issues)
+        for agent in profiles.agents:
+            root_slug = agent.work_root
+            try:
+                raw_backlinks = self.runner.run(
+                    "get_backlinks",
+                    {"slug": root_slug},
+                )
+            except GBrainError as exc:
+                issues.append(
+                    CollectionIssue(
+                        slug=root_slug,
+                        message=str(exc),
+                        impact=(
+                            f"{agent.name}'s work could not be read. Tony's "
+                            "personal tasks remain unaffected."
+                        ),
+                    )
+                )
+                continue
+            if not isinstance(raw_backlinks, list):
+                issues.append(
+                    CollectionIssue(
+                        slug=root_slug,
+                        message="agent work backlinks were not a list",
+                        impact=(
+                            f"{agent.name}'s work could not be read. Tony's "
+                            "personal tasks remain unaffected."
+                        ),
+                    )
+                )
+                continue
+            member_slugs = tuple(
+                dict.fromkeys(
+                    str(edge["from_slug"])
+                    for edge in raw_backlinks
+                    if isinstance(edge, Mapping)
+                    and edge.get("to_slug") == root_slug
+                    and edge.get("link_type") == "member_of"
+                    and isinstance(edge.get("from_slug"), str)
+                )
+            )
+            for slug in member_slugs:
+                try:
+                    page = self.runner.run("get_page", {"slug": slug})
+                    edges = self.runner.run("get_links", {"slug": slug})
+                    if not isinstance(page, Mapping) or not isinstance(edges, list):
+                        raise GBrainProtocolError(
+                            "agent task readback was not structured"
+                        )
+                    frontmatter = page.get("frontmatter")
+                    if not isinstance(frontmatter, Mapping):
+                        raise DomainValidationError(
+                            f"{slug} has no frontmatter"
+                        )
+                    normalized_page = deepcopy(dict(page))
+                    normalized_frontmatter = deepcopy(dict(frontmatter))
+                    raw_links = normalized_frontmatter.get("links", [])
+                    raw_links = raw_links if isinstance(raw_links, list) else []
+                    safe_links = [
+                        deepcopy(dict(link))
+                        for link in raw_links
+                        if isinstance(link, Mapping)
+                        and isinstance(link.get("to"), str)
+                        and isinstance(link.get("type"), str)
+                        and not (
+                            link.get("type") == "member_of"
+                            and (
+                                link.get("to") in AGENT_WORK_ROOTS
+                                or link.get("to") in LIFECYCLE_ROOTS
+                            )
+                        )
+                    ]
+                    safe_links.append({"to": ACTIVE_ROOT, "type": "member_of"})
+                    normalized_frontmatter["links"] = safe_links
+                    normalized_page["frontmatter"] = normalized_frontmatter
+                    normalized_edges = [
+                        deepcopy(dict(edge))
+                        for edge in edges
+                        if isinstance(edge, Mapping)
+                        and not (
+                            edge.get("from_slug") == slug
+                            and edge.get("link_type") == "member_of"
+                            and edge.get("to_slug") in AGENT_WORK_ROOTS
+                        )
+                    ]
+                    normalized_edges.append(
+                        {
+                            "from_slug": slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    )
+                    task = Task.from_page(
+                        normalized_page,
+                        edges=normalized_edges,
+                    )
+                    tasks.append(
+                        {
+                            **task.to_dict(),
+                            "lifecycle_root": root_slug,
+                            "owner": {
+                                "slug": agent.slug,
+                                "name": agent.name,
+                                "avatar": {
+                                    "kind": agent.avatar_kind,
+                                    "value": agent.avatar_value,
+                                },
+                            },
+                            "agent_work": True,
+                            "read_only": True,
+                        }
+                    )
+                except (DomainValidationError, GBrainError) as exc:
+                    issues.append(
+                        CollectionIssue(
+                            slug=slug,
+                            message=str(exc),
+                            impact=(
+                                f"This malformed {agent.name} work item is "
+                                "reported in Inbox and is not shown on Board."
+                            ),
+                        )
+                    )
+        deduped: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            deduped.setdefault(str(task["slug"]), task)
+        return AgentWorkRead(
+            tasks=tuple(deduped.values()),
             issues=tuple(issues),
         )
 

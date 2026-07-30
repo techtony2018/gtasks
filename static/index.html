@@ -45,6 +45,11 @@
             <span>Board</span>
             <span class="nav-count" data-count="board">0</span>
           </button>
+          <button class="nav-item" data-view="agent-work" type="button">
+            <span class="nav-glyph" aria-hidden="true">A</span>
+            <span>Agent Work</span>
+            <span class="nav-count" data-count="agent-work">0</span>
+          </button>
           <button class="nav-item" data-view="upcoming" type="button">
             <span class="nav-glyph" aria-hidden="true">U</span>
             <span>Upcoming</span>
@@ -96,6 +101,10 @@
             <h1 id="view-title">Today’s Action List</h1>
           </div>
           <div class="topbar-actions">
+            <label class="board-agent-filter is-hidden" id="board-agent-filter">
+              <input id="show-agent-tasks" type="checkbox">
+              <span>Show agent tasks</span>
+            </label>
             <div class="sync-stack">
               <span class="sync-label" id="sync-label" role="status">Loading tasks…</span>
               <span
@@ -242,6 +251,16 @@
           <p class="form-error is-hidden" id="goal-action-error" role="alert"></p>
           <h2 id="goal-detail-title"></h2>
           <p class="detail-copy" id="goal-detail-outcome"></p>
+          <section class="goal-default-agent is-hidden" id="goal-default-agent">
+            <span class="agent-avatar" id="goal-default-agent-avatar" aria-hidden="true"></span>
+            <div>
+              <small>Default agent</small>
+              <strong id="goal-default-agent-name"></strong>
+              <a id="goal-default-agent-link" target="_blank" rel="noreferrer">
+                Open agent profile
+              </a>
+            </div>
+          </section>
           <div class="goal-progress-summary">
             <div>
               <strong id="goal-progress-label"></strong>

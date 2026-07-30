@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.9")
+        self.assertEqual(__version__, "V0.0.10")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -53,6 +53,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.7",
                 "V0.0.8",
                 "V0.0.9",
+                "V0.0.10",
             ],
         )
 
@@ -101,6 +102,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("optional count metric", release["summary"])
         self.assertIn("progress", release["summary"])
         self.assertIn("five distinct accepted events", release["summary"])
+
+    def test_v0_0_10_records_agent_profiles_and_board_filter(self) -> None:
+        release = RELEASES[9]
+
+        self.assertEqual(release["version"], "V0.0.10")
+        self.assertIn("Toddy, Timmy, and Tammy", release["summary"])
+        self.assertIn("Show agent tasks", release["summary"])
+        self.assertIn("read-only", release["summary"])
 
 
 if __name__ == "__main__":

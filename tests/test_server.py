@@ -9,6 +9,7 @@ from pathlib import Path
 
 from gtasks.domain import (
     ACTIVE_ROOT,
+    AgentProfile,
     COMPLETED_ROOT,
     EventProgress,
     GOALS_ROOT,
@@ -21,6 +22,8 @@ from gtasks.domain import (
     new_task,
 )
 from gtasks.gbrain import (
+    AgentRead,
+    AgentWorkRead,
     CollectionRead,
     GoalLinkReceipt,
     GoalDeletionReceipt,
@@ -49,11 +52,15 @@ class FakeAdapter:
         completed: tuple[Task, ...] = (),
         goals: tuple[Goal, ...] = (),
         projects: tuple[Project, ...] = (),
+        agents: tuple[AgentProfile, ...] = (),
+        agent_work: tuple[dict, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
         self.goals = goals
         self.projects = projects
+        self.agents = agents
+        self.agent_work = agent_work
         self.created: list[Task] = []
         self.duplicated_from: list[str] = []
         self.goal_links: list[tuple[str, str | None]] = []
@@ -117,6 +124,12 @@ class FakeAdapter:
 
     def list_projects(self) -> ProjectRead:
         return ProjectRead(projects=self.projects)
+
+    def list_agent_profiles(self) -> AgentRead:
+        return AgentRead(agents=self.agents)
+
+    def list_agent_work(self) -> AgentWorkRead:
+        return AgentWorkRead(tasks=self.agent_work)
 
     def create_project(self, project: Project) -> ProjectMutationReceipt:
         self.created_projects.append(project)
@@ -243,6 +256,19 @@ def sample_project(slug: str = "projects/ship-product") -> Project:
     )
 
 
+def sample_agent() -> AgentProfile:
+    return AgentProfile(
+        slug="agents/toddy",
+        name="Toddy",
+        title="Agent Toddy",
+        summary="Coordinates approved work.",
+        work_root="collections/toddys-tasks",
+        default_goal_slugs=("goals/ship-product",),
+        avatar_kind="initials",
+        avatar_value="TO",
+    )
+
+
 class ServerHarness:
     def __init__(
         self,
@@ -335,7 +361,15 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
         self.assertEqual(payload["operational_logs"], "privacy_safe_read_only")
         self.assertEqual(payload["queue_reader_dependency"], "optional")
-        self.assertEqual(payload["version"], "V0.0.9")
+        self.assertEqual(
+            payload["agent_work_roots"],
+            [
+                "collections/toddys-tasks",
+                "collections/timmys-tasks",
+                "collections/tammys-tasks",
+            ],
+        )
+        self.assertEqual(payload["version"], "V0.0.10")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -343,11 +377,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.9")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.9")
+        self.assertEqual(payload["current_version"], "V0.0.10")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.10")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.10",
                 "V0.0.9",
                 "V0.0.8",
                 "V0.0.7",
@@ -1277,6 +1312,44 @@ class TaskProgressMetricApiTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "invalid_progress_metric")
         self.assertIsNone(adapter.active[0].progress_metric)
+
+
+class AgentApiTests(unittest.TestCase):
+    def test_profiles_and_agent_work_are_read_only_separate_endpoints(self) -> None:
+        agent = sample_agent()
+        task = new_inbox_task(
+            "Draft wellbeing check-in",
+            datetime.fromisoformat("2026-07-30T09:00:00-07:00"),
+            "agent01",
+        ).to_dict()
+        task.update(
+            {
+                "owner": {
+                    "slug": agent.slug,
+                    "name": agent.name,
+                    "avatar": {"kind": "initials", "value": "TO"},
+                },
+                "agent_work": True,
+                "read_only": True,
+            }
+        )
+        adapter = FakeAdapter(agents=(agent,), agent_work=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, profiles, _ = harness.request("GET", "/api/agents")
+        self.assertEqual(status, 200)
+        self.assertEqual(profiles["agents"][0]["name"], "Toddy")
+        self.assertEqual(
+            profiles["agents"][0]["default_goal_slugs"],
+            ["goals/ship-product"],
+        )
+
+        status, work, _ = harness.request("GET", "/api/agent-work")
+        self.assertEqual(status, 200)
+        self.assertEqual(work["tasks"][0]["owner"]["name"], "Toddy")
+        self.assertTrue(work["tasks"][0]["read_only"])
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.status_updates, [])
 
 
 class ProjectApiTests(unittest.TestCase):
