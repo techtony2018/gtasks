@@ -9,6 +9,8 @@ from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Condition
+from time import monotonic
 from typing import Any, Callable
 from urllib.parse import urlsplit
 from urllib.parse import unquote
@@ -23,6 +25,7 @@ from .domain import (
     PROJECTS_ROOT,
     Task,
     group_today,
+    new_goal,
     new_inbox_task,
     new_project,
 )
@@ -32,6 +35,7 @@ from .releases import release_payload
 
 MAX_REQUEST_BYTES = 16 * 1024
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+SNAPSHOT_CACHE_SECONDS = 30
 
 
 def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
@@ -146,6 +150,46 @@ def _handler_class(
     identity_factory: Callable[[], str],
     static_dir: Path,
 ) -> type[BaseHTTPRequestHandler]:
+    snapshot_condition = Condition()
+    snapshot_payload: dict[str, Any] | None = None
+    snapshot_created_at = 0.0
+    snapshot_loading = False
+
+    def invalidate_snapshot() -> None:
+        nonlocal snapshot_payload, snapshot_created_at
+        with snapshot_condition:
+            snapshot_payload = None
+            snapshot_created_at = 0.0
+
+    def read_snapshot(force: bool = False) -> dict[str, Any]:
+        nonlocal snapshot_payload, snapshot_created_at, snapshot_loading
+        with snapshot_condition:
+            while snapshot_loading:
+                snapshot_condition.wait()
+                if snapshot_payload is not None:
+                    return snapshot_payload
+            age = monotonic() - snapshot_created_at
+            if (
+                not force
+                and snapshot_payload is not None
+                and age <= SNAPSHOT_CACHE_SECONDS
+            ):
+                return snapshot_payload
+            snapshot_loading = True
+        try:
+            payload = build_task_snapshot(adapter, clock().date())
+        except Exception:
+            with snapshot_condition:
+                snapshot_loading = False
+                snapshot_condition.notify_all()
+            raise
+        with snapshot_condition:
+            snapshot_payload = payload
+            snapshot_created_at = monotonic()
+            snapshot_loading = False
+            snapshot_condition.notify_all()
+            return payload
+
     class GTasksHandler(BaseHTTPRequestHandler):
         server_version = f"GTasks/{__version__}"
 
@@ -223,7 +267,10 @@ def _handler_class(
                 return
             if path == "/api/tasks":
                 try:
-                    payload = build_task_snapshot(adapter, clock().date())
+                    force = (
+                        urlsplit(self.path).query == "refresh=1"
+                    )
+                    payload = read_snapshot(force=force)
                 except GBrainError as exc:
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -267,6 +314,94 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/goals":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required_fields = (
+                    "title",
+                    "outcome",
+                    "success_criteria",
+                    "strategy",
+                    "review_cadence",
+                    "constraints",
+                )
+                if any(
+                    not isinstance(payload.get(field), str)
+                    for field in required_fields
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "all goal text fields must be text.",
+                            "code": "invalid_goal",
+                        },
+                    )
+                    return
+                target_day = None
+                raw_target_day = payload.get("target_day")
+                if raw_target_day not in (None, ""):
+                    if not isinstance(raw_target_day, str):
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {
+                                "error": "target_day must be YYYY-MM-DD or omitted.",
+                                "code": "invalid_goal",
+                            },
+                        )
+                        return
+                    try:
+                        target_day = date.fromisoformat(raw_target_day)
+                    except ValueError:
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {
+                                "error": "target_day must be YYYY-MM-DD or omitted.",
+                                "code": "invalid_goal",
+                            },
+                        )
+                        return
+                try:
+                    goal = new_goal(
+                        title=payload["title"],
+                        outcome=payload["outcome"],
+                        success_criteria=payload["success_criteria"],
+                        strategy=payload["strategy"],
+                        review_cadence=payload["review_cadence"],
+                        constraints=payload["constraints"],
+                        target_day=target_day,
+                        now=clock(),
+                        identity=identity_factory(),
+                    )
+                    receipt = adapter.create_goal(goal)
+                except DomainValidationError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_goal"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(
+                    HTTPStatus.CREATED,
+                    {"goal": goal.to_dict(), "receipt": receipt.to_dict()},
+                )
+                return
             if path == "/api/projects":
                 payload = self._read_json()
                 if payload is None:
@@ -307,6 +442,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                invalidate_snapshot()
                 self._json(
                     HTTPStatus.CREATED,
                     {
@@ -381,6 +517,7 @@ def _handler_class(
                 )
                 return
 
+            invalidate_snapshot()
             self._json(
                 HTTPStatus.CREATED,
                 {
@@ -392,6 +529,51 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            goal_prefix = "/api/goals/"
+            goal_status_suffix = "/status"
+            if path.startswith(goal_prefix) and path.endswith(goal_status_suffix):
+                goal_slug = unquote(
+                    path[len(goal_prefix) : -len(goal_status_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if payload.get("status") != "paused" or len(payload) != 1:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "goal status action supports only paused.",
+                            "code": "invalid_goal_status",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.set_goal_paused(goal_slug)
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_goal"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             prefix = "/api/tasks/"
             membership_suffix = "/relationships/active-membership"
             if path.endswith(membership_suffix):
@@ -460,6 +642,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "next_action":
@@ -509,6 +692,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "project":
@@ -551,6 +735,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "status":
@@ -599,6 +784,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
 
@@ -635,6 +821,47 @@ def _handler_class(
                     {"error": str(exc), "code": "gbrain_unavailable"},
                 )
                 return
+            invalidate_snapshot()
+            self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+
+        def do_DELETE(self) -> None:
+            path = urlsplit(self.path).path
+            prefix = "/api/goals/"
+            if not path.startswith(prefix):
+                self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
+                return
+            goal_slug = unquote(path[len(prefix) :])
+            if not goal_slug:
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "Goal slug is required."},
+                )
+                return
+            try:
+                receipt = adapter.delete_goal(goal_slug)
+            except (DomainValidationError, ValueError) as exc:
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {"error": str(exc), "code": "invalid_goal"},
+                )
+                return
+            except PartialMutationError as exc:
+                self._json(
+                    HTTPStatus.BAD_GATEWAY,
+                    {
+                        "error": str(exc),
+                        "code": "partial_write",
+                        "slug": exc.slug,
+                    },
+                )
+                return
+            except GBrainError as exc:
+                self._json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"error": str(exc), "code": "gbrain_unavailable"},
+                )
+                return
+            invalidate_snapshot()
             self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
 
         def _serve_static(self, path: str) -> None:

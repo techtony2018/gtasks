@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.5",
+  "current_version": "V0.0.6",
   "releases": [
     {
       "version": "V0.0.1",
@@ -30,6 +30,12 @@
       "date": "2026-07-30",
       "title": "Immediate verified status updates",
       "summary": "Status changes now reconcile from canonical GBrain readback immediately; Board adds keyboard/touch movement and silent same-status no-ops. Projects are now limited to typed members of Tony's Projects, with first-use initialization and visible malformed-member diagnostics."
+    },
+    {
+      "version": "V0.0.6",
+      "date": "2026-07-30",
+      "title": "Goal lifecycle controls and steadier reads",
+      "summary": "Added verified goal creation plus confirmed Pause and recoverable Delete workflows that preserve linked task content; capped GBrain read concurrency and coalesced duplicate initial loads while manual and automatic Refresh remain authoritative."
     }
   ]
 }

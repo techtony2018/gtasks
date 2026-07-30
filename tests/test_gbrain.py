@@ -11,12 +11,14 @@ from gtasks.domain import (
     COMPLETED_ROOT,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    new_goal,
     new_inbox_task,
     new_project,
 )
 from gtasks.gbrain import (
     GBrainAdapter,
     GBrainCommandError,
+    GoalLinkReceipt,
     NextActionMutationReceipt,
     PartialMutationError,
     SubprocessCommandRunner,
@@ -176,6 +178,33 @@ class ProjectPersistenceTests(unittest.TestCase):
         result = GBrainAdapter(runner).list_projects()
 
         self.assertEqual([item.slug for item in result.projects], [project.slug])
+
+    def test_reports_malformed_typed_scope_members_for_projects_attention(self) -> None:
+        project = new_project(
+            "Malformed scoped project",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        edge = {
+            "from_slug": project.slug,
+            "to_slug": PROJECTS_ROOT,
+            "link_type": "member_of",
+        }
+        malformed_page = stored_project(project)
+        malformed_page["type"] = "note"
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[edge]],
+                "get_page": [malformed_page],
+                "get_links": [[edge]],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_projects()
+
+        self.assertEqual(result.projects, ())
+        self.assertEqual([issue.slug for issue in result.issues], [project.slug])
+        self.assertIn("not a project page", result.issues[0].message)
 
     def test_excludes_old_projects_without_typed_scope_membership(self) -> None:
         scoped = new_project(
@@ -632,6 +661,156 @@ class LifecycleRepairTests(unittest.TestCase):
         self.assertNotIn(
             "put_page",
             [tool for tool, _params in runner.calls],
+        )
+
+
+class GoalMutationTests(unittest.TestCase):
+    def test_create_goal_writes_and_reads_typed_collection_membership(self) -> None:
+        goal = new_goal(
+            title="Launch the pilot",
+            outcome="The pilot is live.",
+            success_criteria="Ten users complete the workflow.",
+            strategy="Ship one validated slice each week.",
+            review_cadence="weekly",
+            constraints="Keep customer data local.",
+            now=datetime(2026, 7, 30, tzinfo=timezone.utc),
+            identity="a1b2c3",
+        )
+        page = stored_goal(goal.slug, goal.title)
+        page["frontmatter"].update(
+            {
+                "outcome": goal.outcome,
+                "success_criteria": goal.success_criteria,
+                "target_day": goal.target_day.isoformat(),
+                "strategy": goal.strategy,
+                "review_cadence": goal.review_cadence,
+                "constraints": goal.constraints,
+                "links": [{"to": GOALS_ROOT, "type": "member_of"}],
+            }
+        )
+        edge = {
+            "from_slug": goal.slug,
+            "to_slug": GOALS_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": goal.slug}],
+                "get_page": [page],
+                "add_link": [{}],
+                "get_links": [[edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).create_goal(goal)
+
+        self.assertTrue(receipt.verified)
+        self.assertIn("type: goal", runner.calls[0][1]["content"])
+        self.assertIn("type: member_of", runner.calls[0][1]["content"])
+
+    def test_pause_preserves_goal_type_content_and_relationships(self) -> None:
+        page = stored_goal("goals/pause-me", "Pause me")
+        edge = {
+            "from_slug": page["slug"],
+            "to_slug": "tasks/linked",
+            "link_type": "advanced_by",
+        }
+        paused_page = deepcopy(page)
+        paused_page["frontmatter"]["status"] = "paused"
+        runner = FakeRunner(
+            {
+                "get_page": [page, paused_page],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": page["slug"]}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_goal_paused(page["slug"])
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.goal.status, "paused")
+        written = next(
+            params["content"] for tool, params in runner.calls if tool == "put_page"
+        )
+        self.assertIn('"type": "goal"', written)
+        self.assertIn('"status": "paused"', written)
+
+    def test_delete_without_linked_tasks_is_verified_recoverable_soft_delete(self) -> None:
+        page = stored_goal("goals/delete-me", "Delete me")
+        deleted_page = {**page, "deleted_at": "2026-07-30T20:00:00Z"}
+        runner = FakeRunner(
+            {
+                "get_page": [page, deleted_page],
+                "get_links": [[], []],
+                "get_backlinks": [[], []],
+                "delete_page": [{"slug": page["slug"]}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).delete_goal(page["slug"])
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.recoverable_until_hours, 72)
+        self.assertIn(
+            (
+                "get_page",
+                {"slug": page["slug"], "include_deleted": True},
+            ),
+            runner.calls,
+        )
+
+    def test_delete_unlinks_both_directions_without_deleting_linked_task(self) -> None:
+        page = stored_goal("goals/delete-linked", "Delete linked")
+        task_slug = "tasks/keep-me"
+        outgoing = {
+            "from_slug": page["slug"],
+            "to_slug": task_slug,
+            "link_type": "advanced_by",
+        }
+        incoming = {
+            "from_slug": task_slug,
+            "to_slug": page["slug"],
+            "link_type": "advances_goal",
+        }
+        deleted_page = {**page, "deleted_at": "2026-07-30T20:00:00Z"}
+        runner = FakeRunner(
+            {
+                "get_page": [page, deleted_page],
+                "get_links": [[outgoing], []],
+                "get_backlinks": [[incoming], []],
+                "delete_page": [{"slug": page["slug"]}],
+            }
+        )
+
+        class DeleteAdapter(GBrainAdapter):
+            def __init__(self) -> None:
+                super().__init__(runner)
+                self.goal_updates: list[tuple[str, str | None]] = []
+
+            def set_task_goal(
+                self,
+                task_slug: str,
+                goal_slug: str | None,
+            ) -> GoalLinkReceipt:
+                self.goal_updates.append((task_slug, goal_slug))
+                return GoalLinkReceipt(
+                    task_slug=task_slug,
+                    goal_slug=goal_slug,
+                    verified=True,
+                )
+
+        adapter = DeleteAdapter()
+        receipt = adapter.delete_goal(page["slug"])
+
+        self.assertEqual(adapter.goal_updates, [(task_slug, None)])
+        self.assertEqual(receipt.removed_task_links, (task_slug,))
+        self.assertNotIn(
+            "delete_page",
+            [
+                tool
+                for tool, params in runner.calls
+                if params.get("slug") == task_slug
+            ],
         )
 
 

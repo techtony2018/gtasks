@@ -95,6 +95,23 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("advanced_by", readme)
         self.assertIn("Saving the current goal selection", readme)
 
+    def test_goals_have_verified_create_pause_and_delete_confirmations(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="new-goal-dialog"', html)
+        self.assertIn('id="new-goal-title"', html)
+        self.assertIn('id="new-goal-target"', html)
+        self.assertIn('id="goal-pause-button"', html)
+        self.assertIn('id="goal-delete-button"', html)
+        self.assertIn('id="goal-confirm-dialog"', html)
+        self.assertIn("New Goal", javascript)
+        self.assertIn('fetch("/api/goals"', javascript)
+        self.assertIn("openGoalConfirmation", javascript)
+        self.assertIn("soft-deleted and recoverable in GBrain for 72 hours", javascript)
+        self.assertIn("linked tasks", javascript)
+        self.assertIn('goal.status === "paused"', javascript)
+
     def test_about_modal_is_beneath_gbrain_status_with_release_history(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

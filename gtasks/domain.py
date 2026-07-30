@@ -553,3 +553,44 @@ def new_project(title: str, now: datetime, identity: str) -> Project:
         created_at=now,
         updated_at=now,
     )
+
+
+def new_goal(
+    *,
+    title: str,
+    outcome: str,
+    success_criteria: str,
+    strategy: str,
+    review_cadence: str,
+    constraints: str,
+    now: datetime,
+    identity: str,
+    target_day: date | None = None,
+) -> Goal:
+    values = {
+        "title": title.strip(),
+        "outcome": outcome.strip(),
+        "success_criteria": success_criteria.strip(),
+        "strategy": strategy.strip(),
+        "review_cadence": review_cadence.strip(),
+        "constraints": constraints.strip(),
+    }
+    for field_name, value in values.items():
+        if not value:
+            raise DomainValidationError(f"goal {field_name} is required")
+    if len(values["title"]) > 160:
+        raise DomainValidationError("goal title must be 160 characters or fewer")
+    safe_identity = re.sub(r"[^a-z0-9]", "", identity.lower())[:12]
+    if len(safe_identity) < 6:
+        raise DomainValidationError("identity must contain at least 6 letters or numbers")
+    return Goal(
+        slug=f"goals/{_slugify_title(values['title'])}-{safe_identity}",
+        title=values["title"],
+        status="planned",
+        outcome=values["outcome"],
+        success_criteria=values["success_criteria"],
+        target_day=target_day or default_goal_target_day(now.date()),
+        strategy=values["strategy"],
+        review_cadence=values["review_cadence"],
+        constraints=values["constraints"],
+    )

@@ -212,6 +212,15 @@
             <span class="detail-status" id="goal-detail-status"></span>
             <button class="icon-button" id="goal-detail-close" type="button" aria-label="Close goal details">×</button>
           </div>
+          <div class="goal-detail-actions">
+            <button class="secondary-button" id="goal-pause-button" type="button">
+              Pause
+            </button>
+            <button class="danger-button" id="goal-delete-button" type="button">
+              Delete
+            </button>
+          </div>
+          <p class="form-error is-hidden" id="goal-action-error" role="alert"></p>
           <h2 id="goal-detail-title"></h2>
           <p class="detail-copy" id="goal-detail-outcome"></p>
           <div class="goal-progress-summary">
@@ -329,6 +338,64 @@
           </button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="quick-add-dialog goal-create-dialog" id="new-goal-dialog">
+      <form method="dialog" class="quick-add-form" id="new-goal-form">
+        <div class="dialog-heading">
+          <div>
+            <p>New canonical goal</p>
+            <h2>Create a goal</h2>
+          </div>
+          <button class="icon-button" id="new-goal-close" type="button" aria-label="Close New Goal">×</button>
+        </div>
+        <label for="new-goal-title">Title</label>
+        <input id="new-goal-title" type="text" maxlength="160" required>
+        <label for="new-goal-outcome">Outcome</label>
+        <textarea id="new-goal-outcome" rows="2" required></textarea>
+        <label for="new-goal-success">Success criteria</label>
+        <textarea id="new-goal-success" rows="2" required></textarea>
+        <label for="new-goal-strategy">Strategy</label>
+        <textarea id="new-goal-strategy" rows="2" required></textarea>
+        <label for="new-goal-constraints">Constraints</label>
+        <textarea id="new-goal-constraints" rows="2" required></textarea>
+        <label for="new-goal-cadence">Review cadence</label>
+        <select id="new-goal-cadence">
+          <option value="weekly">Weekly</option>
+        </select>
+        <label for="new-goal-target">Target date (optional)</label>
+        <input id="new-goal-target" type="date">
+        <p>
+          When omitted, the target date is the final calendar day of the
+          creation quarter. GTasks reports success only after the goal page and
+          Tony’s Goals membership read back from GBrain.
+        </p>
+        <p class="form-error is-hidden" id="new-goal-error" role="alert"></p>
+        <div class="dialog-footer">
+          <p>No placeholder outcome, strategy, or success criteria are generated.</p>
+          <button class="submit-button" id="new-goal-submit" type="submit">
+            Create goal
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="goal-confirm-dialog" id="goal-confirm-dialog">
+      <div class="goal-confirm-shell">
+        <div class="dialog-heading">
+          <div>
+            <p>Confirm goal change</p>
+            <h2 id="goal-confirm-title"></h2>
+          </div>
+          <button class="icon-button" id="goal-confirm-close" type="button" aria-label="Close confirmation">×</button>
+        </div>
+        <p id="goal-confirm-copy"></p>
+        <p class="form-error is-hidden" id="goal-confirm-error" role="alert"></p>
+        <div class="dialog-footer">
+          <button class="secondary-button" id="goal-confirm-cancel" type="button">Cancel</button>
+          <button class="danger-button" id="goal-confirm-submit" type="button"></button>
+        </div>
+      </div>
     </dialog>
 
     <dialog

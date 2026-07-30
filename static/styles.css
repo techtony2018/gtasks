@@ -590,7 +590,8 @@ kbd {
 }
 
 .submit-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   min-height: 38px;
   padding: 0 15px;
   border-radius: 9px;
@@ -612,6 +613,24 @@ kbd {
 .secondary-button {
   border: 1px solid var(--line-strong);
   background: var(--surface);
+}
+
+.danger-button {
+  border: 1px solid #c98980;
+  color: #863b32;
+  background: #fff8f6;
+}
+
+.danger-button:hover,
+.danger-button.is-destructive {
+  color: white;
+  background: #9e493f;
+}
+
+.danger-button[disabled],
+.secondary-button[disabled] {
+  cursor: default;
+  opacity: 0.58;
 }
 
 .task-section + .task-section {
@@ -1618,6 +1637,50 @@ kbd {
   backdrop-filter: blur(3px);
 }
 
+.goal-create-dialog {
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+}
+
+.goal-confirm-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.goal-confirm-dialog::backdrop {
+  background: rgba(36, 42, 35, 0.34);
+  backdrop-filter: blur(3px);
+}
+
+.goal-confirm-shell {
+  padding: 26px;
+}
+
+.goal-confirm-shell > p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.goal-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin: -4px 0 16px;
+}
+
+.goal-view-section {
+  margin-top: 22px;
+}
+
+.goal-view-section > h2 {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
 .about-dialog {
   width: min(580px, calc(100vw - 32px));
   max-height: min(680px, calc(100dvh - 32px));
@@ -1753,19 +1816,29 @@ kbd {
   font-weight: 500;
 }
 
-.quick-add-form input {
+.quick-add-form input,
+.quick-add-form textarea,
+.quick-add-form select {
   width: 100%;
-  height: 44px;
-  padding: 0 12px;
+  min-height: 44px;
+  padding: 10px 12px;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
   color: var(--ink);
   background: #fcfdfa;
   font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
 }
 
-.quick-add-form input:focus {
+.quick-add-form input:focus,
+.quick-add-form textarea:focus,
+.quick-add-form select:focus {
   border-color: #7ea68b;
+}
+
+.goal-create-dialog .quick-add-form label:not(:first-of-type) {
+  margin-top: 15px;
 }
 
 .due-field {

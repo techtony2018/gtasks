@@ -7,7 +7,10 @@ from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, Project, new_inbox_task
 from gtasks.gbrain import (
     CollectionIssue,
     CollectionRead,
+    GoalDeletionReceipt,
+    GoalMutationReceipt,
     GoalRead,
+    GoalRelationshipRead,
     MutationReceipt,
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
@@ -25,13 +28,39 @@ class IsolatedProjectAdapter:
             "fixture1",
         )
         self.projects: tuple[Project, ...] = ()
+        self.goals = ()
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = (self.task,) if root_slug == ACTIVE_ROOT else ()
         return CollectionRead(root_slug=root_slug, tasks=tasks)
 
     def list_goals(self) -> GoalRead:
-        return GoalRead(goals=())
+        return GoalRead(goals=self.goals)
+
+    def create_goal(self, goal) -> GoalMutationReceipt:
+        self.goals = (*self.goals, goal)
+        return GoalMutationReceipt(goal_slug=goal.slug, goal=goal, verified=True)
+
+    def set_goal_paused(self, goal_slug: str) -> GoalMutationReceipt:
+        goal = next(goal for goal in self.goals if goal.slug == goal_slug)
+        paused = replace(goal, status="paused")
+        self.goals = tuple(
+            paused if candidate.slug == goal_slug else candidate
+            for candidate in self.goals
+        )
+        return GoalMutationReceipt(goal_slug=goal_slug, goal=paused, verified=True)
+
+    def delete_goal(self, goal_slug: str) -> GoalDeletionReceipt:
+        self.goals = tuple(goal for goal in self.goals if goal.slug != goal_slug)
+        return GoalDeletionReceipt(
+            goal_slug=goal_slug,
+            removed_task_links=(),
+            recoverable_until_hours=72,
+            verified=True,
+        )
+
+    def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
+        return GoalRelationshipRead(goal_slug=goal_slug, task_slugs=())
 
     def list_projects(self) -> ProjectRead:
         return ProjectRead(

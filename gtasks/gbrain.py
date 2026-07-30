@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from threading import BoundedSemaphore
 from typing import Any, Mapping, Protocol
 
 from .domain import (
@@ -53,25 +54,27 @@ class SubprocessCommandRunner:
     def __init__(self, executable: str = "gbrain", timeout_seconds: float = 30) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
+        self._concurrency = BoundedSemaphore(16)
 
     def run(self, tool: str, params: dict[str, Any]) -> object:
         payload = json.dumps(params, separators=(",", ":"))
-        try:
-            result = subprocess.run(
-                [self.executable, "call", tool, payload],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-            )
-        except FileNotFoundError as exc:
-            raise GBrainCommandError(
-                f"GBrain executable not found: {self.executable}"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise GBrainCommandError(
-                f"GBrain tool {tool} timed out after {self.timeout_seconds:g}s"
-            ) from exc
+        with self._concurrency:
+            try:
+                result = subprocess.run(
+                    [self.executable, "call", tool, payload],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                )
+            except FileNotFoundError as exc:
+                raise GBrainCommandError(
+                    f"GBrain executable not found: {self.executable}"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise GBrainCommandError(
+                    f"GBrain tool {tool} timed out after {self.timeout_seconds:g}s"
+                ) from exc
 
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
@@ -240,6 +243,36 @@ class ProjectMutationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class GoalMutationReceipt:
+    goal_slug: str
+    goal: Goal
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal_slug": self.goal_slug,
+            "goal": self.goal.to_dict(),
+            "verified": self.verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GoalDeletionReceipt:
+    goal_slug: str
+    removed_task_links: tuple[str, ...]
+    recoverable_until_hours: int
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal_slug": self.goal_slug,
+            "removed_task_links": list(self.removed_task_links),
+            "recoverable_until_hours": self.recoverable_until_hours,
+            "verified": self.verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectAssignmentReceipt:
     task_slug: str
     project_slug: str | None
@@ -372,6 +405,34 @@ def render_project_page(project: Project) -> str:
     )
 
 
+def render_goal_page(goal: Goal) -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: goal",
+            f"title: {_yaml_scalar(goal.title)}",
+            f"status: {_yaml_scalar(goal.status)}",
+            f"outcome: {_yaml_scalar(goal.outcome)}",
+            f"success_criteria: {_yaml_scalar(goal.success_criteria)}",
+            f"target_day: {_yaml_scalar(goal.target_day.isoformat())}",
+            f"strategy: {_yaml_scalar(goal.strategy)}",
+            f"review_cadence: {_yaml_scalar(goal.review_cadence)}",
+            f"constraints: {_yaml_scalar(goal.constraints)}",
+            f"collection: {_yaml_scalar(GOALS_ROOT)}",
+            "links:",
+            f"  - to: {_yaml_scalar(GOALS_ROOT)}",
+            "    type: member_of",
+            "    context: This goal belongs to Tony's Goals.",
+            "---",
+            "",
+            f"# {goal.title}",
+            "",
+            goal.outcome,
+            "",
+        ]
+    )
+
+
 def render_projects_collection_page() -> str:
     return "\n".join(
         [
@@ -403,7 +464,7 @@ def _render_preserved_page(
 ) -> str:
     body = page.get("compiled_truth")
     if not isinstance(body, str):
-        raise GBrainProtocolError("task page has no preserved body content")
+        raise GBrainProtocolError("page has no preserved body content")
     preserved = dict(frontmatter)
     title = page.get("title")
     if "title" not in preserved and isinstance(title, str) and title.strip():
@@ -816,6 +877,263 @@ class GBrainAdapter:
             if issue is not None:
                 issues.append(issue)
         return GoalRead(goals=tuple(goals), issues=tuple(issues))
+
+    def create_goal(self, goal: Goal) -> GoalMutationReceipt:
+        self.runner.run(
+            "put_page",
+            {"slug": goal.slug, "content": render_goal_page(goal)},
+        )
+        try:
+            page = self.runner.run("get_page", {"slug": goal.slug})
+            if not isinstance(page, Mapping):
+                raise GBrainProtocolError("goal page readback was not an object")
+            stored_goal = Goal.from_page(page)
+            if stored_goal.to_dict() != goal.to_dict():
+                raise GBrainProtocolError("goal page readback did not match the write")
+            self.runner.run(
+                "add_link",
+                {
+                    "from": goal.slug,
+                    "to": GOALS_ROOT,
+                    "link_type": "member_of",
+                    "context": "This goal belongs to Tony's Goals.",
+                    "link_source": "gtasks",
+                },
+            )
+            links = self.runner.run("get_links", {"slug": goal.slug})
+            if not isinstance(links, list) or not any(
+                isinstance(link, Mapping)
+                and link.get("from_slug") == goal.slug
+                and link.get("to_slug") == GOALS_ROOT
+                and link.get("link_type") == "member_of"
+                for link in links
+            ):
+                raise GBrainProtocolError(
+                    "goal collection relationship readback was not verified"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                goal.slug,
+                (
+                    "Goal creation was not fully verified. "
+                    "Do not retry until this slug is inspected: "
+                    f"{exc}"
+                ),
+            ) from exc
+        return GoalMutationReceipt(
+            goal_slug=goal.slug,
+            goal=stored_goal,
+            verified=True,
+        )
+
+    def set_goal_paused(self, goal_slug: str) -> GoalMutationReceipt:
+        page = self.runner.run("get_page", {"slug": goal_slug})
+        links = self.runner.run("get_links", {"slug": goal_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("goal pause snapshot was not structured")
+        goal = Goal.from_page(page, edges=links)
+        if goal.status == "paused":
+            return GoalMutationReceipt(
+                goal_slug=goal_slug,
+                goal=goal,
+                verified=True,
+            )
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise GBrainProtocolError("goal page has no frontmatter")
+        original_frontmatter = deepcopy(dict(frontmatter))
+        original_frontmatter["type"] = "goal"
+        original_content = _render_preserved_page(page, original_frontmatter)
+        desired_frontmatter = deepcopy(original_frontmatter)
+        desired_frontmatter["status"] = "paused"
+        write_succeeded = False
+        try:
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": goal_slug,
+                    "content": _render_preserved_page(page, desired_frontmatter),
+                },
+            )
+            write_succeeded = True
+            stored_page = self.runner.run("get_page", {"slug": goal_slug})
+            stored_links = self.runner.run("get_links", {"slug": goal_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(
+                stored_links, list
+            ):
+                raise GBrainProtocolError("goal pause readback was not structured")
+            stored_goal = Goal.from_page(stored_page, edges=stored_links)
+            if stored_page.get("type") != "goal" or stored_goal.status != "paused":
+                raise GBrainProtocolError("goal pause readback did not match")
+            for expected in links:
+                if not isinstance(expected, Mapping):
+                    continue
+                if not any(
+                    isinstance(actual, Mapping)
+                    and actual.get("from_slug") == expected.get("from_slug")
+                    and actual.get("to_slug") == expected.get("to_slug")
+                    and actual.get("link_type") == expected.get("link_type")
+                    for actual in stored_links
+                ):
+                    raise GBrainProtocolError(
+                        "a goal relationship was missing after pause"
+                    )
+        except (DomainValidationError, GBrainError) as exc:
+            if not write_succeeded:
+                raise
+            rollback_verified = False
+            try:
+                self.runner.run(
+                    "put_page",
+                    {"slug": goal_slug, "content": original_content},
+                )
+                rollback_page = self.runner.run("get_page", {"slug": goal_slug})
+                rollback_goal = Goal.from_page(rollback_page)
+                rollback_verified = (
+                    isinstance(rollback_page, Mapping)
+                    and rollback_page.get("type") == "goal"
+                    and rollback_goal.status == goal.status
+                )
+            except (DomainValidationError, GBrainError):
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the goal before retrying."
+            )
+            raise PartialMutationError(
+                goal_slug,
+                f"Goal pause was not verified. {outcome}",
+            ) from exc
+        return GoalMutationReceipt(
+            goal_slug=goal_slug,
+            goal=stored_goal,
+            verified=True,
+        )
+
+    def delete_goal(self, goal_slug: str) -> GoalDeletionReceipt:
+        page = self.runner.run("get_page", {"slug": goal_slug})
+        outgoing = self.runner.run("get_links", {"slug": goal_slug})
+        incoming = self.runner.run("get_backlinks", {"slug": goal_slug})
+        if (
+            not isinstance(page, Mapping)
+            or not isinstance(outgoing, list)
+            or not isinstance(incoming, list)
+        ):
+            raise GBrainProtocolError("goal delete snapshot was not structured")
+        Goal.from_page(page, edges=outgoing)
+        forward_tasks = {
+            str(edge["from_slug"])
+            for edge in incoming
+            if isinstance(edge, Mapping)
+            and edge.get("to_slug") == goal_slug
+            and edge.get("link_type") == "advances_goal"
+            and isinstance(edge.get("from_slug"), str)
+            and str(edge["from_slug"]).startswith("tasks/")
+        }
+        reverse_tasks = {
+            str(edge["to_slug"])
+            for edge in outgoing
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == goal_slug
+            and edge.get("link_type") == "advanced_by"
+            and isinstance(edge.get("to_slug"), str)
+            and str(edge["to_slug"]).startswith("tasks/")
+        }
+        task_slugs = tuple(sorted(forward_tasks | reverse_tasks))
+        unlinked_tasks: list[str] = []
+        delete_succeeded = False
+        try:
+            for task_slug in task_slugs:
+                self.set_task_goal(task_slug, None)
+                unlinked_tasks.append(task_slug)
+            remaining_outgoing = self.runner.run("get_links", {"slug": goal_slug})
+            remaining_incoming = self.runner.run("get_backlinks", {"slug": goal_slug})
+            if not isinstance(remaining_outgoing, list) or not isinstance(
+                remaining_incoming, list
+            ):
+                raise GBrainProtocolError(
+                    "goal relationship removal readback was not structured"
+                )
+            if any(
+                isinstance(edge, Mapping)
+                and edge.get("link_type") == "advanced_by"
+                and edge.get("to_slug") in task_slugs
+                for edge in remaining_outgoing
+            ) or any(
+                isinstance(edge, Mapping)
+                and edge.get("link_type") == "advances_goal"
+                and edge.get("from_slug") in task_slugs
+                for edge in remaining_incoming
+            ):
+                raise GBrainProtocolError(
+                    "goal task relationships remained after removal"
+                )
+            self.runner.run("delete_page", {"slug": goal_slug})
+            delete_succeeded = True
+            deleted_page = self.runner.run(
+                "get_page",
+                {"slug": goal_slug, "include_deleted": True},
+            )
+            if (
+                not isinstance(deleted_page, Mapping)
+                or deleted_page.get("slug") != goal_slug
+                or not deleted_page.get("deleted_at")
+            ):
+                raise GBrainProtocolError("goal soft-delete readback was not verified")
+        except (DomainValidationError, ValueError, GBrainError) as exc:
+            rollback_verified = False
+            try:
+                if delete_succeeded:
+                    self.runner.run("restore_page", {"slug": goal_slug})
+                for task_slug in unlinked_tasks:
+                    self.set_task_goal(task_slug, goal_slug)
+                restored_page = self.runner.run("get_page", {"slug": goal_slug})
+                Goal.from_page(restored_page)
+                restored_outgoing = self.runner.run(
+                    "get_links", {"slug": goal_slug}
+                )
+                restored_incoming = self.runner.run(
+                    "get_backlinks", {"slug": goal_slug}
+                )
+                rollback_verified = (
+                    isinstance(restored_outgoing, list)
+                    and isinstance(restored_incoming, list)
+                    and all(
+                        any(
+                            isinstance(edge, Mapping)
+                            and edge.get("from_slug") == task_slug
+                            and edge.get("to_slug") == goal_slug
+                            and edge.get("link_type") == "advances_goal"
+                            for edge in restored_incoming
+                        )
+                        and any(
+                            isinstance(edge, Mapping)
+                            and edge.get("from_slug") == goal_slug
+                            and edge.get("to_slug") == task_slug
+                            and edge.get("link_type") == "advanced_by"
+                            for edge in restored_outgoing
+                        )
+                        for task_slug in unlinked_tasks
+                    )
+                )
+            except (DomainValidationError, GBrainError):
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the goal before retrying."
+            )
+            raise PartialMutationError(
+                goal_slug,
+                f"Goal deletion was not verified. {outcome}",
+            ) from exc
+        return GoalDeletionReceipt(
+            goal_slug=goal_slug,
+            removed_task_links=task_slugs,
+            recoverable_until_hours=72,
+            verified=True,
+        )
 
     def list_projects(self) -> ProjectRead:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})

@@ -18,6 +18,8 @@ from gtasks.domain import (
 from gtasks.gbrain import (
     CollectionRead,
     GoalLinkReceipt,
+    GoalDeletionReceipt,
+    GoalMutationReceipt,
     GoalRead,
     GoalRelationshipRead,
     MutationReceipt,
@@ -51,8 +53,13 @@ class FakeAdapter:
         self.membership_repairs: list[str] = []
         self.created_projects: list[Project] = []
         self.project_assignments: list[tuple[str, str | None]] = []
+        self.created_goals: list[Goal] = []
+        self.paused_goals: list[str] = []
+        self.deleted_goals: list[str] = []
+        self.collection_reads: list[str] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+        self.collection_reads.append(root_slug)
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
         return CollectionRead(root_slug=root_slug, tasks=tasks)
 
@@ -62,6 +69,31 @@ class FakeAdapter:
 
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
+
+    def create_goal(self, goal: Goal) -> GoalMutationReceipt:
+        self.created_goals.append(goal)
+        self.goals = (*self.goals, goal)
+        return GoalMutationReceipt(goal_slug=goal.slug, goal=goal, verified=True)
+
+    def set_goal_paused(self, goal_slug: str) -> GoalMutationReceipt:
+        goal = next(goal for goal in self.goals if goal.slug == goal_slug)
+        paused = replace(goal, status="paused")
+        self.goals = tuple(
+            paused if candidate.slug == goal_slug else candidate
+            for candidate in self.goals
+        )
+        self.paused_goals.append(goal_slug)
+        return GoalMutationReceipt(goal_slug=goal_slug, goal=paused, verified=True)
+
+    def delete_goal(self, goal_slug: str) -> GoalDeletionReceipt:
+        self.goals = tuple(goal for goal in self.goals if goal.slug != goal_slug)
+        self.deleted_goals.append(goal_slug)
+        return GoalDeletionReceipt(
+            goal_slug=goal_slug,
+            removed_task_links=(),
+            recoverable_until_hours=72,
+            verified=True,
+        )
 
     def list_projects(self) -> ProjectRead:
         return ProjectRead(projects=self.projects)
@@ -216,7 +248,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.5")
+        self.assertEqual(payload["version"], "V0.0.6")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -224,15 +256,28 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.5")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.5")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.4")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][3]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][4]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.6")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.6")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.5")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.4")
+        self.assertEqual(payload["releases"][3]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][4]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][5]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
+    def test_initial_reads_coalesce_through_short_cache_and_refresh_bypasses(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        first, _, _ = harness.request("GET", "/api/tasks")
+        second, _, _ = harness.request("GET", "/api/tasks")
+        refreshed, _, _ = harness.request("GET", "/api/tasks?refresh=1")
+
+        self.assertEqual((first, second, refreshed), (200, 200, 200))
+        self.assertEqual(adapter.collection_reads.count(ACTIVE_ROOT), 2)
+        self.assertEqual(adapter.collection_reads.count(COMPLETED_ROOT), 2)
+
     def test_returns_empty_root_scoped_views_without_sample_tasks(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
 
@@ -435,6 +480,50 @@ class GoalRelationshipApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["goal_slug"], goal.slug)
         self.assertEqual(payload["task_slugs"], ["tasks/explicit"])
+
+
+class GoalMutationApiTests(unittest.TestCase):
+    def test_creates_goal_with_quarter_end_default_and_exact_user_fields(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/goals",
+            {
+                "title": "Launch the pilot",
+                "outcome": "The pilot is live.",
+                "success_criteria": "Ten users complete the workflow.",
+                "strategy": "Ship one validated slice each week.",
+                "review_cadence": "weekly",
+                "constraints": "No customer data leaves the local system.",
+            },
+        )
+
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(payload["goal"]["target_day"], "2026-09-30")
+        self.assertEqual(adapter.created_goals[0].strategy, "Ship one validated slice each week.")
+
+    def test_pause_and_delete_are_explicit_verified_actions(self) -> None:
+        goal = sample_goal()
+        adapter = FakeAdapter(goals=(goal,))
+        harness = ServerHarness(self, adapter)
+
+        pause_status, pause_payload, _ = harness.request(
+            "PATCH",
+            f"/api/goals/{goal.slug.replace('/', '%2F')}/status",
+            {"status": "paused"},
+        )
+        delete_status, delete_payload, _ = harness.request(
+            "DELETE",
+            f"/api/goals/{goal.slug.replace('/', '%2F')}",
+        )
+
+        self.assertEqual(pause_status, 200)
+        self.assertEqual(pause_payload["receipt"]["goal"]["status"], "paused")
+        self.assertEqual(delete_status, 200)
+        self.assertEqual(delete_payload["receipt"]["recoverable_until_hours"], 72)
 
 
 class QuickAddApiTests(unittest.TestCase):

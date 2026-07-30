@@ -42,6 +42,10 @@ drift.
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
 Refresh, and a hidden tab defers work until it becomes visible again.
+The server also coalesces duplicate initial snapshots for 30 seconds and caps
+aggregate GBrain command concurrency to prevent multi-tab request stampedes.
+Manual and automatic Refresh explicitly bypass that short cache, and every
+verified mutation invalidates it.
 
 Projects are scoped exclusively through the canonical
 `collections/tonys-projects` collection. A project appears in GTasks only when
@@ -171,6 +175,14 @@ needing attention section with the exact error and a direct GBrain inspection
 link; valid projects and tasks remain visible.
 
 The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
+
+Goals can be created from complete user-entered outcome, success criteria,
+strategy, constraints, cadence, and optional target date. Pause requires a
+confirmation and retains the goal plus every relationship while removing it
+from active-goal workflows. Delete requires a separate confirmation: GTasks
+removes paired goal relationships from linked task pages without deleting or
+changing those tasks, then soft-deletes the goal with GBrain's 72-hour recovery
+window. Page, relationship, and deletion readback must verify before success.
 
 All views support an honest empty state. The app does not generate sample tasks.
 

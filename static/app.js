@@ -19,6 +19,7 @@ const state = {
   projectIssues: [],
   projectsLoading: true,
   projectsError: "",
+  goalAction: null,
 };
 
 const viewMeta = {
@@ -135,6 +136,28 @@ const elements = {
   newProjectSubmit: document.querySelector("#new-project-submit"),
   newProjectClose: document.querySelector("#new-project-close"),
   newProjectError: document.querySelector("#new-project-error"),
+  newGoalDialog: document.querySelector("#new-goal-dialog"),
+  newGoalForm: document.querySelector("#new-goal-form"),
+  newGoalTitle: document.querySelector("#new-goal-title"),
+  newGoalOutcome: document.querySelector("#new-goal-outcome"),
+  newGoalSuccess: document.querySelector("#new-goal-success"),
+  newGoalStrategy: document.querySelector("#new-goal-strategy"),
+  newGoalConstraints: document.querySelector("#new-goal-constraints"),
+  newGoalCadence: document.querySelector("#new-goal-cadence"),
+  newGoalTarget: document.querySelector("#new-goal-target"),
+  newGoalSubmit: document.querySelector("#new-goal-submit"),
+  newGoalClose: document.querySelector("#new-goal-close"),
+  newGoalError: document.querySelector("#new-goal-error"),
+  goalPauseButton: document.querySelector("#goal-pause-button"),
+  goalDeleteButton: document.querySelector("#goal-delete-button"),
+  goalActionError: document.querySelector("#goal-action-error"),
+  goalConfirmDialog: document.querySelector("#goal-confirm-dialog"),
+  goalConfirmTitle: document.querySelector("#goal-confirm-title"),
+  goalConfirmCopy: document.querySelector("#goal-confirm-copy"),
+  goalConfirmError: document.querySelector("#goal-confirm-error"),
+  goalConfirmClose: document.querySelector("#goal-confirm-close"),
+  goalConfirmCancel: document.querySelector("#goal-confirm-cancel"),
+  goalConfirmSubmit: document.querySelector("#goal-confirm-submit"),
 };
 
 function node(tag, className, text) {
@@ -483,6 +506,8 @@ function goalMiniCard(goal) {
 }
 
 function goalsHomeSection() {
+  const activeGoals = state.snapshot.goals.filter((goal) =>
+    ["planned", "active"].includes(goal.status));
   const wrapper = node("section", "goals-home-section");
   const heading = node("div", "goals-home-heading");
   const copy = node("div");
@@ -495,12 +520,12 @@ function goalsHomeSection() {
   viewAll.addEventListener("click", () => setView("goals"));
   heading.append(copy, viewAll);
   wrapper.append(heading);
-  if (!state.snapshot.goals.length) {
+  if (!activeGoals.length) {
     wrapper.append(node("div", "section-empty", "No GBrain goals are linked to Tony’s Goals."));
     return wrapper;
   }
   const rail = node("div", "goals-rail");
-  state.snapshot.goals.forEach((goal) => rail.append(goalMiniCard(goal)));
+  activeGoals.forEach((goal) => rail.append(goalMiniCard(goal)));
   wrapper.append(rail);
   return wrapper;
 }
@@ -754,15 +779,42 @@ function goalCard(goal) {
 }
 
 function renderGoalsView() {
-  if (!state.snapshot.goals.length) return simpleEmpty(viewMeta.goals);
   const fragment = document.createDocumentFragment();
+  const heading = node("div", "projects-view-heading");
+  const copy = node("div");
+  copy.append(
+    node("h2", "", "Tony’s Goals"),
+    node("p", "", "Active goals stay prominent; paused goals remain available below."),
+  );
+  const create = node("button", "submit-button", "New Goal");
+  create.type = "button";
+  create.addEventListener("click", openNewGoal);
+  heading.append(copy, create);
+  fragment.append(heading);
   const note = node("div", "notice");
   note.textContent =
     "Goal target dates default to the final calendar day of their creation quarter when omitted.";
   fragment.append(note);
-  const grid = node("div", "goals-grid");
-  state.snapshot.goals.forEach((goal) => grid.append(goalCard(goal)));
-  fragment.append(grid);
+  const active = state.snapshot.goals.filter((goal) =>
+    ["planned", "active"].includes(goal.status));
+  const paused = state.snapshot.goals.filter((goal) => goal.status === "paused");
+  const finished = state.snapshot.goals.filter((goal) =>
+    ["completed", "cancelled"].includes(goal.status));
+  const appendGroup = (title, goals, emptyCopy) => {
+    const section = node("section", "goal-view-section");
+    section.append(node("h2", "", title));
+    if (!goals.length) {
+      section.append(node("div", "section-empty", emptyCopy));
+    } else {
+      const grid = node("div", "goals-grid");
+      goals.forEach((goal) => grid.append(goalCard(goal)));
+      section.append(grid);
+    }
+    fragment.append(section);
+  };
+  appendGroup("Active goals", active, "No active goals. Create one when an outcome is ready.");
+  if (paused.length) appendGroup("Paused goals", paused, "");
+  if (finished.length) appendGroup("Completed and cancelled goals", finished, "");
   return fragment;
 }
 
@@ -945,6 +997,174 @@ async function submitNewProject(event) {
   } finally {
     elements.newProjectSubmit.disabled = false;
     elements.newProjectSubmit.textContent = "Create project";
+  }
+}
+
+function openNewGoal() {
+  elements.newGoalForm.reset();
+  elements.newGoalCadence.value = "weekly";
+  elements.newGoalError.classList.add("is-hidden");
+  elements.newGoalDialog.showModal();
+  window.setTimeout(() => elements.newGoalTitle.focus(), 0);
+}
+
+async function submitNewGoal(event) {
+  event.preventDefault();
+  elements.newGoalError.classList.add("is-hidden");
+  elements.newGoalSubmit.disabled = true;
+  elements.newGoalSubmit.textContent = "Creating in GBrain…";
+  const payload = {
+    title: elements.newGoalTitle.value,
+    outcome: elements.newGoalOutcome.value,
+    success_criteria: elements.newGoalSuccess.value,
+    strategy: elements.newGoalStrategy.value,
+    review_cadence: elements.newGoalCadence.value,
+    constraints: elements.newGoalConstraints.value,
+  };
+  if (elements.newGoalTarget.value) {
+    payload.target_day = elements.newGoalTarget.value;
+  }
+  try {
+    const response = await fetch("/api/goals", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Goal could not be created.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    await loadTasks();
+    const created = state.snapshot.goals.some(
+      (goal) => goal.slug === result.goal.slug,
+    );
+    if (!created) {
+      throw new Error(
+        "GBrain accepted the goal, but it was not present after Tony’s Goals refresh.",
+      );
+    }
+    elements.newGoalDialog.close();
+    state.activeView = "goals";
+    showToast("Goal created, linked, and verified in GBrain.");
+    selectGoal(result.goal.slug);
+  } catch (error) {
+    elements.newGoalError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug}; do not retry yet.`
+        : error.message;
+    elements.newGoalError.classList.remove("is-hidden");
+  } finally {
+    elements.newGoalSubmit.disabled = false;
+    elements.newGoalSubmit.textContent = "Create goal";
+  }
+}
+
+function openGoalConfirmation(action) {
+  if (state.selectedKind !== "goal" || !state.selectedSlug) return;
+  const goal = state.snapshot.goals.find(
+    (candidate) => candidate.slug === state.selectedSlug,
+  );
+  if (!goal) return;
+  state.goalAction = { action, goalSlug: goal.slug };
+  elements.goalConfirmError.classList.add("is-hidden");
+  if (action === "pause") {
+    elements.goalConfirmTitle.textContent = `Pause “${goal.title}”?`;
+    elements.goalConfirmCopy.textContent =
+      "The goal and every linked task relationship will be retained. Its status becomes Paused, and it leaves active-goal Home, selection, and progress workflows until resumed.";
+    elements.goalConfirmSubmit.textContent = "Pause goal";
+    elements.goalConfirmSubmit.classList.remove("is-destructive");
+  } else {
+    elements.goalConfirmTitle.textContent = `Delete “${goal.title}”?`;
+    elements.goalConfirmCopy.textContent =
+      "GTasks will remove only this goal’s paired advances_goal and advanced_by links, without deleting or changing the status/content of linked tasks. The goal page is then soft-deleted and recoverable in GBrain for 72 hours.";
+    elements.goalConfirmSubmit.textContent = "Delete goal";
+    elements.goalConfirmSubmit.classList.add("is-destructive");
+  }
+  elements.goalConfirmDialog.showModal();
+  window.setTimeout(() => elements.goalConfirmSubmit.focus(), 0);
+}
+
+function closeGoalConfirmation() {
+  elements.goalConfirmDialog.close();
+  state.goalAction = null;
+}
+
+async function confirmGoalAction() {
+  const pending = state.goalAction;
+  if (!pending) return;
+  elements.goalConfirmError.classList.add("is-hidden");
+  elements.goalConfirmSubmit.disabled = true;
+  const originalLabel = elements.goalConfirmSubmit.textContent;
+  elements.goalConfirmSubmit.textContent =
+    pending.action === "pause" ? "Pausing…" : "Deleting…";
+  try {
+    const response = await fetch(
+      pending.action === "pause"
+        ? `/api/goals/${encodeURIComponent(pending.goalSlug)}/status`
+        : `/api/goals/${encodeURIComponent(pending.goalSlug)}`,
+      {
+        method: pending.action === "pause" ? "PATCH" : "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        ...(pending.action === "pause"
+          ? { body: JSON.stringify({ status: "paused" }) }
+          : {}),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.receipt?.verified) {
+      const error = new Error(
+        result.error || "GBrain did not verify the goal change.",
+      );
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    if (pending.action === "pause") {
+      const index = state.snapshot.goals.findIndex(
+        (goal) => goal.slug === pending.goalSlug,
+      );
+      if (index < 0 || !result.receipt.goal) {
+        throw new Error("Verified paused goal readback was missing.");
+      }
+      state.snapshot.goals[index] = {
+        ...state.snapshot.goals[index],
+        ...result.receipt.goal,
+      };
+      elements.goalConfirmDialog.close();
+      state.goalAction = null;
+      render();
+      selectGoal(pending.goalSlug);
+      showToast("Goal paused and verified in GBrain.");
+    } else {
+      state.snapshot.goals = state.snapshot.goals.filter(
+        (goal) => goal.slug !== pending.goalSlug,
+      );
+      state.snapshot.tasks = state.snapshot.tasks.map((task) =>
+        task.goal === pending.goalSlug ? { ...task, goal: null } : task);
+      rebuildDerivedTaskViews();
+      elements.goalConfirmDialog.close();
+      state.goalAction = null;
+      closeDetails();
+      showToast("Goal soft-deleted and linked tasks preserved.");
+    }
+  } catch (error) {
+    elements.goalConfirmError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug}; do not retry yet.`
+        : error.message;
+    elements.goalConfirmError.classList.remove("is-hidden");
+  } finally {
+    elements.goalConfirmSubmit.disabled = false;
+    elements.goalConfirmSubmit.textContent = originalLabel;
   }
 }
 
@@ -1168,11 +1388,17 @@ function selectTask(slug) {
   const emptyOption = node("option", "", "No linked goal");
   emptyOption.value = "";
   elements.taskGoalSelect.append(emptyOption);
-  state.snapshot.goals.forEach((goal) => {
+  state.snapshot.goals
+    .filter(
+      (goal) =>
+        ["planned", "active"].includes(goal.status) ||
+        goal.slug === task.goal,
+    )
+    .forEach((goal) => {
     const option = node("option", "", goal.title);
     option.value = goal.slug;
     elements.taskGoalSelect.append(option);
-  });
+    });
   elements.taskGoalSelect.value = task.goal || "";
   const linkedGoal = state.snapshot.goals.find((goal) => goal.slug === task.goal);
   if (linkedGoal) {
@@ -1287,6 +1513,10 @@ function selectGoal(slug) {
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.remove("is-hidden");
   elements.goalDetailStatus.textContent = goal.status;
+  elements.goalPauseButton.disabled = goal.status === "paused";
+  elements.goalPauseButton.textContent =
+    goal.status === "paused" ? "Paused" : "Pause";
+  elements.goalActionError.classList.add("is-hidden");
   elements.goalDetailTitle.textContent = goal.title;
   elements.goalDetailOutcome.textContent = goal.outcome;
   elements.goalDetailTarget.textContent = formatDay(goal.target_day, "long");
@@ -1604,10 +1834,13 @@ async function performTaskLoad(reason) {
     elements.viewSurface.replaceChildren(loading);
   }
   try {
-    const response = await fetch("/api/tasks", {
+    const response = await fetch(
+      reason === "initial" ? "/api/tasks" : "/api/tasks?refresh=1",
+      {
       headers: { Accept: "application/json" },
       cache: "no-store",
-    });
+      },
+    );
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to read GBrain.");
     state.snapshot = payload;
@@ -1739,6 +1972,22 @@ elements.newProjectClose.addEventListener("click", () => {
   elements.newProjectDialog.close();
 });
 elements.newProjectForm.addEventListener("submit", submitNewProject);
+elements.newGoalClose.addEventListener("click", () => {
+  elements.newGoalDialog.close();
+});
+elements.newGoalForm.addEventListener("submit", submitNewGoal);
+elements.goalPauseButton.addEventListener("click", () => {
+  openGoalConfirmation("pause");
+});
+elements.goalDeleteButton.addEventListener("click", () => {
+  openGoalConfirmation("delete");
+});
+elements.goalConfirmClose.addEventListener("click", closeGoalConfirmation);
+elements.goalConfirmCancel.addEventListener("click", closeGoalConfirmation);
+elements.goalConfirmSubmit.addEventListener("click", confirmGoalAction);
+elements.goalConfirmDialog.addEventListener("close", () => {
+  state.goalAction = null;
+});
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;
   if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
