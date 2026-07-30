@@ -19,6 +19,7 @@ from gtasks.gbrain import (
     GoalRead,
     GoalRelationshipRead,
     MutationReceipt,
+    NextActionMutationReceipt,
     PartialMutationError,
     StatusMutationReceipt,
     MembershipRepairReceipt,
@@ -39,6 +40,7 @@ class FakeAdapter:
         self.created: list[Task] = []
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
+        self.next_action_updates: list[tuple[str, str, datetime]] = []
         self.membership_repairs: list[str] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
@@ -75,6 +77,19 @@ class FakeAdapter:
             status=status,
             lifecycle_root=ACTIVE_ROOT,
             completed_at=now if status == "completed" else None,
+            verified=True,
+        )
+
+    def set_task_next_action(
+        self,
+        task_slug: str,
+        next_action: str,
+        now: datetime,
+    ) -> NextActionMutationReceipt:
+        self.next_action_updates.append((task_slug, next_action, now))
+        return NextActionMutationReceipt(
+            task_slug=task_slug,
+            next_action=next_action.strip(),
             verified=True,
         )
 
@@ -152,7 +167,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.1")
+        self.assertEqual(payload["version"], "V0.0.3")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -160,8 +175,10 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.1")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.3")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
@@ -512,6 +529,74 @@ class TaskStatusApiTests(unittest.TestCase):
             "PATCH",
             "/api/tasks/tasks%2Fship-gtasks/status",
             {"status": "active"},
+        )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["code"], "partial_write")
+        self.assertEqual(payload["slug"], "tasks/ship-gtasks")
+
+
+class TaskNextActionApiTests(unittest.TestCase):
+    def test_updates_and_clears_next_action_with_the_server_local_clock(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/next-action",
+            {"next_action": "  Draft three STAR examples  "},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["receipt"]["next_action"], "Draft three STAR examples")
+        self.assertEqual(
+            adapter.next_action_updates[0][0:2],
+            ("tasks/ship-gtasks", "  Draft three STAR examples  "),
+        )
+        self.assertIsNotNone(adapter.next_action_updates[0][2].tzinfo)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/next-action",
+            {"next_action": ""},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["receipt"]["next_action"], "")
+
+    def test_rejects_non_text_or_overlong_next_action_before_mutation(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        for value in (42, "x" * 241):
+            status, payload, _ = harness.request(
+                "PATCH",
+                "/api/tasks/tasks%2Fship-gtasks/next-action",
+                {"next_action": value},
+            )
+            self.assertEqual(status, 422)
+            self.assertEqual(payload["code"], "invalid_next_action")
+
+        self.assertEqual(adapter.next_action_updates, [])
+
+    def test_reports_a_rolled_back_next_action_write(self) -> None:
+        class PartialWriteAdapter(FakeAdapter):
+            def set_task_next_action(
+                self,
+                task_slug: str,
+                next_action: str,
+                now: datetime,
+            ) -> NextActionMutationReceipt:
+                raise PartialMutationError(
+                    task_slug,
+                    "GBrain next action readback failed. Rollback verified.",
+                )
+
+        harness = ServerHarness(self, PartialWriteAdapter())
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/next-action",
+            {"next_action": "Draft three STAR examples"},
         )
 
         self.assertEqual(status, 502)

@@ -1,11 +1,23 @@
 {
-  "current_version": "V0.0.1",
+  "current_version": "V0.0.3",
   "releases": [
     {
       "version": "V0.0.1",
       "date": "2026-07-30",
       "title": "Initial GTasks baseline",
       "summary": "Introduced the local GBrain-backed task interface with Today, Inbox, Upcoming, Blocked, Projects, Goals, Completed, Quick Add, and verified task details."
+    },
+    {
+      "version": "V0.0.2",
+      "date": "2026-07-30",
+      "title": "Reliable task workflow and Board",
+      "summary": "Added status editing, the task Board, and reciprocal goal links; normalized lifecycle relationships so every valid task stays visible exactly once without hidden-task issues."
+    },
+    {
+      "version": "V0.0.3",
+      "date": "2026-07-30",
+      "title": "Next actions and automatic refresh",
+      "summary": "Added verified Next Action editing in task details and a visible read-only refresh every 30 minutes that coalesces requests, defers while hidden, and resumes when the page is visible."
     }
   ]
 }

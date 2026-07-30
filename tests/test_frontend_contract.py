@@ -87,6 +87,40 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('event.key === "Escape"', javascript)
         self.assertIn("release-history", javascript)
 
+    def test_task_detail_has_an_accessible_next_action_editor(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-next-action-input"', html)
+        self.assertIn('maxlength="240"', html)
+        self.assertIn('id="task-next-action-save"', html)
+        self.assertIn('id="task-next-action-error"', html)
+        self.assertIn("single next concrete physical or actionable step", html)
+        self.assertIn("/next-action`", javascript)
+        self.assertIn("saveTaskNextAction", javascript)
+        self.assertIn('event.key === "Enter"', javascript)
+
+    def test_auto_refresh_is_visible_coalesced_and_visibility_aware(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="auto-refresh-label"', html)
+        self.assertIn("Auto-refresh every 30 minutes", html)
+        self.assertIn("const AUTO_REFRESH_MINUTES = 30", javascript)
+        self.assertIn(
+            "AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000",
+            javascript,
+        )
+        self.assertIn(
+            "if (state.tasksLoadPromise) return state.tasksLoadPromise",
+            javascript,
+        )
+        self.assertIn('reason: "automatic"', javascript)
+        self.assertIn('document.addEventListener("visibilitychange"', javascript)
+        self.assertIn("document.hidden", javascript)
+        self.assertIn("state.refreshDeferred", javascript)
+        self.assertIn("scheduleAutoRefresh", javascript)
+
     def test_needs_attention_keeps_visible_tasks_and_offers_safe_repair(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

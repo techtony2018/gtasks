@@ -10,6 +10,7 @@ from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, GOALS_ROOT, new_inbox_tas
 from gtasks.gbrain import (
     GBrainAdapter,
     GBrainCommandError,
+    NextActionMutationReceipt,
     PartialMutationError,
     SubprocessCommandRunner,
 )
@@ -1108,6 +1109,125 @@ class TaskStatusMutationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.slug, task.slug)
         self.assertIn("readback", str(raised.exception).lower())
+
+
+class TaskNextActionMutationTests(unittest.TestCase):
+    def test_sets_next_action_and_preserves_task_identity_and_relationships(self) -> None:
+        now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone(timedelta(hours=-7)))
+        task = new_inbox_task("Prepare interview", now, "a1b2c3")
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["captured_via"] = "capture-cli"
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        goal_edge = {
+            "from_slug": task.slug,
+            "to_slug": "goals/find-next-role",
+            "link_type": "advances_goal",
+        }
+        final_page = deepcopy(initial_page)
+        final_page["frontmatter"]["next_action"] = "Draft three STAR examples"
+        final_page["frontmatter"]["updated_at"] = now.isoformat()
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [
+                    [active_edge, goal_edge],
+                    [active_edge, goal_edge],
+                ],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_next_action(
+            task.slug,
+            "  Draft three STAR examples  ",
+            now,
+        )
+
+        self.assertIsInstance(receipt, NextActionMutationReceipt)
+        self.assertEqual(receipt.next_action, "Draft three STAR examples")
+        self.assertTrue(receipt.verified)
+        written = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"type": "task"', written)
+        self.assertIn('"type": "member_of"', written)
+        self.assertIn('"captured_via": "capture-cli"', written)
+        self.assertIn("# Prepare interview", written)
+        self.assertNotIn("add_link", [tool for tool, _params in runner.calls])
+        self.assertNotIn("remove_link", [tool for tool, _params in runner.calls])
+
+    def test_can_clear_next_action(self) -> None:
+        now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone.utc)
+        task = replace(
+            new_inbox_task("Prepare interview", now, "a1b2c3"),
+            next_action="Draft three STAR examples",
+        )
+        initial_page = stored_page(task)
+        final_page = deepcopy(initial_page)
+        final_page["frontmatter"]["next_action"] = ""
+        final_page["frontmatter"]["updated_at"] = now.isoformat()
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [[active_edge], [active_edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_next_action(task.slug, "", now)
+
+        self.assertEqual(receipt.next_action, "")
+        self.assertTrue(receipt.verified)
+
+    def test_rolls_back_when_next_action_readback_does_not_match(self) -> None:
+        now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone.utc)
+        task = replace(
+            new_inbox_task("Prepare interview", now, "a1b2c3"),
+            next_action="Review role notes",
+        )
+        initial_page = stored_page(task)
+        mismatched_page = deepcopy(initial_page)
+        mismatched_page["frontmatter"]["next_action"] = "Unexpected value"
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, mismatched_page, initial_page],
+                "get_links": [[active_edge], [active_edge], [active_edge]],
+                "put_page": [
+                    {"slug": task.slug},
+                    {"slug": task.slug},
+                ],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).set_task_next_action(
+                task.slug,
+                "Draft three STAR examples",
+                now,
+            )
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertIn("Rollback verified", str(raised.exception))
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("put_page"),
+            2,
+        )
 
 
 class SubprocessRunnerTests(unittest.TestCase):

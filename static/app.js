@@ -1,3 +1,6 @@
+const AUTO_REFRESH_MINUTES = 30;
+const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000;
+
 const state = {
   snapshot: null,
   activeView: "today",
@@ -7,6 +10,11 @@ const state = {
   loading: true,
   releases: null,
   aboutReturnFocus: null,
+  tasksLoadPromise: null,
+  autoRefreshTimer: null,
+  autoRefreshDueAt: null,
+  refreshDeferred: false,
+  lastSyncedAt: null,
 };
 
 const viewMeta = {
@@ -54,6 +62,7 @@ const elements = {
   viewTitle: document.querySelector("#view-title"),
   dateLabel: document.querySelector("#date-label"),
   syncLabel: document.querySelector("#sync-label"),
+  autoRefreshLabel: document.querySelector("#auto-refresh-label"),
   refreshButton: document.querySelector("#refresh-button"),
   issueNotice: document.querySelector("#issue-notice"),
   boardStatusAlert: document.querySelector("#board-status-alert"),
@@ -78,11 +87,13 @@ const elements = {
   taskStatusSelect: document.querySelector("#task-status-select"),
   taskStatusSave: document.querySelector("#task-status-save"),
   taskStatusError: document.querySelector("#task-status-error"),
+  taskNextActionInput: document.querySelector("#task-next-action-input"),
+  taskNextActionSave: document.querySelector("#task-next-action-save"),
+  taskNextActionError: document.querySelector("#task-next-action-error"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
   detailProject: document.querySelector("#detail-project"),
   detailPriority: document.querySelector("#detail-priority"),
-  detailNextAction: document.querySelector("#detail-next-action"),
   detailDue: document.querySelector("#detail-due"),
   detailGbrainLink: document.querySelector("#detail-gbrain-link"),
   detailSlug: document.querySelector("#detail-slug"),
@@ -766,11 +777,14 @@ function selectTask(slug) {
   elements.taskStatusSave.disabled =
     elements.taskStatusSelect.value === task.status;
   elements.taskStatusError.classList.add("is-hidden");
+  elements.taskNextActionInput.value = task.next_action || "";
+  elements.taskNextActionInput.dataset.currentValue = task.next_action || "";
+  elements.taskNextActionSave.disabled = true;
+  elements.taskNextActionError.classList.add("is-hidden");
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
   elements.detailProject.textContent = task.project || "No project";
   elements.detailPriority.textContent = task.priority;
-  elements.detailNextAction.textContent = task.next_action || "Not set";
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
   elements.detailSlug.textContent = task.slug;
@@ -1050,6 +1064,57 @@ async function saveTaskStatus() {
   }
 }
 
+function nextActionErrorMessage(error) {
+  if (error.code === "partial_write" && error.slug) {
+    return `${error.message} Inspect ${error.slug} before retrying.`;
+  }
+  return error.message || "Next action could not be saved.";
+}
+
+async function saveTaskNextAction() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const taskSlug = state.selectedSlug;
+  const nextAction = elements.taskNextActionInput.value;
+  elements.taskNextActionError.classList.add("is-hidden");
+  elements.taskNextActionSave.disabled = true;
+  elements.taskNextActionSave.textContent = "Saving…";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/next-action`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ next_action: nextAction }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Next action could not be saved.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    showToast(
+      result.receipt.next_action
+        ? "Next action saved and verified in GBrain."
+        : "Next action cleared and verified in GBrain.",
+    );
+    await loadTasks();
+    selectTask(taskSlug);
+  } catch (error) {
+    elements.taskNextActionError.textContent = nextActionErrorMessage(error);
+    elements.taskNextActionError.classList.remove("is-hidden");
+  } finally {
+    elements.taskNextActionSave.textContent = "Save";
+    elements.taskNextActionSave.disabled =
+      elements.taskNextActionInput.value.trim() ===
+      elements.taskNextActionInput.dataset.currentValue;
+  }
+}
+
 function setView(view) {
   if (!viewMeta[view]) return;
   state.activeView = view;
@@ -1082,9 +1147,63 @@ function showLoadError(error) {
   elements.viewSurface.replaceChildren(wrapper);
 }
 
-async function loadTasks() {
+function formatSyncTime(timestamp) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function updateAutoRefreshLabel(copy = "") {
+  if (copy) {
+    elements.autoRefreshLabel.textContent = copy;
+    return;
+  }
+  const suffix = state.lastSyncedAt
+    ? ` · last sync ${formatSyncTime(state.lastSyncedAt)}`
+    : "";
+  elements.autoRefreshLabel.textContent =
+    `Auto-refresh every ${AUTO_REFRESH_MINUTES} minutes${suffix}`;
+}
+
+function clearAutoRefreshTimer() {
+  if (state.autoRefreshTimer !== null) {
+    window.clearTimeout(state.autoRefreshTimer);
+    state.autoRefreshTimer = null;
+  }
+}
+
+function scheduleAutoRefresh({ reset = false } = {}) {
+  clearAutoRefreshTimer();
+  if (reset || state.autoRefreshDueAt === null) {
+    state.autoRefreshDueAt = Date.now() + AUTO_REFRESH_INTERVAL_MS;
+  }
+  if (document.hidden) {
+    updateAutoRefreshLabel(
+      `Auto-refresh every ${AUTO_REFRESH_MINUTES} minutes · paused while hidden`,
+    );
+    return;
+  }
+  updateAutoRefreshLabel();
+  const delay = Math.max(0, state.autoRefreshDueAt - Date.now());
+  state.autoRefreshTimer = window.setTimeout(async () => {
+    state.autoRefreshTimer = null;
+    if (document.hidden) {
+      state.refreshDeferred = true;
+      updateAutoRefreshLabel(
+        `Auto-refresh every ${AUTO_REFRESH_MINUTES} minutes · refresh deferred`,
+      );
+      return;
+    }
+    await loadTasks({ reason: "automatic" });
+  }, delay);
+}
+
+async function performTaskLoad(reason) {
+  const previousSnapshot = state.snapshot;
   state.loading = true;
-  elements.syncLabel.textContent = "Reading GBrain…";
+  elements.syncLabel.textContent =
+    reason === "automatic" ? "Refreshing from GBrain…" : "Reading GBrain…";
   elements.refreshButton.disabled = true;
   setConnection("loading", "Connecting");
   if (!state.snapshot) {
@@ -1100,8 +1219,12 @@ async function loadTasks() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to read GBrain.");
     state.snapshot = payload;
+    state.lastSyncedAt = Date.now();
+    state.refreshDeferred = false;
     setConnection("connected", "GBrain connected");
-    elements.syncLabel.textContent = `Read ${payload.tasks.length} task${payload.tasks.length === 1 ? "" : "s"}`;
+    elements.syncLabel.textContent =
+      `Synced ${payload.tasks.length} task${payload.tasks.length === 1 ? "" : "s"} ` +
+      `at ${formatSyncTime(state.lastSyncedAt)}`;
     if (payload.issues.length) {
       elements.issueNotice.textContent =
         `${payload.issues.length} task data ${payload.issues.length === 1 ? "issue needs" : "issues need"} attention. Core-valid tasks remain visible; review details below.`;
@@ -1109,16 +1232,37 @@ async function loadTasks() {
     } else {
       elements.issueNotice.classList.add("is-hidden");
     }
+    scheduleAutoRefresh({ reset: true });
   } catch (error) {
-    state.snapshot = null;
-    setConnection("error", "GBrain unavailable");
-    elements.syncLabel.textContent = "Read failed";
-    showLoadError(error);
+    if (previousSnapshot) {
+      state.snapshot = previousSnapshot;
+      setConnection("connected", "GBrain connected");
+      elements.syncLabel.textContent =
+        reason === "automatic" ? "Auto-refresh delayed" : "Refresh delayed";
+      updateAutoRefreshLabel(
+        `Auto-refresh every ${AUTO_REFRESH_MINUTES} minutes · last data kept`,
+      );
+      state.autoRefreshDueAt = Date.now() + AUTO_REFRESH_INTERVAL_MS;
+      scheduleAutoRefresh();
+    } else {
+      state.snapshot = null;
+      setConnection("error", "GBrain unavailable");
+      elements.syncLabel.textContent = "Read failed";
+      showLoadError(error);
+    }
   } finally {
     state.loading = false;
     elements.refreshButton.disabled = false;
     if (state.snapshot) render();
   }
+}
+
+function loadTasks({ reason = "manual" } = {}) {
+  if (state.tasksLoadPromise) return state.tasksLoadPromise;
+  state.tasksLoadPromise = performTaskLoad(reason).finally(() => {
+    state.tasksLoadPromise = null;
+  });
+  return state.tasksLoadPromise;
 }
 
 function openQuickAdd() {
@@ -1184,11 +1328,14 @@ document.querySelectorAll(".nav-item").forEach((button) => {
 elements.quickAddButton.addEventListener("click", openQuickAdd);
 elements.quickAddClose.addEventListener("click", () => elements.quickAddDialog.close());
 elements.quickAddForm.addEventListener("submit", submitQuickAdd);
-elements.refreshButton.addEventListener("click", loadTasks);
+elements.refreshButton.addEventListener("click", () => {
+  loadTasks({ reason: "manual" });
+});
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskGoalSave.addEventListener("click", saveTaskGoal);
 elements.taskStatusSave.addEventListener("click", saveTaskStatus);
+elements.taskNextActionSave.addEventListener("click", saveTaskNextAction);
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;
   if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
@@ -1199,6 +1346,18 @@ elements.taskStatusSelect.addEventListener("change", () => {
     elements.taskStatusSelect.value ===
     elements.taskStatusSelect.dataset.currentStatus;
 });
+elements.taskNextActionInput.addEventListener("input", () => {
+  elements.taskNextActionError.classList.add("is-hidden");
+  elements.taskNextActionSave.disabled =
+    elements.taskNextActionInput.value.trim() ===
+    elements.taskNextActionInput.dataset.currentValue;
+});
+elements.taskNextActionInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !elements.taskNextActionSave.disabled) {
+    event.preventDefault();
+    saveTaskNextAction();
+  }
+});
 elements.aboutButton.addEventListener("click", openAboutDialog);
 elements.aboutClose.addEventListener("click", closeAboutDialog);
 elements.aboutDialog.addEventListener("close", () => {
@@ -1206,6 +1365,25 @@ elements.aboutDialog.addEventListener("close", () => {
     state.aboutReturnFocus.focus();
   }
   state.aboutReturnFocus = null;
+});
+document.addEventListener("visibilitychange", () => {
+  clearAutoRefreshTimer();
+  if (document.hidden) {
+    updateAutoRefreshLabel(
+      `Auto-refresh every ${AUTO_REFRESH_MINUTES} minutes · paused while hidden`,
+    );
+    return;
+  }
+  if (
+    state.refreshDeferred ||
+    state.autoRefreshDueAt === null ||
+    Date.now() >= state.autoRefreshDueAt
+  ) {
+    state.refreshDeferred = false;
+    loadTasks({ reason: "automatic" });
+    return;
+  }
+  scheduleAutoRefresh();
 });
 
 document.addEventListener("keydown", (event) => {
@@ -1225,4 +1403,4 @@ document.addEventListener("keydown", (event) => {
 });
 
 loadReleases();
-loadTasks();
+loadTasks({ reason: "initial" });

@@ -198,6 +198,20 @@ class StatusMutationReceipt:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class NextActionMutationReceipt:
+    task_slug: str
+    next_action: str
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "next_action": self.next_action,
+            "verified": self.verified,
+        }
+
+
 def _yaml_scalar(value: Any) -> str:
     if value is None:
         return "null"
@@ -1071,6 +1085,164 @@ class GBrainAdapter:
             status=status,
             lifecycle_root=target_root,
             completed_at=completed_at,
+            verified=True,
+        )
+
+    def set_task_next_action(
+        self,
+        task_slug: str,
+        next_action: str,
+        now: datetime,
+    ) -> NextActionMutationReceipt:
+        if not isinstance(next_action, str):
+            raise ValueError("next_action must be text")
+        normalized_action = next_action.strip()
+        if len(normalized_action) > 240:
+            raise ValueError("next_action must be 240 characters or fewer")
+        if "\n" in normalized_action or "\r" in normalized_action:
+            raise ValueError("next_action must be a single concise line")
+        if now.tzinfo is None:
+            raise ValueError("next action update time must include Tony's local timezone")
+
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping):
+            raise GBrainProtocolError("get_page did not return an object")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}; "
+                "repair the task type before changing its next action"
+            )
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_links, list):
+            raise GBrainProtocolError("get_links did not return a list")
+        lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if len(lifecycle_edges) != 1:
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+        lifecycle_root = str(lifecycle_edges[0]["to_slug"])
+        normalized_page, normalized_links, _warnings = _normalize_collection_task(
+            raw_page,
+            raw_links,
+            lifecycle_root,
+            legacy_untyped_backlink=False,
+        )
+        try:
+            task = Task.from_page(normalized_page, edges=normalized_links)
+        except DomainValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        if task.lifecycle_root != lifecycle_root:
+            raise ValueError(
+                "task lifecycle relationship does not match its canonical page"
+            )
+        if task.next_action == normalized_action:
+            return NextActionMutationReceipt(
+                task_slug=task_slug,
+                next_action=normalized_action,
+                verified=True,
+            )
+
+        raw_frontmatter = normalized_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("task page has no frontmatter")
+        original_frontmatter = deepcopy(dict(raw_frontmatter))
+        original_frontmatter["type"] = "task"
+        desired_frontmatter = deepcopy(original_frontmatter)
+        desired_frontmatter["next_action"] = normalized_action
+        desired_frontmatter["updated_at"] = now.isoformat()
+        original_content = _render_preserved_page(raw_page, original_frontmatter)
+        desired_content = _render_preserved_page(raw_page, desired_frontmatter)
+
+        write_succeeded = False
+        try:
+            self.runner.run(
+                "put_page",
+                {"slug": task_slug, "content": desired_content},
+            )
+            write_succeeded = True
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(
+                stored_links, list
+            ):
+                raise GBrainProtocolError(
+                    "next action readback was not structured"
+                )
+            if stored_page.get("type") != "task":
+                raise GBrainProtocolError(
+                    "next action write changed the canonical page type away from task"
+                )
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            verified_lifecycle_edges = _lifecycle_edges(task_slug, stored_links)
+            if (
+                stored_task.next_action != normalized_action
+                or stored_task.lifecycle_root != lifecycle_root
+                or len(verified_lifecycle_edges) != 1
+                or verified_lifecycle_edges[0].get("to_slug") != lifecycle_root
+            ):
+                raise GBrainProtocolError(
+                    "next action page and lifecycle readback did not match the request"
+                )
+            unrelated_edges = [
+                link
+                for link in raw_links
+                if isinstance(link, Mapping) and link not in lifecycle_edges
+            ]
+            for expected in unrelated_edges:
+                if not any(
+                    isinstance(actual, Mapping)
+                    and actual.get("from_slug") == expected.get("from_slug")
+                    and actual.get("to_slug") == expected.get("to_slug")
+                    and actual.get("link_type") == expected.get("link_type")
+                    for actual in stored_links
+                ):
+                    raise GBrainProtocolError(
+                        "an unrelated task relationship was missing after readback"
+                    )
+        except (DomainValidationError, GBrainError) as exc:
+            if not write_succeeded:
+                raise
+            rollback_verified = False
+            try:
+                self.runner.run(
+                    "put_page",
+                    {"slug": task_slug, "content": original_content},
+                )
+                rollback_page = self.runner.run("get_page", {"slug": task_slug})
+                rollback_links = self.runner.run("get_links", {"slug": task_slug})
+                if isinstance(rollback_page, Mapping) and isinstance(
+                    rollback_links, list
+                ):
+                    rollback_task = Task.from_page(
+                        rollback_page,
+                        edges=rollback_links,
+                    )
+                    rollback_lifecycle = _lifecycle_edges(
+                        task_slug,
+                        rollback_links,
+                    )
+                    rollback_verified = (
+                        rollback_page.get("type") == "task"
+                        and rollback_task.next_action == task.next_action
+                        and rollback_task.lifecycle_root == lifecycle_root
+                        and len(rollback_lifecycle) == 1
+                        and rollback_lifecycle[0].get("to_slug") == lifecycle_root
+                    )
+            except (DomainValidationError, GBrainError):
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the task before retrying."
+            )
+            raise PartialMutationError(
+                task_slug,
+                f"Task next action write was not verified. {outcome}",
+            ) from exc
+
+        return NextActionMutationReceipt(
+            task_slug=task_slug,
+            next_action=normalized_action,
             verified=True,
         )
 

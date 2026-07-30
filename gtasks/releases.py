@@ -10,6 +10,13 @@ _CATALOG_PATH = Path(__file__).with_name("releases.json")
 _VERSION_PATTERN = re.compile(r"^V\d+\.\d+\.\d+$")
 
 
+def version_parts(version: str) -> tuple[int, int, int]:
+    if not _VERSION_PATTERN.fullmatch(version):
+        raise RuntimeError("release version must use Vmajor.minor.patch")
+    major, minor, patch = version[1:].split(".")
+    return int(major), int(minor), int(patch)
+
+
 def _load_catalog() -> tuple[dict[str, Any], ...]:
     raw = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
     releases = raw.get("releases")
@@ -40,6 +47,18 @@ def _load_catalog() -> tuple[dict[str, Any], ...]:
         )
     if current != normalized[-1]["version"]:
         raise RuntimeError("current_version must match the latest release entry")
+    if normalized[0]["version"] != "V0.0.1":
+        raise RuntimeError("the GTasks release baseline must be V0.0.1")
+    for previous, release in zip(normalized, normalized[1:]):
+        previous_parts = version_parts(str(previous["version"]))
+        current_parts = version_parts(str(release["version"]))
+        if (
+            current_parts[0:2] != previous_parts[0:2]
+            or current_parts[2] != previous_parts[2] + 1
+        ):
+            raise RuntimeError(
+                "user-visible releases must increment only the patch segment by one"
+            )
     return tuple(normalized)
 
 

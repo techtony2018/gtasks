@@ -23,14 +23,25 @@ GTasks starts at `V0.0.1`. The canonical current version and complete
 user-facing release history live together in `gtasks/releases.json`; runtime
 health, the sidebar About control, and the About dialog all read that catalog.
 
-- Patch releases (`V0.0.x`) are user-visible fixes that do not add a workflow.
-- Minor releases (`V0.x.0`) add or materially change a user workflow while the
-  product remains pre-1.0.
+Every user-visible deployment increments only the final patch segment by one:
+`V0.0.1` → `V0.0.2` → `V0.0.3`. Release authors do not choose a major or
+minor number for normal updates. Run the release command with a dated,
+plain-language title and summary; it computes the next patch, appends the
+history entry, and moves `current_version` atomically:
 
-Every user-visible behavior release must deliberately append one dated,
-plain-language catalog entry and move `current_version` to that entry. A
-restart never changes the version. Tests reject drift between the catalog and
-runtime version.
+```bash
+python3 -m gtasks.release \
+  --title "Concise user-facing title" \
+  --summary "What changed for the user"
+```
+
+This is a deliberate release step, not a git hook and not a restart-time bump.
+Tests and server startup reject skipped, repeated, major, or minor version
+drift.
+
+While the page is open, GTasks performs a read-only refresh every 30 minutes.
+The interval is shown beside the sync state, requests are coalesced with manual
+Refresh, and a hidden tab defers work until it becomes visible again.
 
 The server binds to `127.0.0.1` by default. To choose another local port:
 
@@ -125,7 +136,7 @@ Completion records Tony's local completion time and keeps the active collection
 edge until Tony's Tasks applies its next-Monday archive rule. Reopening an
 already archived task moves the same task identity back to the active root.
 
-Loading the app, Board, refreshing, running the test suite, and browser verification are read-only. Only an explicit Quick Add, goal Save, or status Save mutates GBrain.
+Loading the app, Board, refreshing, running the test suite, and browser verification are read-only. Only an explicit Quick Add, goal Save, status Save, Next Action Save, or relationship repair mutates GBrain.
 
 ## Views
 

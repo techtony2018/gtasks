@@ -5,6 +5,7 @@
   "kind": "dashboard",
   "service_url": "http://127.0.0.1:4179/",
   "health_path": "/api/health",
+  "version_source": "/api/health#version",
   "working_directory": "/Users/tony/work/gtasks",
   "command": [
     "python3",

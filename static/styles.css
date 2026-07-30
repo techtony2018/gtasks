@@ -333,9 +333,21 @@ kbd {
   padding-bottom: 2px;
 }
 
+.sync-stack {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
 .sync-label {
   color: var(--faint);
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.auto-refresh-label {
+  color: var(--faint);
+  font-size: 9.5px;
   white-space: nowrap;
 }
 
@@ -899,6 +911,59 @@ kbd {
 
 .task-status-error {
   margin: 10px 0 0;
+}
+
+.next-action-editor {
+  margin: 22px 0 14px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.next-action-editor > label {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.next-action-editor > p {
+  margin: 5px 0 11px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.next-action-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.next-action-controls input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.next-action-controls input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  outline-offset: 1px;
+}
+
+.next-action-controls .secondary-button {
+  min-height: 38px;
+}
+
+.next-action-editor .form-error {
+  margin: 9px 0 0;
 }
 
 .icon-button {
@@ -1715,7 +1780,11 @@ kbd {
 
   .sync-label {
     display: block;
-    margin-bottom: 7px;
+  }
+
+  .auto-refresh-label {
+    display: block;
+    margin: 2px 0 7px;
   }
 
   .action-empty {

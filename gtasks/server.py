@@ -330,6 +330,9 @@ def _handler_class(
             elif path.endswith("/goal"):
                 action = "goal"
                 suffix = "/goal"
+            elif path.endswith("/next-action"):
+                action = "next_action"
+                suffix = "/next-action"
             elif path.endswith("/status"):
                 action = "status"
                 suffix = "/status"
@@ -366,6 +369,55 @@ def _handler_class(
                     self._json(
                         HTTPStatus.CONFLICT,
                         {"error": str(exc), "code": "repair_not_eligible"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
+            if action == "next_action":
+                requested_next_action = payload.get("next_action")
+                if (
+                    not isinstance(requested_next_action, str)
+                    or len(requested_next_action.strip()) > 240
+                    or "\n" in requested_next_action
+                    or "\r" in requested_next_action
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "next_action must be one concise line of "
+                                "240 characters or fewer."
+                            ),
+                            "code": "invalid_next_action",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.set_task_next_action(
+                        task_slug,
+                        requested_next_action,
+                        clock(),
+                    )
+                except ValueError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_next_action"},
                     )
                     return
                 except PartialMutationError as exc:
