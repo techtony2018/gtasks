@@ -1162,7 +1162,15 @@ class GBrainAdapter:
                     )
                 return Project.from_page(page, edges=links), None
             except (DomainValidationError, GBrainError) as exc:
-                return None, CollectionIssue(slug=slug, message=str(exc))
+                return None, CollectionIssue(
+                    slug=slug,
+                    message=str(exc),
+                    category="project_data",
+                    impact=(
+                        "This scoped project is not counted or offered for task "
+                        "assignment until its core project data is repaired."
+                    ),
+                )
 
         projects: list[Project] = []
         issues: list[CollectionIssue] = []

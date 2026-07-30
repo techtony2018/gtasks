@@ -103,7 +103,6 @@
           </div>
         </header>
 
-        <div class="notice is-hidden" id="issue-notice" role="status"></div>
         <div class="board-status-alert is-hidden" id="board-status-alert" role="status">
           <span id="board-status-message"></span>
           <button class="secondary-button is-hidden" id="board-status-retry" type="button">
@@ -394,6 +393,29 @@
         <div class="dialog-footer">
           <button class="secondary-button" id="goal-confirm-cancel" type="button">Cancel</button>
           <button class="danger-button" id="goal-confirm-submit" type="button"></button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="goal-confirm-dialog" id="warning-dismiss-dialog">
+      <div class="goal-confirm-shell">
+        <div class="dialog-heading">
+          <div>
+            <p>Inbox warning preference</p>
+            <h2>Dismiss this unchanged warning?</h2>
+          </div>
+          <button class="icon-button" id="warning-dismiss-close" type="button" aria-label="Close warning dismissal">×</button>
+        </div>
+        <p id="warning-dismiss-copy"></p>
+        <p>
+          The task or project remains visible and unchanged. If the underlying
+          issue changes, its new warning will appear. You can restore this
+          warning later from Dismissed warnings in Inbox.
+        </p>
+        <p class="form-error is-hidden" id="warning-dismiss-error" role="alert"></p>
+        <div class="dialog-footer">
+          <button class="secondary-button" id="warning-dismiss-cancel" type="button">Cancel</button>
+          <button class="danger-button" id="warning-dismiss-confirm" type="button">Dismiss warning</button>
         </div>
       </div>
     </dialog>

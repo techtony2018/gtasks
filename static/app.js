@@ -17,9 +17,12 @@ const state = {
   lastSyncedAt: null,
   projects: [],
   projectIssues: [],
+  projectWarningStateError: "",
   projectsLoading: true,
   projectsError: "",
   goalAction: null,
+  pendingWarning: null,
+  showDismissedWarnings: false,
 };
 
 const viewMeta = {
@@ -69,7 +72,6 @@ const elements = {
   syncLabel: document.querySelector("#sync-label"),
   autoRefreshLabel: document.querySelector("#auto-refresh-label"),
   refreshButton: document.querySelector("#refresh-button"),
-  issueNotice: document.querySelector("#issue-notice"),
   boardStatusAlert: document.querySelector("#board-status-alert"),
   boardStatusMessage: document.querySelector("#board-status-message"),
   boardStatusRetry: document.querySelector("#board-status-retry"),
@@ -158,6 +160,12 @@ const elements = {
   goalConfirmClose: document.querySelector("#goal-confirm-close"),
   goalConfirmCancel: document.querySelector("#goal-confirm-cancel"),
   goalConfirmSubmit: document.querySelector("#goal-confirm-submit"),
+  warningDismissDialog: document.querySelector("#warning-dismiss-dialog"),
+  warningDismissCopy: document.querySelector("#warning-dismiss-copy"),
+  warningDismissError: document.querySelector("#warning-dismiss-error"),
+  warningDismissClose: document.querySelector("#warning-dismiss-close"),
+  warningDismissCancel: document.querySelector("#warning-dismiss-cancel"),
+  warningDismissConfirm: document.querySelector("#warning-dismiss-confirm"),
 };
 
 function node(tag, className, text) {
@@ -199,20 +207,6 @@ function relativeDue(task) {
 
 function taskUiStatus(task) {
   return task.status === "waiting" ? "blocked" : task.status;
-}
-
-function issuesForTask(taskSlug) {
-  return (state.snapshot?.issues || []).filter(
-    (issue) => issue.slug === taskSlug,
-  );
-}
-
-function taskAttentionBadge(taskSlug) {
-  const count = issuesForTask(taskSlug).length;
-  if (!count) return null;
-  const badge = node("span", "attention-badge", "Needs attention");
-  badge.title = `${count} task data issue${count === 1 ? "" : "s"}`;
-  return badge;
 }
 
 function showToast(message) {
@@ -415,8 +409,6 @@ function taskRow(task) {
     node("span", "task-title", task.title || task.summary),
     node("span", "task-project", task.project || (task.inbox ? "Inbox · No project" : "No project")),
   );
-  const attention = taskAttentionBadge(task.slug);
-  if (attention) titleText.append(attention);
   titleWrap.append(dot, titleText);
 
   const nextAction = node(
@@ -651,8 +643,6 @@ function boardCard(task) {
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
-  const attention = taskAttentionBadge(task.slug);
-  if (attention) button.append(attention);
   button.addEventListener("click", () => selectTask(task.slug));
 
   const moveControl = node("label", "board-card-move");
@@ -848,47 +838,6 @@ function renderProjectsView() {
     fragment.append(error);
     return fragment;
   }
-  if (state.projectIssues.length) {
-    const issues = node("section", "project-issues");
-    const issueHeading = node("div", "project-issues-heading");
-    issueHeading.append(
-      node("h2", "", "Projects needing attention"),
-      node("span", "", String(state.projectIssues.length)),
-    );
-    issues.append(
-      issueHeading,
-      node(
-        "p",
-        "",
-        "These linked GBrain pages are not valid projects. Valid projects remain visible and usable.",
-      ),
-    );
-    state.projectIssues.forEach((issue) => {
-      const item = node("article", "project-issue");
-      item.append(
-        node("strong", "", issue.slug),
-        node("p", "", issue.message),
-        node(
-          "p",
-          "project-issue-impact",
-          "Impact: this page is not counted or offered for task assignment until its project type or required membership is repaired.",
-        ),
-        node(
-          "p",
-          "project-issue-impact",
-          "Repair cue: inspect the page in GBrain and restore type: project plus one typed member_of Tony’s Projects relationship. GTasks will not guess or import another project.",
-        ),
-      );
-      const inspect = node("a", "secondary-button", "Inspect in GBrain");
-      inspect.href =
-        `http://127.0.0.1:8788/?slug=${encodeURIComponent(issue.slug)}`;
-      inspect.target = "_blank";
-      inspect.rel = "noreferrer";
-      item.append(inspect);
-      issues.append(item);
-    });
-    fragment.append(issues);
-  }
   if (!state.projects.length) {
     fragment.append(
       node(
@@ -938,6 +887,7 @@ async function loadProjects() {
     }
     state.projects = payload.projects;
     state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
+    state.projectWarningStateError = payload.warning_state_error || "";
   } catch (error) {
     state.projectsError =
       error.message || "Projects could not be read from GBrain.";
@@ -1255,28 +1205,84 @@ async function repairActiveMembership(taskSlug, button) {
 }
 
 function renderNeedsAttention() {
-  const issues = state.snapshot?.issues || [];
-  if (!issues.length) return null;
+  const taskIssues = (state.snapshot?.issues || []).map((issue) => ({
+    ...issue,
+    source: "task",
+  }));
+  const projectIssues = state.projectIssues.map((issue) => ({
+    ...issue,
+    source: "project",
+  }));
+  const seen = new Set();
+  const issues = [...taskIssues, ...projectIssues].filter((issue) => {
+    const identity =
+      issue.fingerprint ||
+      `${issue.source}:${issue.slug}:${issue.message}:${issue.impact || ""}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+  const activeIssues = issues.filter((issue) => !issue.dismissed);
+  const dismissedIssues = issues.filter((issue) => issue.dismissed);
+  const stateError =
+    state.snapshot?.warning_state_error || state.projectWarningStateError;
+  if (!issues.length && !stateError) return null;
   const details = node("details", "needs-attention");
+  details.open =
+    activeIssues.length > 0 ||
+    Boolean(stateError) ||
+    state.showDismissedWarnings;
   const summary = node("summary");
   summary.append(
-    node("span", "", "Needs Attention"),
-    node("strong", "", String(issues.length)),
+    node(
+      "span",
+      "",
+      dismissedIssues.length
+        ? `Needs Attention · ${dismissedIssues.length} dismissed`
+        : "Needs Attention",
+    ),
+    node("strong", "", String(activeIssues.length)),
   );
-  details.append(summary);
+  details.append(
+    summary,
+    node(
+      "p",
+      "attention-intro",
+      "Warnings live only in Inbox. Dismissing one changes only this warning display; it never hides or changes the task or project.",
+    ),
+  );
+  if (stateError) {
+    details.append(
+      node(
+        "p",
+        "attention-state-error",
+        `Warning preferences are temporarily unavailable: ${stateError}`,
+      ),
+    );
+  }
   const list = node("div", "attention-list");
-  issues.forEach((issue) => {
-    const item = node("article", "attention-item");
+  const appendIssue = (issue, { dismissed = false } = {}) => {
+    const item = node(
+      "article",
+      dismissed ? "attention-item is-dismissed" : "attention-item",
+    );
     const task = state.snapshot.tasks.find(
+      (candidate) => candidate.slug === issue.slug,
+    );
+    const project = state.projects.find(
       (candidate) => candidate.slug === issue.slug,
     );
     const heading = node("div", "attention-item-heading");
     heading.append(
-      node("strong", "", task?.title || task?.summary || issue.slug),
+      node(
+        "strong",
+        "",
+        task?.title || task?.summary || project?.title || issue.slug,
+      ),
       node(
         "span",
         `attention-severity ${issue.severity || "error"}`,
-        issue.task_visible ? "Shown" : "Not shown",
+        dismissed ? "Dismissed" : issue.task_visible === false ? "Not shown" : "Shown",
       ),
     );
     item.append(
@@ -1307,12 +1313,145 @@ function renderNeedsAttention() {
       inspect.rel = "noreferrer";
       actions.append(inspect);
     }
+    if (dismissed) {
+      const restore = node("button", "secondary-button", "Restore warning");
+      restore.type = "button";
+      restore.disabled = !issue.fingerprint || Boolean(stateError);
+      restore.addEventListener("click", () => restoreWarning(issue, restore));
+      actions.append(restore);
+    } else {
+      const dismiss = node("button", "secondary-button", "Dismiss");
+      dismiss.type = "button";
+      dismiss.disabled = !issue.fingerprint || Boolean(stateError);
+      dismiss.addEventListener("click", () => openWarningDismiss(issue));
+      actions.append(dismiss);
+    }
     item.append(actions);
     item.append(node("p", "attention-repair-error is-hidden"));
     list.append(item);
-  });
+  };
+  activeIssues.forEach((issue) => appendIssue(issue));
+  if (!activeIssues.length) {
+    list.append(
+      node(
+        "p",
+        "attention-empty",
+        dismissedIssues.length
+          ? "No active warnings. Dismissed warnings stay recoverable below."
+          : "No warnings need attention.",
+      ),
+    );
+  }
+  if (dismissedIssues.length) {
+    const toggle = node(
+      "button",
+      "dismissed-warning-toggle",
+      state.showDismissedWarnings
+        ? "Hide dismissed warnings"
+        : `Show dismissed warnings (${dismissedIssues.length})`,
+    );
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(state.showDismissedWarnings));
+    toggle.addEventListener("click", () => {
+      state.showDismissedWarnings = !state.showDismissedWarnings;
+      render();
+    });
+    list.append(toggle);
+    if (state.showDismissedWarnings) {
+      dismissedIssues.forEach((issue) =>
+        appendIssue(issue, { dismissed: true }),
+      );
+    }
+  }
   details.append(list);
   return details;
+}
+
+function updateWarningDismissal(fingerprint, dismissed) {
+  const update = (issues) =>
+    (issues || []).map((issue) =>
+      issue.fingerprint === fingerprint ? { ...issue, dismissed } : issue,
+    );
+  if (state.snapshot) state.snapshot.issues = update(state.snapshot.issues);
+  state.projectIssues = update(state.projectIssues);
+}
+
+function openWarningDismiss(issue) {
+  state.pendingWarning = issue;
+  elements.warningDismissCopy.textContent =
+    `Dismiss “${issue.message}” for ${issue.slug}? It will stay dismissed while this exact issue is unchanged.`;
+  elements.warningDismissError.classList.add("is-hidden");
+  elements.warningDismissDialog.showModal();
+  window.setTimeout(() => elements.warningDismissConfirm.focus(), 0);
+}
+
+function closeWarningDismiss() {
+  elements.warningDismissDialog.close();
+}
+
+async function confirmWarningDismiss() {
+  const issue = state.pendingWarning;
+  if (!issue?.fingerprint) return;
+  elements.warningDismissError.classList.add("is-hidden");
+  elements.warningDismissConfirm.disabled = true;
+  elements.warningDismissConfirm.textContent = "Dismissing…";
+  try {
+    const response = await fetch("/api/warnings/dismiss", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ fingerprint: issue.fingerprint }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.verified || !result.dismissed) {
+      throw new Error(result.error || "Warning dismissal could not be verified.");
+    }
+    updateWarningDismissal(issue.fingerprint, true);
+    elements.warningDismissDialog.close();
+    render();
+    showToast("Warning dismissed. The task or project was not changed.");
+  } catch (error) {
+    elements.warningDismissError.textContent =
+      error.message || "Warning dismissal failed.";
+    elements.warningDismissError.classList.remove("is-hidden");
+  } finally {
+    elements.warningDismissConfirm.disabled = false;
+    elements.warningDismissConfirm.textContent = "Dismiss warning";
+  }
+}
+
+async function restoreWarning(issue, button) {
+  const item = button.closest(".attention-item");
+  const message = item?.querySelector(".attention-repair-error");
+  button.disabled = true;
+  button.textContent = "Restoring…";
+  if (message) message.classList.add("is-hidden");
+  try {
+    const response = await fetch("/api/warnings/restore", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ fingerprint: issue.fingerprint }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.verified || result.dismissed) {
+      throw new Error(result.error || "Warning restore could not be verified.");
+    }
+    updateWarningDismissal(issue.fingerprint, false);
+    render();
+    showToast("Warning restored in Inbox.");
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Restore warning";
+    if (message) {
+      message.textContent = error.message || "Warning restore failed.";
+      message.classList.remove("is-hidden");
+    }
+  }
 }
 
 function render() {
@@ -1333,7 +1472,7 @@ function render() {
       : view === "goals"
         ? renderGoalsView()
         : renderListView(view);
-  const attention = renderNeedsAttention();
+  const attention = view === "inbox" ? renderNeedsAttention() : null;
   elements.viewSurface.replaceChildren(
     ...(attention ? [attention, content] : [content]),
   );
@@ -1850,13 +1989,6 @@ async function performTaskLoad(reason) {
     elements.syncLabel.textContent =
       `Synced ${payload.tasks.length} task${payload.tasks.length === 1 ? "" : "s"} ` +
       `at ${formatSyncTime(state.lastSyncedAt)}`;
-    if (payload.issues.length) {
-      elements.issueNotice.textContent =
-        `${payload.issues.length} task data ${payload.issues.length === 1 ? "issue needs" : "issues need"} attention. Core-valid tasks remain visible; review details below.`;
-      elements.issueNotice.classList.remove("is-hidden");
-    } else {
-      elements.issueNotice.classList.add("is-hidden");
-    }
     scheduleAutoRefresh({ reset: true });
   } catch (error) {
     if (previousSnapshot) {
@@ -1987,6 +2119,13 @@ elements.goalConfirmCancel.addEventListener("click", closeGoalConfirmation);
 elements.goalConfirmSubmit.addEventListener("click", confirmGoalAction);
 elements.goalConfirmDialog.addEventListener("close", () => {
   state.goalAction = null;
+});
+elements.warningDismissClose.addEventListener("click", closeWarningDismiss);
+elements.warningDismissCancel.addEventListener("click", closeWarningDismiss);
+elements.warningDismissConfirm.addEventListener("click", confirmWarningDismiss);
+elements.warningDismissDialog.addEventListener("close", () => {
+  state.pendingWarning = null;
+  elements.warningDismissError.classList.add("is-hidden");
 });
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;

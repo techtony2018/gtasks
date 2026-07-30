@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.6",
+  "current_version": "V0.0.7",
   "releases": [
     {
       "version": "V0.0.1",
@@ -36,6 +36,12 @@
       "date": "2026-07-30",
       "title": "Goal lifecycle controls and steadier reads",
       "summary": "Added verified goal creation plus confirmed Pause and recoverable Delete workflows that preserve linked task content; capped GBrain read concurrency and coalesced duplicate initial loads while manual and automatic Refresh remain authoritative."
+    },
+    {
+      "version": "V0.0.7",
+      "date": "2026-07-30",
+      "title": "Inbox-centered warning controls",
+      "summary": "Centralized task, project, goal, and relationship warnings in Inbox; added confirmed durable dismissal, restart-safe preferences, changed-issue reappearance, and a recoverable dismissed-warning list without hiding canonical data."
     }
   ]
 }

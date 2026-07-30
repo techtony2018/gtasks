@@ -1,9 +1,11 @@
 import http.client
 import json
+import tempfile
 import threading
 import unittest
 from dataclasses import replace
 from datetime import date, datetime
+from pathlib import Path
 
 from gtasks.domain import (
     ACTIVE_ROOT,
@@ -32,6 +34,7 @@ from gtasks.gbrain import (
     ProjectRead,
 )
 from gtasks.server import build_server
+from gtasks.warnings import WarningDismissalStore
 
 
 class FakeAdapter:
@@ -194,19 +197,36 @@ def sample_project(slug: str = "projects/ship-product") -> Project:
 
 
 class ServerHarness:
-    def __init__(self, test_case: unittest.TestCase, adapter: FakeAdapter) -> None:
+    def __init__(
+        self,
+        test_case: unittest.TestCase,
+        adapter: FakeAdapter,
+        warning_store: WarningDismissalStore | None = None,
+    ) -> None:
+        self.closed = False
+        if warning_store is None:
+            self.warning_directory = tempfile.TemporaryDirectory()
+            test_case.addCleanup(self.warning_directory.cleanup)
+            warning_store = WarningDismissalStore(
+                Path(self.warning_directory.name) / "warning-state.json",
+                user_id="test-user",
+            )
         self.server = build_server(
             host="127.0.0.1",
             port=0,
             adapter=adapter,
             clock=lambda: datetime(2026, 7, 30, 9, 15).astimezone(),
             identity_factory=lambda: "a1b2c3",
+            warning_store=warning_store,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         test_case.addCleanup(self.close)
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
@@ -248,7 +268,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.6")
+        self.assertEqual(payload["version"], "V0.0.7")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -256,13 +276,14 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.6")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.6")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.5")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.4")
-        self.assertEqual(payload["releases"][3]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][4]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][5]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.7")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.7")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.6")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.5")
+        self.assertEqual(payload["releases"][3]["version"], "V0.0.4")
+        self.assertEqual(payload["releases"][4]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][5]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][6]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
@@ -351,6 +372,91 @@ class TasksApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([item["slug"] for item in payload["tasks"]], [task.slug])
         self.assertEqual(payload["issues"][0]["severity"], "warning")
+        self.assertEqual(len(payload["issues"][0]["fingerprint"]), 64)
+        self.assertFalse(payload["issues"][0]["dismissed"])
+
+    def test_warning_dismissal_survives_refresh_restart_and_changed_issue(self) -> None:
+        task = new_inbox_task(
+            "Visible despite warning",
+            datetime(2026, 7, 30, 9, 15).astimezone(),
+            "a1b2c3",
+        )
+
+        class WarningAdapter(FakeAdapter):
+            def __init__(self, message: str) -> None:
+                super().__init__(active=(task,))
+                self.message = message
+
+            def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+                from gtasks.gbrain import CollectionIssue
+
+                if root_slug == ACTIVE_ROOT:
+                    return CollectionRead(
+                        root_slug=root_slug,
+                        tasks=(task,),
+                        issues=(
+                            CollectionIssue(
+                                slug=task.slug,
+                                message=self.message,
+                                severity="warning",
+                                impact="Task remains visible.",
+                            ),
+                        ),
+                    )
+                return CollectionRead(root_slug=root_slug, tasks=())
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "warning-state.json"
+        first = ServerHarness(
+            self,
+            WarningAdapter("Optional relationship is stale."),
+            WarningDismissalStore(path, user_id="tony"),
+        )
+
+        status, initial, _ = first.request("GET", "/api/tasks")
+        fingerprint = initial["issues"][0]["fingerprint"]
+        dismissed_status, receipt, _ = first.request(
+            "POST",
+            "/api/warnings/dismiss",
+            {"fingerprint": fingerprint},
+        )
+        refresh_status, refreshed, _ = first.request("GET", "/api/tasks?refresh=1")
+
+        self.assertEqual((status, dismissed_status, refresh_status), (200, 200, 200))
+        self.assertTrue(receipt["verified"])
+        self.assertTrue(refreshed["issues"][0]["dismissed"])
+        self.assertEqual([item["slug"] for item in refreshed["tasks"]], [task.slug])
+
+        first.close()
+        restarted = ServerHarness(
+            self,
+            WarningAdapter("Optional relationship is stale."),
+            WarningDismissalStore(path, user_id="tony"),
+        )
+        _, after_restart, _ = restarted.request("GET", "/api/tasks")
+        self.assertTrue(after_restart["issues"][0]["dismissed"])
+
+        restarted.close()
+        changed = ServerHarness(
+            self,
+            WarningAdapter("Optional relationship target is now missing."),
+            WarningDismissalStore(path, user_id="tony"),
+        )
+        _, changed_payload, _ = changed.request("GET", "/api/tasks")
+        changed_issue = changed_payload["issues"][0]
+        self.assertNotEqual(changed_issue["fingerprint"], fingerprint)
+        self.assertFalse(changed_issue["dismissed"])
+        self.assertEqual([item["slug"] for item in changed_payload["tasks"]], [task.slug])
+
+        restore_status, restored, _ = changed.request(
+            "POST",
+            "/api/warnings/restore",
+            {"fingerprint": fingerprint},
+        )
+        self.assertEqual(restore_status, 200)
+        self.assertTrue(restored["verified"])
+        self.assertFalse(restored["dismissed"])
 
     def test_dedupes_collection_tasks_before_today_and_navigation_views(self) -> None:
         task = new_inbox_task(

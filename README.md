@@ -170,9 +170,18 @@ Loading the app, Board, refreshing, running the test suite, and browser verifica
 Task rows show title, project, priority, next action, and due date. Board cards
 show the same canonical tasks by status. Selecting either opens the shared
 detail panel, where status can be changed without leaving GTasks.
-Projects that fail core project validation are listed in a visible Projects
-needing attention section with the exact error and a direct GBrain inspection
-link; valid projects and tasks remain visible.
+
+All task, project, goal, and relationship warnings are centralized in Inbox's
+Needs Attention area. Other views and detail panels do not repeat them.
+Warnings never hide core-valid data. A user may deliberately dismiss one exact
+warning fingerprint after confirmation; the preference survives refresh and
+service restart, while a meaningfully changed warning receives a new
+fingerprint and appears again. Dismissed warnings remain recoverable from
+Inbox. These user-scoped presentation preferences are stored separately from
+canonical GBrain data at
+`~/Library/Application Support/GTasks/warning-dismissals.json` by default
+(`GTASKS_WARNING_STATE_FILE` overrides the path for an isolated service or
+test).
 
 The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
 

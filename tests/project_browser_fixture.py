@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, Project, new_inbox_task
 from gtasks.gbrain import (
@@ -18,6 +20,7 @@ from gtasks.gbrain import (
     StatusMutationReceipt,
 )
 from gtasks.server import build_server
+from gtasks.warnings import WarningDismissalStore
 
 
 class IsolatedProjectAdapter:
@@ -69,6 +72,11 @@ class IsolatedProjectAdapter:
                 CollectionIssue(
                     slug="projects/malformed-fixture",
                     message="projects/malformed-fixture is not a project page",
+                    category="project_data",
+                    impact=(
+                        "This scoped project is not counted or offered for task "
+                        "assignment until its core project data is repaired."
+                    ),
                 ),
             ),
         )
@@ -126,11 +134,16 @@ class IsolatedProjectAdapter:
 
 
 if __name__ == "__main__":
-    server = build_server(
-        host="127.0.0.1",
-        port=4182,
-        adapter=IsolatedProjectAdapter(),
-        identity_factory=lambda: "fixture2",
-        clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
-    )
-    server.serve_forever()
+    with TemporaryDirectory() as directory:
+        server = build_server(
+            host="127.0.0.1",
+            port=4182,
+            adapter=IsolatedProjectAdapter(),
+            identity_factory=lambda: "fixture2",
+            clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
+            warning_store=WarningDismissalStore(
+                Path(directory) / "warning-state.json",
+                user_id="fixture-user",
+            ),
+        )
+        server.serve_forever()

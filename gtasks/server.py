@@ -31,6 +31,7 @@ from .domain import (
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
 from .releases import release_payload
+from .warnings import WarningDismissalStore
 
 
 MAX_REQUEST_BYTES = 16 * 1024
@@ -149,11 +150,32 @@ def _handler_class(
     clock: Callable[[], datetime],
     identity_factory: Callable[[], str],
     static_dir: Path,
+    warning_store: WarningDismissalStore,
 ) -> type[BaseHTTPRequestHandler]:
     snapshot_condition = Condition()
     snapshot_payload: dict[str, Any] | None = None
     snapshot_created_at = 0.0
     snapshot_loading = False
+
+    def decorate_issues(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            decorated = warning_store.decorate(payload.get("issues", []))
+            error = None
+        except RuntimeError as exc:
+            decorated = [
+                {
+                    **dict(issue),
+                    "fingerprint": None,
+                    "dismissed": False,
+                }
+                for issue in payload.get("issues", [])
+            ]
+            error = str(exc)
+        return {
+            **payload,
+            "issues": decorated,
+            "warning_state_error": error,
+        }
 
     def invalidate_snapshot() -> None:
         nonlocal snapshot_payload, snapshot_created_at
@@ -259,6 +281,7 @@ def _handler_class(
                         "completed_root": COMPLETED_ROOT,
                         "goals_root": GOALS_ROOT,
                         "projects_root": PROJECTS_ROOT,
+                        "warning_dismissals": "user_scoped_local_state",
                     },
                 )
                 return
@@ -277,7 +300,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                self._json(HTTPStatus.OK, payload)
+                self._json(HTTPStatus.OK, decorate_issues(payload))
                 return
             if path == "/api/projects":
                 try:
@@ -288,7 +311,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                self._json(HTTPStatus.OK, payload)
+                self._json(HTTPStatus.OK, decorate_issues(payload))
                 return
             goal_prefix = "/api/goals/"
             goal_suffix = "/relationships"
@@ -314,6 +337,54 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path in {"/api/warnings/dismiss", "/api/warnings/restore"}:
+                payload = self._read_json()
+                if payload is None:
+                    return
+                fingerprint = payload.get("fingerprint")
+                if not isinstance(fingerprint, str) or len(payload) != 1:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "fingerprint must be the only field.",
+                            "code": "invalid_warning_fingerprint",
+                        },
+                    )
+                    return
+                try:
+                    dismissed = path.endswith("/dismiss")
+                    verified = (
+                        warning_store.dismiss(fingerprint)
+                        if dismissed
+                        else warning_store.restore(fingerprint)
+                    )
+                except ValueError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": "invalid_warning_fingerprint",
+                        },
+                    )
+                    return
+                except (OSError, RuntimeError) as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": str(exc),
+                            "code": "warning_state_unavailable",
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "fingerprint": fingerprint,
+                        "dismissed": dismissed,
+                        "verified": verified,
+                    },
+                )
+                return
             if path == "/api/goals":
                 payload = self._read_json()
                 if payload is None:
@@ -905,12 +976,14 @@ def build_server(
     clock: Callable[[], datetime] | None = None,
     identity_factory: Callable[[], str] | None = None,
     static_dir: Path = STATIC_DIR,
+    warning_store: WarningDismissalStore | None = None,
 ) -> ThreadingHTTPServer:
     handler = _handler_class(
         adapter or GBrainAdapter(),
         clock or (lambda: datetime.now().astimezone()),
         identity_factory or (lambda: uuid.uuid4().hex[:8]),
         static_dir,
+        warning_store or WarningDismissalStore(),
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -921,9 +994,18 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4179)
+    parser.add_argument("--warning-state-file", type=Path)
     args = parser.parse_args()
 
-    server = build_server(host=args.host, port=args.port)
+    server = build_server(
+        host=args.host,
+        port=args.port,
+        warning_store=(
+            WarningDismissalStore(args.warning_state_file)
+            if args.warning_state_file
+            else None
+        ),
+    )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:
         server.serve_forever()

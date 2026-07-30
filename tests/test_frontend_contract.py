@@ -179,22 +179,34 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("submitNewProject", javascript)
         self.assertIn("/project`", javascript)
         self.assertIn("No tasks assigned yet", javascript)
-        self.assertIn("Projects needing attention", javascript)
         self.assertIn("state.projectIssues", javascript)
         self.assertIn("payload.issues", javascript)
+        projects_body = javascript[
+            javascript.index("function renderProjectsView()")
+            : javascript.index("async function loadProjects()")
+        ]
+        self.assertNotIn("Needs Attention", projects_body)
+        self.assertNotIn("projectIssues", projects_body)
         self.assertIn("typed <code>member_of</code>", html)
         self.assertIn("first creation only", html)
-        self.assertIn("GTasks will not guess or import another project", javascript)
 
-    def test_needs_attention_keeps_visible_tasks_and_offers_safe_repair(self) -> None:
+    def test_needs_attention_is_inbox_only_durable_and_recoverable(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="issue-notice"', html)
+        self.assertNotIn('id="issue-notice"', html)
+        self.assertIn('id="warning-dismiss-dialog"', html)
+        self.assertIn('id="warning-dismiss-confirm"', html)
         self.assertIn("renderNeedsAttention", javascript)
         self.assertIn("task_visible", javascript)
         self.assertIn("repair_active_membership", javascript)
         self.assertIn("/relationships/active-membership", javascript)
+        self.assertIn('view === "inbox" ? renderNeedsAttention() : null', javascript)
+        self.assertIn('fetch("/api/warnings/dismiss"', javascript)
+        self.assertIn('fetch("/api/warnings/restore"', javascript)
+        self.assertIn("Show dismissed warnings", javascript)
+        self.assertIn("Restore warning", javascript)
+        self.assertIn("never hides or changes the task or project", javascript)
         self.assertIn("Needs Attention", javascript)
 
 

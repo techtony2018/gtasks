@@ -407,6 +407,20 @@ kbd {
   text-align: center;
 }
 
+.attention-intro,
+.attention-state-error,
+.attention-empty {
+  margin: 0;
+  padding: 0 13px 12px;
+  color: var(--faint);
+  font-size: 9.5px;
+  line-height: 1.55;
+}
+
+.attention-state-error {
+  color: #803c34;
+}
+
 .attention-list {
   display: grid;
   gap: 1px;
@@ -417,6 +431,28 @@ kbd {
 .attention-item {
   padding: 14px;
   background: #fffdf8;
+}
+
+.attention-item.is-dismissed {
+  background: #f8f7f2;
+}
+
+.dismissed-warning-toggle {
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 0;
+  background: #fffdf8;
+  color: #754d21;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.dismissed-warning-toggle:hover,
+.dismissed-warning-toggle:focus-visible {
+  background: #fff8e9;
 }
 
 .attention-item-heading {
