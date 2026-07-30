@@ -200,6 +200,7 @@ class StatusMutationReceipt:
     status: str
     lifecycle_root: str
     completed_at: datetime | None
+    task: Task
     verified: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,6 +211,7 @@ class StatusMutationReceipt:
             "completed_at": (
                 self.completed_at.isoformat() if self.completed_at else None
             ),
+            "task": self.task.to_dict(),
             "verified": self.verified,
         }
 
@@ -360,11 +362,36 @@ def render_project_page(project: Project) -> str:
             ),
             "links:",
             f"  - to: {_yaml_scalar(PROJECTS_ROOT)}",
-            "    type: involved_in",
-            "    context: GTasks durable project membership.",
+            "    type: member_of",
+            "    context: This project is explicitly owned by GTasks.",
             "---",
             "",
             f"# {project.title}",
+            "",
+        ]
+    )
+
+
+def render_projects_collection_page() -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: collection",
+            "title: Tony's Projects",
+            "owner: people/tony-guan",
+            "status: active",
+            "visibility: private",
+            "required_project_fields:",
+            "  - status",
+            "  - summary",
+            "---",
+            "",
+            "# Tony's Projects",
+            "",
+            "Canonical scope collection for projects explicitly created in GTasks.",
+            "",
+            "A project is visible in GTasks only when it has a typed "
+            "`member_of` relationship to this collection.",
             "",
         ]
     )
@@ -800,10 +827,9 @@ class GBrainAdapter:
                 for backlink in raw_backlinks
                 if isinstance(backlink, Mapping)
                 and backlink.get("to_slug") == PROJECTS_ROOT
-                and backlink.get("link_type") == "involved_in"
+                and backlink.get("link_type") == "member_of"
                 and isinstance(backlink.get("from_slug"), str)
                 and str(backlink["from_slug"]).startswith("projects/")
-                and backlink.get("from_slug") != PROJECTS_ROOT
             )
         )
         def read_project(
@@ -830,7 +856,44 @@ class GBrainAdapter:
         projects.sort(key=lambda project: project.title.casefold())
         return ProjectRead(projects=tuple(projects), issues=tuple(issues))
 
+    def _ensure_projects_root(self) -> None:
+        try:
+            page = self.runner.run("get_page", {"slug": PROJECTS_ROOT})
+        except GBrainCommandError as exc:
+            if "page_not_found" not in str(exc):
+                raise
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": PROJECTS_ROOT,
+                    "content": render_projects_collection_page(),
+                },
+            )
+            page = self.runner.run("get_page", {"slug": PROJECTS_ROOT})
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError(
+                "Tony's Projects collection readback was not an object"
+            )
+        if (
+            page.get("slug") != PROJECTS_ROOT
+            or page.get("type") != "collection"
+            or page.get("title") not in {"Tony's Projects", "Tony’s Projects"}
+        ):
+            raise GBrainProtocolError(
+                f"{PROJECTS_ROOT} is not the canonical Tony's Projects collection"
+            )
+
     def create_project(self, project: Project) -> ProjectMutationReceipt:
+        try:
+            self._ensure_projects_root()
+        except GBrainError as exc:
+            raise PartialMutationError(
+                PROJECTS_ROOT,
+                (
+                    "Project creation did not start because the GTasks project "
+                    f"scope collection could not be verified: {exc}"
+                ),
+            ) from exc
         content = render_project_page(project)
         self.runner.run(
             "put_page",
@@ -854,8 +917,8 @@ class GBrainAdapter:
                 {
                     "from": project.slug,
                     "to": PROJECTS_ROOT,
-                    "link_type": "involved_in",
-                    "context": "GTasks durable project membership.",
+                    "link_type": "member_of",
+                    "context": "This project is explicitly owned by GTasks.",
                     "link_source": "gtasks",
                 },
             )
@@ -864,7 +927,7 @@ class GBrainAdapter:
                 isinstance(link, Mapping)
                 and link.get("from_slug") == project.slug
                 and link.get("to_slug") == PROJECTS_ROOT
-                and link.get("link_type") == "involved_in"
+                and link.get("link_type") == "member_of"
                 for link in links
             ):
                 raise GBrainProtocolError(
@@ -1186,6 +1249,7 @@ class GBrainAdapter:
                 status=status,
                 lifecycle_root=task.lifecycle_root,
                 completed_at=task.completed_at,
+                task=task,
                 verified=True,
             )
 
@@ -1305,6 +1369,7 @@ class GBrainAdapter:
             status=status,
             lifecycle_root=target_root,
             completed_at=completed_at,
+            task=stored_task,
             verified=True,
         )
 

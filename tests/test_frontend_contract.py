@@ -47,12 +47,39 @@ class FrontendContractTests(unittest.TestCase):
             '`task-state-dot ${taskUiStatus(task)}`',
             javascript,
         )
-        self.assertIn("button.draggable = true", javascript)
+        self.assertIn("card.draggable = true", javascript)
         for event_name in ("dragstart", "dragend", "dragover", "dragleave", "drop"):
             self.assertIn(f'addEventListener("{event_name}"', javascript)
         self.assertIn('id="board-status-alert"', html)
         self.assertIn('id="board-status-retry"', html)
         self.assertIn("requestTaskStatus(", javascript)
+        self.assertIn("editableTaskStatuses", javascript)
+        self.assertIn("Move ${task.title || task.summary} to another status", javascript)
+
+    def test_board_same_status_drop_is_a_silent_no_op(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        move_body = javascript[
+            javascript.index("async function moveBoardTask")
+            : javascript.index("async function saveTaskStatus")
+        ]
+
+        self.assertIn("if (task.status === status) return", move_body)
+        self.assertLess(
+            move_body.index("if (task.status === status) return"),
+            move_body.index('phase: "saving"'),
+        )
+
+    def test_status_success_reconciles_authoritative_task_without_full_reload(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        move_body = javascript[
+            javascript.index("async function moveBoardTask")
+            : javascript.index("function nextActionErrorMessage")
+        ]
+
+        self.assertIn("result.receipt?.task", javascript)
+        self.assertIn("reconcileVerifiedTask(receipt.task)", move_body)
+        self.assertNotIn("await loadTasks()", move_body)
+        self.assertIn("rebuildDerivedTaskViews", javascript)
 
     def test_goal_details_explain_bidirectional_links_and_explicit_repair(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -135,6 +162,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("submitNewProject", javascript)
         self.assertIn("/project`", javascript)
         self.assertIn("No tasks assigned yet", javascript)
+        self.assertIn("Projects needing attention", javascript)
+        self.assertIn("state.projectIssues", javascript)
+        self.assertIn("payload.issues", javascript)
+        self.assertIn("typed <code>member_of</code>", html)
+        self.assertIn("first creation only", html)
+        self.assertIn("GTasks will not guess or import another project", javascript)
 
     def test_needs_attention_keeps_visible_tasks_and_offers_safe_repair(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

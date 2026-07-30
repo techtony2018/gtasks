@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 ACTIVE_ROOT = "collections/tonys-tasks"
 COMPLETED_ROOT = "collections/tonys-completed-tasks"
 GOALS_ROOT = "collections/tonys-goals"
-PROJECTS_ROOT = "projects/tonys-projects"
+PROJECTS_ROOT = "collections/tonys-projects"
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 
 TASK_STATUSES = frozenset(
@@ -448,13 +448,13 @@ class Project:
             raise DomainValidationError(f"{slug} has no frontmatter")
         links = _links_from(frontmatter)
         frontmatter_member = any(
-            link["to"] == PROJECTS_ROOT and link["type"] == "involved_in"
+            link["to"] == PROJECTS_ROOT and link["type"] == "member_of"
             for link in links
         )
         graph_member = any(
             edge.get("from_slug") == slug
             and edge.get("to_slug") == PROJECTS_ROOT
-            and edge.get("link_type") == "involved_in"
+            and edge.get("link_type") == "member_of"
             for edge in edges
         )
         if not (frontmatter_member or graph_member):

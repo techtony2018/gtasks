@@ -78,7 +78,21 @@ def stored_project(project) -> dict:
             "updated_at": (
                 project.updated_at.isoformat() if project.updated_at else None
             ),
-            "links": [{"to": PROJECTS_ROOT, "type": "involved_in"}],
+            "links": [{"to": PROJECTS_ROOT, "type": "member_of"}],
+        },
+    }
+
+
+def stored_projects_root() -> dict:
+    return {
+        "slug": PROJECTS_ROOT,
+        "type": "collection",
+        "title": "Tony's Projects",
+        "compiled_truth": "# Tony's Projects",
+        "frontmatter": {
+            "owner": "people/tony-guan",
+            "status": "active",
+            "visibility": "private",
         },
     }
 
@@ -140,7 +154,7 @@ class CollectionReadTests(unittest.TestCase):
 
 
 class ProjectPersistenceTests(unittest.TestCase):
-    def test_lists_project_nodes_from_tonys_projects_without_tasks(self) -> None:
+    def test_lists_only_typed_g_tasks_scope_members_without_tasks(self) -> None:
         project = new_project(
             "Interview preparation",
             datetime(2026, 7, 30, tzinfo=timezone.utc),
@@ -149,7 +163,7 @@ class ProjectPersistenceTests(unittest.TestCase):
         edge = {
             "from_slug": project.slug,
             "to_slug": PROJECTS_ROOT,
-            "link_type": "involved_in",
+            "link_type": "member_of",
         }
         runner = FakeRunner(
             {
@@ -163,6 +177,49 @@ class ProjectPersistenceTests(unittest.TestCase):
 
         self.assertEqual([item.slug for item in result.projects], [project.slug])
 
+    def test_excludes_old_projects_without_typed_scope_membership(self) -> None:
+        scoped = new_project(
+            "Scoped project",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        old = new_project(
+            "Old unrelated project",
+            datetime(2025, 1, 1, tzinfo=timezone.utc),
+            "d4e5f6",
+        )
+        scoped_edge = {
+            "from_slug": scoped.slug,
+            "to_slug": PROJECTS_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        scoped_edge,
+                        {
+                            "from_slug": old.slug,
+                            "to_slug": PROJECTS_ROOT,
+                            "link_type": "involved_in",
+                        },
+                        {
+                            "from_slug": old.slug,
+                            "to_slug": "collections/other-projects",
+                            "link_type": "member_of",
+                        },
+                    ]
+                ],
+                "get_page": [stored_project(scoped)],
+                "get_links": [[scoped_edge]],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_projects()
+
+        self.assertEqual([item.slug for item in result.projects], [scoped.slug])
+        self.assertNotIn(old.slug, [item.slug for item in result.projects])
+
     def test_create_project_requires_page_and_collection_link_readback(self) -> None:
         project = new_project(
             "Interview preparation",
@@ -172,12 +229,12 @@ class ProjectPersistenceTests(unittest.TestCase):
         edge = {
             "from_slug": project.slug,
             "to_slug": PROJECTS_ROOT,
-            "link_type": "involved_in",
+            "link_type": "member_of",
         }
         runner = FakeRunner(
             {
                 "put_page": [{"slug": project.slug}],
-                "get_page": [stored_project(project)],
+                "get_page": [stored_projects_root(), stored_project(project)],
                 "add_link": [{}],
                 "get_links": [[edge]],
             }
@@ -186,14 +243,65 @@ class ProjectPersistenceTests(unittest.TestCase):
         receipt = GBrainAdapter(runner).create_project(project)
 
         self.assertTrue(receipt.verified)
-        self.assertIn("type: project", runner.calls[0][1]["content"])
+        self.assertIn("type: project", runner.calls[1][1]["content"])
         self.assertIn(("add_link", {
             "from": project.slug,
             "to": PROJECTS_ROOT,
-            "link_type": "involved_in",
-            "context": "GTasks durable project membership.",
+            "link_type": "member_of",
+            "context": "This project is explicitly owned by GTasks.",
             "link_source": "gtasks",
         }), runner.calls)
+
+    def test_new_project_initializes_missing_scope_only_on_explicit_create(self) -> None:
+        project = new_project(
+            "ERFA PAC",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        edge = {
+            "from_slug": project.slug,
+            "to_slug": PROJECTS_ROOT,
+            "link_type": "member_of",
+        }
+        missing = GBrainCommandError(
+            "GBrain tool get_page failed: page_not_found"
+        )
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    missing,
+                    stored_projects_root(),
+                    stored_project(project),
+                ],
+                "put_page": [
+                    {"slug": PROJECTS_ROOT},
+                    {"slug": project.slug},
+                ],
+                "add_link": [{}],
+                "get_links": [[edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).create_project(project)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(
+            runner.calls[:3],
+            [
+                ("get_page", {"slug": PROJECTS_ROOT}),
+                (
+                    "put_page",
+                    {
+                        "slug": PROJECTS_ROOT,
+                        "content": runner.calls[1][1]["content"],
+                    },
+                ),
+                ("get_page", {"slug": PROJECTS_ROOT}),
+            ],
+        )
+        self.assertIn("type: collection", runner.calls[1][1]["content"])
+        self.assertIn("title: Tony's Projects", runner.calls[1][1]["content"])
+        self.assertIn("type: member_of", runner.calls[3][1]["content"])
 
     def test_reports_invalid_linked_pages_without_hiding_valid_tasks(self) -> None:
         valid = new_inbox_task(
@@ -1033,6 +1141,7 @@ class TaskStatusMutationTests(unittest.TestCase):
         self.assertEqual(receipt.status, "completed")
         self.assertEqual(receipt.lifecycle_root, ACTIVE_ROOT)
         self.assertEqual(receipt.completed_at, now)
+        self.assertEqual(receipt.task.status, "completed")
         written = runner.calls[2][1]["content"]
         self.assertIn('"type": "task"', written)
         self.assertIn('"type": "member_of"', written)

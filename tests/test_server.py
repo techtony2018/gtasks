@@ -101,11 +101,22 @@ class FakeAdapter:
         now: datetime,
     ) -> StatusMutationReceipt:
         self.status_updates.append((task_slug, status, now))
+        existing = next(
+            (task for task in (*self.active, *self.completed) if task.slug == task_slug),
+            new_inbox_task("Ship GTasks", now, "status1"),
+        )
+        stored_task = replace(
+            existing,
+            slug=task_slug,
+            status=status,
+            completed_at=now if status == "completed" else None,
+        )
         return StatusMutationReceipt(
             task_slug=task_slug,
             status=status,
             lifecycle_root=ACTIVE_ROOT,
             completed_at=now if status == "completed" else None,
+            task=stored_task,
             verified=True,
         )
 
@@ -205,7 +216,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.4")
+        self.assertEqual(payload["version"], "V0.0.5")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -213,11 +224,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.4")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.4")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][3]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.5")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.5")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.4")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][3]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][4]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
@@ -518,6 +530,7 @@ class TaskStatusApiTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload["receipt"]["status"], "active")
+        self.assertEqual(payload["receipt"]["task"]["status"], "active")
         self.assertEqual(adapter.status_updates[0][0:2], ("tasks/ship-gtasks", "active"))
         self.assertIsNotNone(adapter.status_updates[0][2].tzinfo)
 

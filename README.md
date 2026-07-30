@@ -43,6 +43,15 @@ While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
 Refresh, and a hidden tab defers work until it becomes visible again.
 
+Projects are scoped exclusively through the canonical
+`collections/tonys-projects` collection. A project appears in GTasks only when
+it has a typed `member_of` relationship to that collection; `type: project`
+alone, task links, titles, and age never imply ownership. Existing GBrain
+projects are not imported. The first explicit New Project action may initialize
+the missing Tony's Projects collection, then creates the project and verifies
+both page and typed scope membership before reporting success. Merely opening
+or refreshing Projects never creates that collection.
+
 The server binds to `127.0.0.1` by default. To choose another local port:
 
 ```bash
@@ -132,6 +141,11 @@ Changing status is explicit and verified too. The detail editor supports
 `planned`, `active`, `blocked`, `completed`, and `cancelled`. Existing
 `waiting` pages remain readable and display as Blocked, but `waiting` is not
 offered as a new workflow status and no bulk normalization occurs.
+Board cards provide the same five-status selector as a keyboard and touch
+alternative to drag and drop. Dropping or selecting the task's current
+canonical status is a silent no-op: it performs no GBrain call, loading state,
+readback, or notification. A real change is displayed only from the canonical
+task returned by verified post-write readback.
 Completion records Tony's local completion time and keeps the active collection
 edge until Tony's Tasks applies its next-Monday archive rule. Reopening an
 already archived task moves the same task identity back to the active root.
@@ -152,6 +166,9 @@ Loading the app, Board, refreshing, running the test suite, and browser verifica
 Task rows show title, project, priority, next action, and due date. Board cards
 show the same canonical tasks by status. Selecting either opens the shared
 detail panel, where status can be changed without leaving GTasks.
+Projects that fail core project validation are listed in a visible Projects
+needing attention section with the exact error and a direct GBrain inspection
+link; valid projects and tasks remain visible.
 
 The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
 

@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 
 from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, Project, new_inbox_task
 from gtasks.gbrain import (
+    CollectionIssue,
     CollectionRead,
     GoalRead,
     MutationReceipt,
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
     ProjectRead,
+    StatusMutationReceipt,
 )
 from gtasks.server import build_server
 
@@ -32,7 +34,15 @@ class IsolatedProjectAdapter:
         return GoalRead(goals=())
 
     def list_projects(self) -> ProjectRead:
-        return ProjectRead(projects=self.projects)
+        return ProjectRead(
+            projects=self.projects,
+            issues=(
+                CollectionIssue(
+                    slug="projects/malformed-fixture",
+                    message="projects/malformed-fixture is not a project page",
+                ),
+            ),
+        )
 
     def create_project(self, project: Project) -> ProjectMutationReceipt:
         self.projects = (*self.projects, project)
@@ -59,6 +69,31 @@ class IsolatedProjectAdapter:
     def create_inbox(self, task) -> MutationReceipt:
         self.task = task
         return MutationReceipt(slug=task.slug, verified=True)
+
+    def set_task_status(
+        self,
+        task_slug: str,
+        status: str,
+        now: datetime,
+    ) -> StatusMutationReceipt:
+        if task_slug != self.task.slug:
+            raise ValueError("unknown isolated task")
+        completed_at = now if status == "completed" else None
+        lifecycle_root = COMPLETED_ROOT if status == "completed" else ACTIVE_ROOT
+        self.task = replace(
+            self.task,
+            status=status,
+            completed_at=completed_at,
+            lifecycle_root=lifecycle_root,
+        )
+        return StatusMutationReceipt(
+            task_slug=task_slug,
+            status=status,
+            lifecycle_root=lifecycle_root,
+            completed_at=completed_at,
+            task=self.task,
+            verified=True,
+        )
 
 
 if __name__ == "__main__":

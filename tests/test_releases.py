@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.4")
+        self.assertEqual(__version__, "V0.0.5")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -43,7 +43,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_release_history_is_strictly_sequential_patch_only(self) -> None:
         self.assertEqual(
             [release["version"] for release in RELEASES],
-            ["V0.0.1", "V0.0.2", "V0.0.3", "V0.0.4"],
+            ["V0.0.1", "V0.0.2", "V0.0.3", "V0.0.4", "V0.0.5"],
         )
 
     def test_v0_0_4_records_durable_projects_and_read_latency_work(self) -> None:
@@ -52,6 +52,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(release["version"], "V0.0.4")
         self.assertIn("verified GBrain project creation", release["summary"])
         self.assertIn("bounded parallel reads", release["summary"])
+
+    def test_v0_0_5_records_immediate_status_and_scoped_projects(self) -> None:
+        release = RELEASES[4]
+
+        self.assertEqual(release["version"], "V0.0.5")
+        self.assertIn("canonical GBrain readback immediately", release["summary"])
+        self.assertIn("typed members of Tony's Projects", release["summary"])
 
 
 if __name__ == "__main__":

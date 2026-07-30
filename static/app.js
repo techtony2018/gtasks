@@ -16,6 +16,7 @@ const state = {
   refreshDeferred: false,
   lastSyncedAt: null,
   projects: [],
+  projectIssues: [],
   projectsLoading: true,
   projectsError: "",
 };
@@ -260,6 +261,96 @@ function allTodayTasks() {
   ];
 }
 
+function rebuildDerivedTaskViews() {
+  const asOf = state.snapshot.as_of;
+  const active = state.snapshot.tasks.filter(
+    (task) => task.lifecycle_root === "collections/tonys-tasks",
+  );
+  const unfinished = (task) =>
+    !["completed", "cancelled"].includes(task.status);
+  const inProgress = active.filter((task) => task.status === "active");
+  state.snapshot.today = {
+    in_progress: inProgress.slice(0, 3),
+    in_progress_overflow: Math.max(0, inProgress.length - 3),
+    todays_actions: active.filter(
+      (task) =>
+        !["active", "waiting", "blocked", "completed", "cancelled"].includes(
+          task.status,
+        ) &&
+        (task.due_day === asOf || task.scheduled_day === asOf),
+    ),
+    waiting_and_blocked: active.filter((task) =>
+      ["waiting", "blocked"].includes(task.status)),
+    overdue: active.filter(
+      (task) =>
+        !["active", "waiting", "blocked", "completed", "cancelled"].includes(
+          task.status,
+        ) &&
+        task.due_day &&
+        task.due_day < asOf,
+    ),
+  };
+  state.snapshot.views = {
+    inbox: active.filter((task) => task.inbox && unfinished(task)),
+    upcoming: active.filter(
+      (task) => task.due_day && task.due_day > asOf && unfinished(task),
+    ),
+    blocked: active.filter((task) =>
+      ["waiting", "blocked"].includes(task.status)),
+    projects: active.filter((task) => task.project),
+    completed: state.snapshot.tasks.filter(
+      (task) =>
+        task.status === "completed" ||
+        task.lifecycle_root === "collections/tonys-completed-tasks",
+    ),
+  };
+  state.snapshot.goals = state.snapshot.goals.map((goal) => {
+    const linked = state.snapshot.tasks.filter(
+      (task) => task.goal === goal.slug,
+    );
+    const activeTasks = linked.filter(unfinished);
+    const completedTasks = linked.filter(
+      (task) => task.status === "completed",
+    );
+    return {
+      ...goal,
+      active_tasks: activeTasks,
+      completed_tasks: completedTasks,
+      progress: {
+        active: activeTasks.length,
+        completed: completedTasks.length,
+        linked: linked.length,
+        percent: linked.length
+          ? Math.round((completedTasks.length / linked.length) * 100)
+          : 0,
+      },
+    };
+  });
+}
+
+function reconcileVerifiedTask(task) {
+  if (!task || typeof task.slug !== "string" || typeof task.status !== "string") {
+    const error = new Error(
+      "GBrain acknowledged the write, but authoritative task readback was missing.",
+    );
+    error.code = "ambiguous_readback";
+    throw error;
+  }
+  const index = state.snapshot.tasks.findIndex(
+    (candidate) => candidate.slug === task.slug,
+  );
+  if (index < 0) {
+    const error = new Error(
+      "GBrain returned a task that is not present in the current GTasks snapshot.",
+    );
+    error.code = "ambiguous_readback";
+    throw error;
+  }
+  state.snapshot.tasks.splice(index, 1, task);
+  rebuildDerivedTaskViews();
+  render();
+}
+
 function navCounts() {
   if (!state.snapshot) return {};
   return {
@@ -497,19 +588,28 @@ const boardColumns = [
   },
 ];
 
+const editableTaskStatuses = [
+  { value: "planned", label: "Planned" },
+  { value: "active", label: "In Progress" },
+  { value: "blocked", label: "Blocked" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
 function boardCard(task) {
-  const button = node("button", "board-card");
+  const card = node("article", "board-card");
+  card.draggable = true;
+  card.dataset.slug = task.slug;
+  card.dataset.status = taskUiStatus(task);
+  card.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  const button = node("button", "board-card-open");
   button.type = "button";
-  button.draggable = true;
-  button.dataset.slug = task.slug;
-  button.dataset.status = taskUiStatus(task);
-  button.classList.toggle("is-selected", state.selectedSlug === task.slug);
   const isSaving =
     state.boardMove?.phase === "saving" &&
     state.boardMove.taskSlug === task.slug;
-  button.classList.toggle("is-saving", isSaving);
+  card.classList.toggle("is-saving", isSaving);
   button.disabled = isSaving;
-  button.setAttribute("aria-grabbed", "false");
+  card.setAttribute("aria-grabbed", "false");
   const heading = node("span", "board-card-heading");
   heading.append(
     node("span", `task-state-dot ${taskUiStatus(task)}`),
@@ -528,26 +628,47 @@ function boardCard(task) {
   );
   const attention = taskAttentionBadge(task.slug);
   if (attention) button.append(attention);
-  if (isSaving) button.append(node("span", "board-card-saving", "Saving in GBrain…"));
   button.addEventListener("click", () => selectTask(task.slug));
-  button.addEventListener("dragstart", (event) => {
+
+  const moveControl = node("label", "board-card-move");
+  moveControl.append(node("span", "", "Move to"));
+  const statusSelect = node("select");
+  statusSelect.setAttribute(
+    "aria-label",
+    `Move ${task.title || task.summary} to another status`,
+  );
+  editableTaskStatuses.forEach((status) => {
+    const option = node("option", "", status.label);
+    option.value = status.value;
+    statusSelect.append(option);
+  });
+  statusSelect.value = taskUiStatus(task);
+  statusSelect.disabled = isSaving;
+  statusSelect.addEventListener("change", () => {
+    moveBoardTask(task.slug, statusSelect.value);
+  });
+  moveControl.append(statusSelect);
+  card.append(button, moveControl);
+  if (isSaving) card.append(node("span", "board-card-saving", "Saving in GBrain…"));
+
+  card.addEventListener("dragstart", (event) => {
     if (!event.dataTransfer || isSaving) {
       event.preventDefault();
       return;
     }
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", task.slug);
-    button.classList.add("is-dragging");
-    button.setAttribute("aria-grabbed", "true");
+    card.classList.add("is-dragging");
+    card.setAttribute("aria-grabbed", "true");
   });
-  button.addEventListener("dragend", () => {
-    button.classList.remove("is-dragging");
-    button.setAttribute("aria-grabbed", "false");
+  card.addEventListener("dragend", () => {
+    card.classList.remove("is-dragging");
+    card.setAttribute("aria-grabbed", "false");
     document
       .querySelectorAll(".board-column.is-drop-target")
       .forEach((column) => column.classList.remove("is-drop-target"));
   });
-  return button;
+  return card;
 }
 
 function updateBoardStatus() {
@@ -675,6 +796,47 @@ function renderProjectsView() {
     fragment.append(error);
     return fragment;
   }
+  if (state.projectIssues.length) {
+    const issues = node("section", "project-issues");
+    const issueHeading = node("div", "project-issues-heading");
+    issueHeading.append(
+      node("h2", "", "Projects needing attention"),
+      node("span", "", String(state.projectIssues.length)),
+    );
+    issues.append(
+      issueHeading,
+      node(
+        "p",
+        "",
+        "These linked GBrain pages are not valid projects. Valid projects remain visible and usable.",
+      ),
+    );
+    state.projectIssues.forEach((issue) => {
+      const item = node("article", "project-issue");
+      item.append(
+        node("strong", "", issue.slug),
+        node("p", "", issue.message),
+        node(
+          "p",
+          "project-issue-impact",
+          "Impact: this page is not counted or offered for task assignment until its project type or required membership is repaired.",
+        ),
+        node(
+          "p",
+          "project-issue-impact",
+          "Repair cue: inspect the page in GBrain and restore type: project plus one typed member_of Tony’s Projects relationship. GTasks will not guess or import another project.",
+        ),
+      );
+      const inspect = node("a", "secondary-button", "Inspect in GBrain");
+      inspect.href =
+        `http://127.0.0.1:8788/?slug=${encodeURIComponent(issue.slug)}`;
+      inspect.target = "_blank";
+      inspect.rel = "noreferrer";
+      item.append(inspect);
+      issues.append(item);
+    });
+    fragment.append(issues);
+  }
   if (!state.projects.length) {
     fragment.append(
       node(
@@ -723,6 +885,7 @@ async function loadProjects() {
       throw new Error(payload.error || "Projects could not be read from GBrain.");
     }
     state.projects = payload.projects;
+    state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
   } catch (error) {
     state.projectsError =
       error.message || "Projects could not be read from GBrain.";
@@ -1212,7 +1375,15 @@ async function requestTaskStatus(taskSlug, status) {
     error.slug = result.slug;
     throw error;
   }
-  return result;
+  if (!result.receipt?.verified || !result.receipt?.task) {
+    const error = new Error(
+      "Status write did not include verified canonical task readback.",
+    );
+    error.code = "ambiguous_readback";
+    error.slug = taskSlug;
+    throw error;
+  }
+  return result.receipt;
 }
 
 function statusErrorMessage(error) {
@@ -1226,6 +1397,7 @@ async function moveBoardTask(taskSlug, status) {
   const task = state.snapshot?.tasks.find((item) => item.slug === taskSlug);
   const definition = boardColumns.find((column) => column.status === status);
   if (!task || !definition || state.boardMove?.phase === "saving") return;
+  if (task.status === status) return;
   const move = {
     taskSlug,
     taskTitle: task.title || task.summary,
@@ -1236,18 +1408,22 @@ async function moveBoardTask(taskSlug, status) {
   state.boardMove = move;
   render();
   try {
-    await requestTaskStatus(taskSlug, status);
-    showToast(`${move.taskTitle} saved as ${move.statusLabel} in GBrain.`);
+    const receipt = await requestTaskStatus(taskSlug, status);
+    reconcileVerifiedTask(receipt.task);
     state.boardMove = null;
-    await loadTasks();
+    render();
     if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
       selectTask(taskSlug);
     }
+    showToast(`${move.taskTitle} saved as ${move.statusLabel} in GBrain.`);
   } catch (error) {
     state.boardMove = {
       ...move,
       phase: "error",
-      message: `${move.taskTitle} stayed in its original lane. ${statusErrorMessage(error)}`,
+      message: (
+        `${move.taskTitle} could not be reconciled with GBrain. ` +
+        `${statusErrorMessage(error)} Use Refresh before retrying.`
+      ),
     };
     render();
   }
@@ -1261,10 +1437,14 @@ async function saveTaskStatus() {
   elements.taskStatusSave.disabled = true;
   elements.taskStatusSave.textContent = "Saving…";
   try {
-    await requestTaskStatus(taskSlug, status);
-    showToast(`Status saved as ${status} in GBrain.`);
-    await loadTasks();
+    const currentTask = state.snapshot.tasks.find(
+      (task) => task.slug === taskSlug,
+    );
+    if (currentTask?.status === status) return;
+    const receipt = await requestTaskStatus(taskSlug, status);
+    reconcileVerifiedTask(receipt.task);
     selectTask(taskSlug);
+    showToast(`Status saved as ${status} in GBrain.`);
   } catch (error) {
     elements.taskStatusError.textContent = statusErrorMessage(error);
     elements.taskStatusError.classList.remove("is-hidden");

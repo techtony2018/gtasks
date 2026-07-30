@@ -316,8 +316,10 @@
         >
         <p>
           Creation writes a real <code>type: project</code> node to Tony’s
-          Projects and verifies both the page and collection relationship
-          before showing success.
+          Projects and verifies the page plus typed <code>member_of</code>
+          relationship before showing success. On the first creation only,
+          GTasks initializes and verifies the Tony’s Projects scope collection
+          if it does not yet exist.
         </p>
         <p class="form-error is-hidden" id="new-project-error" role="alert"></p>
         <div class="dialog-footer">
