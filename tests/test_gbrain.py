@@ -6,7 +6,14 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, GOALS_ROOT, new_inbox_task
+from gtasks.domain import (
+    ACTIVE_ROOT,
+    COMPLETED_ROOT,
+    GOALS_ROOT,
+    PROJECTS_ROOT,
+    new_inbox_task,
+    new_project,
+)
 from gtasks.gbrain import (
     GBrainAdapter,
     GBrainCommandError,
@@ -52,6 +59,26 @@ def stored_goal(slug: str, title: str) -> dict:
             "review_cadence": "weekly",
             "constraints": "Define during weekly review.",
             "collection": GOALS_ROOT,
+        },
+    }
+
+
+def stored_project(project) -> dict:
+    return {
+        "slug": project.slug,
+        "type": "project",
+        "title": project.title,
+        "compiled_truth": f"# {project.title}",
+        "frontmatter": {
+            "status": project.status,
+            "summary": project.summary,
+            "created_at": (
+                project.created_at.isoformat() if project.created_at else None
+            ),
+            "updated_at": (
+                project.updated_at.isoformat() if project.updated_at else None
+            ),
+            "links": [{"to": PROJECTS_ROOT, "type": "involved_in"}],
         },
     }
 
@@ -110,6 +137,63 @@ class CollectionReadTests(unittest.TestCase):
                 ("get_links", {"slug": task.slug}),
             ],
         )
+
+
+class ProjectPersistenceTests(unittest.TestCase):
+    def test_lists_project_nodes_from_tonys_projects_without_tasks(self) -> None:
+        project = new_project(
+            "Interview preparation",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        edge = {
+            "from_slug": project.slug,
+            "to_slug": PROJECTS_ROOT,
+            "link_type": "involved_in",
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[edge]],
+                "get_page": [stored_project(project)],
+                "get_links": [[edge]],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_projects()
+
+        self.assertEqual([item.slug for item in result.projects], [project.slug])
+
+    def test_create_project_requires_page_and_collection_link_readback(self) -> None:
+        project = new_project(
+            "Interview preparation",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        edge = {
+            "from_slug": project.slug,
+            "to_slug": PROJECTS_ROOT,
+            "link_type": "involved_in",
+        }
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": project.slug}],
+                "get_page": [stored_project(project)],
+                "add_link": [{}],
+                "get_links": [[edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).create_project(project)
+
+        self.assertTrue(receipt.verified)
+        self.assertIn("type: project", runner.calls[0][1]["content"])
+        self.assertIn(("add_link", {
+            "from": project.slug,
+            "to": PROJECTS_ROOT,
+            "link_type": "involved_in",
+            "context": "GTasks durable project membership.",
+            "link_source": "gtasks",
+        }), runner.calls)
 
     def test_reports_invalid_linked_pages_without_hiding_valid_tasks(self) -> None:
         valid = new_inbox_task(

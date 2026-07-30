@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,6 +16,8 @@ from .domain import (
     GOALS_ROOT,
     Goal,
     LIFECYCLE_ROOTS,
+    PROJECTS_ROOT,
+    Project,
     Task,
 )
 
@@ -149,6 +152,19 @@ class GoalRead:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectRead:
+    projects: tuple[Project, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "root_slug": PROJECTS_ROOT,
+            "projects": [project.to_dict() for project in self.projects],
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class GoalRelationshipRead:
     goal_slug: str
     task_slugs: tuple[str, ...]
@@ -208,6 +224,29 @@ class NextActionMutationReceipt:
         return {
             "task_slug": self.task_slug,
             "next_action": self.next_action,
+            "verified": self.verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectMutationReceipt:
+    project_slug: str
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"project_slug": self.project_slug, "verified": self.verified}
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectAssignmentReceipt:
+    task_slug: str
+    project_slug: str | None
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "project_slug": self.project_slug,
             "verified": self.verified,
         }
 
@@ -297,6 +336,38 @@ def render_task_page(task: Task) -> str:
     if task.detail:
         lines.extend([task.detail, ""])
     return "\n".join(lines)
+
+
+def render_project_page(project: Project) -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: project",
+            f"title: {_yaml_scalar(project.title)}",
+            f"status: {_yaml_scalar(project.status)}",
+            f"summary: {_yaml_scalar(project.summary)}",
+            (
+                "created_at: "
+                + _yaml_scalar(
+                    project.created_at.isoformat() if project.created_at else None
+                )
+            ),
+            (
+                "updated_at: "
+                + _yaml_scalar(
+                    project.updated_at.isoformat() if project.updated_at else None
+                )
+            ),
+            "links:",
+            f"  - to: {_yaml_scalar(PROJECTS_ROOT)}",
+            "    type: involved_in",
+            "    context: GTasks durable project membership.",
+            "---",
+            "",
+            f"# {project.title}",
+            "",
+        ]
+    )
 
 
 def _render_preserved_page(
@@ -480,6 +551,36 @@ def _normalize_collection_task(
                 impact="The task is shown without a project until you choose one.",
             )
         )
+    elif project_links:
+        project_slug = str(project_links[0]["to"])
+        graph_project_verified = any(
+            isinstance(edge, Mapping)
+            and edge.get("from_slug") == slug
+            and edge.get("to_slug") == project_slug
+            and edge.get("link_type") == "member_of"
+            for edge in edges
+        )
+        if not graph_project_verified:
+            valid_links = [
+                link
+                for link in valid_links
+                if not (
+                    link.get("type") == "member_of"
+                    and link.get("to") not in LIFECYCLE_ROOTS
+                )
+            ]
+            frontmatter["project"] = None
+            warnings.append(
+                _visible_warning(
+                    slug,
+                    "The task project link is not verified in the GBrain graph.",
+                    category="optional_relationship",
+                    impact=(
+                        "The task is shown without a project; choose a durable "
+                        "project in task details to repair the assignment."
+                    ),
+                )
+            )
     frontmatter["links"] = valid_links
 
     has_verified_task_shape = (
@@ -547,6 +648,12 @@ class GBrainAdapter:
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self.runner = runner or SubprocessCommandRunner()
 
+    def _bounded_map(self, function: Any, values: list[Any]) -> list[Any]:
+        if len(values) < 2 or not isinstance(self.runner, SubprocessCommandRunner):
+            return [function(value) for value in values]
+        with ThreadPoolExecutor(max_workers=min(8, len(values))) as executor:
+            return list(executor.map(function, values))
+
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         if root_slug not in APPROVED_ROOTS:
             raise ValueError("collection root is not approved for GTasks")
@@ -568,9 +675,11 @@ class GBrainAdapter:
                 elif link_type in {"", None}:
                     member_slugs.setdefault(str(backlink["from_slug"]), True)
 
-        tasks: list[Task] = []
-        issues: list[CollectionIssue] = []
-        for slug, legacy_untyped in member_slugs.items():
+        def read_task(
+            item: tuple[str, bool],
+        ) -> tuple[Task | None, list[CollectionIssue]]:
+            slug, legacy_untyped = item
+            item_issues: list[CollectionIssue] = []
             try:
                 page = self.runner.run("get_page", {"slug": slug})
                 if not isinstance(page, Mapping):
@@ -583,7 +692,7 @@ class GBrainAdapter:
                         or frontmatter.get("collection") != root_slug
                     )
                 ):
-                    continue
+                    return None, []
                 relationship_warning: CollectionIssue | None = None
                 try:
                     raw_edges = self.runner.run("get_links", {"slug": slug})
@@ -614,12 +723,12 @@ class GBrainAdapter:
                     raise DomainValidationError(
                         "page frontmatter does not match its lifecycle root edge"
                     )
-                tasks.append(task)
-                issues.extend(warnings)
+                item_issues.extend(warnings)
                 if relationship_warning is not None:
-                    issues.append(relationship_warning)
+                    item_issues.append(relationship_warning)
+                return task, item_issues
             except (DomainValidationError, GBrainError) as exc:
-                issues.append(
+                item_issues.append(
                     CollectionIssue(
                         slug=slug,
                         message=str(exc),
@@ -629,6 +738,17 @@ class GBrainAdapter:
                         ),
                     )
                 )
+                return None, item_issues
+
+        tasks: list[Task] = []
+        issues: list[CollectionIssue] = []
+        for task, item_issues in self._bounded_map(
+            read_task,
+            list(member_slugs.items()),
+        ):
+            if task is not None:
+                tasks.append(task)
+            issues.extend(item_issues)
 
         return CollectionRead(
             root_slug=root_slug,
@@ -649,17 +769,117 @@ class GBrainAdapter:
             and str(backlink["from_slug"]).startswith("goals/")
         ]
 
-        goals: list[Goal] = []
-        issues: list[CollectionIssue] = []
-        for slug in dict.fromkeys(goal_slugs):
+        def read_goal(slug: str) -> tuple[Goal | None, CollectionIssue | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
                 if not isinstance(page, Mapping):
                     raise GBrainProtocolError("goal get_page did not return an object")
-                goals.append(Goal.from_page(page))
+                return Goal.from_page(page), None
             except (DomainValidationError, GBrainError) as exc:
-                issues.append(CollectionIssue(slug=slug, message=str(exc)))
+                return None, CollectionIssue(slug=slug, message=str(exc))
+
+        goals: list[Goal] = []
+        issues: list[CollectionIssue] = []
+        for goal, issue in self._bounded_map(
+            read_goal,
+            list(dict.fromkeys(goal_slugs)),
+        ):
+            if goal is not None:
+                goals.append(goal)
+            if issue is not None:
+                issues.append(issue)
         return GoalRead(goals=tuple(goals), issues=tuple(issues))
+
+    def list_projects(self) -> ProjectRead:
+        raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})
+        if not isinstance(raw_backlinks, list):
+            raise GBrainProtocolError("projects get_backlinks did not return a list")
+        project_slugs = list(
+            dict.fromkeys(
+                str(backlink["from_slug"])
+                for backlink in raw_backlinks
+                if isinstance(backlink, Mapping)
+                and backlink.get("to_slug") == PROJECTS_ROOT
+                and backlink.get("link_type") == "involved_in"
+                and isinstance(backlink.get("from_slug"), str)
+                and str(backlink["from_slug"]).startswith("projects/")
+                and backlink.get("from_slug") != PROJECTS_ROOT
+            )
+        )
+        def read_project(
+            slug: str,
+        ) -> tuple[Project | None, CollectionIssue | None]:
+            try:
+                page = self.runner.run("get_page", {"slug": slug})
+                links = self.runner.run("get_links", {"slug": slug})
+                if not isinstance(page, Mapping) or not isinstance(links, list):
+                    raise GBrainProtocolError(
+                        "project page or relationship readback was not structured"
+                    )
+                return Project.from_page(page, edges=links), None
+            except (DomainValidationError, GBrainError) as exc:
+                return None, CollectionIssue(slug=slug, message=str(exc))
+
+        projects: list[Project] = []
+        issues: list[CollectionIssue] = []
+        for project, issue in self._bounded_map(read_project, project_slugs):
+            if project is not None:
+                projects.append(project)
+            if issue is not None:
+                issues.append(issue)
+        projects.sort(key=lambda project: project.title.casefold())
+        return ProjectRead(projects=tuple(projects), issues=tuple(issues))
+
+    def create_project(self, project: Project) -> ProjectMutationReceipt:
+        content = render_project_page(project)
+        self.runner.run(
+            "put_page",
+            {"slug": project.slug, "content": content},
+        )
+        try:
+            page = self.runner.run("get_page", {"slug": project.slug})
+            if not isinstance(page, Mapping):
+                raise GBrainProtocolError("project page readback was not an object")
+            stored_project = Project.from_page(page)
+            if (
+                stored_project.slug != project.slug
+                or stored_project.title != project.title
+                or stored_project.status != project.status
+            ):
+                raise GBrainProtocolError(
+                    "project page readback did not match the write"
+                )
+            self.runner.run(
+                "add_link",
+                {
+                    "from": project.slug,
+                    "to": PROJECTS_ROOT,
+                    "link_type": "involved_in",
+                    "context": "GTasks durable project membership.",
+                    "link_source": "gtasks",
+                },
+            )
+            links = self.runner.run("get_links", {"slug": project.slug})
+            if not isinstance(links, list) or not any(
+                isinstance(link, Mapping)
+                and link.get("from_slug") == project.slug
+                and link.get("to_slug") == PROJECTS_ROOT
+                and link.get("link_type") == "involved_in"
+                for link in links
+            ):
+                raise GBrainProtocolError(
+                    "project collection relationship readback was not verified"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                project.slug,
+                (
+                    "Project creation was not fully verified. "
+                    "Do not retry until this slug is inspected: "
+                    f"{exc}"
+                ),
+            ) from exc
+        return ProjectMutationReceipt(project_slug=project.slug, verified=True)
 
     def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
         page = self.runner.run("get_page", {"slug": goal_slug})
@@ -1243,6 +1463,178 @@ class GBrainAdapter:
         return NextActionMutationReceipt(
             task_slug=task_slug,
             next_action=normalized_action,
+            verified=True,
+        )
+
+    def set_task_project(
+        self,
+        task_slug: str,
+        project_slug: str | None,
+    ) -> ProjectAssignmentReceipt:
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("task project snapshot was not structured")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}"
+            )
+        lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if len(lifecycle_edges) != 1:
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+        lifecycle_root = str(lifecycle_edges[0]["to_slug"])
+        normalized_page, normalized_links, _warnings = _normalize_collection_task(
+            raw_page,
+            raw_links,
+            lifecycle_root,
+            legacy_untyped_backlink=False,
+        )
+        task = Task.from_page(normalized_page, edges=normalized_links)
+        approved_projects = {
+            project.slug for project in self.list_projects().projects
+        }
+        if project_slug is not None and project_slug not in approved_projects:
+            raise ValueError("project is not a durable member of Tony's Projects")
+        current_project = task.project
+        if current_project == project_slug:
+            return ProjectAssignmentReceipt(
+                task_slug=task_slug,
+                project_slug=project_slug,
+                verified=True,
+            )
+
+        raw_frontmatter = normalized_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("task page has no frontmatter")
+        original_frontmatter = deepcopy(dict(raw_frontmatter))
+        original_frontmatter["type"] = "task"
+        desired_frontmatter = deepcopy(original_frontmatter)
+        desired_links = desired_frontmatter.get("links")
+        if not isinstance(desired_links, list):
+            raise GBrainProtocolError("task frontmatter links must be a list")
+        desired_links = [
+            link
+            for link in deepcopy(desired_links)
+            if not (
+                isinstance(link, Mapping)
+                and link.get("type") == "member_of"
+                and link.get("to") not in LIFECYCLE_ROOTS
+            )
+        ]
+        if project_slug is not None:
+            desired_links.append({"to": project_slug, "type": "member_of"})
+        desired_frontmatter["links"] = desired_links
+        desired_frontmatter["project"] = project_slug
+        original_content = _render_preserved_page(raw_page, original_frontmatter)
+        desired_content = _render_preserved_page(raw_page, desired_frontmatter)
+        journal: list[str] = []
+        try:
+            self.runner.run(
+                "put_page",
+                {"slug": task_slug, "content": desired_content},
+            )
+            journal.append("put_page")
+            if project_slug is not None:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task_slug,
+                        "to": project_slug,
+                        "link_type": "member_of",
+                        "context": "GTasks task project assignment.",
+                        "link_source": "gtasks",
+                    },
+                )
+                journal.append("add_new")
+            if current_project is not None:
+                self.runner.run(
+                    "remove_link",
+                    {
+                        "from": task_slug,
+                        "to": current_project,
+                        "link_type": "member_of",
+                    },
+                )
+                journal.append("remove_old")
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(
+                stored_links, list
+            ):
+                raise GBrainProtocolError(
+                    "task project readback was not structured"
+                )
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            verified_project_edges = [
+                edge
+                for edge in stored_links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task_slug
+                and edge.get("link_type") == "member_of"
+                and edge.get("to_slug") not in APPROVED_ROOTS
+            ]
+            expected_projects = [project_slug] if project_slug else []
+            if (
+                stored_page.get("type") != "task"
+                or stored_task.project != project_slug
+                or [edge.get("to_slug") for edge in verified_project_edges]
+                != expected_projects
+                or len(_lifecycle_edges(task_slug, stored_links)) != 1
+            ):
+                raise GBrainProtocolError(
+                    "task project page and relationship readback did not match"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            rollback_verified = False
+            try:
+                if "remove_old" in journal and current_project is not None:
+                    self.runner.run(
+                        "add_link",
+                        {
+                            "from": task_slug,
+                            "to": current_project,
+                            "link_type": "member_of",
+                            "context": "Restored GTasks project assignment.",
+                            "link_source": "gtasks",
+                        },
+                    )
+                if "add_new" in journal and project_slug is not None:
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": task_slug,
+                            "to": project_slug,
+                            "link_type": "member_of",
+                        },
+                    )
+                if "put_page" in journal:
+                    self.runner.run(
+                        "put_page",
+                        {"slug": task_slug, "content": original_content},
+                    )
+                rollback_page = self.runner.run("get_page", {"slug": task_slug})
+                rollback_links = self.runner.run("get_links", {"slug": task_slug})
+                rollback_task = Task.from_page(
+                    rollback_page,
+                    edges=rollback_links,
+                )
+                rollback_verified = rollback_task.project == current_project
+            except (DomainValidationError, GBrainError):
+                rollback_verified = False
+            outcome = (
+                "Rollback verified."
+                if rollback_verified
+                else "Rollback could not be verified; inspect the task before retrying."
+            )
+            raise PartialMutationError(
+                task_slug,
+                f"Task project assignment was not verified. {outcome}",
+            ) from exc
+        return ProjectAssignmentReceipt(
+            task_slug=task_slug,
+            project_slug=project_slug,
             verified=True,
         )
 

@@ -121,6 +121,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.refreshDeferred", javascript)
         self.assertIn("scheduleAutoRefresh", javascript)
 
+    def test_projects_have_durable_create_and_separate_assignment_flows(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="new-project-dialog"', html)
+        self.assertIn('id="new-project-title"', html)
+        self.assertIn("Create project", html)
+        self.assertIn('id="task-project-select"', html)
+        self.assertIn('id="task-project-save"', html)
+        self.assertIn("Assignment is separate from project creation", html)
+        self.assertIn('fetch("/api/projects"', javascript)
+        self.assertIn("submitNewProject", javascript)
+        self.assertIn("/project`", javascript)
+        self.assertIn("No tasks assigned yet", javascript)
+
     def test_needs_attention_keeps_visible_tasks_and_offers_safe_repair(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

@@ -9,7 +9,9 @@ from gtasks.domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
     GOALS_ROOT,
+    PROJECTS_ROOT,
     Goal,
+    Project,
     Task,
     new_inbox_task,
 )
@@ -23,6 +25,9 @@ from gtasks.gbrain import (
     PartialMutationError,
     StatusMutationReceipt,
     MembershipRepairReceipt,
+    ProjectAssignmentReceipt,
+    ProjectMutationReceipt,
+    ProjectRead,
 )
 from gtasks.server import build_server
 
@@ -33,15 +38,19 @@ class FakeAdapter:
         active: tuple[Task, ...] = (),
         completed: tuple[Task, ...] = (),
         goals: tuple[Goal, ...] = (),
+        projects: tuple[Project, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
         self.goals = goals
+        self.projects = projects
         self.created: list[Task] = []
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
         self.next_action_updates: list[tuple[str, str, datetime]] = []
         self.membership_repairs: list[str] = []
+        self.created_projects: list[Project] = []
+        self.project_assignments: list[tuple[str, str | None]] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
@@ -53,6 +62,26 @@ class FakeAdapter:
 
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
+
+    def list_projects(self) -> ProjectRead:
+        return ProjectRead(projects=self.projects)
+
+    def create_project(self, project: Project) -> ProjectMutationReceipt:
+        self.created_projects.append(project)
+        self.projects = (*self.projects, project)
+        return ProjectMutationReceipt(project_slug=project.slug, verified=True)
+
+    def set_task_project(
+        self,
+        task_slug: str,
+        project_slug: str | None,
+    ) -> ProjectAssignmentReceipt:
+        self.project_assignments.append((task_slug, project_slug))
+        return ProjectAssignmentReceipt(
+            task_slug=task_slug,
+            project_slug=project_slug,
+            verified=True,
+        )
 
     def set_task_goal(self, task_slug: str, goal_slug: str | None) -> GoalLinkReceipt:
         self.goal_links.append((task_slug, goal_slug))
@@ -112,6 +141,15 @@ def sample_goal(slug: str = "goals/ship-product") -> Goal:
     )
 
 
+def sample_project(slug: str = "projects/ship-product") -> Project:
+    return Project(
+        slug=slug,
+        title="Ship the product",
+        status="active",
+        summary="Ship the product",
+    )
+
+
 class ServerHarness:
     def __init__(self, test_case: unittest.TestCase, adapter: FakeAdapter) -> None:
         self.server = build_server(
@@ -167,7 +205,7 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.3")
+        self.assertEqual(payload["version"], "V0.0.4")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -175,10 +213,11 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.3")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.4")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.4")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][3]["version"], "V0.0.1")
 
 
 class TasksApiTests(unittest.TestCase):
@@ -602,6 +641,55 @@ class TaskNextActionApiTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "partial_write")
         self.assertEqual(payload["slug"], "tasks/ship-gtasks")
+
+
+class ProjectApiTests(unittest.TestCase):
+    def test_lists_durable_projects_even_without_assigned_tasks(self) -> None:
+        harness = ServerHarness(
+            self,
+            FakeAdapter(projects=(sample_project(),)),
+        )
+
+        status, payload, _ = harness.request("GET", "/api/projects")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["root_slug"], PROJECTS_ROOT)
+        self.assertEqual(
+            [project["slug"] for project in payload["projects"]],
+            ["projects/ship-product"],
+        )
+
+    def test_creates_a_project_only_after_verified_adapter_receipt(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/projects",
+            {"title": "Interview preparation"},
+        )
+
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(adapter.created_projects[0].title, "Interview preparation")
+        self.assertTrue(payload["project"]["slug"].startswith("projects/"))
+
+    def test_assigns_a_task_to_a_durable_project_separately(self) -> None:
+        adapter = FakeAdapter(projects=(sample_project(),))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/project",
+            {"project_slug": "projects/ship-product"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(
+            adapter.project_assignments,
+            [("tasks/ship-gtasks", "projects/ship-product")],
+        )
 
 
 class TaskRelationshipRepairApiTests(unittest.TestCase):

@@ -165,10 +165,6 @@
           </section>
           <dl class="detail-list">
             <div>
-              <dt>Project</dt>
-              <dd id="detail-project"></dd>
-            </div>
-            <div>
               <dt>Priority</dt>
               <dd id="detail-priority"></dd>
             </div>
@@ -177,6 +173,20 @@
               <dd id="detail-due"></dd>
             </div>
           </dl>
+          <div class="project-link-editor">
+            <label for="task-project-select">Assign to project</label>
+            <div class="project-link-controls">
+              <select id="task-project-select">
+                <option value="">No project</option>
+              </select>
+              <button class="secondary-button" id="task-project-save" type="button">Save</button>
+            </div>
+            <p>
+              Assignment is separate from project creation and is stored as a
+              verified typed <code>member_of</code> relationship.
+            </p>
+            <p class="form-error is-hidden" id="task-project-error" role="alert"></p>
+          </div>
           <div class="goal-link-editor">
             <label for="task-goal-select">Advances goal</label>
             <div class="goal-link-controls">
@@ -280,6 +290,40 @@
           <p>Creates one real GBrain task in Tony’s Tasks.</p>
           <button class="submit-button" id="quick-add-submit" type="submit">
             Add to Inbox
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="quick-add-dialog" id="new-project-dialog">
+      <form method="dialog" class="quick-add-form" id="new-project-form">
+        <div class="dialog-heading">
+          <div>
+            <p>New durable project</p>
+            <h2>Create a project</h2>
+          </div>
+          <button class="icon-button" id="new-project-close" type="button" aria-label="Close New Project">×</button>
+        </div>
+        <label for="new-project-title">Project title</label>
+        <input
+          id="new-project-title"
+          name="title"
+          type="text"
+          maxlength="160"
+          autocomplete="off"
+          placeholder="e.g. Prepare for OpenAI interviews"
+          required
+        >
+        <p>
+          Creation writes a real <code>type: project</code> node to Tony’s
+          Projects and verifies both the page and collection relationship
+          before showing success.
+        </p>
+        <p class="form-error is-hidden" id="new-project-error" role="alert"></p>
+        <div class="dialog-footer">
+          <p>Assign tasks separately from each task’s details.</p>
+          <button class="submit-button" id="new-project-submit" type="submit">
+            Create project
           </button>
         </div>
       </form>

@@ -989,7 +989,8 @@ kbd {
   letter-spacing: -0.035em;
 }
 
-.goal-link-editor {
+.goal-link-editor,
+.project-link-editor {
   margin: 0 0 25px;
   padding: 15px;
   border: 1px solid var(--line);
@@ -997,20 +998,23 @@ kbd {
   background: var(--surface-muted);
 }
 
-.goal-link-editor > label {
+.goal-link-editor > label,
+.project-link-editor > label {
   display: block;
   margin-bottom: 8px;
   font-size: 11px;
   font-weight: 700;
 }
 
-.goal-link-controls {
+.goal-link-controls,
+.project-link-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
-.goal-link-controls select {
+.goal-link-controls select,
+.project-link-controls select {
   min-width: 0;
   height: 38px;
   padding: 0 30px 0 10px;
@@ -1022,14 +1026,16 @@ kbd {
   font-size: 11px;
 }
 
-.goal-link-editor > p {
+.goal-link-editor > p,
+.project-link-editor > p {
   margin: 8px 0 0;
   color: var(--faint);
   font-size: 9.5px;
   line-height: 1.4;
 }
 
-.goal-link-editor .form-error {
+.goal-link-editor .form-error,
+.project-link-editor .form-error {
   color: #803c34;
   font-size: 10px;
 }
@@ -1272,6 +1278,65 @@ kbd {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
+}
+
+.projects-view-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.projects-view-heading h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.projects-view-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.project-card {
+  min-width: 0;
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.project-card-status {
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.project-card h2 {
+  margin: 8px 0 5px;
+  font-size: 14px;
+}
+
+.project-card p,
+.project-card code {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-card code {
+  display: block;
+  margin-top: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .goal-card {
@@ -1821,7 +1886,8 @@ kbd {
     padding: 2px 20px 20px;
   }
 
-  .goals-grid {
+  .goals-grid,
+  .projects-grid {
     grid-template-columns: 1fr;
   }
 

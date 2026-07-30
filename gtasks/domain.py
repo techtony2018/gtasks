@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 ACTIVE_ROOT = "collections/tonys-tasks"
 COMPLETED_ROOT = "collections/tonys-completed-tasks"
 GOALS_ROOT = "collections/tonys-goals"
+PROJECTS_ROOT = "projects/tonys-projects"
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 
 TASK_STATUSES = frozenset(
@@ -24,6 +25,7 @@ TASK_RELATIONSHIPS = frozenset(
     {"member_of", "child_of", "depends_on", "blocked_by", "advances_goal"}
 )
 GOAL_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelled"})
+PROJECT_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelled"})
 
 
 class DomainValidationError(ValueError):
@@ -418,6 +420,75 @@ class Goal:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class Project:
+    slug: str
+    title: str
+    status: str
+    summary: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "Project":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("projects/"):
+            raise DomainValidationError("project slug must start with projects/")
+        if slug == PROJECTS_ROOT or page.get("type") != "project":
+            raise DomainValidationError(f"{slug} is not a project page")
+        title = page.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise DomainValidationError("project title is required")
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise DomainValidationError(f"{slug} has no frontmatter")
+        links = _links_from(frontmatter)
+        frontmatter_member = any(
+            link["to"] == PROJECTS_ROOT and link["type"] == "involved_in"
+            for link in links
+        )
+        graph_member = any(
+            edge.get("from_slug") == slug
+            and edge.get("to_slug") == PROJECTS_ROOT
+            and edge.get("link_type") == "involved_in"
+            for edge in edges
+        )
+        if not (frontmatter_member or graph_member):
+            raise DomainValidationError(
+                f"project must belong to {PROJECTS_ROOT}"
+            )
+        status = frontmatter.get("status", "active")
+        if status not in PROJECT_STATUSES:
+            raise DomainValidationError(
+                f"project status must be one of {', '.join(sorted(PROJECT_STATUSES))}"
+            )
+        summary = frontmatter.get("summary", title)
+        if not isinstance(summary, str):
+            raise DomainValidationError("project summary must be text")
+        return cls(
+            slug=slug,
+            title=title.strip(),
+            status=status,
+            summary=summary.strip() or title.strip(),
+            created_at=_optional_datetime(frontmatter.get("created_at"), "created_at"),
+            updated_at=_optional_datetime(frontmatter.get("updated_at"), "updated_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "title": self.title,
+            "status": self.status,
+            "summary": self.summary,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 def default_goal_target_day(creation_day: date) -> date:
     quarter_end_month = ((creation_day.month - 1) // 3 + 1) * 3
     return date(
@@ -460,6 +531,25 @@ def new_inbox_task(
         scheduled_day=None,
         inbox=True,
         lifecycle_root=ACTIVE_ROOT,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def new_project(title: str, now: datetime, identity: str) -> Project:
+    clean_title = title.strip()
+    if not clean_title:
+        raise DomainValidationError("project title is required")
+    if len(clean_title) > 160:
+        raise DomainValidationError("project title must be 160 characters or fewer")
+    safe_identity = re.sub(r"[^a-z0-9]", "", identity.lower())[:12]
+    if len(safe_identity) < 6:
+        raise DomainValidationError("identity must contain at least 6 letters or numbers")
+    return Project(
+        slug=f"projects/{_slugify_title(clean_title)}-{safe_identity}",
+        title=clean_title,
+        status="active",
+        summary=clean_title,
         created_at=now,
         updated_at=now,
     )

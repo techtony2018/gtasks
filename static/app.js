@@ -15,6 +15,9 @@ const state = {
   autoRefreshDueAt: null,
   refreshDeferred: false,
   lastSyncedAt: null,
+  projects: [],
+  projectsLoading: true,
+  projectsError: "",
 };
 
 const viewMeta = {
@@ -92,7 +95,6 @@ const elements = {
   taskNextActionError: document.querySelector("#task-next-action-error"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
-  detailProject: document.querySelector("#detail-project"),
   detailPriority: document.querySelector("#detail-priority"),
   detailDue: document.querySelector("#detail-due"),
   detailGbrainLink: document.querySelector("#detail-gbrain-link"),
@@ -101,6 +103,9 @@ const elements = {
   taskGoalSave: document.querySelector("#task-goal-save"),
   taskGoalError: document.querySelector("#task-goal-error"),
   taskGoalNav: document.querySelector("#task-goal-nav"),
+  taskProjectSelect: document.querySelector("#task-project-select"),
+  taskProjectSave: document.querySelector("#task-project-save"),
+  taskProjectError: document.querySelector("#task-project-error"),
   goalDetailClose: document.querySelector("#goal-detail-close"),
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
@@ -123,6 +128,12 @@ const elements = {
   aboutClose: document.querySelector("#about-close"),
   aboutCurrentVersion: document.querySelector("#about-current-version"),
   releaseHistory: document.querySelector("#release-history"),
+  newProjectDialog: document.querySelector("#new-project-dialog"),
+  newProjectForm: document.querySelector("#new-project-form"),
+  newProjectTitle: document.querySelector("#new-project-title"),
+  newProjectSubmit: document.querySelector("#new-project-submit"),
+  newProjectClose: document.querySelector("#new-project-close"),
+  newProjectError: document.querySelector("#new-project-error"),
 };
 
 function node(tag, className, text) {
@@ -257,7 +268,7 @@ function navCounts() {
     board: state.snapshot.tasks.length,
     upcoming: state.snapshot.views.upcoming.length,
     blocked: state.snapshot.views.blocked.length,
-    projects: state.snapshot.views.projects.length,
+    projects: state.projects.length,
     goals: state.snapshot.goals.length,
     completed: state.snapshot.views.completed.length,
   };
@@ -634,6 +645,193 @@ function renderGoalsView() {
   return fragment;
 }
 
+function renderProjectsView() {
+  const fragment = document.createDocumentFragment();
+  const heading = node("div", "projects-view-heading");
+  const copy = node("div");
+  copy.append(
+    node("h2", "", "Durable projects"),
+    node(
+      "p",
+      "",
+      "Projects remain here even before a task is assigned.",
+    ),
+  );
+  const create = node("button", "submit-button", "New Project");
+  create.type = "button";
+  create.addEventListener("click", openNewProject);
+  heading.append(copy, create);
+  fragment.append(heading);
+  if (state.projectsLoading) {
+    fragment.append(node("div", "section-empty", "Reading Tony’s Projects…"));
+    return fragment;
+  }
+  if (state.projectsError) {
+    const error = node("div", "section-empty", state.projectsError);
+    const retry = node("button", "secondary-button", "Try again");
+    retry.type = "button";
+    retry.addEventListener("click", loadProjects);
+    error.append(retry);
+    fragment.append(error);
+    return fragment;
+  }
+  if (!state.projects.length) {
+    fragment.append(
+      node(
+        "div",
+        "section-empty",
+        "No durable GTasks projects yet. Create one, then assign tasks separately.",
+      ),
+    );
+    return fragment;
+  }
+  const grid = node("div", "projects-grid");
+  state.projects.forEach((project) => {
+    const tasks = state.snapshot.tasks.filter(
+      (task) => task.project === project.slug,
+    );
+    const card = node("article", "project-card");
+    card.append(
+      node("span", "project-card-status", project.status),
+      node("h2", "", project.title),
+      node(
+        "p",
+        "",
+        tasks.length
+          ? `${tasks.length} assigned task${tasks.length === 1 ? "" : "s"}`
+          : "No tasks assigned yet",
+      ),
+      node("code", "", project.slug),
+    );
+    grid.append(card);
+  });
+  fragment.append(grid);
+  return fragment;
+}
+
+async function loadProjects() {
+  state.projectsLoading = true;
+  state.projectsError = "";
+  if (state.snapshot) render();
+  try {
+    const response = await fetch("/api/projects", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Projects could not be read from GBrain.");
+    }
+    state.projects = payload.projects;
+  } catch (error) {
+    state.projectsError =
+      error.message || "Projects could not be read from GBrain.";
+  } finally {
+    state.projectsLoading = false;
+    if (state.snapshot) render();
+  }
+}
+
+function openNewProject() {
+  elements.newProjectForm.reset();
+  elements.newProjectError.classList.add("is-hidden");
+  elements.newProjectDialog.showModal();
+  window.setTimeout(() => elements.newProjectTitle.focus(), 0);
+}
+
+async function submitNewProject(event) {
+  event.preventDefault();
+  elements.newProjectError.classList.add("is-hidden");
+  elements.newProjectSubmit.disabled = true;
+  elements.newProjectSubmit.textContent = "Creating in GBrain…";
+  try {
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ title: elements.newProjectTitle.value }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Project could not be created.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    await loadProjects();
+    const created = state.projects.some(
+      (project) => project.slug === result.project.slug,
+    );
+    if (!created) {
+      throw new Error(
+        "GBrain accepted the project, but it was not present after collection refresh.",
+      );
+    }
+    elements.newProjectDialog.close();
+    state.activeView = "projects";
+    showToast("Project created, linked, and verified in GBrain.");
+    render();
+  } catch (error) {
+    elements.newProjectError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug}; do not retry yet.`
+        : error.message;
+    elements.newProjectError.classList.remove("is-hidden");
+  } finally {
+    elements.newProjectSubmit.disabled = false;
+    elements.newProjectSubmit.textContent = "Create project";
+  }
+}
+
+async function saveTaskProject() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const taskSlug = state.selectedSlug;
+  const projectSlug = elements.taskProjectSelect.value;
+  elements.taskProjectError.classList.add("is-hidden");
+  elements.taskProjectSave.disabled = true;
+  elements.taskProjectSave.textContent = "Saving…";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/project`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ project_slug: projectSlug }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Project assignment failed.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    showToast(
+      projectSlug
+        ? "Task project assignment verified in GBrain."
+        : "Task removed from its project in GBrain.",
+    );
+    await loadTasks();
+    selectTask(taskSlug);
+  } catch (error) {
+    elements.taskProjectError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug} before retrying.`
+        : error.message;
+    elements.taskProjectError.classList.remove("is-hidden");
+  } finally {
+    elements.taskProjectSave.textContent = "Save";
+    elements.taskProjectSave.disabled =
+      elements.taskProjectSelect.value ===
+      elements.taskProjectSelect.dataset.currentProject;
+  }
+}
+
 async function repairActiveMembership(taskSlug, button) {
   button.disabled = true;
   button.textContent = "Repairing…";
@@ -747,6 +945,8 @@ function render() {
       ? renderToday()
       : view === "board"
         ? renderBoard()
+      : view === "projects"
+        ? renderProjectsView()
       : view === "goals"
         ? renderGoalsView()
         : renderListView(view);
@@ -783,12 +983,24 @@ function selectTask(slug) {
   elements.taskNextActionError.classList.add("is-hidden");
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
-  elements.detailProject.textContent = task.project || "No project";
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
   elements.detailSlug.textContent = task.slug;
   elements.taskGoalError.classList.add("is-hidden");
+  elements.taskProjectError.classList.add("is-hidden");
+  elements.taskProjectSelect.replaceChildren();
+  const noProjectOption = node("option", "", "No project");
+  noProjectOption.value = "";
+  elements.taskProjectSelect.append(noProjectOption);
+  state.projects.forEach((project) => {
+    const option = node("option", "", project.title);
+    option.value = project.slug;
+    elements.taskProjectSelect.append(option);
+  });
+  elements.taskProjectSelect.value = task.project || "";
+  elements.taskProjectSelect.dataset.currentProject = task.project || "";
+  elements.taskProjectSave.disabled = true;
   elements.taskGoalSelect.replaceChildren();
   const emptyOption = node("option", "", "No linked goal");
   emptyOption.value = "";
@@ -1336,6 +1548,17 @@ elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskGoalSave.addEventListener("click", saveTaskGoal);
 elements.taskStatusSave.addEventListener("click", saveTaskStatus);
 elements.taskNextActionSave.addEventListener("click", saveTaskNextAction);
+elements.taskProjectSave.addEventListener("click", saveTaskProject);
+elements.taskProjectSelect.addEventListener("change", () => {
+  elements.taskProjectError.classList.add("is-hidden");
+  elements.taskProjectSave.disabled =
+    elements.taskProjectSelect.value ===
+    elements.taskProjectSelect.dataset.currentProject;
+});
+elements.newProjectClose.addEventListener("click", () => {
+  elements.newProjectDialog.close();
+});
+elements.newProjectForm.addEventListener("submit", submitNewProject);
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;
   if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
@@ -1404,3 +1627,4 @@ document.addEventListener("keydown", (event) => {
 
 loadReleases();
 loadTasks({ reason: "initial" });
+loadProjects();

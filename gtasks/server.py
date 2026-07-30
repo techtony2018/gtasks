@@ -4,6 +4,7 @@ import argparse
 import json
 import mimetypes
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,9 +20,11 @@ from .domain import (
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
     GOALS_ROOT,
+    PROJECTS_ROOT,
     Task,
     group_today,
     new_inbox_task,
+    new_project,
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
 from .releases import release_payload
@@ -43,9 +46,16 @@ def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
 
 
 def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
-    active_read = adapter.list_collection_tasks(ACTIVE_ROOT)
-    completed_read = adapter.list_collection_tasks(COMPLETED_ROOT)
-    goal_read = adapter.list_goals()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        active_future = executor.submit(adapter.list_collection_tasks, ACTIVE_ROOT)
+        completed_future = executor.submit(
+            adapter.list_collection_tasks,
+            COMPLETED_ROOT,
+        )
+        goals_future = executor.submit(adapter.list_goals)
+        active_read = active_future.result()
+        completed_read = completed_future.result()
+        goal_read = goals_future.result()
     active = _dedupe_tasks(list(active_read.tasks))
     archived = _dedupe_tasks(list(completed_read.tasks))
     all_tasks = _dedupe_tasks(active + archived)
@@ -204,6 +214,7 @@ def _handler_class(
                         "active_root": ACTIVE_ROOT,
                         "completed_root": COMPLETED_ROOT,
                         "goals_root": GOALS_ROOT,
+                        "projects_root": PROJECTS_ROOT,
                     },
                 )
                 return
@@ -213,6 +224,17 @@ def _handler_class(
             if path == "/api/tasks":
                 try:
                     payload = build_task_snapshot(adapter, clock().date())
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, payload)
+                return
+            if path == "/api/projects":
+                try:
+                    payload = adapter.list_projects().to_dict()
                 except GBrainError as exc:
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -245,6 +267,54 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/projects":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                raw_title = payload.get("title", "")
+                if not isinstance(raw_title, str):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "project title must be text."},
+                    )
+                    return
+                try:
+                    project = new_project(
+                        raw_title,
+                        now=clock(),
+                        identity=identity_factory(),
+                    )
+                    receipt = adapter.create_project(project)
+                except DomainValidationError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_project"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(
+                    HTTPStatus.CREATED,
+                    {
+                        "project": project.to_dict(),
+                        "receipt": receipt.to_dict(),
+                    },
+                )
+                return
             if path != "/api/tasks":
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
                 return
@@ -333,6 +403,9 @@ def _handler_class(
             elif path.endswith("/next-action"):
                 action = "next_action"
                 suffix = "/next-action"
+            elif path.endswith("/project"):
+                action = "project"
+                suffix = "/project"
             elif path.endswith("/status"):
                 action = "status"
                 suffix = "/status"
@@ -418,6 +491,48 @@ def _handler_class(
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {"error": str(exc), "code": "invalid_next_action"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
+            if action == "project":
+                project_slug = payload.get("project_slug")
+                if project_slug == "":
+                    project_slug = None
+                if project_slug is not None and not isinstance(project_slug, str):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "project_slug must be a project slug or null.",
+                            "code": "invalid_project_assignment",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.set_task_project(task_slug, project_slug)
+                except ValueError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": "invalid_project_assignment",
+                        },
                     )
                     return
                 except PartialMutationError as exc:
