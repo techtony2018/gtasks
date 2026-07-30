@@ -201,7 +201,11 @@ always equals both unique evidence and receipt counts. GTasks requires
 `job_applied` event completes the task, using the same verified canonical
 status mutation as the UI.
 
-Duplicate is a reviewable action in task details. It copies task intent,
+Task detail is read-only by default. Select Edit to change title, status,
+priority, due date, next action, project, associated goal, optional metric, or
+assignee in one form. The detail surface retains navigation and its single Edit
+action, avoiding competing field-level saves. Duplicate is a reviewable action
+in the canonical task workflow. It copies task intent,
 priority, Next Action, project, goal, and metric configuration, while resetting
 status to Planned, current progress to zero, event evidence and receipts to
 empty, and completion time to none. The user reviews and chooses the new due
@@ -268,7 +272,7 @@ already archived task moves the same task identity back to the active root.
 
 Loading the app, Board, refreshing, opening Create or Duplicate, running the
 test suite, and browser verification are read-only. Only an explicit submitted
-Create Task/duplicate, goal Save, status Save, Next Action Save, metric
+Create Task, the full Edit save, duplicate, goal lifecycle actions, metric
 configuration, or relationship repair mutates GBrain.
 
 ## Views
@@ -322,7 +326,7 @@ GTasks operational history defaults to
 `GTASKS_OPERATION_LOG_FILE` and `GTASKS_QUEUE_LOG_FILE` provide isolated test
 overrides.
 
-The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
+The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. The full Task Edit form can select a goal; both detail surfaces navigate across the relationship.
 
 Goals can be created from complete user-entered outcome, success criteria,
 strategy, constraints, cadence, and optional target date. Pause requires a

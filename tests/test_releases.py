@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.13")
+        self.assertEqual(__version__, "V0.0.14")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -57,6 +57,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.11",
                 "V0.0.12",
                 "V0.0.13",
+                "V0.0.14",
             ],
         )
 
@@ -138,6 +139,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("reduced Quick Add", release["summary"])
         self.assertIn("sidebar", release["summary"])
         self.assertIn("Today and Inbox", release["summary"])
+
+    def test_v0_0_14_records_unified_task_editing(self) -> None:
+        release = RELEASES[13]
+
+        self.assertEqual(release["version"], "V0.0.14")
+        self.assertIn("read-only until Edit", release["summary"])
+        self.assertIn("associated goal", release["summary"])
+        self.assertIn("assignment history", release["summary"])
 
 
 if __name__ == "__main__":

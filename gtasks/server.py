@@ -1148,6 +1148,67 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             prefix = "/api/tasks/"
+            if path.startswith(prefix) and "/" not in path[len(prefix) :]:
+                task_slug = unquote(path[len(prefix) :])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                allowed = {
+                    "title", "detail", "priority", "due_day", "next_action",
+                    "project_slug", "goal_slug", "status", "assignee_slug",
+                    "progress_metric", "handoff_reason", "complete_when_target_reached",
+                }
+                if set(payload) - allowed:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "task edit contains unsupported fields.", "code": "invalid_task_edit"})
+                    return
+                try:
+                    due_day = date.fromisoformat(payload.get("due_day", ""))
+                    current = adapter.get_task(task_slug)
+                    raw_metric = payload.get("progress_metric")
+                    if isinstance(raw_metric, dict) and raw_metric.get("event_binding") == "job_applied":
+                        event_progress = current.event_progress
+                        current_value = raw_metric.get("current")
+                        if event_progress is None or current_value != len(event_progress.receipt_ids):
+                            raise DomainValidationError("Automatic job-applied progress is changed only by verified queue evidence.")
+                        progress_metric = ProgressMetric(
+                            kind=raw_metric.get("kind", "count"), label=raw_metric.get("label"),
+                            unit="job_application", target=raw_metric.get("target"), current=current_value,
+                            event_binding="job_applied", auto_complete=bool(raw_metric.get("auto_complete", True)),
+                            task_day=due_day, timezone="America/Los_Angeles",
+                        )
+                    else:
+                        progress_metric, event_progress = _progress_metric_from_request(raw_metric, due_day=due_day)
+                    requested_status = payload.get("status")
+                    if requested_status not in EDITABLE_TASK_STATUSES:
+                        raise DomainValidationError("status must be a supported task status")
+                    if progress_metric and progress_metric.current >= progress_metric.target and requested_status not in {"completed", "cancelled"}:
+                        if payload.get("complete_when_target_reached") is not True:
+                            raise DomainValidationError("Metric target is reached. Confirm completion or choose a completed status explicitly.")
+                        requested_status = "completed"
+                    receipt = adapter.edit_task(
+                        task_slug,
+                        title=payload.get("title", ""), detail=payload.get("detail", ""),
+                        priority=payload.get("priority", "normal"), due_day=due_day,
+                        next_action=payload.get("next_action", ""),
+                        project_slug=payload.get("project_slug") or None,
+                        goal_slug=payload.get("goal_slug") or None,
+                        status=requested_status,
+                        assignee_slug=payload.get("assignee_slug", "tony"),
+                        progress_metric=progress_metric, event_progress=event_progress,
+                        handoff_reason=payload.get("handoff_reason", ""), now=clock(),
+                    )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_task_edit"})
+                    return
+                except PartialMutationError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
+                    return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             membership_suffix = "/relationships/active-membership"
             if path.endswith(membership_suffix):
                 action = "active_membership"

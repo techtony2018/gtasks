@@ -12,8 +12,8 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn('data-view="board"', html)
         self.assertIn('data-count="board"', html)
-        self.assertIn('id="task-status-select"', html)
-        self.assertIn('id="task-status-save"', html)
+        self.assertIn('id="task-edit-button"', html)
+        self.assertIn('id="task-editor-status"', html)
         for status in (
             "planned",
             "active",
@@ -25,7 +25,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn('<option value="waiting">', html)
 
         self.assertIn("function renderBoard()", javascript)
-        self.assertIn("/status`", javascript)
+        self.assertIn('`/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}`', javascript)
         self.assertIn("renderBoard()", javascript)
 
     def test_board_has_five_exact_drop_destinations_and_retry(self) -> None:
@@ -87,10 +87,10 @@ class FrontendContractTests(unittest.TestCase):
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn('id="goal-relationship-notice"', html)
-        self.assertIn("<code>advances_goal</code>", html)
-        self.assertIn("<code>advanced_by</code>", html)
+        self.assertIn('id="task-editor-goal"', html)
+        self.assertIn('id="task-edit-button"', html)
         self.assertIn("legacy_one_way_tasks", javascript)
-        self.assertIn("Save its current goal", javascript)
+        self.assertIn("choose Edit, and save its current goal", javascript)
         self.assertIn("/relationships`", javascript)
         self.assertIn("advanced_by", readme)
         self.assertIn("Saving the current goal selection", readme)
@@ -166,18 +166,16 @@ class FrontendContractTests(unittest.TestCase):
         )
         self.assertNotIn('fetch("/api/logs", {\n      method:', javascript)
 
-    def test_task_detail_has_an_accessible_next_action_editor(self) -> None:
+    def test_task_detail_is_read_only_until_the_full_editor_opens(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="task-next-action-input"', html)
-        self.assertIn('maxlength="240"', html)
-        self.assertIn('id="task-next-action-save"', html)
-        self.assertIn('id="task-next-action-error"', html)
-        self.assertIn("single next concrete physical or actionable step", html)
-        self.assertIn("/next-action`", javascript)
-        self.assertIn("saveTaskNextAction", javascript)
-        self.assertIn('event.key === "Enter"', javascript)
+        self.assertIn('id="task-next-action-value"', html)
+        self.assertIn('id="task-edit-button"', html)
+        self.assertIn('id="task-editor-next-action"', html)
+        self.assertNotIn('id="task-next-action-save"', html)
+        self.assertIn("function openEditTask", javascript)
+        self.assertIn('method: state.taskEditorMode === "edit" ? "PATCH" : "POST"', javascript)
 
     def test_full_create_and_duplicate_offer_optional_progress_metrics(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -195,7 +193,7 @@ class FrontendContractTests(unittest.TestCase):
             "task-metric-current",
             "task-metric-preview",
             "task-metric-event-binding",
-            "task-duplicate-button",
+            "task-editor-status",
         ):
             self.assertIn(f'id="{element_id}"', html)
         self.assertIn("Track a metric", html)
@@ -282,7 +280,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('value="agents/tammy"', html)
         self.assertIn("creates one authorized, queued agent work item", html)
         self.assertIn("assignee_slug", javascript)
-        self.assertIn("result.task.owner_agent", javascript)
+        self.assertIn("savedTask.owner_agent", javascript)
         self.assertNotIn('id="quick-add-button"', html)
         self.assertNotIn('id="quick-add-dialog"', html)
         self.assertNotIn("openQuickAdd", javascript)
@@ -336,12 +334,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="new-project-dialog"', html)
         self.assertIn('id="new-project-title"', html)
         self.assertIn("Create project", html)
-        self.assertIn('id="task-project-select"', html)
-        self.assertIn('id="task-project-save"', html)
-        self.assertIn("Assignment is separate from project creation", html)
+        self.assertIn('id="task-editor-project"', html)
+        self.assertIn('id="task-edit-button"', html)
+        self.assertNotIn('id="task-project-save"', html)
         self.assertIn('fetch("/api/projects"', javascript)
         self.assertIn("submitNewProject", javascript)
-        self.assertIn("/project`", javascript)
+        self.assertIn("project_slug", javascript)
         self.assertIn("No tasks assigned yet", javascript)
         self.assertIn("state.projectIssues", javascript)
         self.assertIn("payload.issues", javascript)

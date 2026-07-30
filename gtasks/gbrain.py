@@ -385,6 +385,20 @@ class ProjectAssignmentReceipt:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class TaskEditReceipt:
+    task_slug: str
+    task: Task
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "task": self.task.to_dict(),
+            "verified": self.verified,
+        }
+
+
 def _yaml_scalar(value: Any) -> str:
     if value is None:
         return "null"
@@ -2425,6 +2439,176 @@ class GBrainAdapter:
                 if task.slug == task_slug:
                     return task
         raise ValueError("task is not a member of an approved GTasks root")
+
+    def get_task(self, task_slug: str) -> Task:
+        page = self.runner.run("get_page", {"slug": task_slug})
+        links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("task readback was not structured")
+        if page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {page.get('type') or 'missing'}; repair the task type before editing"
+            )
+        return Task.from_page(page, edges=links)
+
+    def edit_task(
+        self,
+        task_slug: str,
+        *,
+        title: str,
+        detail: str,
+        priority: str,
+        due_day: date,
+        next_action: str,
+        project_slug: str | None,
+        goal_slug: str | None,
+        status: str,
+        assignee_slug: str,
+        progress_metric: ProgressMetric | None,
+        event_progress: EventProgress | None,
+        handoff_reason: str,
+        now: datetime,
+    ) -> TaskEditReceipt:
+        """Apply the full detail form through verified canonical mutations.
+
+        Page fields are written together first; relationship and lifecycle changes use
+        their existing readback/rollback paths. A later failure is always surfaced as
+        a partial mutation, never as an unverified success.
+        """
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("task edit snapshot was not structured")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}; repair the task type before editing"
+            )
+        task = Task.from_page(raw_page, edges=raw_links)
+        if status not in EDITABLE_TASK_STATUSES:
+            raise ValueError("task status is not supported")
+        if assignee_slug != "tony" and assignee_slug not in dict(AGENT_SCOPES):
+            raise ValueError("assignee must be Tony, Toddy, Timmy, or Tammy")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+            raise ValueError("title is required and must be 160 characters or fewer")
+        if not isinstance(detail, str):
+            raise ValueError("detail must be text")
+        if not isinstance(next_action, str) or len(next_action.strip()) > 240 or "\n" in next_action:
+            raise ValueError("next_action must be one concise line of 240 characters or fewer")
+        if priority not in {"low", "normal", "high", "urgent"}:
+            raise ValueError("priority is not supported")
+        if progress_metric and progress_metric.event_binding:
+            if event_progress is None or progress_metric.current != len(event_progress.receipt_ids):
+                raise ValueError("event-bound metric progress must match its verified evidence and receipts")
+
+        if project_slug != task.project:
+            approved = {project.slug for project in self.list_projects().projects}
+            if project_slug is not None and project_slug not in approved:
+                raise ValueError("project is not a durable member of Tony's Projects")
+        if goal_slug != task.goal:
+            approved_goals = {goal.slug for goal in self.list_goals().goals}
+            if goal_slug is not None and goal_slug not in approved_goals:
+                raise ValueError("goal is not a member of Tony's Goals")
+
+        raw_frontmatter = raw_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("task page has no frontmatter")
+        frontmatter = deepcopy(dict(raw_frontmatter))
+        frontmatter.update(
+            {
+                "type": "task",
+                "title": title.strip(),
+                "summary": title.strip(),
+                "detail": detail.strip(),
+                "priority": priority,
+                "due_day": due_day.isoformat(),
+                "next_action": next_action.strip(),
+                "progress_metric": progress_metric.to_dict() if progress_metric else None,
+                "event_progress": event_progress.to_dict() if event_progress else None,
+                "updated_at": now.isoformat(),
+            }
+        )
+        original_content = _render_preserved_page(raw_page, dict(raw_frontmatter))
+        desired_content = _render_preserved_page(raw_page, frontmatter)
+        try:
+            self.runner.run("put_page", {"slug": task_slug, "content": desired_content})
+            if project_slug != task.project:
+                self.set_task_project(task_slug, project_slug)
+            if goal_slug != task.goal:
+                self.set_task_goal(task_slug, goal_slug)
+            if assignee_slug != (task.owner_agent or "tony"):
+                self._move_task_assignee(task_slug, assignee_slug, handoff_reason, now)
+            if status != task.status:
+                self.set_task_status(task_slug, status, now)
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+                raise GBrainProtocolError("task edit readback was not structured")
+            stored = Task.from_page(stored_page, edges=stored_links)
+            if (
+                stored.title != title.strip() or stored.detail != detail.strip()
+                or stored.priority != priority or stored.due_day != due_day
+                or stored.next_action != next_action.strip() or stored.project != project_slug
+                or stored.goal != goal_slug or stored.status != status
+                or stored.owner_agent != (None if assignee_slug == "tony" else assignee_slug)
+                or stored.progress_metric != progress_metric or stored.event_progress != event_progress
+            ):
+                raise GBrainProtocolError("task edit readback did not match the requested values")
+            return TaskEditReceipt(task_slug=task_slug, task=stored, verified=True)
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                task_slug,
+                "Task edit was not fully verified. Some requested fields may be unchanged; inspect the task before retrying. " + str(exc),
+            ) from exc
+
+    def _move_task_assignee(
+        self, task_slug: str, assignee_slug: str, handoff_reason: str, now: datetime
+    ) -> None:
+        page = self.runner.run("get_page", {"slug": task_slug})
+        links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("task reassignment snapshot was not structured")
+        task = Task.from_page(page, edges=links)
+        old_owner = task.owner_agent or "tony"
+        old_root = task.lifecycle_root
+        target_root = ACTIVE_ROOT if assignee_slug == "tony" else dict(AGENT_SCOPES)[assignee_slug]
+        frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
+        raw_frontmatter_links = frontmatter.get("links")
+        if not isinstance(raw_frontmatter_links, list):
+            raise GBrainProtocolError("task frontmatter links must be a list")
+        retained = [
+            link for link in raw_frontmatter_links
+            if not (isinstance(link, Mapping) and (
+                (link.get("type") == "member_of" and link.get("to") in TASK_SCOPE_ROOTS)
+                or (link.get("type") == "assigned_to" and str(link.get("to", "")).startswith("agents/"))
+            ))
+        ]
+        retained.append({"to": target_root, "type": "member_of", "context": "GTasks current work scope."})
+        if assignee_slug != "tony":
+            retained.append({"to": assignee_slug, "type": "assigned_to", "context": "Tony assigned this work to the canonical agent."})
+        history = frontmatter.get("assignment_history")
+        if not isinstance(history, list):
+            history = []
+        history.append({"from": old_owner, "to": assignee_slug, "actor": "tony", "at": now.isoformat(), "reason": handoff_reason.strip(), "status": task.status})
+        frontmatter["type"] = "task"
+        frontmatter["links"] = retained
+        frontmatter["assignment_history"] = history[-100:]
+        frontmatter["updated_at"] = now.isoformat()
+        self.runner.run("put_page", {"slug": task_slug, "content": _render_preserved_page(page, frontmatter)})
+        if target_root != old_root:
+            self.runner.run("add_link", {"from": task_slug, "to": target_root, "link_type": "member_of", "context": "GTasks current work scope.", "link_source": "gtasks"})
+        if assignee_slug != "tony":
+            self.runner.run("add_link", {"from": task_slug, "to": assignee_slug, "link_type": "assigned_to", "context": "Tony assigned this work to the canonical agent.", "link_source": "gtasks"})
+        if old_owner != "tony":
+            self.runner.run("remove_link", {"from": task_slug, "to": old_owner, "link_type": "assigned_to"})
+        if target_root != old_root:
+            self.runner.run("remove_link", {"from": task_slug, "to": old_root, "link_type": "member_of"})
+        read_page = self.runner.run("get_page", {"slug": task_slug})
+        read_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(read_page, Mapping) or not isinstance(read_links, list):
+            raise GBrainProtocolError("task reassignment readback was not structured")
+        verified = Task.from_page(read_page, edges=read_links)
+        if verified.lifecycle_root != target_root or verified.owner_agent != (None if assignee_slug == "tony" else assignee_slug):
+            raise GBrainProtocolError("task reassignment retained a stale owner or collection membership")
 
     def set_task_status(
         self,

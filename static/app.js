@@ -112,10 +112,14 @@ const elements = {
   taskEditorTitle: document.querySelector("#task-editor-title"),
   taskEditorDetail: document.querySelector("#task-editor-detail"),
   taskEditorPriority: document.querySelector("#task-editor-priority"),
+  taskEditorStatusField: document.querySelector("#task-editor-status-field"),
+  taskEditorStatus: document.querySelector("#task-editor-status"),
   taskEditorDue: document.querySelector("#task-editor-due"),
   taskEditorNextAction: document.querySelector("#task-editor-next-action"),
   taskEditorAssigneeField: document.querySelector("#task-editor-assignee-field"),
   taskEditorAssignee: document.querySelector("#task-editor-assignee"),
+  taskEditorHandoffField: document.querySelector("#task-editor-handoff-field"),
+  taskEditorHandoffReason: document.querySelector("#task-editor-handoff-reason"),
   taskEditorProject: document.querySelector("#task-editor-project"),
   taskEditorGoal: document.querySelector("#task-editor-goal"),
   taskTrackMetric: document.querySelector("#task-track-metric"),
@@ -152,17 +156,12 @@ const elements = {
   detailContent: document.querySelector("#detail-content"),
   goalDetailContent: document.querySelector("#goal-detail-content"),
   detailClose: document.querySelector("#detail-close"),
-  taskStatusSelect: document.querySelector("#task-status-select"),
-  taskStatusSave: document.querySelector("#task-status-save"),
-  taskStatusError: document.querySelector("#task-status-error"),
+  taskDetailStatus: document.querySelector("#task-detail-status"),
+  taskEditButton: document.querySelector("#task-edit-button"),
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
-  taskNextActionEditor: document.querySelector("#task-next-action-editor"),
-  taskNextActionInput: document.querySelector("#task-next-action-input"),
-  taskNextActionSave: document.querySelector("#task-next-action-save"),
-  taskNextActionError: document.querySelector("#task-next-action-error"),
-  taskDuplicateButton: document.querySelector("#task-duplicate-button"),
+  taskNextActionValue: document.querySelector("#task-next-action-value"),
   taskProgressDetail: document.querySelector("#task-progress-detail"),
   taskProgressLabel: document.querySelector("#task-progress-label"),
   taskProgressValue: document.querySelector("#task-progress-value"),
@@ -174,15 +173,9 @@ const elements = {
   detailDue: document.querySelector("#detail-due"),
   detailGbrainLink: document.querySelector("#detail-gbrain-link"),
   detailSlug: document.querySelector("#detail-slug"),
-  taskGoalSelect: document.querySelector("#task-goal-select"),
-  taskGoalSave: document.querySelector("#task-goal-save"),
-  taskGoalError: document.querySelector("#task-goal-error"),
   taskGoalNav: document.querySelector("#task-goal-nav"),
-  taskProjectSelect: document.querySelector("#task-project-select"),
-  taskProjectSave: document.querySelector("#task-project-save"),
-  taskProjectError: document.querySelector("#task-project-error"),
-  taskProjectEditor: document.querySelector("#task-project-editor"),
-  taskGoalEditor: document.querySelector("#task-goal-editor"),
+  taskGoalValue: document.querySelector("#task-goal-value"),
+  taskProjectValue: document.querySelector("#task-project-value"),
   goalDetailClose: document.querySelector("#goal-detail-close"),
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
@@ -2433,15 +2426,7 @@ function selectTask(slug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
-  elements.taskStatusSelect.value = taskUiStatus(task);
-  elements.taskStatusSelect.dataset.currentStatus = task.status;
-  elements.taskStatusSave.disabled =
-    elements.taskStatusSelect.value === task.status;
-  elements.taskStatusError.classList.add("is-hidden");
-  elements.taskNextActionInput.value = task.next_action || "";
-  elements.taskNextActionInput.dataset.currentValue = task.next_action || "";
-  elements.taskNextActionSave.disabled = true;
-  elements.taskNextActionError.classList.add("is-hidden");
+  elements.taskDetailStatus.textContent = taskUiStatus(task) === "active" ? "In Progress" : taskUiStatus(task);
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
   const owner = task.owner || (
@@ -2462,11 +2447,7 @@ function selectTask(slug) {
       owner.avatar?.value || owner.name.slice(0, 1);
     elements.taskOwnerName.textContent = owner.name;
   }
-  const isAgentTask = Boolean(task.agent_work || task.owner_agent);
-  elements.taskNextActionEditor.classList.toggle("is-hidden", isAgentTask);
-  elements.taskProjectEditor.classList.toggle("is-hidden", isAgentTask);
-  elements.taskGoalEditor.classList.toggle("is-hidden", isAgentTask);
-  elements.taskDuplicateButton.classList.toggle("is-hidden", isAgentTask);
+  elements.taskNextActionValue.textContent = task.next_action || "No next action set.";
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -2486,44 +2467,18 @@ function selectTask(slug) {
   }
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
   elements.detailSlug.textContent = task.slug;
-  elements.taskGoalError.classList.add("is-hidden");
-  elements.taskProjectError.classList.add("is-hidden");
-  elements.taskProjectSelect.replaceChildren();
-  const noProjectOption = node("option", "", "No project");
-  noProjectOption.value = "";
-  elements.taskProjectSelect.append(noProjectOption);
-  state.projects.forEach((project) => {
-    const option = node("option", "", project.title);
-    option.value = project.slug;
-    elements.taskProjectSelect.append(option);
-  });
-  elements.taskProjectSelect.value = task.project || "";
-  elements.taskProjectSelect.dataset.currentProject = task.project || "";
-  elements.taskProjectSave.disabled = true;
-  elements.taskGoalSelect.replaceChildren();
-  const emptyOption = node("option", "", "No linked goal");
-  emptyOption.value = "";
-  elements.taskGoalSelect.append(emptyOption);
-  state.snapshot.goals
-    .filter(
-      (goal) =>
-        ["planned", "active"].includes(goal.status) ||
-        goal.slug === task.goal,
-    )
-    .forEach((goal) => {
-    const option = node("option", "", goal.title);
-    option.value = goal.slug;
-    elements.taskGoalSelect.append(option);
-    });
-  elements.taskGoalSelect.value = task.goal || "";
+  const project = state.projects.find((item) => item.slug === task.project);
+  elements.taskProjectValue.textContent = project?.title || (task.project ? task.project : "No project");
   const linkedGoal = state.snapshot.goals.find((goal) => goal.slug === task.goal);
   if (linkedGoal) {
-    elements.taskGoalNav.textContent = `View goal · ${linkedGoal.title}`;
+    elements.taskGoalNav.textContent = linkedGoal.title;
     elements.taskGoalNav.classList.remove("is-hidden");
     elements.taskGoalNav.onclick = () => selectGoal(linkedGoal.slug);
+    elements.taskGoalValue.textContent = "";
   } else {
     elements.taskGoalNav.classList.add("is-hidden");
     elements.taskGoalNav.onclick = null;
+    elements.taskGoalValue.textContent = task.goal ? task.goal : "No associated goal";
   }
   render();
 }
@@ -2585,7 +2540,7 @@ function renderGoalRelationshipTasks(goal, reciprocalTaskSlugs) {
     const count = legacyOneWayTasks.length;
     elements.goalRelationshipNotice.textContent =
       `${count} legacy one-way task link${count === 1 ? "" : "s"} remains visible. ` +
-      "Open a task below and Save its current goal to repair both relationship directions.";
+      "Open a task below, choose Edit, and save its current goal to repair both relationship directions.";
     elements.goalRelationshipNotice.classList.remove("is-hidden");
   } else {
     elements.goalRelationshipNotice.classList.add("is-hidden");
@@ -3059,7 +3014,7 @@ function resetTaskEditorMetric(metric = null) {
   elements.taskMetricLabel.value = metric?.label ||
     (metric?.unit === "job_application" ? "Job applications" : "");
   elements.taskMetricTarget.value = metric?.target || "";
-  elements.taskMetricCurrent.value = metric ? "0" : "0";
+  elements.taskMetricCurrent.value = metric ? String(metric.current) : "0";
   elements.taskMetricEventBinding.value = metric?.event_binding || "";
   updateTaskMetricPreview();
 }
@@ -3077,6 +3032,9 @@ function openCreateTask() {
   elements.taskEditorPriority.value = "normal";
   elements.taskEditorAssignee.value = "tony";
   elements.taskEditorAssigneeField.classList.remove("is-hidden");
+  elements.taskEditorStatusField.classList.add("is-hidden");
+  elements.taskEditorHandoffField.classList.add("is-hidden");
+  elements.taskEditorHandoffReason.classList.add("is-hidden");
   populateTaskEditorRelationships();
   resetTaskEditorMetric();
   elements.taskEditorError.classList.add("is-hidden");
@@ -3102,7 +3060,41 @@ function openDuplicateTask() {
   elements.taskEditorNextAction.value = task.next_action || "";
   elements.taskEditorAssignee.value = "tony";
   elements.taskEditorAssigneeField.classList.add("is-hidden");
+  elements.taskEditorStatusField.classList.add("is-hidden");
+  elements.taskEditorHandoffField.classList.add("is-hidden");
+  elements.taskEditorHandoffReason.classList.add("is-hidden");
   elements.taskEditorDue.value = dayAfter(state.snapshot?.as_of);
+  populateTaskEditorRelationships(task);
+  resetTaskEditorMetric(task.progress_metric);
+  if (task.progress_metric) elements.taskMetricCurrent.value = "0";
+  elements.taskEditorError.classList.add("is-hidden");
+  elements.taskEditorDialog.showModal();
+  window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
+}
+
+function openEditTask() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const task = findTaskBySlug(state.selectedSlug);
+  if (!task) return;
+  state.taskEditorMode = "edit";
+  state.taskEditorSourceSlug = task.slug;
+  elements.taskEditorForm.reset();
+  elements.taskEditorMode.textContent = "Review and save one canonical change";
+  elements.taskEditorHeading.textContent = "Edit Task";
+  elements.taskEditorSubmit.textContent = "Save changes";
+  elements.taskEditorSafety.textContent = "Every saved field and typed relationship is read back from GBrain before GTasks reports success.";
+  elements.taskEditorTitle.value = task.title || task.summary;
+  elements.taskEditorDetail.value = task.detail || "";
+  elements.taskEditorPriority.value = task.priority;
+  elements.taskEditorStatus.value = taskUiStatus(task);
+  elements.taskEditorStatusField.classList.remove("is-hidden");
+  elements.taskEditorDue.value = task.due_day || "";
+  elements.taskEditorNextAction.value = task.next_action || "";
+  elements.taskEditorAssigneeField.classList.remove("is-hidden");
+  elements.taskEditorAssignee.value = task.owner_agent || "tony";
+  elements.taskEditorHandoffField.classList.remove("is-hidden");
+  elements.taskEditorHandoffReason.classList.remove("is-hidden");
+  elements.taskEditorHandoffReason.value = "";
   populateTaskEditorRelationships(task);
   resetTaskEditorMetric(task.progress_metric);
   elements.taskEditorError.classList.add("is-hidden");
@@ -3142,8 +3134,7 @@ async function submitTaskEditor(event) {
   event.preventDefault();
   elements.taskEditorError.classList.add("is-hidden");
   elements.taskEditorSubmit.disabled = true;
-  const originalLabel =
-    state.taskEditorMode === "duplicate" ? "Create Duplicate" : "Create Task";
+  const originalLabel = state.taskEditorMode === "duplicate" ? "Create Duplicate" : state.taskEditorMode === "edit" ? "Save changes" : "Create Task";
   elements.taskEditorSubmit.textContent = "Saving in GBrain…";
   try {
     const payload = {
@@ -3158,13 +3149,29 @@ async function submitTaskEditor(event) {
       ...(state.taskEditorMode === "create"
         ? { assignee_slug: elements.taskEditorAssignee.value }
         : {}),
+      ...(state.taskEditorMode === "edit" ? {
+        status: elements.taskEditorStatus.value,
+        assignee_slug: elements.taskEditorAssignee.value,
+        handoff_reason: elements.taskEditorHandoffReason.value,
+      } : {}),
     };
-    const endpoint =
-      state.taskEditorMode === "duplicate"
+    if (
+      state.taskEditorMode === "edit" && payload.progress_metric &&
+      payload.progress_metric.current >= payload.progress_metric.target &&
+      !["completed", "cancelled"].includes(payload.status)
+    ) {
+      if (!window.confirm("This metric has reached its target. Mark the task completed when saving?")) {
+        return;
+      }
+      payload.complete_when_target_reached = true;
+    }
+    const endpoint = state.taskEditorMode === "edit"
+      ? `/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}`
+      : state.taskEditorMode === "duplicate"
         ? `/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}/duplicate`
         : "/api/tasks";
     const response = await fetch(endpoint, {
-      method: "POST",
+      method: state.taskEditorMode === "edit" ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -3172,7 +3179,8 @@ async function submitTaskEditor(event) {
       body: JSON.stringify(payload),
     });
     const result = await response.json();
-    if (!response.ok || !result.receipt?.verified || !result.task) {
+    const savedTask = result.task || result.receipt?.task;
+    if (!response.ok || !result.receipt?.verified || !savedTask) {
       const error = new Error(
         result.error || "Task creation did not include verified GBrain readback.",
       );
@@ -3181,27 +3189,37 @@ async function submitTaskEditor(event) {
       throw error;
     }
     elements.taskEditorDialog.close();
-    if (result.task.owner_agent) {
-      await loadAgentWork();
+    if (savedTask.owner_agent) {
+      await Promise.all([
+        loadAgentWork(),
+        ...(state.taskEditorMode === "edit" ? [loadTasks()] : []),
+      ]);
       state.showAgentTasks = true;
       elements.showAgentTasks.checked = true;
       state.activeView = "board";
       render();
-      selectTask(result.task.slug);
+      selectTask(savedTask.slug);
       const agent = state.agents.find(
-        (candidate) => candidate.slug === result.task.owner_agent,
+        (candidate) => candidate.slug === savedTask.owner_agent,
       );
       showToast(
-        `Created queued work for ${agent?.name || "the selected agent"} and verified its assignment in GBrain.`,
+        state.taskEditorMode === "edit"
+          ? `Saved “${savedTask.title}” and verified its assignment in GBrain.`
+          : `Created queued work for ${agent?.name || "the selected agent"} and verified its assignment in GBrain.`,
       );
     } else {
       showToast(
         state.taskEditorMode === "duplicate"
-          ? `Created a clean copy of “${result.task.title}” in GBrain.`
-          : `Created “${result.task.title}” in GBrain.`,
+          ? `Created a clean copy of “${savedTask.title}” in GBrain.`
+          : state.taskEditorMode === "edit"
+            ? `Saved “${savedTask.title}” and verified it in GBrain.`
+            : `Created “${savedTask.title}” in GBrain.`,
       );
-      await loadTasks();
-      selectTask(result.task.slug);
+      await Promise.all([
+        loadTasks(),
+        ...(state.taskEditorMode === "edit" ? [loadAgentWork()] : []),
+      ]);
+      selectTask(savedTask.slug);
     }
   } catch (error) {
     elements.taskEditorError.textContent =
@@ -3253,17 +3271,7 @@ elements.showAgentTasks.addEventListener("change", () => {
 });
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
-elements.taskGoalSave.addEventListener("click", saveTaskGoal);
-elements.taskStatusSave.addEventListener("click", saveTaskStatus);
-elements.taskNextActionSave.addEventListener("click", saveTaskNextAction);
-elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);
-elements.taskProjectSave.addEventListener("click", saveTaskProject);
-elements.taskProjectSelect.addEventListener("change", () => {
-  elements.taskProjectError.classList.add("is-hidden");
-  elements.taskProjectSave.disabled =
-    elements.taskProjectSelect.value ===
-    elements.taskProjectSelect.dataset.currentProject;
-});
+elements.taskEditButton.addEventListener("click", openEditTask);
 elements.newProjectClose.addEventListener("click", () => {
   elements.newProjectDialog.close();
 });
@@ -3325,24 +3333,6 @@ elements.proposalDecisionDialog.addEventListener("close", () => {
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;
   if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
-});
-elements.taskStatusSelect.addEventListener("change", () => {
-  elements.taskStatusError.classList.add("is-hidden");
-  elements.taskStatusSave.disabled =
-    elements.taskStatusSelect.value ===
-    elements.taskStatusSelect.dataset.currentStatus;
-});
-elements.taskNextActionInput.addEventListener("input", () => {
-  elements.taskNextActionError.classList.add("is-hidden");
-  elements.taskNextActionSave.disabled =
-    elements.taskNextActionInput.value.trim() ===
-    elements.taskNextActionInput.dataset.currentValue;
-});
-elements.taskNextActionInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !elements.taskNextActionSave.disabled) {
-    event.preventDefault();
-    saveTaskNextAction();
-  }
 });
 elements.aboutButton.addEventListener("click", openAboutDialog);
 elements.aboutClose.addEventListener("click", closeAboutDialog);

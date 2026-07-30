@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.13",
+  "current_version": "V0.0.14",
   "releases": [
     {
       "version": "V0.0.1",
@@ -78,6 +78,12 @@
       "date": "2026-07-30",
       "title": "One full Create Task flow",
       "summary": "Removed the reduced Quick Add interface. Create Task is now the only visible task-creation action in the sidebar and at the top of Today and Inbox; all three open the same full form with due date, assignee, project, goal, and optional metric support, and the N shortcut opens that full form."
+    },
+    {
+      "version": "V0.0.14",
+      "date": "2026-07-30",
+      "title": "Unified task editing",
+      "summary": "Task details are now read-only until Edit opens one full form for task fields, status, project, associated goal, optional metric, and assignee. Saves use canonical GBrain readback; agent handoffs retain the same task and a durable assignment history."
     }
   ]
 }

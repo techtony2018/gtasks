@@ -137,20 +137,10 @@
         </div>
         <div class="detail-content is-hidden" id="detail-content">
           <div class="detail-toolbar">
-            <div class="task-status-editor">
-              <label for="task-status-select">Status</label>
-              <select id="task-status-select">
-                <option value="planned">Planned</option>
-                <option value="active">Active</option>
-                <option value="blocked">Blocked</option>
-                <option value="completed">Completed</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-              <button class="secondary-button" id="task-status-save" type="button">Save</button>
-            </div>
+            <span class="detail-status" id="task-detail-status"></span>
+            <button class="secondary-button" id="task-edit-button" type="button">Edit</button>
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
-          <p class="form-error task-status-error is-hidden" id="task-status-error" role="alert"></p>
           <div class="task-owner is-hidden" id="task-owner">
             <span class="agent-avatar" id="task-owner-avatar" aria-hidden="true"></span>
             <div>
@@ -160,9 +150,6 @@
           </div>
           <h2 id="detail-title"></h2>
           <p class="detail-copy" id="detail-copy"></p>
-          <button class="secondary-button task-duplicate-button" id="task-duplicate-button" type="button">
-            Duplicate
-          </button>
           <section class="task-progress-detail is-hidden" id="task-progress-detail" aria-labelledby="task-progress-label">
             <div>
               <strong id="task-progress-label"></strong>
@@ -173,25 +160,9 @@
             </div>
             <p id="task-progress-binding"></p>
           </section>
-          <section class="next-action-editor" id="task-next-action-editor" aria-labelledby="task-next-action-label">
-            <label id="task-next-action-label" for="task-next-action-input">
-              Next action
-            </label>
-            <p>The single next concrete physical or actionable step—not a project plan or general note.</p>
-            <div class="next-action-controls">
-              <input
-                id="task-next-action-input"
-                type="text"
-                maxlength="240"
-                autocomplete="off"
-                enterkeyhint="done"
-                placeholder="e.g. Draft three STAR examples"
-              >
-              <button class="secondary-button" id="task-next-action-save" type="button">
-                Save
-              </button>
-            </div>
-            <p class="form-error is-hidden" id="task-next-action-error" role="alert"></p>
+          <section class="next-action-detail" aria-labelledby="task-next-action-label">
+            <h3 id="task-next-action-label">Next action</h3>
+            <p id="task-next-action-value"></p>
           </section>
           <dl class="detail-list">
             <div>
@@ -202,36 +173,9 @@
               <dt>Due</dt>
               <dd id="detail-due"></dd>
             </div>
+            <div><dt>Project</dt><dd id="task-project-value"></dd></div>
+            <div><dt>Associated goal</dt><dd><button class="goal-nav-button is-hidden" id="task-goal-nav" type="button"></button><span id="task-goal-value"></span></dd></div>
           </dl>
-          <div class="project-link-editor" id="task-project-editor">
-            <label for="task-project-select">Assign to project</label>
-            <div class="project-link-controls">
-              <select id="task-project-select">
-                <option value="">No project</option>
-              </select>
-              <button class="secondary-button" id="task-project-save" type="button">Save</button>
-            </div>
-            <p>
-              Assignment is separate from project creation and is stored as a
-              verified typed <code>member_of</code> relationship.
-            </p>
-            <p class="form-error is-hidden" id="task-project-error" role="alert"></p>
-          </div>
-          <div class="goal-link-editor" id="task-goal-editor">
-            <label for="task-goal-select">Advances goal</label>
-            <div class="goal-link-controls">
-              <select id="task-goal-select">
-                <option value="">No linked goal</option>
-              </select>
-              <button class="secondary-button" id="task-goal-save" type="button">Save</button>
-            </div>
-            <p>
-              Stored as paired <code>advances_goal</code> and
-              <code>advanced_by</code> relationships in GBrain.
-            </p>
-            <p class="form-error is-hidden" id="task-goal-error" role="alert"></p>
-            <button class="goal-nav-button is-hidden" id="task-goal-nav" type="button"></button>
-          </div>
           <a class="gbrain-link" id="detail-gbrain-link" target="_blank" rel="noreferrer">
             Open in Memory Stargraph
           </a>
@@ -322,6 +266,16 @@
         <label for="task-editor-detail">Detail</label>
         <textarea id="task-editor-detail" rows="3"></textarea>
         <div class="task-editor-grid">
+          <label id="task-editor-status-field" class="is-hidden">
+            Status
+            <select id="task-editor-status">
+              <option value="planned">Planned</option>
+              <option value="active">In Progress</option>
+              <option value="blocked">Blocked</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </label>
           <label>
             Priority
             <select id="task-editor-priority">
@@ -351,6 +305,8 @@
             in that agent’s canonical task collection. It is not a proposal or
             a duplicate Tony task.
           </p>
+          <label class="is-hidden" id="task-editor-handoff-field" for="task-editor-handoff-reason">Handoff reason (optional)</label>
+          <input class="is-hidden" id="task-editor-handoff-reason" type="text" maxlength="240" placeholder="Why is this work changing hands?">
         </div>
         <div class="task-editor-grid">
           <label>
