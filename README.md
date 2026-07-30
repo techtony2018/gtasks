@@ -23,6 +23,17 @@ The server binds to `127.0.0.1` by default. To choose another local port:
 python3 -m gtasks.server --port 4180
 ```
 
+## All Things Codex Dashboard
+
+GTasks is registered with All Things Codex Dashboard at
+[http://127.0.0.1:4188](http://127.0.0.1:4188). Its service card can start,
+stop, restart, observe, and open the existing GTasks process on port `4179`.
+
+The manager runs this checkout directly from `/Users/tony/work/gtasks`; it
+does not vendor another copy of GTasks or introduce a task database. The
+machine-readable registration contract is
+[`dashboard-integration.json`](dashboard-integration.json).
+
 ## Canonical task scope
 
 GTasks reads direct typed memberships from exactly two roots:
@@ -86,11 +97,18 @@ A creation is reported as successful only when the task page and membership edge
 
 Changing a task's goal is also explicit and verified. GTasks proves both nodes are under the approved roots, writes an `advances_goal` edge, verifies it, removes the prior goal edge when needed, and performs final readback. Clearing the selection removes only `advances_goal`.
 
-Loading the app, refreshing, running the test suite, and browser verification are read-only. Only an explicit Quick Add submit mutates GBrain.
+Changing status is explicit and verified too. The detail editor supports
+`planned`, `active`, `waiting`, `blocked`, `completed`, and `cancelled`.
+Completion records Tony's local completion time and keeps the active collection
+edge until Tony's Tasks applies its next-Monday archive rule. Reopening an
+already archived task moves the same task identity back to the active root.
+
+Loading the app, Board, refreshing, running the test suite, and browser verification are read-only. Only an explicit Quick Add, goal Save, or status Save mutates GBrain.
 
 ## Views
 
 - Today: In Progress (maximum three), Today's Actions, Waiting and Blocked, Overdue
+- Board: Planned, In Progress, Waiting / Blocked, Completed / Cancelled
 - Inbox
 - Upcoming
 - Blocked
@@ -98,7 +116,9 @@ Loading the app, refreshing, running the test suite, and browser verification ar
 - Goals
 - Completed
 
-Task rows show title, project, priority, next action, and due date. Selecting a row opens its detail panel and links to the same GBrain slug in Memory Stargraph.
+Task rows show title, project, priority, next action, and due date. Board cards
+show the same canonical tasks by status. Selecting either opens the shared
+detail panel, where status can be changed without leaving GTasks.
 
 The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
 

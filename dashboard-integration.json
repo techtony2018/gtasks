@@ -1,0 +1,26 @@
+{
+  "dashboard": "All Things Codex Dashboard",
+  "service_id": "gtasks",
+  "title": "GTasks",
+  "kind": "dashboard",
+  "service_url": "http://127.0.0.1:4179/",
+  "health_path": "/api/health",
+  "working_directory": "/Users/tony/work/gtasks",
+  "command": [
+    "python3",
+    "-m",
+    "gtasks.server",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "4179"
+  ],
+  "managed_actions": [
+    "start",
+    "stop",
+    "restart"
+  ],
+  "canonical_store": "gbrain",
+  "vendored_copy": false,
+  "summary": "Manages the existing local GTasks process while GBrain remains the canonical task and goal store."
+}

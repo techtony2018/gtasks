@@ -19,6 +19,7 @@ from .domain import (
     DomainValidationError,
     GOALS_ROOT,
     Task,
+    TASK_STATUSES,
     group_today,
     new_inbox_task,
 )
@@ -294,8 +295,16 @@ def _handler_class(
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
             prefix = "/api/tasks/"
-            suffix = "/goal"
-            if not path.startswith(prefix) or not path.endswith(suffix):
+            if path.endswith("/goal"):
+                action = "goal"
+                suffix = "/goal"
+            elif path.endswith("/status"):
+                action = "status"
+                suffix = "/status"
+            else:
+                action = ""
+                suffix = ""
+            if not path.startswith(prefix) or not action:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
                 return
             encoded_slug = path[len(prefix) : -len(suffix)]
@@ -309,6 +318,55 @@ def _handler_class(
             payload = self._read_json()
             if payload is None:
                 return
+            if action == "status":
+                requested_status = payload.get("status")
+                if (
+                    not isinstance(requested_status, str)
+                    or requested_status not in TASK_STATUSES
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "status must be one of "
+                                + ", ".join(sorted(TASK_STATUSES))
+                                + "."
+                            ),
+                            "code": "invalid_status",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.set_task_status(
+                        task_slug,
+                        requested_status,
+                        clock(),
+                    )
+                except ValueError as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_status"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
+
             goal_slug = payload.get("goal_slug")
             if goal_slug == "":
                 goal_slug = None

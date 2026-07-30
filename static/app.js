@@ -15,6 +15,9 @@ const viewMeta = {
   today: {
     title: "Today’s Action List",
   },
+  board: {
+    title: "Board",
+  },
   upcoming: {
     title: "Upcoming",
     emptyTitle: "Nothing is waiting ahead",
@@ -66,7 +69,9 @@ const elements = {
   detailContent: document.querySelector("#detail-content"),
   goalDetailContent: document.querySelector("#goal-detail-content"),
   detailClose: document.querySelector("#detail-close"),
-  detailStatus: document.querySelector("#detail-status"),
+  taskStatusSelect: document.querySelector("#task-status-select"),
+  taskStatusSave: document.querySelector("#task-status-save"),
+  taskStatusError: document.querySelector("#task-status-error"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
   detailProject: document.querySelector("#detail-project"),
@@ -158,6 +163,7 @@ function navCounts() {
   return {
     inbox: state.snapshot.views.inbox.length,
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
+    board: state.snapshot.tasks.length,
     upcoming: state.snapshot.views.upcoming.length,
     blocked: state.snapshot.views.blocked.length,
     projects: state.snapshot.views.projects.length,
@@ -359,6 +365,79 @@ function renderListView(view) {
   return fragment;
 }
 
+const boardColumns = [
+  {
+    title: "Planned",
+    statuses: ["planned"],
+    empty: "No planned tasks.",
+  },
+  {
+    title: "In Progress",
+    statuses: ["active"],
+    empty: "No task is in progress.",
+  },
+  {
+    title: "Waiting / Blocked",
+    statuses: ["waiting", "blocked"],
+    empty: "Nothing is waiting or blocked.",
+  },
+  {
+    title: "Completed / Cancelled",
+    statuses: ["completed", "cancelled"],
+    empty: "No finished tasks are shown.",
+  },
+];
+
+function boardCard(task) {
+  const button = node("button", "board-card");
+  button.type = "button";
+  button.dataset.slug = task.slug;
+  button.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  const heading = node("span", "board-card-heading");
+  heading.append(
+    node("span", `task-state-dot ${task.status}`),
+    node("strong", "", task.title || task.summary),
+  );
+  const meta = node("span", "board-card-meta");
+  meta.append(
+    node("span", "", task.project || (task.inbox ? "Inbox" : "No project")),
+    node("span", `priority-badge ${task.priority}`, task.priority),
+  );
+  button.append(
+    heading,
+    node("span", "board-card-next", task.next_action || "Next action not set"),
+    meta,
+    node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
+  );
+  button.addEventListener("click", () => selectTask(task.slug));
+  return button;
+}
+
+function renderBoard() {
+  const board = node("section", "board-grid");
+  board.setAttribute("aria-label", "Task status board");
+  boardColumns.forEach((definition) => {
+    const tasks = state.snapshot.tasks.filter((task) =>
+      definition.statuses.includes(task.status));
+    const column = node("section", "board-column");
+    const heading = node("div", "board-column-heading");
+    heading.append(
+      node("h2", "", definition.title),
+      node("span", "", String(tasks.length)),
+    );
+    column.append(heading);
+    if (tasks.length) {
+      const cards = node("div", "board-card-list");
+      tasks.forEach((task) => cards.append(boardCard(task)));
+      column.append(cards);
+    } else {
+      column.append(node("div", "board-empty", definition.empty));
+    }
+    board.append(column);
+  });
+  return board;
+}
+
 function goalCard(goal) {
   const button = node("button", "goal-card");
   button.type = "button";
@@ -403,6 +482,8 @@ function render() {
   elements.viewSurface.replaceChildren(
     view === "today"
       ? renderToday()
+      : view === "board"
+        ? renderBoard()
       : view === "goals"
         ? renderGoalsView()
         : renderListView(view),
@@ -425,7 +506,10 @@ function selectTask(slug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
-  elements.detailStatus.textContent = task.status;
+  elements.taskStatusSelect.value = task.status;
+  elements.taskStatusSelect.dataset.currentStatus = task.status;
+  elements.taskStatusSave.disabled = true;
+  elements.taskStatusError.classList.add("is-hidden");
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
   elements.detailProject.textContent = task.project || "No project";
@@ -551,6 +635,50 @@ async function saveTaskGoal() {
   } finally {
     elements.taskGoalSave.disabled = false;
     elements.taskGoalSave.textContent = "Save";
+  }
+}
+
+async function saveTaskStatus() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const taskSlug = state.selectedSlug;
+  const status = elements.taskStatusSelect.value;
+  elements.taskStatusError.classList.add("is-hidden");
+  elements.taskStatusSave.disabled = true;
+  elements.taskStatusSave.textContent = "Saving…";
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/status`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ status }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Task status could not be saved.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    showToast(`Status saved as ${status} in GBrain.`);
+    await loadTasks();
+    selectTask(taskSlug);
+  } catch (error) {
+    let message = error.message;
+    if (error.code === "partial_write" && error.slug) {
+      message = `${message} Do not retry yet; inspect ${error.slug} first.`;
+    }
+    elements.taskStatusError.textContent = message;
+    elements.taskStatusError.classList.remove("is-hidden");
+  } finally {
+    elements.taskStatusSave.textContent = "Save";
+    elements.taskStatusSave.disabled =
+      elements.taskStatusSelect.value ===
+      elements.taskStatusSelect.dataset.currentStatus;
   }
 }
 
@@ -692,6 +820,13 @@ elements.refreshButton.addEventListener("click", loadTasks);
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskGoalSave.addEventListener("click", saveTaskGoal);
+elements.taskStatusSave.addEventListener("click", saveTaskStatus);
+elements.taskStatusSelect.addEventListener("change", () => {
+  elements.taskStatusError.classList.add("is-hidden");
+  elements.taskStatusSave.disabled =
+    elements.taskStatusSelect.value ===
+    elements.taskStatusSelect.dataset.currentStatus;
+});
 
 document.addEventListener("keydown", (event) => {
   const editing =

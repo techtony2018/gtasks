@@ -37,6 +37,11 @@
             <span>Today</span>
             <span class="nav-count" data-count="today">0</span>
           </button>
+          <button class="nav-item" data-view="board" type="button">
+            <span class="nav-glyph" aria-hidden="true">▦</span>
+            <span>Board</span>
+            <span class="nav-count" data-count="board">0</span>
+          </button>
           <button class="nav-item" data-view="upcoming" type="button">
             <span class="nav-glyph" aria-hidden="true">U</span>
             <span>Upcoming</span>
@@ -105,9 +110,21 @@
         </div>
         <div class="detail-content is-hidden" id="detail-content">
           <div class="detail-toolbar">
-            <span class="detail-status" id="detail-status"></span>
+            <div class="task-status-editor">
+              <label for="task-status-select">Status</label>
+              <select id="task-status-select">
+                <option value="planned">Planned</option>
+                <option value="active">Active</option>
+                <option value="waiting">Waiting</option>
+                <option value="blocked">Blocked</option>
+                <option value="completed">Completed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <button class="secondary-button" id="task-status-save" type="button">Save</button>
+            </div>
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
+          <p class="form-error task-status-error is-hidden" id="task-status-error" role="alert"></p>
           <h2 id="detail-title"></h2>
           <p class="detail-copy" id="detail-copy"></p>
           <dl class="detail-list">

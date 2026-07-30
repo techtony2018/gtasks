@@ -1,10 +1,12 @@
 import json
 import subprocess
 import unittest
-from datetime import datetime, timezone
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from gtasks.domain import ACTIVE_ROOT, GOALS_ROOT, new_inbox_task
+from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, GOALS_ROOT, new_inbox_task
 from gtasks.gbrain import (
     GBrainAdapter,
     PartialMutationError,
@@ -349,6 +351,123 @@ class GoalLinkMutationTests(unittest.TestCase):
             ),
             runner.calls,
         )
+
+
+class TaskStatusMutationTests(unittest.TestCase):
+    def test_completion_sets_local_timestamp_and_keeps_active_membership(self) -> None:
+        now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))
+        task = new_inbox_task("Finish GTasks", now, "a1b2c3")
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["captured_via"] = "capture-cli"
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        final_page = deepcopy(initial_page)
+        final_page["frontmatter"]["status"] = "completed"
+        final_page["frontmatter"]["completed_at"] = now.isoformat()
+        final_page["frontmatter"]["updated_at"] = now.isoformat()
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [[active_edge], [active_edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_status(task.slug, "completed", now)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(receipt.lifecycle_root, ACTIVE_ROOT)
+        self.assertEqual(receipt.completed_at, now)
+        written = runner.calls[2][1]["content"]
+        self.assertIn('"captured_via": "capture-cli"', written)
+        self.assertIn("# Finish GTasks", written)
+        self.assertNotIn("add_link", [tool for tool, _ in runner.calls])
+        self.assertNotIn("remove_link", [tool for tool, _ in runner.calls])
+
+    def test_reopening_an_archived_task_restores_active_membership(self) -> None:
+        now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))
+        completed_at = datetime(2026, 7, 28, 17, 0, tzinfo=timezone(timedelta(hours=-7)))
+        task = replace(
+            new_inbox_task("Reopen GTasks", now, "a1b2c3"),
+            status="completed",
+            lifecycle_root=COMPLETED_ROOT,
+            completed_at=completed_at,
+        )
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["links"] = [
+            {"to": COMPLETED_ROOT, "type": "member_of"}
+        ]
+        initial_page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        archived_edge = {
+            "from_slug": task.slug,
+            "to_slug": COMPLETED_ROOT,
+            "link_type": "member_of",
+        }
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        final_page = deepcopy(initial_page)
+        final_page["frontmatter"]["status"] = "active"
+        final_page["frontmatter"]["completed_at"] = None
+        final_page["frontmatter"]["updated_at"] = now.isoformat()
+        final_page["frontmatter"]["links"] = [
+            {"to": ACTIVE_ROOT, "type": "member_of"}
+        ]
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [[archived_edge], [active_edge]],
+                "put_page": [{"slug": task.slug}],
+                "add_link": [active_edge],
+                "remove_link": [{}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).set_task_status(task.slug, "active", now)
+
+        self.assertEqual(receipt.lifecycle_root, ACTIVE_ROOT)
+        self.assertIsNone(receipt.completed_at)
+        self.assertIn(("add_link", {
+            "from": task.slug,
+            "to": ACTIVE_ROOT,
+            "link_type": "member_of",
+            "context": "GTasks active task membership.",
+            "link_source": "gtasks",
+        }), runner.calls)
+        self.assertIn(("remove_link", {
+            "from": task.slug,
+            "to": COMPLETED_ROOT,
+            "link_type": "member_of",
+        }), runner.calls)
+
+    def test_status_write_requires_matching_page_and_link_readback(self) -> None:
+        now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc)
+        task = new_inbox_task("Finish GTasks", now, "a1b2c3")
+        page = stored_page(task)
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [page, page],
+                "get_links": [[active_edge], [active_edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).set_task_status(task.slug, "blocked", now)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertIn("readback", str(raised.exception).lower())
 
 
 class SubprocessRunnerTests(unittest.TestCase):

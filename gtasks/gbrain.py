@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping, Protocol
 
 from .domain import (
@@ -12,6 +14,7 @@ from .domain import (
     GOALS_ROOT,
     Goal,
     Task,
+    TASK_STATUSES,
 )
 
 
@@ -136,6 +139,26 @@ class GoalLinkReceipt:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class StatusMutationReceipt:
+    task_slug: str
+    status: str
+    lifecycle_root: str
+    completed_at: datetime | None
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "status": self.status,
+            "lifecycle_root": self.lifecycle_root,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
+            "verified": self.verified,
+        }
+
+
 def _yaml_scalar(value: Any) -> str:
     if value is None:
         return "null"
@@ -221,6 +244,41 @@ def render_task_page(task: Task) -> str:
     if task.detail:
         lines.extend([task.detail, ""])
     return "\n".join(lines)
+
+
+def _render_preserved_page(
+    page: Mapping[str, Any],
+    frontmatter: Mapping[str, Any],
+) -> str:
+    body = page.get("compiled_truth")
+    if not isinstance(body, str):
+        raise GBrainProtocolError("task page has no preserved body content")
+    preserved = dict(frontmatter)
+    title = page.get("title")
+    if "title" not in preserved and isinstance(title, str) and title.strip():
+        preserved["title"] = title.strip()
+    lines = ["---"]
+    for key, value in preserved.items():
+        lines.append(
+            f"{json.dumps(str(key), ensure_ascii=False)}: "
+            f"{json.dumps(value, ensure_ascii=False)}"
+        )
+    lines.extend(["---", "", body.rstrip(), ""])
+    return "\n".join(lines)
+
+
+def _lifecycle_edges(
+    task_slug: str,
+    links: list[object],
+) -> list[Mapping[str, Any]]:
+    return [
+        link
+        for link in links
+        if isinstance(link, Mapping)
+        and link.get("from_slug") == task_slug
+        and link.get("to_slug") in APPROVED_ROOTS
+        and link.get("link_type") == "member_of"
+    ]
 
 
 class GBrainAdapter:
@@ -374,6 +432,161 @@ class GBrainAdapter:
                 if task.slug == task_slug:
                     return task
         raise ValueError("task is not a member of an approved GTasks root")
+
+    def set_task_status(
+        self,
+        task_slug: str,
+        status: str,
+        now: datetime,
+    ) -> StatusMutationReceipt:
+        if status not in TASK_STATUSES:
+            raise ValueError(
+                f"status must be one of {', '.join(sorted(TASK_STATUSES))}"
+            )
+        if now.tzinfo is None:
+            raise ValueError("status update time must include Tony's local timezone")
+
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping):
+            raise GBrainProtocolError("get_page did not return an object")
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_links, list):
+            raise GBrainProtocolError("get_links did not return a list")
+        try:
+            task = Task.from_page(raw_page, edges=raw_links)
+        except DomainValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        existing_lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        if (
+            len(existing_lifecycle_edges) != 1
+            or existing_lifecycle_edges[0].get("to_slug") != task.lifecycle_root
+        ):
+            raise ValueError(
+                "task does not have exactly one verified approved lifecycle edge"
+            )
+
+        if task.status == status:
+            return StatusMutationReceipt(
+                task_slug=task_slug,
+                status=status,
+                lifecycle_root=task.lifecycle_root,
+                completed_at=task.completed_at,
+                verified=True,
+            )
+
+        unfinished = status not in {"completed", "cancelled"}
+        target_root = (
+            ACTIVE_ROOT
+            if task.lifecycle_root == COMPLETED_ROOT and unfinished
+            else task.lifecycle_root
+        )
+        completed_at = now if status == "completed" else None
+
+        raw_frontmatter = raw_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("task page has no frontmatter")
+        frontmatter = deepcopy(dict(raw_frontmatter))
+        frontmatter["status"] = status
+        frontmatter["completed_at"] = (
+            completed_at.isoformat() if completed_at else None
+        )
+        frontmatter["updated_at"] = now.isoformat()
+
+        if target_root != task.lifecycle_root:
+            raw_frontmatter_links = frontmatter.get("links")
+            if not isinstance(raw_frontmatter_links, list):
+                raise GBrainProtocolError("task frontmatter links must be a list")
+            replaced = 0
+            for link in raw_frontmatter_links:
+                if (
+                    isinstance(link, dict)
+                    and link.get("type") == "member_of"
+                    and link.get("to") == task.lifecycle_root
+                ):
+                    link["to"] = target_root
+                    replaced += 1
+            if replaced != 1:
+                raise GBrainProtocolError(
+                    "task frontmatter lifecycle link could not be updated safely"
+                )
+
+        content = _render_preserved_page(raw_page, frontmatter)
+        self.runner.run("put_page", {"slug": task_slug, "content": content})
+        try:
+            if target_root != task.lifecycle_root:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task_slug,
+                        "to": target_root,
+                        "link_type": "member_of",
+                        "context": "GTasks active task membership.",
+                        "link_source": "gtasks",
+                    },
+                )
+                self.runner.run(
+                    "remove_link",
+                    {
+                        "from": task_slug,
+                        "to": task.lifecycle_root,
+                        "link_type": "member_of",
+                    },
+                )
+
+            stored_page = self.runner.run("get_page", {"slug": task_slug})
+            if not isinstance(stored_page, Mapping):
+                raise GBrainProtocolError("status get_page readback was not an object")
+            stored_links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(stored_links, list):
+                raise GBrainProtocolError("status get_links readback was not a list")
+            stored_task = Task.from_page(stored_page, edges=stored_links)
+            if (
+                stored_task.status != status
+                or stored_task.lifecycle_root != target_root
+                or stored_task.completed_at != completed_at
+            ):
+                raise GBrainProtocolError(
+                    "status page readback did not match the requested update"
+                )
+            verified_lifecycle_edges = _lifecycle_edges(task_slug, stored_links)
+            if (
+                len(verified_lifecycle_edges) != 1
+                or verified_lifecycle_edges[0].get("to_slug") != target_root
+            ):
+                raise GBrainProtocolError(
+                    "status lifecycle edge readback did not match the task page"
+                )
+
+            unrelated_edges = [
+                link
+                for link in raw_links
+                if isinstance(link, Mapping)
+                and link not in existing_lifecycle_edges
+            ]
+            for expected in unrelated_edges:
+                if not any(
+                    isinstance(actual, Mapping)
+                    and actual.get("from_slug") == expected.get("from_slug")
+                    and actual.get("to_slug") == expected.get("to_slug")
+                    and actual.get("link_type") == expected.get("link_type")
+                    for actual in stored_links
+                ):
+                    raise GBrainProtocolError(
+                        "an unrelated task relationship was missing after readback"
+                    )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                task_slug,
+                f"Task status write was not verified by page and link readback: {exc}",
+            ) from exc
+
+        return StatusMutationReceipt(
+            task_slug=task_slug,
+            status=status,
+            lifecycle_root=target_root,
+            completed_at=completed_at,
+            verified=True,
+        )
 
     def set_task_goal(
         self,

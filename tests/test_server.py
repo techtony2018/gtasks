@@ -18,6 +18,8 @@ from gtasks.gbrain import (
     GoalLinkReceipt,
     GoalRead,
     MutationReceipt,
+    PartialMutationError,
+    StatusMutationReceipt,
 )
 from gtasks.server import build_server
 
@@ -34,6 +36,7 @@ class FakeAdapter:
         self.goals = goals
         self.created: list[Task] = []
         self.goal_links: list[tuple[str, str | None]] = []
+        self.status_updates: list[tuple[str, str, datetime]] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
@@ -49,6 +52,21 @@ class FakeAdapter:
     def set_task_goal(self, task_slug: str, goal_slug: str | None) -> GoalLinkReceipt:
         self.goal_links.append((task_slug, goal_slug))
         return GoalLinkReceipt(task_slug=task_slug, goal_slug=goal_slug, verified=True)
+
+    def set_task_status(
+        self,
+        task_slug: str,
+        status: str,
+        now: datetime,
+    ) -> StatusMutationReceipt:
+        self.status_updates.append((task_slug, status, now))
+        return StatusMutationReceipt(
+            task_slug=task_slug,
+            status=status,
+            lifecycle_root=ACTIVE_ROOT,
+            completed_at=now if status == "completed" else None,
+            verified=True,
+        )
 
 
 def sample_goal(slug: str = "goals/ship-product") -> Goal:
@@ -276,6 +294,62 @@ class GoalLinkApiTests(unittest.TestCase):
 
         self.assertEqual(status, 422)
         self.assertIn("goal_slug", payload["error"])
+
+
+class TaskStatusApiTests(unittest.TestCase):
+    def test_updates_a_task_status_with_the_server_local_clock(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/status",
+            {"status": "active"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["receipt"]["status"], "active")
+        self.assertEqual(adapter.status_updates[0][0:2], ("tasks/ship-gtasks", "active"))
+        self.assertIsNotNone(adapter.status_updates[0][2].tzinfo)
+
+    def test_rejects_an_unsupported_status_before_mutation(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/status",
+            {"status": "someday"},
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_status")
+        self.assertEqual(adapter.status_updates, [])
+
+    def test_reports_a_partial_status_write_with_the_task_slug(self) -> None:
+        class PartialWriteAdapter(FakeAdapter):
+            def set_task_status(
+                self,
+                task_slug: str,
+                status: str,
+                now: datetime,
+            ) -> StatusMutationReceipt:
+                raise PartialMutationError(
+                    task_slug,
+                    "GBrain status readback did not match the requested value.",
+                )
+
+        harness = ServerHarness(self, PartialWriteAdapter())
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/status",
+            {"status": "active"},
+        )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["code"], "partial_write")
+        self.assertEqual(payload["slug"], "tasks/ship-gtasks")
 
 
 if __name__ == "__main__":
