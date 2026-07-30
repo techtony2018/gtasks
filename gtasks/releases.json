@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.10",
+  "current_version": "V0.0.11",
   "releases": [
     {
       "version": "V0.0.1",
@@ -60,6 +60,12 @@
       "date": "2026-07-30",
       "title": "Agent profiles and optional Board work",
       "summary": "Agent Work now shows Toddy, Timmy, and Tammy with typed default-goal ownership and safe profile links. Board remains Tony-only by default; Show agent tasks reads the three canonical agent collections on demand, adds accessible owner and avatar badges, and keeps agent work visibly read-only and separate from Tony’s obligations."
+    },
+    {
+      "version": "V0.0.11",
+      "date": "2026-07-30",
+      "title": "Agent proposal review",
+      "summary": "Inbox now shows canonical agent proposals grouped by Toddy, Timmy, and Tammy, distinguishes work proposed for Tony from proposed agent work, and provides explicit review, approval, and rejection flows with durable GBrain relationships and exact readback; empty state creates no suggestions."
     }
   ]
 }

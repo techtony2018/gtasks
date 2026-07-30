@@ -117,7 +117,32 @@ Tony's tasks.
 The Agent Work view is a coordination surface, not another Today list. It
 shows profile-to-goal ownership and reserves the future work states Queued,
 Working, Waiting for Tony, Blocked, Completed, and Failed. It does not imply
-that proposed work is implemented, approved, or permitted to execute.
+that unapproved work is permitted to execute.
+
+## Agent proposal review
+
+Inbox reads proposals only from typed `member_of
+collections/gtasks-proposed-work` backlinks. A valid `type: task_proposal`
+page has one typed `proposed_by` link to Toddy, Timmy, or Tammy; a recipient
+of `tony` or `agent`; a rationale and concrete next step; and at least one
+explicit `serves_goal` or `proposes_for_task` relationship. GTasks never
+guesses or fabricates proposals from goals.
+
+The Proposed Tasks section is grouped and filtered by proposing agent. The
+recipient is secondary and visible on every card as **Proposed for Tony** or
+**Proposed agent work**. Editing moves a proposal into `review` without
+creating a task. Approval and rejection are confirmation-bound:
+
+- approval creates exactly one canonical task and adds typed `approved_as`
+  readback before reporting success;
+- rejection retains the proposal and all linked goal, task, and agent data;
+- `proposed`, `review`, `approved`, and `rejected` remain durable audit
+  states.
+
+The proposal collection is not created or seeded during application
+deployment or verification. Its first canonical producer must create it under
+an explicit authorized workflow; an empty or absent scope renders an honest
+empty state.
 
 ## Task creation contract
 

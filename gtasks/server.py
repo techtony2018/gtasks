@@ -26,6 +26,7 @@ from .domain import (
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    PROPOSALS_ROOT,
     ProgressMetric,
     Task,
     group_today,
@@ -379,6 +380,7 @@ def _handler_class(
                         "agent_work_roots": [
                             root for _agent, root in AGENT_SCOPES
                         ],
+                        "proposals_root": PROPOSALS_ROOT,
                     },
                 )
                 return
@@ -399,6 +401,17 @@ def _handler_class(
             if path == "/api/agent-work":
                 try:
                     payload = adapter.list_agent_work().to_dict()
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, decorate_issues(payload))
+                return
+            if path == "/api/proposals":
+                try:
+                    payload = adapter.list_proposals().to_dict()
                 except GBrainError as exc:
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -517,6 +530,77 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            proposal_prefix = "/api/proposals/"
+            proposal_decision_suffix = "/decision"
+            if (
+                path.startswith(proposal_prefix)
+                and path.endswith(proposal_decision_suffix)
+            ):
+                proposal_slug = unquote(
+                    path[
+                        len(proposal_prefix) : -len(proposal_decision_suffix)
+                    ]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) - {"action", "decision_note"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "proposal decision contains unsupported fields.",
+                            "code": "invalid_proposal_decision",
+                        },
+                    )
+                    return
+                action = payload.get("action")
+                decision_note = payload.get("decision_note", "")
+                if action not in {"approve", "reject"} or not isinstance(
+                    decision_note, str
+                ) or len(decision_note) > 1000:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "action must be approve or reject and the "
+                                "optional decision note must be text."
+                            ),
+                            "code": "invalid_proposal_decision",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.decide_proposal(
+                        proposal_slug,
+                        action=action,
+                        decision_note=decision_note,
+                        now=clock(),
+                    )
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "proposal_not_decidable"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             if path in {"/api/warnings/dismiss", "/api/warnings/restore"}:
                 payload = self._read_json()
                 if payload is None:
@@ -930,6 +1014,72 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            proposal_prefix = "/api/proposals/"
+            proposal_review_suffix = "/review"
+            if (
+                path.startswith(proposal_prefix)
+                and path.endswith(proposal_review_suffix)
+            ):
+                proposal_slug = unquote(
+                    path[len(proposal_prefix) : -len(proposal_review_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {
+                    "title",
+                    "rationale",
+                    "proposed_next_step",
+                    "due_day",
+                }:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "proposal review requires title, rationale, "
+                                "proposed_next_step, and due_day."
+                            ),
+                            "code": "invalid_proposal_review",
+                        },
+                    )
+                    return
+                try:
+                    raw_due = payload["due_day"]
+                    if not isinstance(raw_due, str):
+                        raise ValueError("proposal due_day must be YYYY-MM-DD")
+                    due_day = date.fromisoformat(raw_due)
+                    receipt = adapter.review_proposal(
+                        proposal_slug,
+                        title=payload["title"],
+                        rationale=payload["rationale"],
+                        proposed_next_step=payload["proposed_next_step"],
+                        due_day=due_day,
+                        now=clock(),
+                    )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_proposal_review"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "partial_write",
+                            "slug": exc.slug,
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             goal_prefix = "/api/goals/"
             goal_status_suffix = "/status"
             if path.startswith(goal_prefix) and path.endswith(goal_status_suffix):

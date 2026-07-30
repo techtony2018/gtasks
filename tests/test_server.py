@@ -18,6 +18,7 @@ from gtasks.domain import (
     ProgressMetric,
     Project,
     Task,
+    TaskProposal,
     new_inbox_task,
     new_task,
 )
@@ -39,6 +40,8 @@ from gtasks.gbrain import (
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
     ProjectRead,
+    ProposalRead,
+    ProposalMutationReceipt,
 )
 from gtasks.server import build_server
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
@@ -54,6 +57,7 @@ class FakeAdapter:
         projects: tuple[Project, ...] = (),
         agents: tuple[AgentProfile, ...] = (),
         agent_work: tuple[dict, ...] = (),
+        proposals: tuple[TaskProposal, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
@@ -61,6 +65,7 @@ class FakeAdapter:
         self.projects = projects
         self.agents = agents
         self.agent_work = agent_work
+        self.proposals = proposals
         self.created: list[Task] = []
         self.duplicated_from: list[str] = []
         self.goal_links: list[tuple[str, str | None]] = []
@@ -73,6 +78,8 @@ class FakeAdapter:
         self.paused_goals: list[str] = []
         self.deleted_goals: list[str] = []
         self.collection_reads: list[str] = []
+        self.proposal_reviews: list[tuple[str, str]] = []
+        self.proposal_decisions: list[tuple[str, str, str]] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         self.collection_reads.append(root_slug)
@@ -130,6 +137,82 @@ class FakeAdapter:
 
     def list_agent_work(self) -> AgentWorkRead:
         return AgentWorkRead(tasks=self.agent_work)
+
+    def list_proposals(self) -> ProposalRead:
+        return ProposalRead(proposals=self.proposals)
+
+    def review_proposal(
+        self,
+        proposal_slug: str,
+        *,
+        title: str,
+        rationale: str,
+        proposed_next_step: str,
+        due_day: date,
+        now: datetime,
+    ) -> ProposalMutationReceipt:
+        proposal = next(
+            proposal
+            for proposal in self.proposals
+            if proposal.slug == proposal_slug
+        )
+        stored = replace(
+            proposal,
+            title=title,
+            rationale=rationale,
+            proposed_next_step=proposed_next_step,
+            due_day=due_day,
+            status="review",
+            updated_at=now,
+        )
+        self.proposals = tuple(
+            stored if item.slug == proposal_slug else item
+            for item in self.proposals
+        )
+        self.proposal_reviews.append((proposal_slug, title))
+        return ProposalMutationReceipt(
+            proposal_slug=proposal_slug,
+            status="review",
+            proposal=stored,
+            created_task=None,
+            verified=True,
+        )
+
+    def decide_proposal(
+        self,
+        proposal_slug: str,
+        *,
+        action: str,
+        decision_note: str,
+        now: datetime,
+    ) -> ProposalMutationReceipt:
+        proposal = next(
+            proposal
+            for proposal in self.proposals
+            if proposal.slug == proposal_slug
+        )
+        status = "approved" if action == "approve" else "rejected"
+        stored = replace(
+            proposal,
+            status=status,
+            reviewed_at=now,
+            updated_at=now,
+            decision_note=decision_note,
+        )
+        self.proposals = tuple(
+            stored if item.slug == proposal_slug else item
+            for item in self.proposals
+        )
+        self.proposal_decisions.append(
+            (proposal_slug, action, decision_note)
+        )
+        return ProposalMutationReceipt(
+            proposal_slug=proposal_slug,
+            status=status,
+            proposal=stored,
+            created_task=None,
+            verified=True,
+        )
 
     def create_project(self, project: Project) -> ProjectMutationReceipt:
         self.created_projects.append(project)
@@ -269,6 +352,23 @@ def sample_agent() -> AgentProfile:
     )
 
 
+def sample_proposal() -> TaskProposal:
+    submitted = datetime.fromisoformat("2026-07-30T14:00:00-07:00")
+    return TaskProposal(
+        slug="proposals/toddy-wellbeing-check-in",
+        title="Schedule a wellbeing check-in",
+        status="proposed",
+        recipient="tony",
+        proposing_agent="agents/toddy",
+        rationale="A check-in supports the wellbeing goal.",
+        proposed_next_step="Choose a 20-minute time tomorrow.",
+        due_day=date(2026, 7, 31),
+        submitted_at=submitted,
+        updated_at=submitted,
+        linked_goal="goals/happier-and-healthier",
+    )
+
+
 class ServerHarness:
     def __init__(
         self,
@@ -369,7 +469,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.10")
+        self.assertEqual(payload["version"], "V0.0.11")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -377,11 +477,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.10")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.10")
+        self.assertEqual(payload["current_version"], "V0.0.11")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.11")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.11",
                 "V0.0.10",
                 "V0.0.9",
                 "V0.0.8",
@@ -1415,6 +1516,64 @@ class TaskRelationshipRepairApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(adapter.membership_repairs, ["tasks/legacy"])
         self.assertTrue(payload["receipt"]["verified"])
+
+
+class ProposalApiTests(unittest.TestCase):
+    def test_lists_one_canonical_proposal_without_creating_work(self) -> None:
+        adapter = FakeAdapter(proposals=(sample_proposal(),))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request("GET", "/api/proposals")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["proposals"][0]["proposing_agent"],
+            "agents/toddy",
+        )
+        self.assertEqual(adapter.created, [])
+
+    def test_reviews_then_explicitly_rejects_without_deleting_data(self) -> None:
+        adapter = FakeAdapter(proposals=(sample_proposal(),))
+        harness = ServerHarness(self, adapter)
+        slug = "proposals%2Ftoddy-wellbeing-check-in"
+
+        review_status, reviewed, _ = harness.request(
+            "PATCH",
+            f"/api/proposals/{slug}/review",
+            {
+                "title": "Schedule a short wellbeing check-in",
+                "rationale": "This still supports the wellbeing goal.",
+                "proposed_next_step": "Choose a 15-minute time tomorrow.",
+                "due_day": "2026-07-31",
+            },
+        )
+        decision_status, decided, _ = harness.request(
+            "POST",
+            f"/api/proposals/{slug}/decision",
+            {"action": "reject", "decision_note": "Not needed this week."},
+        )
+
+        self.assertEqual(review_status, 200)
+        self.assertEqual(reviewed["receipt"]["status"], "review")
+        self.assertEqual(decision_status, 200)
+        self.assertEqual(decided["receipt"]["status"], "rejected")
+        self.assertEqual(len(adapter.proposals), 1)
+        self.assertEqual(adapter.created, [])
+
+    def test_unknown_or_implicit_decision_fails_safely(self) -> None:
+        harness = ServerHarness(
+            self,
+            FakeAdapter(proposals=(sample_proposal(),)),
+        )
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/proposals/proposals%2Ftoddy-wellbeing-check-in/decision",
+            {"action": "maybe"},
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_proposal_decision")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from gtasks.domain import (
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    PROPOSALS_ROOT,
     ProgressMetric,
     new_goal,
     new_inbox_task,
@@ -1448,7 +1449,8 @@ class AgentReadTests(unittest.TestCase):
         )
         task_page = stored_page(task)
         task_page["frontmatter"]["links"] = [
-            {"to": "collections/toddys-tasks", "type": "member_of"}
+            {"to": "collections/toddys-tasks", "type": "member_of"},
+            {"to": "agents/toddy", "type": "assigned_to"},
         ]
         agent_pages = [
             {
@@ -1483,7 +1485,12 @@ class AgentReadTests(unittest.TestCase):
                             "from_slug": task.slug,
                             "to_slug": "collections/toddys-tasks",
                             "link_type": "member_of",
-                        }
+                        },
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": "agents/toddy",
+                            "link_type": "assigned_to",
+                        },
                     ],
                 ],
                 "get_backlinks": [
@@ -1514,7 +1521,7 @@ class AgentReadTests(unittest.TestCase):
             result.tasks[0]["lifecycle_root"],
             "collections/toddys-tasks",
         )
-        self.assertTrue(result.tasks[0]["read_only"])
+        self.assertFalse(result.tasks[0]["read_only"])
         self.assertNotIn(
             "tasks/ignored-untyped",
             [item["slug"] for item in result.tasks],
@@ -1566,6 +1573,73 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(result.tasks, ())
         self.assertEqual(result.issues[0].slug, "notes/not-a-task")
         self.assertIn("not shown on Board", result.issues[0].impact)
+
+
+class ProposalReadTests(unittest.TestCase):
+    def test_reads_only_typed_proposals_and_keeps_malformed_items_visible(self) -> None:
+        slug = "proposals/toddy-wellbeing-check-in"
+        page = {
+            "slug": slug,
+            "type": "task_proposal",
+            "title": "Schedule a wellbeing check-in",
+            "compiled_truth": "# Schedule a wellbeing check-in",
+            "frontmatter": {
+                "status": "proposed",
+                "recipient": "tony",
+                "proposing_agent": "agents/toddy",
+                "rationale": "This supports the wellbeing goal.",
+                "proposed_next_step": "Choose a time tomorrow.",
+                "due_day": "2026-07-31",
+                "submitted_at": "2026-07-30T14:00:00-07:00",
+                "updated_at": "2026-07-30T14:00:00-07:00",
+                "links": [
+                    {"to": PROPOSALS_ROOT, "type": "member_of"},
+                    {"to": "agents/toddy", "type": "proposed_by"},
+                    {
+                        "to": "goals/happier-and-healthier",
+                        "type": "serves_goal",
+                    },
+                ],
+            },
+        }
+        edges = [
+            {
+                "from_slug": slug,
+                "to_slug": PROPOSALS_ROOT,
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": slug,
+                "to_slug": "agents/toddy",
+                "link_type": "proposed_by",
+            },
+            {
+                "from_slug": slug,
+                "to_slug": "goals/happier-and-healthier",
+                "link_type": "serves_goal",
+            },
+        ]
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        edges[0],
+                        {
+                            "from_slug": "proposals/legacy-untyped",
+                            "to_slug": PROPOSALS_ROOT,
+                            "link_type": "",
+                        },
+                    ]
+                ],
+                "get_page": [page],
+                "get_links": [edges],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_proposals()
+
+        self.assertEqual([item.slug for item in result.proposals], [slug])
+        self.assertEqual(result.issues, ())
 
 
 class TaskStatusMutationTests(unittest.TestCase):

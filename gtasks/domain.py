@@ -12,6 +12,7 @@ ACTIVE_ROOT = "collections/tonys-tasks"
 COMPLETED_ROOT = "collections/tonys-completed-tasks"
 GOALS_ROOT = "collections/tonys-goals"
 PROJECTS_ROOT = "collections/tonys-projects"
+PROPOSALS_ROOT = "collections/gtasks-proposed-work"
 AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
@@ -19,6 +20,10 @@ AGENT_SCOPES = (
 )
 AGENT_WORK_ROOTS = frozenset(root for _agent, root in AGENT_SCOPES)
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
+TASK_SCOPE_ROOTS = frozenset({*LIFECYCLE_ROOTS, *AGENT_WORK_ROOTS})
+AGENT_BY_WORK_ROOT = {
+    work_root: agent_slug for agent_slug, work_root in AGENT_SCOPES
+}
 
 TASK_STATUSES = frozenset(
     {"planned", "active", "waiting", "blocked", "completed", "cancelled"}
@@ -32,6 +37,8 @@ TASK_RELATIONSHIPS = frozenset(
 )
 GOAL_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelled"})
 PROJECT_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelled"})
+PROPOSAL_STATUSES = frozenset({"proposed", "review", "approved", "rejected"})
+PROPOSAL_RECIPIENTS = frozenset({"tony", "agent"})
 
 
 class DomainValidationError(ValueError):
@@ -134,6 +141,175 @@ class AgentProfile:
                 "value": self.avatar_value,
             },
             "chat_url": self.chat_url,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProposal:
+    slug: str
+    title: str
+    status: str
+    recipient: str
+    proposing_agent: str
+    rationale: str
+    proposed_next_step: str
+    due_day: date
+    submitted_at: datetime
+    updated_at: datetime
+    linked_goal: str | None = None
+    linked_task: str | None = None
+    approved_task: str | None = None
+    reviewed_at: datetime | None = None
+    decision_note: str = ""
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "TaskProposal":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("proposals/"):
+            raise DomainValidationError("proposal slug must start with proposals/")
+        if page.get("type") != "task_proposal":
+            raise DomainValidationError(f"{slug} is not a task proposal page")
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise DomainValidationError(f"{slug} has no frontmatter")
+        title = page.get("title") or frontmatter.get("title")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+            raise DomainValidationError(
+                "proposal title must be 1 to 160 characters"
+            )
+        status = frontmatter.get("status")
+        if status not in PROPOSAL_STATUSES:
+            raise DomainValidationError("proposal status is invalid")
+        recipient = frontmatter.get("recipient")
+        if recipient not in PROPOSAL_RECIPIENTS:
+            raise DomainValidationError("proposal recipient is invalid")
+        proposing_agent = frontmatter.get("proposing_agent")
+        if (
+            not isinstance(proposing_agent, str)
+            or proposing_agent not in {agent for agent, _root in AGENT_SCOPES}
+        ):
+            raise DomainValidationError(
+                "proposal proposing_agent is not an approved agent"
+            )
+        rationale = frontmatter.get("rationale")
+        next_step = frontmatter.get("proposed_next_step")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise DomainValidationError("proposal rationale is required")
+        if not isinstance(next_step, str) or not next_step.strip():
+            raise DomainValidationError(
+                "proposal proposed_next_step is required"
+            )
+        due_day = _optional_date(frontmatter.get("due_day"), "proposal due_day")
+        if due_day is None:
+            raise DomainValidationError("proposal due_day is required")
+        submitted_at = _optional_datetime(
+            frontmatter.get("submitted_at"),
+            "proposal submitted_at",
+        )
+        updated_at = _optional_datetime(
+            frontmatter.get("updated_at"),
+            "proposal updated_at",
+        )
+        if submitted_at is None or updated_at is None:
+            raise DomainValidationError(
+                "proposal submitted_at and updated_at are required"
+            )
+        normalized_edges = [
+            edge for edge in edges if isinstance(edge, Mapping)
+        ]
+        if not any(
+            edge.get("from_slug") == slug
+            and edge.get("to_slug") == PROPOSALS_ROOT
+            and edge.get("link_type") == "member_of"
+            for edge in normalized_edges
+        ):
+            raise DomainValidationError(
+                "proposal requires typed proposed-work collection membership"
+            )
+        if not any(
+            edge.get("from_slug") == slug
+            and edge.get("to_slug") == proposing_agent
+            and edge.get("link_type") == "proposed_by"
+            for edge in normalized_edges
+        ):
+            raise DomainValidationError(
+                "proposal requires typed proposed_by agent relationship"
+            )
+
+        def one_target(link_type: str, prefix: str) -> str | None:
+            targets = tuple(
+                dict.fromkeys(
+                    str(edge["to_slug"])
+                    for edge in normalized_edges
+                    if edge.get("from_slug") == slug
+                    and edge.get("link_type") == link_type
+                    and isinstance(edge.get("to_slug"), str)
+                    and str(edge["to_slug"]).startswith(prefix)
+                )
+            )
+            if len(targets) > 1:
+                raise DomainValidationError(
+                    f"proposal has multiple {link_type} relationships"
+                )
+            return targets[0] if targets else None
+
+        linked_goal = one_target("serves_goal", "goals/")
+        linked_task = one_target("proposes_for_task", "tasks/")
+        approved_task = one_target("approved_as", "tasks/")
+        if linked_goal is None and linked_task is None:
+            raise DomainValidationError(
+                "proposal must link to a goal or Tony task"
+            )
+        if status == "approved" and approved_task is None:
+            raise DomainValidationError(
+                "approved proposal requires an approved_as task relationship"
+            )
+        reviewed_at = _optional_datetime(
+            frontmatter.get("reviewed_at"),
+            "proposal reviewed_at",
+        )
+        decision_note = frontmatter.get("decision_note", "")
+        if not isinstance(decision_note, str):
+            raise DomainValidationError("proposal decision_note must be text")
+        return cls(
+            slug=slug,
+            title=title.strip(),
+            status=status,
+            recipient=recipient,
+            proposing_agent=proposing_agent,
+            rationale=rationale.strip(),
+            proposed_next_step=next_step.strip(),
+            due_day=due_day,
+            submitted_at=submitted_at,
+            updated_at=updated_at,
+            linked_goal=linked_goal,
+            linked_task=linked_task,
+            approved_task=approved_task,
+            reviewed_at=reviewed_at,
+            decision_note=decision_note.strip(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "title": self.title,
+            "status": self.status,
+            "recipient": self.recipient,
+            "proposing_agent": self.proposing_agent,
+            "rationale": self.rationale,
+            "proposed_next_step": self.proposed_next_step,
+            "due_day": self.due_day.isoformat(),
+            "submitted_at": self.submitted_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "linked_goal": self.linked_goal,
+            "linked_task": self.linked_task,
+            "approved_task": self.approved_task,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "decision_note": self.decision_note,
         }
 
 
@@ -363,6 +539,7 @@ class Task:
     scheduled_day: date | None
     inbox: bool
     lifecycle_root: str
+    owner_agent: str | None = None
     project: str | None = None
     parent: str | None = None
     dependencies: tuple[str, ...] = ()
@@ -418,20 +595,25 @@ class Task:
         lifecycle_roots = [
             link["to"]
             for link in links
-            if link["type"] == "member_of" and link["to"] in LIFECYCLE_ROOTS
+            if link["type"] == "member_of" and link["to"] in TASK_SCOPE_ROOTS
         ]
         if len(lifecycle_roots) != 1:
             raise DomainValidationError(
-                "task must belong to exactly one GTasks lifecycle root"
+                "task must belong to exactly one GTasks lifecycle root or "
+                "agent work scope"
             )
         lifecycle_root = lifecycle_roots[0]
-        if status not in {"completed", "cancelled"} and lifecycle_root != ACTIVE_ROOT:
+        if (
+            lifecycle_root in LIFECYCLE_ROOTS
+            and status not in {"completed", "cancelled"}
+            and lifecycle_root != ACTIVE_ROOT
+        ):
             raise DomainValidationError("unfinished task must belong to the active lifecycle root")
 
         project_links = [
             link["to"]
             for link in links
-            if link["type"] == "member_of" and link["to"] not in LIFECYCLE_ROOTS
+            if link["type"] == "member_of" and link["to"] not in TASK_SCOPE_ROOTS
         ]
         explicit_project = frontmatter.get("project")
         if explicit_project in (None, "", "none"):
@@ -470,6 +652,31 @@ class Task:
         )
         if len(goals) > 1:
             raise DomainValidationError("task can advance only one goal")
+
+        assigned_agents = tuple(
+            dict.fromkeys(
+                str(edge["to_slug"])
+                for edge in edges
+                if edge.get("from_slug") == slug
+                and edge.get("link_type") == "assigned_to"
+                and isinstance(edge.get("to_slug"), str)
+                and str(edge["to_slug"]).startswith("agents/")
+            )
+        )
+        expected_agent = AGENT_BY_WORK_ROOT.get(lifecycle_root)
+        if expected_agent is not None:
+            if assigned_agents != (expected_agent,):
+                raise DomainValidationError(
+                    "agent task requires exactly one assigned_to relationship "
+                    "matching its work collection"
+                )
+            owner_agent = expected_agent
+        else:
+            if assigned_agents:
+                raise DomainValidationError(
+                    "Tony task cannot retain an agent assigned_to relationship"
+                )
+            owner_agent = None
 
         inbox = frontmatter.get("inbox", False)
         if not isinstance(inbox, bool):
@@ -530,6 +737,7 @@ class Task:
             ),
             inbox=inbox,
             lifecycle_root=lifecycle_root,
+            owner_agent=owner_agent,
             project=project,
             parent=parents[0] if parents else None,
             dependencies=dependencies,
@@ -560,6 +768,7 @@ class Task:
             ),
             "inbox": self.inbox,
             "lifecycle_root": self.lifecycle_root,
+            "owner_agent": self.owner_agent,
             "project": self.project,
             "parent": self.parent,
             "dependencies": list(self.dependencies),

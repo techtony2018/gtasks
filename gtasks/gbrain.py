@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from threading import BoundedSemaphore
 from typing import Any, Mapping, Protocol
 
@@ -13,6 +14,7 @@ from .domain import (
     ACTIVE_ROOT,
     AGENT_SCOPES,
     AGENT_WORK_ROOTS,
+    AGENT_BY_WORK_ROOT,
     AgentProfile,
     COMPLETED_ROOT,
     DomainValidationError,
@@ -24,7 +26,11 @@ from .domain import (
     PROJECTS_ROOT,
     ProgressMetric,
     Project,
+    PROPOSALS_ROOT,
+    TASK_SCOPE_ROOTS,
     Task,
+    TaskProposal,
+    new_task,
 )
 
 
@@ -150,6 +156,39 @@ class AgentWorkRead:
             "tasks": [dict(task) for task in self.tasks],
             "issues": [issue.to_dict() for issue in self.issues],
             "roots": [root for _agent, root in AGENT_SCOPES],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalRead:
+    proposals: tuple[TaskProposal, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "root_slug": PROPOSALS_ROOT,
+            "proposals": [proposal.to_dict() for proposal in self.proposals],
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalMutationReceipt:
+    proposal_slug: str
+    status: str
+    proposal: TaskProposal
+    created_task: Task | None
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "proposal_slug": self.proposal_slug,
+            "status": self.status,
+            "proposal": self.proposal.to_dict(),
+            "created_task": (
+                self.created_task.to_dict() if self.created_task else None
+            ),
+            "verified": self.verified,
         }
 
 
@@ -362,6 +401,14 @@ def render_task_page(task: Task) -> str:
             "context": "GTasks lifecycle membership.",
         }
     ]
+    if task.owner_agent:
+        links.append(
+            {
+                "to": task.owner_agent,
+                "type": "assigned_to",
+                "context": "Tony assigned this work to the canonical agent.",
+            }
+        )
     if task.project:
         links.append(
             {
@@ -444,6 +491,78 @@ def render_task_page(task: Task) -> str:
     lines.extend(["---", "", f"# {task.title}", ""])
     if task.detail:
         lines.extend([task.detail, ""])
+    return "\n".join(lines)
+
+
+def render_proposal_page(proposal: TaskProposal) -> str:
+    links = [
+        {
+            "to": PROPOSALS_ROOT,
+            "type": "member_of",
+            "context": "GTasks proposal review scope.",
+        },
+        {
+            "to": proposal.proposing_agent,
+            "type": "proposed_by",
+            "context": "Canonical proposing agent.",
+        },
+    ]
+    if proposal.linked_goal:
+        links.append(
+            {
+                "to": proposal.linked_goal,
+                "type": "serves_goal",
+                "context": "Goal this proposal serves.",
+            }
+        )
+    if proposal.linked_task:
+        links.append(
+            {
+                "to": proposal.linked_task,
+                "type": "proposes_for_task",
+                "context": "Tony task this proposal supports.",
+            }
+        )
+    if proposal.approved_task:
+        links.append(
+            {
+                "to": proposal.approved_task,
+                "type": "approved_as",
+                "context": "Canonical task created by explicit Tony approval.",
+            }
+        )
+    lines = [
+        "---",
+        "type: task_proposal",
+        f"title: {_yaml_scalar(proposal.title)}",
+        f"status: {_yaml_scalar(proposal.status)}",
+        f"recipient: {_yaml_scalar(proposal.recipient)}",
+        f"proposing_agent: {_yaml_scalar(proposal.proposing_agent)}",
+        f"rationale: {_yaml_scalar(proposal.rationale)}",
+        f"proposed_next_step: {_yaml_scalar(proposal.proposed_next_step)}",
+        f"due_day: {_yaml_scalar(proposal.due_day.isoformat())}",
+        f"submitted_at: {_yaml_scalar(proposal.submitted_at.isoformat())}",
+        f"updated_at: {_yaml_scalar(proposal.updated_at.isoformat())}",
+        (
+            "reviewed_at: "
+            + _yaml_scalar(
+                proposal.reviewed_at.isoformat()
+                if proposal.reviewed_at
+                else None
+            )
+        ),
+        f"decision_note: {_yaml_scalar(proposal.decision_note)}",
+        "links:",
+    ]
+    for link in links:
+        lines.extend(
+            [
+                f"  - to: {_yaml_scalar(link['to'])}",
+                f"    type: {_yaml_scalar(link['type'])}",
+                f"    context: {_yaml_scalar(link['context'])}",
+            ]
+        )
+    lines.extend(["---", "", f"# {proposal.title}", "", proposal.rationale, ""])
     return "\n".join(lines)
 
 
@@ -562,7 +681,7 @@ def _lifecycle_edges(
         for link in links
         if isinstance(link, Mapping)
         and link.get("from_slug") == task_slug
-        and link.get("to_slug") in APPROVED_ROOTS
+        and link.get("to_slug") in TASK_SCOPE_ROOTS
         and link.get("link_type") == "member_of"
     ]
 
@@ -640,7 +759,7 @@ def _normalize_collection_task(
         link
         for link in valid_links
         if link.get("type") == "member_of"
-        and link.get("to") in LIFECYCLE_ROOTS
+        and link.get("to") in TASK_SCOPE_ROOTS
     ]
     graph_has_typed_membership = any(
         isinstance(edge, Mapping)
@@ -694,7 +813,7 @@ def _normalize_collection_task(
         link
         for link in valid_links
         if link.get("type") == "member_of"
-        and link.get("to") not in LIFECYCLE_ROOTS
+        and link.get("to") not in TASK_SCOPE_ROOTS
     ]
     if len({str(link.get("to")) for link in project_links}) > 1:
         valid_links = [
@@ -702,7 +821,7 @@ def _normalize_collection_task(
             for link in valid_links
             if not (
                 link.get("type") == "member_of"
-                and link.get("to") not in LIFECYCLE_ROOTS
+                and link.get("to") not in TASK_SCOPE_ROOTS
             )
         ]
         warnings.append(
@@ -728,7 +847,7 @@ def _normalize_collection_task(
                 for link in valid_links
                 if not (
                     link.get("type") == "member_of"
-                    and link.get("to") not in LIFECYCLE_ROOTS
+                    and link.get("to") not in TASK_SCOPE_ROOTS
                 )
             ]
             frontmatter["project"] = None
@@ -1010,57 +1129,17 @@ class GBrainAdapter:
                         raise GBrainProtocolError(
                             "agent task readback was not structured"
                         )
-                    frontmatter = page.get("frontmatter")
-                    if not isinstance(frontmatter, Mapping):
+                    task = Task.from_page(page, edges=edges)
+                    if (
+                        task.lifecycle_root != root_slug
+                        or task.owner_agent != agent.slug
+                    ):
                         raise DomainValidationError(
-                            f"{slug} has no frontmatter"
+                            "agent task owner does not match its typed work collection"
                         )
-                    normalized_page = deepcopy(dict(page))
-                    normalized_frontmatter = deepcopy(dict(frontmatter))
-                    raw_links = normalized_frontmatter.get("links", [])
-                    raw_links = raw_links if isinstance(raw_links, list) else []
-                    safe_links = [
-                        deepcopy(dict(link))
-                        for link in raw_links
-                        if isinstance(link, Mapping)
-                        and isinstance(link.get("to"), str)
-                        and isinstance(link.get("type"), str)
-                        and not (
-                            link.get("type") == "member_of"
-                            and (
-                                link.get("to") in AGENT_WORK_ROOTS
-                                or link.get("to") in LIFECYCLE_ROOTS
-                            )
-                        )
-                    ]
-                    safe_links.append({"to": ACTIVE_ROOT, "type": "member_of"})
-                    normalized_frontmatter["links"] = safe_links
-                    normalized_page["frontmatter"] = normalized_frontmatter
-                    normalized_edges = [
-                        deepcopy(dict(edge))
-                        for edge in edges
-                        if isinstance(edge, Mapping)
-                        and not (
-                            edge.get("from_slug") == slug
-                            and edge.get("link_type") == "member_of"
-                            and edge.get("to_slug") in AGENT_WORK_ROOTS
-                        )
-                    ]
-                    normalized_edges.append(
-                        {
-                            "from_slug": slug,
-                            "to_slug": ACTIVE_ROOT,
-                            "link_type": "member_of",
-                        }
-                    )
-                    task = Task.from_page(
-                        normalized_page,
-                        edges=normalized_edges,
-                    )
                     tasks.append(
                         {
                             **task.to_dict(),
-                            "lifecycle_root": root_slug,
                             "owner": {
                                 "slug": agent.slug,
                                 "name": agent.name,
@@ -1070,7 +1149,7 @@ class GBrainAdapter:
                                 },
                             },
                             "agent_work": True,
-                            "read_only": True,
+                            "read_only": False,
                         }
                     )
                 except (DomainValidationError, GBrainError) as exc:
@@ -1089,6 +1168,64 @@ class GBrainAdapter:
             deduped.setdefault(str(task["slug"]), task)
         return AgentWorkRead(
             tasks=tuple(deduped.values()),
+            issues=tuple(issues),
+        )
+
+    def list_proposals(self) -> ProposalRead:
+        raw_backlinks = self.runner.run(
+            "get_backlinks",
+            {"slug": PROPOSALS_ROOT},
+        )
+        if not isinstance(raw_backlinks, list):
+            raise GBrainProtocolError(
+                "proposal collection backlinks were not a list"
+            )
+        proposal_slugs = tuple(
+            dict.fromkeys(
+                str(edge["from_slug"])
+                for edge in raw_backlinks
+                if isinstance(edge, Mapping)
+                and edge.get("to_slug") == PROPOSALS_ROOT
+                and edge.get("link_type") == "member_of"
+                and isinstance(edge.get("from_slug"), str)
+            )
+        )
+
+        def read_proposal(
+            slug: str,
+        ) -> tuple[TaskProposal | None, CollectionIssue | None]:
+            try:
+                page = self.runner.run("get_page", {"slug": slug})
+                edges = self.runner.run("get_links", {"slug": slug})
+                if not isinstance(page, Mapping) or not isinstance(edges, list):
+                    raise GBrainProtocolError(
+                        "proposal readback was not structured"
+                    )
+                return TaskProposal.from_page(page, edges=edges), None
+            except (DomainValidationError, GBrainError) as exc:
+                return None, CollectionIssue(
+                    slug=slug,
+                    message=str(exc),
+                    impact=(
+                        "This proposal remains canonical in GBrain, but cannot "
+                        "be reviewed until its required proposal fields and "
+                        "typed relationships are repaired."
+                    ),
+                )
+
+        proposals: list[TaskProposal] = []
+        issues: list[CollectionIssue] = []
+        for proposal, issue in self._bounded_map(
+            read_proposal,
+            list(proposal_slugs),
+        ):
+            if proposal is not None:
+                proposals.append(proposal)
+            if issue is not None:
+                issues.append(issue)
+        proposals.sort(key=lambda proposal: proposal.updated_at, reverse=True)
+        return ProposalRead(
+            proposals=tuple(proposals),
             issues=tuple(issues),
         )
 
@@ -1747,6 +1884,347 @@ class GBrainAdapter:
                 ),
             ) from exc
         return receipt
+
+    def create_agent_task(
+        self,
+        task: Task,
+        agent_slug: str,
+    ) -> MutationReceipt:
+        scope_by_agent = dict(AGENT_SCOPES)
+        work_root = scope_by_agent.get(agent_slug)
+        if work_root is None:
+            raise ValueError("assignee must be Tony, Toddy, Timmy, or Tammy")
+        if (
+            task.owner_agent != agent_slug
+            or task.lifecycle_root != work_root
+            or task.status != "planned"
+            or not task.inbox
+        ):
+            raise ValueError(
+                "new agent work must start planned/queued in exactly the "
+                "selected agent work collection"
+            )
+        agent_page = self.runner.run("get_page", {"slug": agent_slug})
+        agent_links = self.runner.run("get_links", {"slug": agent_slug})
+        if not isinstance(agent_page, Mapping) or not isinstance(
+            agent_links, list
+        ):
+            raise ValueError("selected agent profile could not be verified")
+        AgentProfile.from_page(
+            agent_page,
+            work_root=work_root,
+            edges=agent_links,
+        )
+        if task.project:
+            project_page = self.runner.run("get_page", {"slug": task.project})
+            project_links = self.runner.run("get_links", {"slug": task.project})
+            if not isinstance(project_page, Mapping) or not isinstance(
+                project_links, list
+            ):
+                raise ValueError("selected project could not be verified")
+            Project.from_page(project_page, edges=project_links)
+        if task.goal:
+            goal_page = self.runner.run("get_page", {"slug": task.goal})
+            if not isinstance(goal_page, Mapping):
+                raise ValueError("selected goal could not be verified")
+            Goal.from_page(goal_page)
+
+        self.runner.run(
+            "put_page",
+            {"slug": task.slug, "content": render_task_page(task)},
+        )
+        descriptors = [
+            {
+                "from": task.slug,
+                "to": work_root,
+                "link_type": "member_of",
+                "context": "Canonical agent work collection membership.",
+                "link_source": "gtasks",
+            },
+            {
+                "from": task.slug,
+                "to": agent_slug,
+                "link_type": "assigned_to",
+                "context": "Tony explicitly assigned this work to the agent.",
+                "link_source": "gtasks",
+            },
+        ]
+        if task.project:
+            descriptors.append(
+                {
+                    "from": task.slug,
+                    "to": task.project,
+                    "link_type": "member_of",
+                    "context": "GTasks project membership.",
+                    "link_source": "gtasks",
+                }
+            )
+        if task.goal:
+            descriptors.append(
+                {
+                    "from": task.slug,
+                    "to": task.goal,
+                    "link_type": "advances_goal",
+                    "context": "This agent task advances the linked Tony goal.",
+                    "link_source": "gtasks",
+                }
+            )
+        try:
+            for descriptor in descriptors:
+                self.runner.run("add_link", descriptor)
+            if task.goal:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.goal,
+                        "to": task.slug,
+                        "link_type": "advanced_by",
+                        "context": "This goal is advanced by the assigned agent task.",
+                        "link_source": "gtasks",
+                    },
+                )
+            page = self.runner.run("get_page", {"slug": task.slug})
+            links = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError(
+                    "agent task readback was not structured"
+                )
+            stored = Task.from_page(page, edges=links)
+            if stored != task:
+                raise GBrainProtocolError(
+                    "agent task page readback did not match the requested task"
+                )
+            typed = {
+                (
+                    edge.get("from_slug"),
+                    edge.get("to_slug"),
+                    edge.get("link_type"),
+                )
+                for edge in links
+                if isinstance(edge, Mapping)
+            }
+            if (task.slug, work_root, "member_of") not in typed or (
+                task.slug,
+                agent_slug,
+                "assigned_to",
+            ) not in typed:
+                raise GBrainProtocolError(
+                    "agent assignment relationships were not verified"
+                )
+            if any(
+                edge[0] == task.slug
+                and edge[2] == "member_of"
+                and edge[1] in TASK_SCOPE_ROOTS
+                and edge[1] != work_root
+                for edge in typed
+            ):
+                raise GBrainProtocolError(
+                    "agent task retained another current task scope"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                task.slug,
+                (
+                    "Agent task was not fully verified. Do not retry until "
+                    f"this slug is inspected: {exc}"
+                ),
+            ) from exc
+        return MutationReceipt(slug=task.slug, verified=True)
+
+    def review_proposal(
+        self,
+        proposal_slug: str,
+        *,
+        title: str,
+        rationale: str,
+        proposed_next_step: str,
+        due_day: date,
+        now: datetime,
+    ) -> ProposalMutationReceipt:
+        proposal = next(
+            (
+                candidate
+                for candidate in self.list_proposals().proposals
+                if candidate.slug == proposal_slug
+            ),
+            None,
+        )
+        if proposal is None:
+            raise ValueError("proposal is not in the canonical review scope")
+        if proposal.status not in {"proposed", "review"}:
+            raise ValueError("only proposed or in-review work may be edited")
+        updated = replace(
+            proposal,
+            title=title.strip(),
+            rationale=rationale.strip(),
+            proposed_next_step=proposed_next_step.strip(),
+            due_day=due_day,
+            status="review",
+            updated_at=now,
+        )
+        if not updated.title or len(updated.title) > 160:
+            raise ValueError("proposal title must be 1 to 160 characters")
+        if not updated.rationale or not updated.proposed_next_step:
+            raise ValueError("proposal rationale and next step are required")
+        self.runner.run(
+            "put_page",
+            {"slug": proposal_slug, "content": render_proposal_page(updated)},
+        )
+        try:
+            page = self.runner.run("get_page", {"slug": proposal_slug})
+            links = self.runner.run("get_links", {"slug": proposal_slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError(
+                    "proposal edit readback was not structured"
+                )
+            stored = TaskProposal.from_page(page, edges=links)
+            if stored != updated:
+                raise GBrainProtocolError(
+                    "proposal edit readback did not match the request"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                proposal_slug,
+                f"Proposal edit write was not verified: {exc}",
+            ) from exc
+        return ProposalMutationReceipt(
+            proposal_slug=proposal_slug,
+            status=stored.status,
+            proposal=stored,
+            created_task=None,
+            verified=True,
+        )
+
+    def decide_proposal(
+        self,
+        proposal_slug: str,
+        *,
+        action: str,
+        decision_note: str,
+        now: datetime,
+    ) -> ProposalMutationReceipt:
+        proposal = next(
+            (
+                candidate
+                for candidate in self.list_proposals().proposals
+                if candidate.slug == proposal_slug
+            ),
+            None,
+        )
+        if proposal is None:
+            raise ValueError("proposal is not in the canonical review scope")
+        if action not in {"approve", "reject"}:
+            raise ValueError("proposal decision must be approve or reject")
+        if proposal.status in {"approved", "rejected"}:
+            if (
+                proposal.status == "approved"
+                and action == "approve"
+                and proposal.approved_task
+            ):
+                page = self.runner.run(
+                    "get_page",
+                    {"slug": proposal.approved_task},
+                )
+                links = self.runner.run(
+                    "get_links",
+                    {"slug": proposal.approved_task},
+                )
+                if not isinstance(page, Mapping) or not isinstance(links, list):
+                    raise GBrainProtocolError(
+                        "approved task readback was not structured"
+                    )
+                task = Task.from_page(page, edges=links)
+                return ProposalMutationReceipt(
+                    proposal_slug=proposal.slug,
+                    status=proposal.status,
+                    proposal=proposal,
+                    created_task=task,
+                    verified=True,
+                )
+            raise ValueError("proposal already has a final decision")
+
+        created_task: Task | None = None
+        if action == "approve":
+            identity = hashlib.sha256(
+                proposal.slug.encode("utf-8")
+            ).hexdigest()[:12]
+            created_task = new_task(
+                title=proposal.title,
+                detail=proposal.rationale,
+                next_action=proposal.proposed_next_step,
+                due_day=proposal.due_day,
+                goal=proposal.linked_goal,
+                now=now,
+                identity=identity,
+            )
+            if proposal.recipient == "agent":
+                work_root = dict(AGENT_SCOPES)[proposal.proposing_agent]
+                created_task = replace(
+                    created_task,
+                    lifecycle_root=work_root,
+                    owner_agent=proposal.proposing_agent,
+                )
+                self.create_agent_task(
+                    created_task,
+                    proposal.proposing_agent,
+                )
+            else:
+                self.create_task(created_task)
+
+        decided = replace(
+            proposal,
+            status="approved" if action == "approve" else "rejected",
+            approved_task=created_task.slug if created_task else None,
+            reviewed_at=now,
+            updated_at=now,
+            decision_note=decision_note.strip(),
+        )
+        self.runner.run(
+            "put_page",
+            {"slug": proposal.slug, "content": render_proposal_page(decided)},
+        )
+        if created_task:
+            self.runner.run(
+                "add_link",
+                {
+                    "from": proposal.slug,
+                    "to": created_task.slug,
+                    "link_type": "approved_as",
+                    "context": "Tony explicitly approved this proposal as a task.",
+                    "link_source": "gtasks",
+                },
+            )
+        try:
+            page = self.runner.run("get_page", {"slug": proposal.slug})
+            links = self.runner.run("get_links", {"slug": proposal.slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError(
+                    "proposal decision readback was not structured"
+                )
+            stored = TaskProposal.from_page(page, edges=links)
+            if (
+                stored.status != decided.status
+                or stored.approved_task != decided.approved_task
+                or stored.reviewed_at != now
+            ):
+                raise GBrainProtocolError(
+                    "proposal decision readback did not match the request"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                proposal.slug,
+                (
+                    "Proposal decision was not fully verified. Inspect the "
+                    f"proposal and any approved task before retrying: {exc}"
+                ),
+            ) from exc
+        return ProposalMutationReceipt(
+            proposal_slug=proposal.slug,
+            status=stored.status,
+            proposal=stored,
+            created_task=created_task,
+            verified=True,
+        )
 
     def duplicate_task(
         self,

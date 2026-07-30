@@ -7,6 +7,8 @@ import gtasks.domain as domain
 from gtasks.domain import (
     ACTIVE_ROOT,
     AgentProfile,
+    PROPOSALS_ROOT,
+    TaskProposal,
     DomainValidationError,
     GOALS_ROOT,
     Goal,
@@ -139,6 +141,49 @@ class TaskParsingTests(unittest.TestCase):
             ("goals/happier-and-healthier",),
         )
         self.assertIsNone(profile.chat_url)
+
+    def test_task_proposal_requires_typed_agent_and_collection_links(self) -> None:
+        proposal = TaskProposal.from_page(
+            {
+                "slug": "proposals/toddy-wellbeing-check-in",
+                "type": "task_proposal",
+                "title": "Schedule a wellbeing check-in",
+                "frontmatter": {
+                    "status": "proposed",
+                    "recipient": "tony",
+                    "proposing_agent": "agents/toddy",
+                    "rationale": "A check-in supports the wellbeing goal.",
+                    "proposed_next_step": "Choose a 20-minute time tomorrow.",
+                    "due_day": "2026-07-31",
+                    "submitted_at": "2026-07-30T14:00:00-07:00",
+                    "updated_at": "2026-07-30T14:00:00-07:00",
+                },
+            },
+            edges=[
+                {
+                    "from_slug": "proposals/toddy-wellbeing-check-in",
+                    "to_slug": PROPOSALS_ROOT,
+                    "link_type": "member_of",
+                },
+                {
+                    "from_slug": "proposals/toddy-wellbeing-check-in",
+                    "to_slug": "agents/toddy",
+                    "link_type": "proposed_by",
+                },
+                {
+                    "from_slug": "proposals/toddy-wellbeing-check-in",
+                    "to_slug": "goals/happier-and-healthier",
+                    "link_type": "serves_goal",
+                },
+            ],
+        )
+
+        self.assertEqual(proposal.recipient, "tony")
+        self.assertEqual(proposal.proposing_agent, "agents/toddy")
+        self.assertEqual(
+            proposal.linked_goal,
+            "goals/happier-and-healthier",
+        )
 
     def test_rejects_invalid_progress_metric_contracts(self) -> None:
         valid = {

@@ -2713,6 +2713,113 @@ kbd {
   }
 }
 
+.proposed-work {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 22px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%);
+}
+
+.proposed-work-heading,
+.proposal-card-header,
+.proposal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.proposed-work-heading h2,
+.proposal-agent-group h3,
+.proposal-card h4 {
+  margin: 0;
+}
+
+.proposed-work-heading p,
+.proposal-card p {
+  margin: 6px 0 0;
+}
+
+.proposal-agent-filter {
+  min-width: 150px;
+}
+
+.proposal-agent-filter span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.proposal-agent-group {
+  display: grid;
+  gap: 12px;
+}
+
+.proposal-card {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.proposal-recipient,
+.proposal-status {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.proposal-recipient.agent {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+}
+
+.proposal-rationale,
+.proposal-next-step,
+.proposal-link,
+.proposal-time,
+.proposal-decision-note {
+  color: var(--muted);
+}
+
+.proposal-time {
+  font-size: 0.78rem;
+}
+
+.proposal-actions {
+  justify-content: flex-start;
+  margin-top: 6px;
+}
+
+@media (max-width: 720px) {
+  .proposed-work {
+    padding: 16px;
+  }
+
+  .proposed-work-heading,
+  .proposal-card-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .proposal-agent-filter,
+  .proposal-agent-filter select {
+    width: 100%;
+  }
+
+  .proposal-actions > button {
+    flex: 1 1 100%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

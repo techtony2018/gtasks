@@ -221,7 +221,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("metric-progress", javascript)
         self.assertIn("taskProgressLabel(task)", javascript)
 
-    def test_agent_profiles_and_board_filter_are_read_only_and_default_off(
+    def test_agent_profiles_and_board_filter_are_scoped_and_default_off(
         self,
     ) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -237,8 +237,27 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("agent-owner-badge", javascript)
         self.assertIn("owner.name", javascript)
         self.assertIn("owner.avatar", javascript)
-        self.assertIn("read-only", javascript.lower())
         self.assertNotIn("showAgentTasks", javascript[javascript.index("body: JSON.stringify") : javascript.index("document.querySelectorAll")])
+
+    def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(
+        self,
+    ) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("Proposed Tasks", javascript)
+        self.assertIn("All Agents", javascript)
+        self.assertIn("Proposed for Tony", javascript)
+        self.assertIn("Proposed agent work", javascript)
+        self.assertIn('fetch("/api/proposals"', javascript)
+        self.assertIn('id="proposal-review-dialog"', html)
+        self.assertIn('id="proposal-decision-dialog"', html)
+        self.assertIn("It does not create a task", html)
+        self.assertIn("Rejection records a durable decision", javascript)
+        self.assertIn(
+            'view === "inbox" ? renderProposedWork() : null',
+            javascript,
+        )
 
     def test_goal_detail_has_default_agent_profile_link(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

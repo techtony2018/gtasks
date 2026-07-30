@@ -550,6 +550,63 @@
     </dialog>
 
     <dialog
+      class="task-editor-dialog"
+      id="proposal-review-dialog"
+      aria-labelledby="proposal-review-title"
+    >
+      <form method="dialog" class="task-editor-form" id="proposal-review-form">
+        <div class="dialog-heading">
+          <div>
+            <p>Review before approval</p>
+            <h2 id="proposal-review-title">Edit proposed task</h2>
+          </div>
+          <button class="icon-button" id="proposal-review-close" type="button" aria-label="Close proposal review">×</button>
+        </div>
+        <label for="proposal-review-name">Task title</label>
+        <input id="proposal-review-name" type="text" maxlength="160" required>
+        <label for="proposal-review-rationale">Rationale</label>
+        <textarea id="proposal-review-rationale" rows="3" required></textarea>
+        <label for="proposal-review-next-step">Proposed next step</label>
+        <input id="proposal-review-next-step" type="text" maxlength="240" required>
+        <label for="proposal-review-due">Due date</label>
+        <input id="proposal-review-due" type="date" required>
+        <p>
+          Saving keeps this item in proposal review. It does not create a task
+          or authorize any work.
+        </p>
+        <p class="form-error is-hidden" id="proposal-review-error" role="alert"></p>
+        <div class="dialog-footer">
+          <button class="secondary-button" id="proposal-review-cancel" type="button">Cancel</button>
+          <button class="submit-button" id="proposal-review-submit" type="submit">Save reviewed proposal</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      class="goal-confirm-dialog"
+      id="proposal-decision-dialog"
+      aria-labelledby="proposal-decision-title"
+    >
+      <div class="goal-confirm-shell">
+        <div class="dialog-heading">
+          <div>
+            <p>Explicit proposal decision</p>
+            <h2 id="proposal-decision-title"></h2>
+          </div>
+          <button class="icon-button" id="proposal-decision-close" type="button" aria-label="Close proposal decision">×</button>
+        </div>
+        <p id="proposal-decision-copy"></p>
+        <label for="proposal-decision-note">Decision note <span>optional</span></label>
+        <textarea id="proposal-decision-note" rows="3" maxlength="1000"></textarea>
+        <p class="form-error is-hidden" id="proposal-decision-error" role="alert"></p>
+        <div class="dialog-footer">
+          <button class="secondary-button" id="proposal-decision-cancel" type="button">Cancel</button>
+          <button class="danger-button" id="proposal-decision-submit" type="button"></button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog
       class="logs-dialog"
       id="logs-dialog"
       aria-modal="true"

@@ -36,6 +36,12 @@ const state = {
   agentWorkLoading: false,
   agentWorkError: "",
   showAgentTasks: false,
+  proposals: [],
+  proposalIssues: [],
+  proposalsLoading: true,
+  proposalsError: "",
+  proposalAgentFilter: "all",
+  proposalAction: null,
 };
 
 const viewMeta = {
@@ -130,6 +136,24 @@ const elements = {
   taskEditorError: document.querySelector("#task-editor-error"),
   taskEditorSubmit: document.querySelector("#task-editor-submit"),
   taskEditorSafety: document.querySelector("#task-editor-safety"),
+  proposalReviewDialog: document.querySelector("#proposal-review-dialog"),
+  proposalReviewForm: document.querySelector("#proposal-review-form"),
+  proposalReviewClose: document.querySelector("#proposal-review-close"),
+  proposalReviewCancel: document.querySelector("#proposal-review-cancel"),
+  proposalReviewName: document.querySelector("#proposal-review-name"),
+  proposalReviewRationale: document.querySelector("#proposal-review-rationale"),
+  proposalReviewNextStep: document.querySelector("#proposal-review-next-step"),
+  proposalReviewDue: document.querySelector("#proposal-review-due"),
+  proposalReviewError: document.querySelector("#proposal-review-error"),
+  proposalReviewSubmit: document.querySelector("#proposal-review-submit"),
+  proposalDecisionDialog: document.querySelector("#proposal-decision-dialog"),
+  proposalDecisionTitle: document.querySelector("#proposal-decision-title"),
+  proposalDecisionCopy: document.querySelector("#proposal-decision-copy"),
+  proposalDecisionNote: document.querySelector("#proposal-decision-note"),
+  proposalDecisionError: document.querySelector("#proposal-decision-error"),
+  proposalDecisionClose: document.querySelector("#proposal-decision-close"),
+  proposalDecisionCancel: document.querySelector("#proposal-decision-cancel"),
+  proposalDecisionSubmit: document.querySelector("#proposal-decision-submit"),
   detailPanel: document.querySelector("#detail-panel"),
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
@@ -1329,6 +1353,34 @@ async function loadAgentWork() {
   }
 }
 
+async function loadProposals() {
+  state.proposalsLoading = true;
+  state.proposalsError = "";
+  if (state.snapshot) render();
+  try {
+    const response = await fetch("/api/proposals", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Proposed tasks could not be read.");
+    }
+    state.proposals = Array.isArray(payload.proposals)
+      ? payload.proposals
+      : [];
+    state.proposalIssues = Array.isArray(payload.issues)
+      ? payload.issues
+      : [];
+  } catch (error) {
+    state.proposalsError =
+      error.message || "Proposed tasks could not be read.";
+  } finally {
+    state.proposalsLoading = false;
+    if (state.snapshot) render();
+  }
+}
+
 async function loadProjects() {
   state.projectsLoading = true;
   state.projectsError = "";
@@ -1674,8 +1726,17 @@ function renderNeedsAttention() {
     ...issue,
     source: "agent",
   }));
+  const proposalIssues = state.proposalIssues.map((issue) => ({
+    ...issue,
+    source: "proposal",
+  }));
   const seen = new Set();
-  const issues = [...taskIssues, ...projectIssues, ...agentIssues].filter((issue) => {
+  const issues = [
+    ...taskIssues,
+    ...projectIssues,
+    ...agentIssues,
+    ...proposalIssues,
+  ].filter((issue) => {
     const identity =
       issue.fingerprint ||
       `${issue.source}:${issue.slug}:${issue.message}:${issue.impact || ""}`;
@@ -1915,6 +1976,319 @@ async function restoreWarning(issue, button) {
   }
 }
 
+function proposalAgent(proposal) {
+  return state.agents.find(
+    (agent) => agent.slug === proposal.proposing_agent,
+  );
+}
+
+function proposalRelationLabel(proposal) {
+  if (proposal.linked_goal) {
+    const goal = state.snapshot?.goals.find(
+      (candidate) => candidate.slug === proposal.linked_goal,
+    );
+    return goal ? `Goal · ${goal.title}` : `Goal · ${proposal.linked_goal}`;
+  }
+  const task = state.snapshot?.tasks.find(
+    (candidate) => candidate.slug === proposal.linked_task,
+  );
+  return task
+    ? `Tony task · ${task.title || task.summary}`
+    : `Tony task · ${proposal.linked_task}`;
+}
+
+function openProposalReview(proposal) {
+  state.proposalAction = { proposal, action: "review" };
+  elements.proposalReviewName.value = proposal.title;
+  elements.proposalReviewRationale.value = proposal.rationale;
+  elements.proposalReviewNextStep.value = proposal.proposed_next_step;
+  elements.proposalReviewDue.value = proposal.due_day;
+  elements.proposalReviewError.classList.add("is-hidden");
+  elements.proposalReviewDialog.showModal();
+  window.setTimeout(() => elements.proposalReviewName.focus(), 0);
+}
+
+function openProposalDecision(proposal, action) {
+  const agent = proposalAgent(proposal);
+  const recipient =
+    proposal.recipient === "tony"
+      ? "a canonical Tony task"
+      : `canonical assigned work for ${agent?.name || "the proposing agent"}`;
+  state.proposalAction = { proposal, action };
+  elements.proposalDecisionTitle.textContent =
+    action === "approve"
+      ? `Approve “${proposal.title}”?`
+      : `Reject “${proposal.title}”?`;
+  elements.proposalDecisionCopy.textContent =
+    action === "approve"
+      ? `Approval creates ${recipient} only after exact GBrain page and relationship readback. It does not authorize unrelated external side effects.`
+      : "Rejection records a durable decision and retains this canonical proposal, its links, and its audit history. It does not delete task, goal, or agent data.";
+  elements.proposalDecisionNote.value = "";
+  elements.proposalDecisionError.classList.add("is-hidden");
+  elements.proposalDecisionSubmit.textContent =
+    action === "approve" ? "Approve and create task" : "Reject proposal";
+  elements.proposalDecisionSubmit.classList.toggle(
+    "is-destructive",
+    action === "reject",
+  );
+  elements.proposalDecisionDialog.showModal();
+  window.setTimeout(() => elements.proposalDecisionSubmit.focus(), 0);
+}
+
+function proposalCard(proposal) {
+  const agent = proposalAgent(proposal);
+  const card = node("article", "proposal-card");
+  const header = node("div", "proposal-card-header");
+  header.append(
+    agentOwnerBadge({
+      name: agent?.name || proposal.proposing_agent,
+      avatar: agent?.avatar || { kind: "initials", value: "A" },
+    }),
+    node(
+      "span",
+      `proposal-recipient ${proposal.recipient}`,
+      proposal.recipient === "tony"
+        ? "Proposed for Tony"
+        : "Proposed agent work",
+    ),
+    node("span", `proposal-status ${proposal.status}`, proposal.status),
+  );
+  card.append(
+    header,
+    node("h4", "", proposal.title),
+    node("p", "proposal-link", proposalRelationLabel(proposal)),
+    node("p", "proposal-rationale", proposal.rationale),
+    node(
+      "p",
+      "proposal-next-step",
+      `Next step · ${proposal.proposed_next_step}`,
+    ),
+    node(
+      "p",
+      "proposal-time",
+      `Submitted ${new Date(proposal.submitted_at).toLocaleString()} · updated ${new Date(proposal.updated_at).toLocaleString()}`,
+    ),
+  );
+  if (["proposed", "review"].includes(proposal.status)) {
+    const actions = node("div", "proposal-actions");
+    const edit = node("button", "secondary-button", "Review / edit");
+    edit.type = "button";
+    edit.addEventListener("click", () => openProposalReview(proposal));
+    const approve = node("button", "submit-button", "Approve");
+    approve.type = "button";
+    approve.addEventListener(
+      "click",
+      () => openProposalDecision(proposal, "approve"),
+    );
+    const reject = node("button", "danger-button", "Reject");
+    reject.type = "button";
+    reject.addEventListener(
+      "click",
+      () => openProposalDecision(proposal, "reject"),
+    );
+    actions.append(edit, approve, reject);
+    card.append(actions);
+  } else if (proposal.decision_note) {
+    card.append(
+      node("p", "proposal-decision-note", proposal.decision_note),
+    );
+  }
+  return card;
+}
+
+function renderProposedWork() {
+  const section = node("section", "proposed-work");
+  const heading = node("div", "proposed-work-heading");
+  const title = node("div");
+  title.append(
+    node("h2", "", "Proposed Tasks"),
+    node(
+      "p",
+      "",
+      "Grouped by proposing agent. Every proposal stays unapproved until Tony explicitly decides.",
+    ),
+  );
+  const filterLabel = node("label", "proposal-agent-filter");
+  filterLabel.append(node("span", "", "Agent"));
+  const filter = node("select");
+  filter.setAttribute("aria-label", "Filter proposed tasks by agent");
+  [
+    ["all", "All Agents"],
+    ["agents/toddy", "Toddy"],
+    ["agents/timmy", "Timmy"],
+    ["agents/tammy", "Tammy"],
+  ].forEach(([value, label]) => {
+    const option = node("option", "", label);
+    option.value = value;
+    filter.append(option);
+  });
+  filter.value = state.proposalAgentFilter;
+  filter.addEventListener("change", () => {
+    state.proposalAgentFilter = filter.value;
+    render();
+  });
+  filterLabel.append(filter);
+  heading.append(title, filterLabel);
+  section.append(heading);
+  if (state.proposalsLoading) {
+    section.append(node("div", "section-empty", "Reading proposed work…"));
+    return section;
+  }
+  if (state.proposalsError) {
+    const error = node("div", "section-empty", state.proposalsError);
+    const retry = node("button", "secondary-button", "Try again");
+    retry.type = "button";
+    retry.addEventListener("click", loadProposals);
+    error.append(retry);
+    section.append(error);
+    return section;
+  }
+  const visible = state.proposals.filter(
+    (proposal) =>
+      state.proposalAgentFilter === "all" ||
+      proposal.proposing_agent === state.proposalAgentFilter,
+  );
+  if (!visible.length) {
+    section.append(
+      node(
+        "div",
+        "section-empty",
+        state.proposals.length
+          ? "No proposals from this agent."
+          : "No agent has submitted proposed work. Nothing is auto-generated or approved.",
+      ),
+    );
+    return section;
+  }
+  const agentOrder = [
+    "agents/toddy",
+    "agents/timmy",
+    "agents/tammy",
+  ];
+  agentOrder.forEach((agentSlug) => {
+    const group = visible.filter(
+      (proposal) => proposal.proposing_agent === agentSlug,
+    );
+    if (!group.length) return;
+    const agent = state.agents.find((item) => item.slug === agentSlug);
+    const wrapper = node("section", "proposal-agent-group");
+    wrapper.append(
+      node("h3", "", agent?.name || agentSlug),
+      ...group.map(proposalCard),
+    );
+    section.append(wrapper);
+  });
+  return section;
+}
+
+async function submitProposalReview(event) {
+  event.preventDefault();
+  const pending = state.proposalAction;
+  if (!pending || pending.action !== "review") return;
+  elements.proposalReviewError.classList.add("is-hidden");
+  elements.proposalReviewSubmit.disabled = true;
+  elements.proposalReviewSubmit.textContent = "Verifying in GBrain…";
+  try {
+    const response = await fetch(
+      `/api/proposals/${encodeURIComponent(pending.proposal.slug)}/review`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          title: elements.proposalReviewName.value,
+          rationale: elements.proposalReviewRationale.value,
+          proposed_next_step: elements.proposalReviewNextStep.value,
+          due_day: elements.proposalReviewDue.value,
+        }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.receipt?.verified) {
+      const error = new Error(result.error || "Proposal review was not verified.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    state.proposals = state.proposals.map((proposal) =>
+      proposal.slug === result.receipt.proposal.slug
+        ? result.receipt.proposal
+        : proposal);
+    elements.proposalReviewDialog.close();
+    state.proposalAction = null;
+    render();
+    showToast("Proposal review saved and verified. It remains unapproved.");
+  } catch (error) {
+    elements.proposalReviewError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug}; do not retry yet.`
+        : error.message;
+    elements.proposalReviewError.classList.remove("is-hidden");
+  } finally {
+    elements.proposalReviewSubmit.disabled = false;
+    elements.proposalReviewSubmit.textContent = "Save reviewed proposal";
+  }
+}
+
+async function submitProposalDecision() {
+  const pending = state.proposalAction;
+  if (!pending || !["approve", "reject"].includes(pending.action)) return;
+  elements.proposalDecisionError.classList.add("is-hidden");
+  elements.proposalDecisionSubmit.disabled = true;
+  const original = elements.proposalDecisionSubmit.textContent;
+  elements.proposalDecisionSubmit.textContent = "Verifying in GBrain…";
+  try {
+    const response = await fetch(
+      `/api/proposals/${encodeURIComponent(pending.proposal.slug)}/decision`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          action: pending.action,
+          decision_note: elements.proposalDecisionNote.value,
+        }),
+      },
+    );
+    const result = await response.json();
+    if (!response.ok || !result.receipt?.verified) {
+      const error = new Error(result.error || "Proposal decision was not verified.");
+      error.code = result.code;
+      error.slug = result.slug;
+      throw error;
+    }
+    state.proposals = state.proposals.map((proposal) =>
+      proposal.slug === result.receipt.proposal.slug
+        ? result.receipt.proposal
+        : proposal);
+    elements.proposalDecisionDialog.close();
+    state.proposalAction = null;
+    if (pending.action === "approve") {
+      await Promise.all([loadTasks(), loadAgentWork()]);
+    } else {
+      render();
+    }
+    showToast(
+      pending.action === "approve"
+        ? "Proposal approved; canonical task creation and readback verified."
+        : "Proposal rejection recorded; canonical data retained.",
+    );
+  } catch (error) {
+    elements.proposalDecisionError.textContent =
+      error.code === "partial_write" && error.slug
+        ? `${error.message} Inspect ${error.slug}; do not retry yet.`
+        : error.message;
+    elements.proposalDecisionError.classList.remove("is-hidden");
+  } finally {
+    elements.proposalDecisionSubmit.disabled = false;
+    elements.proposalDecisionSubmit.textContent = original;
+  }
+}
+
 function render() {
   renderNavigation();
   updateBoardStatus();
@@ -1940,8 +2314,13 @@ function render() {
         ? renderGoalsView()
         : renderListView(view);
   const attention = view === "inbox" ? renderNeedsAttention() : null;
+  const proposals = view === "inbox" ? renderProposedWork() : null;
   elements.viewSurface.replaceChildren(
-    ...(attention ? [attention, content] : [content]),
+    ...[
+      ...(attention ? [attention] : []),
+      ...(proposals ? [proposals] : []),
+      content,
+    ],
   );
   const date = parseDay(state.snapshot.as_of);
   elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
@@ -2787,6 +3166,7 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });
   if (state.agentWorkLoaded || state.showAgentTasks) loadAgentWork();
+  loadProposals();
 });
 elements.showAgentTasks.addEventListener("change", () => {
   state.showAgentTasks = elements.showAgentTasks.checked;
@@ -2834,6 +3214,37 @@ elements.warningDismissConfirm.addEventListener("click", confirmWarningDismiss);
 elements.warningDismissDialog.addEventListener("close", () => {
   state.pendingWarning = null;
   elements.warningDismissError.classList.add("is-hidden");
+});
+elements.proposalReviewForm.addEventListener("submit", submitProposalReview);
+[
+  elements.proposalReviewClose,
+  elements.proposalReviewCancel,
+].forEach((button) => {
+  button.addEventListener("click", () => {
+    elements.proposalReviewDialog.close();
+    state.proposalAction = null;
+  });
+});
+elements.proposalReviewDialog.addEventListener("close", () => {
+  state.proposalAction = null;
+  elements.proposalReviewError.classList.add("is-hidden");
+});
+[
+  elements.proposalDecisionClose,
+  elements.proposalDecisionCancel,
+].forEach((button) => {
+  button.addEventListener("click", () => {
+    elements.proposalDecisionDialog.close();
+    state.proposalAction = null;
+  });
+});
+elements.proposalDecisionSubmit.addEventListener(
+  "click",
+  submitProposalDecision,
+);
+elements.proposalDecisionDialog.addEventListener("close", () => {
+  state.proposalAction = null;
+  elements.proposalDecisionError.classList.add("is-hidden");
 });
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;
@@ -2903,6 +3314,14 @@ document.addEventListener("visibilitychange", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && elements.proposalReviewDialog.open) {
+    state.proposalAction = null;
+    return;
+  }
+  if (event.key === "Escape" && elements.proposalDecisionDialog.open) {
+    state.proposalAction = null;
+    return;
+  }
   if (event.key === "Escape" && elements.logsDialog.open) {
     event.preventDefault();
     closeLogsDialog();
@@ -2927,3 +3346,4 @@ loadReleases();
 loadTasks({ reason: "initial" });
 loadProjects();
 loadAgents();
+loadProposals();
