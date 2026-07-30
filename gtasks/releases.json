@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.7",
+  "current_version": "V0.0.8",
   "releases": [
     {
       "version": "V0.0.1",
@@ -42,6 +42,12 @@
       "date": "2026-07-30",
       "title": "Inbox-centered warning controls",
       "summary": "Centralized task, project, goal, and relationship warnings in Inbox; added confirmed durable dismissal, restart-safe preferences, changed-issue reappearance, and a recoverable dismissed-warning list without hiding canonical data."
+    },
+    {
+      "version": "V0.0.8",
+      "date": "2026-07-30",
+      "title": "Privacy-safe operational Logs",
+      "summary": "Added a read-only Logs dialog beside About with newest-first filtering and pagination, fixed-message Event Queue Reader history and health, bounded redacted GTasks events, and graceful queue-unavailable status that never blocks core task workflows."
     }
   ]
 }

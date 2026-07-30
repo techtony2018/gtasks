@@ -131,6 +131,41 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('event.key === "Escape"', javascript)
         self.assertIn("release-history", javascript)
 
+    def test_logs_are_adjacent_read_only_filtered_and_accessible(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        store_end = html.index("</div>", html.index('class="store-card"'))
+        logs_button = html.index('id="logs-button"')
+        about_button = html.index('id="about-button"')
+        self.assertGreater(logs_button, store_end)
+        self.assertLess(logs_button, about_button)
+        for element_id in (
+            "logs-dialog",
+            "logs-close",
+            "logs-severity",
+            "logs-component",
+            "logs-refresh",
+            "operational-log-list",
+            "logs-load-more",
+            "queue-reader-status",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        self.assertIn('aria-labelledby="logs-title"', html)
+        self.assertIn("no event payloads", html)
+        self.assertIn("private task content", html)
+        self.assertIn("Inbox warning", html)
+        self.assertIn('fetch(`/api/logs?', javascript)
+        self.assertIn("URLSearchParams", javascript)
+        self.assertIn("state.logsNextCursor", javascript)
+        self.assertIn("renderQueueReaderStatus", javascript)
+        self.assertIn("GTasks remains available", javascript)
+        self.assertIn(
+            'event.key === "Escape" && elements.logsDialog.open',
+            javascript,
+        )
+        self.assertNotIn('fetch("/api/logs", {\n      method:', javascript)
+
     def test_task_detail_has_an_accessible_next_action_editor(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

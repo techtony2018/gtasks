@@ -20,6 +20,7 @@ from gtasks.gbrain import (
     StatusMutationReceipt,
 )
 from gtasks.server import build_server
+from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
 from gtasks.warnings import WarningDismissalStore
 
 
@@ -144,6 +145,20 @@ if __name__ == "__main__":
             warning_store=WarningDismissalStore(
                 Path(directory) / "warning-state.json",
                 user_id="fixture-user",
+            ),
+            log_reader=OperationalLogReader(
+                gtasks_store=OperationalLogStore(
+                    Path(directory) / "operational-events.jsonl"
+                ),
+                queue_path=Path(directory) / "reader-observability.json",
+                queue_health=lambda: {
+                    "status": "unavailable",
+                    "broker_connected": False,
+                    "message": (
+                        "Event Queue Reader status is unavailable. "
+                        "GTasks remains available."
+                    ),
+                },
             ),
         )
         server.serve_forever()

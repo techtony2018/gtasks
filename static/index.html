@@ -76,6 +76,10 @@
           </div>
           <p>Every task stays in GBrain. GTasks keeps no separate task database.</p>
         </div>
+        <button class="about-button" id="logs-button" type="button">
+          <span>Logs</span>
+          <strong>Read-only</strong>
+        </button>
         <button class="about-button" id="about-button" type="button">
           <span>About</span>
           <strong id="sidebar-version">Loading…</strong>
@@ -416,6 +420,63 @@
         <div class="dialog-footer">
           <button class="secondary-button" id="warning-dismiss-cancel" type="button">Cancel</button>
           <button class="danger-button" id="warning-dismiss-confirm" type="button">Dismiss warning</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog
+      class="logs-dialog"
+      id="logs-dialog"
+      aria-modal="true"
+      aria-labelledby="logs-title"
+    >
+      <div class="logs-dialog-shell">
+        <header class="about-dialog-header">
+          <div>
+            <p>Privacy-safe operations</p>
+            <h2 id="logs-title">GTasks Logs</h2>
+          </div>
+          <button class="icon-button" id="logs-close" type="button" aria-label="Close Logs">×</button>
+        </header>
+        <div class="logs-body">
+          <p class="logs-separation-note">
+            These read-only operational logs contain no event payloads or
+            private task content. Dismissing an Inbox warning is a separate
+            presentation preference and never removes a log entry.
+          </p>
+          <div class="queue-reader-status" id="queue-reader-status" role="status">
+            Reading Event Queue Reader status…
+          </div>
+          <form class="logs-controls" id="logs-filter-form">
+            <label>
+              Severity
+              <select id="logs-severity">
+                <option value="">All severities</option>
+                <option value="error">Error</option>
+                <option value="warning">Warning</option>
+                <option value="info">Info</option>
+              </select>
+            </label>
+            <label>
+              Component
+              <select id="logs-component">
+                <option value="">All components</option>
+              </select>
+            </label>
+            <button class="secondary-button" id="logs-refresh" type="button">
+              Refresh
+            </button>
+          </form>
+          <p class="form-error is-hidden" id="logs-error" role="alert"></p>
+          <div class="operational-log-list" id="operational-log-list" tabindex="0">
+            <p class="release-loading">Reading operational logs…</p>
+          </div>
+          <div class="logs-footer">
+            <p id="logs-retention">Newest first · bounded history</p>
+            <button class="secondary-button is-hidden" id="logs-load-more" type="button">
+              Load older
+            </button>
+          </div>
         </div>
       </div>
     </dialog>

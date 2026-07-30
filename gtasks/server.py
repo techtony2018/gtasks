@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Condition
 from time import monotonic
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.parse import unquote
 
 from . import __version__
@@ -30,6 +30,14 @@ from .domain import (
     new_project,
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
+from .operational_logs import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    SEVERITIES,
+    COMPONENT_PATTERN,
+    OperationalLogReader,
+    OperationalLogStore,
+)
 from .releases import release_payload
 from .warnings import WarningDismissalStore
 
@@ -151,6 +159,7 @@ def _handler_class(
     identity_factory: Callable[[], str],
     static_dir: Path,
     warning_store: WarningDismissalStore,
+    log_reader: OperationalLogReader,
 ) -> type[BaseHTTPRequestHandler]:
     snapshot_condition = Condition()
     snapshot_payload: dict[str, Any] | None = None
@@ -225,6 +234,22 @@ def _handler_class(
             )
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
+            operational_messages = {
+                "gbrain_unavailable": "A GBrain operation was unavailable.",
+                "partial_write": (
+                    "A GBrain mutation needs verification before it is retried."
+                ),
+                "warning_state_unavailable": (
+                    "Inbox warning preference storage is unavailable."
+                ),
+            }
+            code = payload.get("code")
+            if status >= 500 and code in operational_messages:
+                log_reader.append_gtasks(
+                    severity="error" if status >= 502 else "warning",
+                    message=operational_messages[code],
+                    now=clock(),
+                )
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -282,11 +307,74 @@ def _handler_class(
                         "goals_root": GOALS_ROOT,
                         "projects_root": PROJECTS_ROOT,
                         "warning_dismissals": "user_scoped_local_state",
+                        "operational_logs": "privacy_safe_read_only",
+                        "queue_reader_dependency": "optional",
                     },
                 )
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            if path == "/api/logs":
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if any(
+                    key not in {"severity", "component", "cursor", "limit"}
+                    or len(values) != 1
+                    for key, values in query.items()
+                ):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Unsupported or repeated log filter."},
+                    )
+                    return
+                severity = query.get("severity", [None])[0] or None
+                component = query.get("component", [None])[0] or None
+                if severity is not None and severity not in SEVERITIES:
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Unknown log severity filter."},
+                    )
+                    return
+                if (
+                    component is not None
+                    and not COMPONENT_PATTERN.fullmatch(component)
+                ):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Invalid log component filter."},
+                    )
+                    return
+                try:
+                    cursor = int(query.get("cursor", ["0"])[0])
+                    limit = int(
+                        query.get("limit", [str(DEFAULT_PAGE_SIZE)])[0]
+                    )
+                except ValueError:
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Log cursor and limit must be integers."},
+                    )
+                    return
+                if cursor < 0 or not 1 <= limit <= MAX_PAGE_SIZE:
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "error": (
+                                f"Log cursor must be nonnegative and limit must "
+                                f"be between 1 and {MAX_PAGE_SIZE}."
+                            )
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    log_reader.page(
+                        severity=severity,
+                        component=component,
+                        cursor=cursor,
+                        limit=limit,
+                    ),
+                )
                 return
             if path == "/api/tasks":
                 try:
@@ -977,13 +1065,21 @@ def build_server(
     identity_factory: Callable[[], str] | None = None,
     static_dir: Path = STATIC_DIR,
     warning_store: WarningDismissalStore | None = None,
+    log_reader: OperationalLogReader | None = None,
 ) -> ThreadingHTTPServer:
+    active_log_reader = log_reader or OperationalLogReader()
+    active_log_reader.append_gtasks(
+        severity="info",
+        message="GTasks runtime initialized.",
+        now=(clock or (lambda: datetime.now().astimezone()))(),
+    )
     handler = _handler_class(
         adapter or GBrainAdapter(),
         clock or (lambda: datetime.now().astimezone()),
         identity_factory or (lambda: uuid.uuid4().hex[:8]),
         static_dir,
         warning_store or WarningDismissalStore(),
+        active_log_reader,
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -995,6 +1091,8 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4179)
     parser.add_argument("--warning-state-file", type=Path)
+    parser.add_argument("--operation-log-file", type=Path)
+    parser.add_argument("--queue-log-file", type=Path)
     args = parser.parse_args()
 
     server = build_server(
@@ -1005,6 +1103,12 @@ def main() -> None:
             if args.warning_state_file
             else None
         ),
+        log_reader=OperationalLogReader(
+            gtasks_store=OperationalLogStore(args.operation_log_file),
+            queue_path=args.queue_log_file,
+        )
+        if args.operation_log_file or args.queue_log_file
+        else None,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

@@ -183,6 +183,28 @@ canonical GBrain data at
 (`GTASKS_WARNING_STATE_FILE` overrides the path for an isolated service or
 test).
 
+The Logs control beside About opens a separate, read-only operational history.
+It never reads or exposes raw NATS, GBrain, HTTP, or consumer process logs.
+GTasks records only fixed, concise application messages, while the Event Queue
+Reader supplies its independent schema-version-1 observability snapshot at
+`state/gtasks-events/reader-observability.json` and
+`http://127.0.0.1:4181/api/observability`. That snapshot contains only
+timestamp, fixed component, severity, and a fixed privacy-reviewed message;
+raw event envelopes, task/job fields, credentials, tokens, and exception text
+are excluded. GTasks rejects queue messages outside the approved fixed set.
+
+The combined `/api/logs` view is newest-first, filtered by severity or
+component, paginated in pages of 25 (maximum 50), and bounded to 500 combined
+events, drawing from GTasks history and the Queue Reader's atomic 100-event
+history. Queue Reader health is
+shown when available; an unavailable reader degrades only the Logs status and
+never task, project, goal, Board, or mutation paths. Inbox warning dismissal is
+a separate presentation preference and does not remove operational history.
+GTasks operational history defaults to
+`~/Library/Application Support/GTasks/operational-events.jsonl`;
+`GTASKS_OPERATION_LOG_FILE` and `GTASKS_QUEUE_LOG_FILE` provide isolated test
+overrides.
+
 The four action sections remain first on Today. A compact goal-progress strip follows them. The Goals view is populated from GBrain at runtime; goal details show target date, review cadence, active/completed linked tasks, and progress. Task details can select a goal, and both detail surfaces navigate across the relationship.
 
 Goals can be created from complete user-entered outcome, success criteria,

@@ -34,6 +34,7 @@ from gtasks.gbrain import (
     ProjectRead,
 )
 from gtasks.server import build_server
+from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
 from gtasks.warnings import WarningDismissalStore
 
 
@@ -202,14 +203,31 @@ class ServerHarness:
         test_case: unittest.TestCase,
         adapter: FakeAdapter,
         warning_store: WarningDismissalStore | None = None,
+        log_reader: OperationalLogReader | None = None,
     ) -> None:
         self.closed = False
+        self.runtime_directory = tempfile.TemporaryDirectory()
+        test_case.addCleanup(self.runtime_directory.cleanup)
+        runtime_path = Path(self.runtime_directory.name)
         if warning_store is None:
-            self.warning_directory = tempfile.TemporaryDirectory()
-            test_case.addCleanup(self.warning_directory.cleanup)
             warning_store = WarningDismissalStore(
-                Path(self.warning_directory.name) / "warning-state.json",
+                runtime_path / "warning-state.json",
                 user_id="test-user",
+            )
+        if log_reader is None:
+            log_reader = OperationalLogReader(
+                gtasks_store=OperationalLogStore(
+                    runtime_path / "operational-events.jsonl"
+                ),
+                queue_path=runtime_path / "queue-events.jsonl",
+                queue_health=lambda: {
+                    "status": "unavailable",
+                    "broker_connected": False,
+                    "message": (
+                        "Event Queue Reader status is unavailable. "
+                        "GTasks remains available."
+                    ),
+                },
             )
         self.server = build_server(
             host="127.0.0.1",
@@ -218,6 +236,7 @@ class ServerHarness:
             clock=lambda: datetime(2026, 7, 30, 9, 15).astimezone(),
             identity_factory=lambda: "a1b2c3",
             warning_store=warning_store,
+            log_reader=log_reader,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -268,7 +287,9 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(payload["default_due_day"], "task_creation_day")
         self.assertEqual(payload["default_goal_target_day"], "end_of_creation_quarter")
         self.assertEqual(payload["mutations"], "explicit_user_actions_only")
-        self.assertEqual(payload["version"], "V0.0.7")
+        self.assertEqual(payload["operational_logs"], "privacy_safe_read_only")
+        self.assertEqual(payload["queue_reader_dependency"], "optional")
+        self.assertEqual(payload["version"], "V0.0.8")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -276,14 +297,171 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.7")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.7")
-        self.assertEqual(payload["releases"][1]["version"], "V0.0.6")
-        self.assertEqual(payload["releases"][2]["version"], "V0.0.5")
-        self.assertEqual(payload["releases"][3]["version"], "V0.0.4")
-        self.assertEqual(payload["releases"][4]["version"], "V0.0.3")
-        self.assertEqual(payload["releases"][5]["version"], "V0.0.2")
-        self.assertEqual(payload["releases"][6]["version"], "V0.0.1")
+        self.assertEqual(payload["current_version"], "V0.0.8")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.8")
+        self.assertEqual(payload["releases"][1]["version"], "V0.0.7")
+        self.assertEqual(payload["releases"][2]["version"], "V0.0.6")
+        self.assertEqual(payload["releases"][3]["version"], "V0.0.5")
+        self.assertEqual(payload["releases"][4]["version"], "V0.0.4")
+        self.assertEqual(payload["releases"][5]["version"], "V0.0.3")
+        self.assertEqual(payload["releases"][6]["version"], "V0.0.2")
+        self.assertEqual(payload["releases"][7]["version"], "V0.0.1")
+
+
+class LogsApiTests(unittest.TestCase):
+    def test_logs_are_read_only_filtered_paginated_and_queue_optional(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        store = OperationalLogStore(root / "gtasks.jsonl")
+        store.append(
+            component="gtasks",
+            severity="warning",
+            message="A GBrain operation was unavailable.",
+            now=datetime.fromisoformat("2026-07-30T09:00:00-07:00"),
+        )
+        store.append(
+            component="gtasks",
+            severity="info",
+            message="GTasks runtime initialized.",
+            now=datetime.fromisoformat("2026-07-30T08:59:00-07:00"),
+        )
+        queue_path = root / "queue.jsonl"
+        queue_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "health": {
+                        "broker_connected": True,
+                        "pending": 2,
+                        "ack_pending": 1,
+                        "redelivered": 0,
+                        "last_error_code": None,
+                    },
+                    "events": [
+                        {
+                            "timestamp": "2026-07-30T16:01:00+00:00",
+                            "component": "handler",
+                            "severity": "error",
+                            "message": (
+                                "Queue event processing failed; "
+                                "queue retry remains active."
+                            ),
+                        },
+                        {
+                            "timestamp": "2026-07-30T16:00:00+00:00",
+                            "component": "handler",
+                            "severity": "error",
+                            "message": (
+                                "Applied to a private company with "
+                                "password=must-never-appear"
+                            ),
+                        },
+                    ],
+                    "retention": {
+                        "max_events": 100,
+                        "order": "newest_first",
+                        "storage": "atomic_file",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        reader = OperationalLogReader(
+            gtasks_store=store,
+            queue_path=queue_path,
+            queue_health=lambda: {
+                "status": "connected",
+                "broker_connected": True,
+                "pending": 2,
+                "ack_pending": 1,
+                "redelivered": 0,
+                "message": "Event Queue Reader is connected.",
+            },
+        )
+        harness = ServerHarness(self, FakeAdapter(), log_reader=reader)
+
+        status, first, _ = harness.request("GET", "/api/logs?limit=2")
+        filtered_status, filtered, _ = harness.request(
+            "GET",
+            "/api/logs?severity=error&component=handler&limit=25",
+        )
+
+        self.assertEqual((status, filtered_status), (200, 200))
+        self.assertTrue(first["read_only"])
+        self.assertEqual(len(first["events"]), 2)
+        self.assertIsNotNone(first["next_cursor"])
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(
+            filtered["events"][0]["message"],
+            "Queue event processing failed; queue retry remains active.",
+        )
+        self.assertNotIn("must-never-appear", json.dumps(filtered))
+        self.assertEqual(filtered["queue_reader"]["status"], "connected")
+
+    def test_logs_remain_available_when_queue_reader_is_unavailable(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+
+        def unavailable_health() -> dict:
+            raise ConnectionError("consumer unavailable")
+
+        reader = OperationalLogReader(
+            gtasks_store=OperationalLogStore(root / "gtasks.jsonl"),
+            queue_path=root / "missing-queue.jsonl",
+            queue_health=unavailable_health,
+        )
+        harness = ServerHarness(self, FakeAdapter(), log_reader=reader)
+
+        log_status, logs, _ = harness.request("GET", "/api/logs")
+        task_status, tasks, _ = harness.request("GET", "/api/tasks")
+
+        self.assertEqual((log_status, task_status), (200, 200))
+        self.assertEqual(logs["queue_reader"]["status"], "unavailable")
+        self.assertIn("GTasks remains available", logs["queue_reader"]["message"])
+        self.assertEqual(tasks["tasks"], [])
+
+    def test_logs_reject_unknown_filters(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, _, _ = harness.request("GET", "/api/logs?severity=debug")
+        repeated_status, _, _ = harness.request(
+            "GET",
+            "/api/logs?component=gtasks&component=event_queue_reader",
+        )
+
+        self.assertEqual((status, repeated_status), (400, 400))
+
+    def test_gbrain_runtime_failure_adds_only_a_safe_operational_message(self) -> None:
+        class FailingAdapter(FakeAdapter):
+            def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+                from gtasks.gbrain import GBrainError
+
+                raise GBrainError(
+                    "private task title and credential=must-never-appear"
+                )
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        reader = OperationalLogReader(
+            gtasks_store=OperationalLogStore(root / "gtasks.jsonl"),
+            queue_path=root / "missing.json",
+            queue_health=lambda: {"status": "unavailable"},
+        )
+        harness = ServerHarness(self, FailingAdapter(), log_reader=reader)
+
+        failed_status, _, _ = harness.request("GET", "/api/tasks")
+        log_status, logs, _ = harness.request(
+            "GET",
+            "/api/logs?component=gtasks&severity=error",
+        )
+
+        self.assertEqual((failed_status, log_status), (503, 200))
+        self.assertEqual(logs["events"][0]["message"], "A GBrain operation was unavailable.")
+        self.assertNotIn("private task title", json.dumps(logs))
+        self.assertNotIn("must-never-appear", json.dumps(logs))
 
 
 class TasksApiTests(unittest.TestCase):

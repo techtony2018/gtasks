@@ -284,7 +284,8 @@ kbd {
   cursor: pointer;
 }
 
-.about-button:hover {
+.about-button:hover,
+.about-button:focus-visible {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.52);
 }
@@ -1732,6 +1733,207 @@ kbd {
   backdrop-filter: blur(3px);
 }
 
+.logs-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(780px, calc(100dvh - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.logs-dialog::backdrop {
+  background: rgba(36, 42, 35, 0.34);
+  backdrop-filter: blur(3px);
+}
+
+.logs-dialog-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: min(780px, calc(100dvh - 32px));
+}
+
+.logs-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(140px, 1fr) auto;
+  gap: 12px;
+  padding: 18px 26px 22px;
+}
+
+.logs-separation-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.queue-reader-status {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  background: #f8f8f4;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.queue-reader-status.connected {
+  color: var(--accent-dark);
+  border-color: #c8ddce;
+  background: #f2f8f3;
+}
+
+.queue-reader-status.degraded,
+.queue-reader-status.unavailable {
+  color: #754d21;
+  border-color: #e8cba7;
+  background: #fff7ea;
+}
+
+.logs-controls {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(160px, 1.4fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.logs-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.logs-controls select {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+  font: inherit;
+  font-size: 11px;
+}
+
+.operational-log-list {
+  min-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  overscroll-behavior: contain;
+}
+
+.operational-log-entry {
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.operational-log-entry:last-child {
+  border-bottom: 0;
+}
+
+.operational-log-heading,
+.operational-log-identity,
+.logs-footer {
+  display: flex;
+  align-items: center;
+}
+
+.operational-log-heading {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.operational-log-identity {
+  gap: 8px;
+}
+
+.operational-log-identity strong,
+.operational-log-heading time {
+  font-size: 9.5px;
+}
+
+.operational-log-heading time {
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.operational-log-entry > p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.log-severity {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #eeeeea;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.log-severity.warning {
+  color: #754d21;
+  background: #f7e7ca;
+}
+
+.log-severity.error {
+  color: #803c34;
+  background: #f9e3df;
+}
+
+.log-severity.info {
+  color: var(--accent-dark);
+  background: #e7f1e9;
+}
+
+.logs-empty {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.logs-empty-mark {
+  color: var(--accent);
+  font-size: 20px;
+}
+
+.logs-empty h3,
+.logs-empty p {
+  margin: 5px 0 0;
+}
+
+.logs-empty h3 {
+  font-size: 12px;
+}
+
+.logs-empty p {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.logs-footer {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.logs-footer p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 9px;
+}
+
 .about-dialog-shell {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2022,6 +2224,30 @@ kbd {
     min-height: 30px;
     margin-top: 3px;
     padding: 0 11px;
+  }
+
+  .logs-body {
+    padding: 14px;
+  }
+
+  .logs-controls {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .logs-controls .secondary-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .operational-log-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .logs-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .main-content {

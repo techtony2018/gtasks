@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.7")
+        self.assertEqual(__version__, "V0.0.8")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -51,6 +51,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.5",
                 "V0.0.6",
                 "V0.0.7",
+                "V0.0.8",
             ],
         )
 
@@ -83,6 +84,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("warnings in Inbox", release["summary"])
         self.assertIn("restart-safe preferences", release["summary"])
         self.assertIn("without hiding canonical data", release["summary"])
+
+    def test_v0_0_8_records_privacy_safe_operational_logs(self) -> None:
+        release = RELEASES[7]
+
+        self.assertEqual(release["version"], "V0.0.8")
+        self.assertIn("read-only Logs dialog", release["summary"])
+        self.assertIn("Event Queue Reader history and health", release["summary"])
+        self.assertIn("never blocks core task workflows", release["summary"])
 
 
 if __name__ == "__main__":

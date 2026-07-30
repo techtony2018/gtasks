@@ -10,6 +10,10 @@ const state = {
   loading: true,
   releases: null,
   aboutReturnFocus: null,
+  logsReturnFocus: null,
+  logEvents: [],
+  logsNextCursor: null,
+  logsLoading: false,
   tasksLoadPromise: null,
   autoRefreshTimer: null,
   autoRefreshDueAt: null,
@@ -132,6 +136,18 @@ const elements = {
   aboutClose: document.querySelector("#about-close"),
   aboutCurrentVersion: document.querySelector("#about-current-version"),
   releaseHistory: document.querySelector("#release-history"),
+  logsButton: document.querySelector("#logs-button"),
+  logsDialog: document.querySelector("#logs-dialog"),
+  logsClose: document.querySelector("#logs-close"),
+  logsFilterForm: document.querySelector("#logs-filter-form"),
+  logsSeverity: document.querySelector("#logs-severity"),
+  logsComponent: document.querySelector("#logs-component"),
+  logsRefresh: document.querySelector("#logs-refresh"),
+  logsError: document.querySelector("#logs-error"),
+  logsList: document.querySelector("#operational-log-list"),
+  logsLoadMore: document.querySelector("#logs-load-more"),
+  logsRetention: document.querySelector("#logs-retention"),
+  queueReaderStatus: document.querySelector("#queue-reader-status"),
   newProjectDialog: document.querySelector("#new-project-dialog"),
   newProjectForm: document.querySelector("#new-project-form"),
   newProjectTitle: document.querySelector("#new-project-title"),
@@ -265,6 +281,176 @@ function openAboutDialog() {
 
 function closeAboutDialog() {
   elements.aboutDialog.close();
+}
+
+function componentLabel(component) {
+  const labels = {
+    gtasks: "GTasks",
+    queue_reader: "Event Queue Reader",
+    broker: "Event Queue Broker",
+    consumer: "Durable Consumer",
+    handler: "Event Handler",
+  };
+  return (
+    labels[component] ||
+    component
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
+function formatLogTimestamp(timestamp) {
+  const value = new Date(timestamp);
+  if (Number.isNaN(value.valueOf())) return "Unknown time";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(value);
+}
+
+function renderOperationalLogs() {
+  if (!state.logEvents.length) {
+    const empty = node("div", "logs-empty");
+    empty.append(
+      node("span", "logs-empty-mark", "✓"),
+      node("h3", "", "No matching operational events"),
+      node(
+        "p",
+        "",
+        "There are no privacy-safe log entries for these filters yet.",
+      ),
+    );
+    elements.logsList.replaceChildren(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  state.logEvents.forEach((event) => {
+    const article = node("article", "operational-log-entry");
+    const heading = node("div", "operational-log-heading");
+    const identity = node("div", "operational-log-identity");
+    identity.append(
+      node(
+        "span",
+        `log-severity ${event.severity}`,
+        event.severity,
+      ),
+      node("strong", "", componentLabel(event.component)),
+    );
+    const time = node("time", "", formatLogTimestamp(event.timestamp));
+    time.dateTime = event.timestamp;
+    heading.append(identity, time);
+    article.append(heading, node("p", "", event.message));
+    fragment.append(article);
+  });
+  elements.logsList.replaceChildren(fragment);
+}
+
+function updateLogComponentOptions(components) {
+  const current = elements.logsComponent.value;
+  const options = [node("option", "", "All components")];
+  options[0].value = "";
+  components.forEach((component) => {
+    const option = node("option", "", componentLabel(component));
+    option.value = component;
+    options.push(option);
+  });
+  elements.logsComponent.replaceChildren(...options);
+  elements.logsComponent.value = components.includes(current) ? current : "";
+}
+
+function renderQueueReaderStatus(status) {
+  const stateName = status?.status || "unavailable";
+  elements.queueReaderStatus.className =
+    `queue-reader-status ${stateName}`;
+  const message =
+    status?.message ||
+    "Event Queue Reader status is unavailable. GTasks remains available.";
+  const counts =
+    stateName === "connected"
+      ? ` ${status.pending || 0} waiting · ${status.ack_pending || 0} processing · ${status.redelivered || 0} redelivered.`
+      : "";
+  elements.queueReaderStatus.textContent = `${message}${counts}`;
+}
+
+async function loadOperationalLogs({ append = false } = {}) {
+  if (state.logsLoading) return;
+  state.logsLoading = true;
+  elements.logsRefresh.disabled = true;
+  elements.logsLoadMore.disabled = true;
+  elements.logsError.classList.add("is-hidden");
+  elements.logsList.setAttribute("aria-busy", "true");
+  if (!append) {
+    state.logEvents = [];
+    state.logsNextCursor = null;
+    elements.logsList.replaceChildren(
+      node("p", "release-loading", "Reading operational logs…"),
+    );
+  }
+  const parameters = new URLSearchParams({ limit: "25" });
+  if (elements.logsSeverity.value) {
+    parameters.set("severity", elements.logsSeverity.value);
+  }
+  if (elements.logsComponent.value) {
+    parameters.set("component", elements.logsComponent.value);
+  }
+  if (append && state.logsNextCursor !== null) {
+    parameters.set("cursor", String(state.logsNextCursor));
+  }
+  try {
+    const response = await fetch(`/api/logs?${parameters.toString()}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error || "Operational logs are unavailable.");
+    }
+    state.logEvents = append
+      ? [...state.logEvents, ...result.events]
+      : result.events;
+    state.logsNextCursor = result.next_cursor;
+    updateLogComponentOptions(result.components || []);
+    renderQueueReaderStatus(result.queue_reader);
+    renderOperationalLogs();
+    elements.logsRetention.textContent =
+      `Newest first · showing ${state.logEvents.length} of ${result.total} matching events · retains up to ${result.retention_limit}`;
+    elements.logsLoadMore.classList.toggle(
+      "is-hidden",
+      state.logsNextCursor === null,
+    );
+    if (result.source_errors?.length) {
+      elements.logsError.textContent = result.source_errors
+        .map((issue) => issue.message)
+        .join(" ");
+      elements.logsError.classList.remove("is-hidden");
+    }
+  } catch (error) {
+    if (!append) renderOperationalLogs();
+    elements.logsError.textContent =
+      `${error.message || "Operational logs are unavailable."} GTasks remains available.`;
+    elements.logsError.classList.remove("is-hidden");
+    renderQueueReaderStatus(null);
+  } finally {
+    state.logsLoading = false;
+    elements.logsRefresh.disabled = false;
+    elements.logsLoadMore.disabled = false;
+    elements.logsList.removeAttribute("aria-busy");
+  }
+}
+
+function openLogsDialog() {
+  state.logsReturnFocus = document.activeElement;
+  elements.logsDialog.showModal();
+  loadOperationalLogs();
+  window.setTimeout(() => elements.logsClose.focus(), 0);
+}
+
+function closeLogsDialog() {
+  elements.logsDialog.close();
 }
 
 function allTodayTasks() {
@@ -2157,6 +2343,23 @@ elements.aboutDialog.addEventListener("close", () => {
   }
   state.aboutReturnFocus = null;
 });
+elements.logsButton.addEventListener("click", openLogsDialog);
+elements.logsClose.addEventListener("click", closeLogsDialog);
+elements.logsRefresh.addEventListener("click", () => loadOperationalLogs());
+elements.logsLoadMore.addEventListener("click", () => {
+  loadOperationalLogs({ append: true });
+});
+elements.logsSeverity.addEventListener("change", () => loadOperationalLogs());
+elements.logsComponent.addEventListener("change", () => loadOperationalLogs());
+elements.logsFilterForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+});
+elements.logsDialog.addEventListener("close", () => {
+  if (state.logsReturnFocus instanceof HTMLElement) {
+    state.logsReturnFocus.focus();
+  }
+  state.logsReturnFocus = null;
+});
 document.addEventListener("visibilitychange", () => {
   clearAutoRefreshTimer();
   if (document.hidden) {
@@ -2178,6 +2381,11 @@ document.addEventListener("visibilitychange", () => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && elements.logsDialog.open) {
+    event.preventDefault();
+    closeLogsDialog();
+    return;
+  }
   if (event.key === "Escape" && elements.aboutDialog.open) {
     event.preventDefault();
     closeAboutDialog();
