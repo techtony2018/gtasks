@@ -269,6 +269,41 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("default_goal_slugs", javascript)
         self.assertIn("Open agent profile", javascript)
 
+    def test_full_task_creation_has_explicit_agent_assignment_without_changing_quick_add(
+        self,
+    ) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-editor-assignee"', html)
+        self.assertIn('value="tony">Tony — personal task', html)
+        self.assertIn('value="agents/toddy"', html)
+        self.assertIn('value="agents/timmy"', html)
+        self.assertIn('value="agents/tammy"', html)
+        self.assertIn("creates one authorized, queued agent work item", html)
+        self.assertIn("assignee_slug", javascript)
+        self.assertIn("result.task.owner_agent", javascript)
+        quick_add = html[
+            html.index('id="quick-add-dialog"')
+            : html.index('id="task-editor-dialog"')
+        ]
+        self.assertNotIn("task-editor-assignee", quick_add)
+
+    def test_agent_board_cards_have_owner_badges_and_safe_status_controls(
+        self,
+    ) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        body = javascript[
+            javascript.index("function agentBoardCard")
+            : javascript.index("function updateBoardStatus")
+        ]
+
+        self.assertIn("agentOwnerBadge(task.owner)", body)
+        self.assertIn("Move to", body)
+        self.assertIn("moveBoardTask(task.slug", body)
+        self.assertIn("card.draggable = true", body)
+        self.assertNotIn("Read-only in GTasks", body)
+
     def test_auto_refresh_is_visible_coalesced_and_visibility_aware(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

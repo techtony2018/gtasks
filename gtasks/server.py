@@ -6,6 +6,7 @@ import mimetypes
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -935,6 +936,7 @@ def _handler_class(
                 "project_slug",
                 "goal_slug",
                 "progress_metric",
+                "assignee_slug",
             }
             unsupported = set(payload) - full_task_fields
             if unsupported:
@@ -957,6 +959,14 @@ def _handler_class(
                     )
                     project_slug = payload.get("project_slug") or None
                     goal_slug = payload.get("goal_slug") or None
+                    assignee_slug = payload.get("assignee_slug", "tony")
+                    if assignee_slug not in {
+                        "tony",
+                        *(agent for agent, _root in AGENT_SCOPES),
+                    }:
+                        raise DomainValidationError(
+                            "assignee must be Tony, Toddy, Timmy, or Tammy"
+                        )
                     task = new_task(
                         title=raw_title,
                         detail=payload.get("detail", ""),
@@ -970,7 +980,19 @@ def _handler_class(
                         now=now,
                         identity=identity_factory(),
                     )
-                    receipt = adapter.create_task(task)
+                    if assignee_slug == "tony":
+                        receipt = adapter.create_task(task)
+                    else:
+                        work_root = dict(AGENT_SCOPES)[assignee_slug]
+                        task = replace(
+                            task,
+                            lifecycle_root=work_root,
+                            owner_agent=assignee_slug,
+                        )
+                        receipt = adapter.create_agent_task(
+                            task,
+                            assignee_slug,
+                        )
                 else:
                     task = new_inbox_task(
                         raw_title,

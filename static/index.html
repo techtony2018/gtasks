@@ -156,6 +156,13 @@
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
           <p class="form-error task-status-error is-hidden" id="task-status-error" role="alert"></p>
+          <div class="task-owner is-hidden" id="task-owner">
+            <span class="agent-avatar" id="task-owner-avatar" aria-hidden="true"></span>
+            <div>
+              <small>Assigned agent</small>
+              <strong id="task-owner-name"></strong>
+            </div>
+          </div>
           <h2 id="detail-title"></h2>
           <p class="detail-copy" id="detail-copy"></p>
           <button class="secondary-button task-duplicate-button" id="task-duplicate-button" type="button">
@@ -171,7 +178,7 @@
             </div>
             <p id="task-progress-binding"></p>
           </section>
-          <section class="next-action-editor" aria-labelledby="task-next-action-label">
+          <section class="next-action-editor" id="task-next-action-editor" aria-labelledby="task-next-action-label">
             <label id="task-next-action-label" for="task-next-action-input">
               Next action
             </label>
@@ -201,7 +208,7 @@
               <dd id="detail-due"></dd>
             </div>
           </dl>
-          <div class="project-link-editor">
+          <div class="project-link-editor" id="task-project-editor">
             <label for="task-project-select">Assign to project</label>
             <div class="project-link-controls">
               <select id="task-project-select">
@@ -215,7 +222,7 @@
             </p>
             <p class="form-error is-hidden" id="task-project-error" role="alert"></p>
           </div>
-          <div class="goal-link-editor">
+          <div class="goal-link-editor" id="task-goal-editor">
             <label for="task-goal-select">Advances goal</label>
             <div class="goal-link-controls">
               <select id="task-goal-select">
@@ -373,6 +380,20 @@
         </div>
         <label for="task-editor-next-action">Next action</label>
         <input id="task-editor-next-action" type="text" maxlength="240" placeholder="One concrete physical or actionable step">
+        <div id="task-editor-assignee-field">
+          <label for="task-editor-assignee">Who should do this work?</label>
+          <select id="task-editor-assignee">
+            <option value="tony">Tony — personal task</option>
+            <option value="agents/toddy">Toddy — agent work</option>
+            <option value="agents/timmy">Timmy — agent work</option>
+            <option value="agents/tammy">Tammy — agent work</option>
+          </select>
+          <p>
+            Selecting an agent creates one authorized, queued agent work item
+            in that agent’s canonical task collection. It is not a proposal or
+            a duplicate Tony task.
+          </p>
+        </div>
         <div class="task-editor-grid">
           <label>
             Project

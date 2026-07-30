@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.11",
+  "current_version": "V0.0.12",
   "releases": [
     {
       "version": "V0.0.1",
@@ -66,6 +66,12 @@
       "date": "2026-07-30",
       "title": "Agent proposal review",
       "summary": "Inbox now shows canonical agent proposals grouped by Toddy, Timmy, and Tammy, distinguishes work proposed for Tony from proposed agent work, and provides explicit review, approval, and rejection flows with durable GBrain relationships and exact readback; empty state creates no suggestions."
+    },
+    {
+      "version": "V0.0.12",
+      "date": "2026-07-30",
+      "title": "Explicit agent task assignment",
+      "summary": "Full Create Task now defaults to Tony but can create one verified queued work item for Toddy, Timmy, or Tammy with exact typed collection membership and assigned_to ownership, no duplicate Tony task or proposal; agent cards retain owner avatars and support authoritative status updates."
     }
   ]
 }

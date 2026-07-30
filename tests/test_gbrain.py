@@ -1041,6 +1041,91 @@ class InboxMutationTests(unittest.TestCase):
         self.assertIn((task.slug, goal_page["slug"], "advances_goal"), runner.links)
         self.assertIn((goal_page["slug"], task.slug, "advanced_by"), runner.links)
 
+    def test_agent_creation_verifies_one_scope_and_one_assigned_to_edge(
+        self,
+    ) -> None:
+        now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc)
+        base = new_task(
+            title="Prepare a wellbeing update",
+            next_action="Draft three bullets",
+            now=now,
+            identity="agent12",
+        )
+        agent_slug = "agents/toddy"
+        work_root = "collections/toddys-tasks"
+        task = replace(
+            base,
+            lifecycle_root=work_root,
+            owner_agent=agent_slug,
+        )
+        page = stored_page(task)
+        page["frontmatter"]["links"] = [
+            {"to": work_root, "type": "member_of"},
+            {"to": agent_slug, "type": "assigned_to"},
+        ]
+        page["frontmatter"]["created_at"] = now.isoformat()
+        page["frontmatter"]["updated_at"] = now.isoformat()
+        agent_page = {
+            "slug": agent_slug,
+            "type": "agent",
+            "title": "Agent Toddy",
+            "compiled_truth": "# Agent Toddy",
+            "frontmatter": {},
+        }
+
+        class AgentCreationRunner:
+            def __init__(self) -> None:
+                self.links: set[tuple[str, str, str]] = set()
+
+            def run(self, tool: str, params: dict) -> object:
+                if tool == "put_page":
+                    return {"slug": task.slug}
+                if tool == "get_page":
+                    return agent_page if params["slug"] == agent_slug else page
+                if tool == "get_links":
+                    slug = params["slug"]
+                    return [
+                        {
+                            "from_slug": source,
+                            "to_slug": target,
+                            "link_type": link_type,
+                        }
+                        for source, target, link_type in sorted(self.links)
+                        if source == slug or target == slug
+                    ]
+                if tool == "add_link":
+                    self.links.add(
+                        (
+                            params["from"],
+                            params["to"],
+                            params["link_type"],
+                        )
+                    )
+                    return {}
+                raise AssertionError(f"unexpected {tool}: {params}")
+
+        runner = AgentCreationRunner()
+
+        receipt = GBrainAdapter(runner).create_agent_task(task, agent_slug)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(
+            {
+                edge
+                for edge in runner.links
+                if edge[2] == "member_of"
+                and edge[1] in {
+                    ACTIVE_ROOT,
+                    COMPLETED_ROOT,
+                    "collections/toddys-tasks",
+                    "collections/timmys-tasks",
+                    "collections/tammys-tasks",
+                }
+            },
+            {(task.slug, work_root, "member_of")},
+        )
+        self.assertIn((task.slug, agent_slug, "assigned_to"), runner.links)
+
     def test_writes_page_and_edge_then_verifies_both(self) -> None:
         task = new_inbox_task(
             "Create the launch brief",
@@ -1654,6 +1739,71 @@ class TaskStatusMutationTests(unittest.TestCase):
             )
 
         self.assertEqual(runner.calls, [])
+
+    def test_agent_status_update_preserves_owner_scope_and_task_identity(
+        self,
+    ) -> None:
+        now = datetime(
+            2026,
+            7,
+            30,
+            9,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        base = new_task(
+            title="Prepare a wellbeing update",
+            now=now,
+            identity="agent34",
+        )
+        task = replace(
+            base,
+            lifecycle_root="collections/toddys-tasks",
+            owner_agent="agents/toddy",
+        )
+        page = stored_page(task)
+        page["frontmatter"].update(
+            {
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "links": [
+                    {
+                        "to": "collections/toddys-tasks",
+                        "type": "member_of",
+                    },
+                    {"to": "agents/toddy", "type": "assigned_to"},
+                ],
+            }
+        )
+        links = [
+            {
+                "from_slug": task.slug,
+                "to_slug": "collections/toddys-tasks",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": task.slug,
+                "to_slug": "agents/toddy",
+                "link_type": "assigned_to",
+            },
+        ]
+        runner = StatefulTaskRunner(page, links)
+
+        receipt = GBrainAdapter(runner).set_task_status(
+            task.slug,
+            "active",
+            now + timedelta(minutes=5),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.status, "active")
+        self.assertEqual(receipt.task.owner_agent, "agents/toddy")
+        self.assertEqual(
+            receipt.task.lifecycle_root,
+            "collections/toddys-tasks",
+        )
+        self.assertEqual(runner.page["type"], "task")
+        self.assertEqual(runner.links, links)
 
     def test_completion_sets_local_timestamp_and_keeps_active_membership(self) -> None:
         now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))

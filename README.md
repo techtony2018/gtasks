@@ -109,10 +109,9 @@ tasks** preference performs no GBrain mutation. When enabled, GTasks reads only
 typed `member_of` backlinks from the three approved agent collections and
 shows each valid work item in its canonical status lane with a visible agent
 name and avatar placeholder. It never imports those items into Tony's Tasks.
-Agent work is currently read-only in GTasks because Tony-task lifecycle
-mutation rules cannot safely be applied to an agent collection. Malformed
-typed members become Inbox-only Needs Attention warnings and never hide
-Tony's tasks.
+Agent status changes use the same write/readback rules as Tony tasks while
+preserving the agent collection and exact assignment. Malformed typed members
+become Inbox-only Needs Attention warnings and never hide Tony's tasks.
 
 The Agent Work view is a coordination surface, not another Today list. It
 shows profile-to-goal ownership and reserves the future work states Queued,
@@ -156,6 +155,23 @@ project, goal, and optional progress tracking. A count metric has a
 user-facing label, positive target, and current value from zero through the
 target. Unmetered tasks are unchanged. A manual metric does not complete a task
 merely because its initial current value equals its target.
+
+Full Create Task also has an explicit assignee. Tony is the default and keeps
+the existing `member_of collections/tonys-tasks` path. Choosing Toddy, Timmy,
+or Tammy instead creates one `status: planned` agent work item—shown as
+queued, never falsely in progress—with:
+
+- exactly one typed `member_of` relationship to that agent's approved work
+  collection;
+- exactly one typed task-to-agent `assigned_to` relationship;
+- no membership in Tony's Tasks and no proposal-review entry;
+- exact page, collection, assignment, and optional goal/project readback
+  before success.
+
+The `assigned_to` relation is individual work ownership and is intentionally
+different from an agent profile's goal-level `default_agent_for` relation.
+Quick Add remains Tony-only and unchanged. Reassignment is a separate later
+workflow and is not implied by this creation contract.
 
 The first automatic binding is the daily job-application quota. Its canonical
 contract is intentionally exact:

@@ -123,6 +123,8 @@ const elements = {
   taskEditorPriority: document.querySelector("#task-editor-priority"),
   taskEditorDue: document.querySelector("#task-editor-due"),
   taskEditorNextAction: document.querySelector("#task-editor-next-action"),
+  taskEditorAssigneeField: document.querySelector("#task-editor-assignee-field"),
+  taskEditorAssignee: document.querySelector("#task-editor-assignee"),
   taskEditorProject: document.querySelector("#task-editor-project"),
   taskEditorGoal: document.querySelector("#task-editor-goal"),
   taskTrackMetric: document.querySelector("#task-track-metric"),
@@ -162,6 +164,10 @@ const elements = {
   taskStatusSelect: document.querySelector("#task-status-select"),
   taskStatusSave: document.querySelector("#task-status-save"),
   taskStatusError: document.querySelector("#task-status-error"),
+  taskOwner: document.querySelector("#task-owner"),
+  taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
+  taskOwnerName: document.querySelector("#task-owner-name"),
+  taskNextActionEditor: document.querySelector("#task-next-action-editor"),
   taskNextActionInput: document.querySelector("#task-next-action-input"),
   taskNextActionSave: document.querySelector("#task-next-action-save"),
   taskNextActionError: document.querySelector("#task-next-action-error"),
@@ -184,6 +190,8 @@ const elements = {
   taskProjectSelect: document.querySelector("#task-project-select"),
   taskProjectSave: document.querySelector("#task-project-save"),
   taskProjectError: document.querySelector("#task-project-error"),
+  taskProjectEditor: document.querySelector("#task-project-editor"),
+  taskGoalEditor: document.querySelector("#task-goal-editor"),
   goalDetailClose: document.querySelector("#goal-detail-close"),
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
@@ -629,6 +637,14 @@ function rebuildDerivedTaskViews() {
   });
 }
 
+function findTaskBySlug(slug) {
+  return (
+    state.snapshot?.tasks.find((candidate) => candidate.slug === slug) ||
+    state.agentTasks.find((candidate) => candidate.slug === slug) ||
+    null
+  );
+}
+
 function reconcileVerifiedTask(task) {
   if (!task || typeof task.slug !== "string" || typeof task.status !== "string") {
     const error = new Error(
@@ -640,16 +656,42 @@ function reconcileVerifiedTask(task) {
   const index = state.snapshot.tasks.findIndex(
     (candidate) => candidate.slug === task.slug,
   );
-  if (index < 0) {
+  if (index >= 0) {
+    state.snapshot.tasks.splice(index, 1, task);
+    rebuildDerivedTaskViews();
+    render();
+    return;
+  }
+  const agentIndex = state.agentTasks.findIndex(
+    (candidate) => candidate.slug === task.slug,
+  );
+  if (agentIndex >= 0) {
+    const previous = state.agentTasks[agentIndex];
+    const owner = previous.owner || {
+      slug: task.owner_agent,
+      name:
+        state.agents.find((agent) => agent.slug === task.owner_agent)?.name ||
+        task.owner_agent,
+      avatar:
+        state.agents.find((agent) => agent.slug === task.owner_agent)?.avatar ||
+        { kind: "initials", value: "A" },
+    };
+    state.agentTasks.splice(agentIndex, 1, {
+      ...task,
+      owner,
+      agent_work: true,
+      read_only: false,
+    });
+    render();
+    return;
+  }
+  {
     const error = new Error(
       "GBrain returned a task that is not present in the current GTasks snapshot.",
     );
     error.code = "ambiguous_readback";
     throw error;
   }
-  state.snapshot.tasks.splice(index, 1, task);
-  rebuildDerivedTaskViews();
-  render();
 }
 
 function navCounts() {
@@ -987,13 +1029,18 @@ function agentOwnerBadge(owner) {
 
 function agentBoardCard(task) {
   const card = node("article", "board-card agent-board-card");
+  card.draggable = true;
   card.dataset.slug = task.slug;
   card.dataset.status = taskUiStatus(task);
-  const link = node("a", "board-card-open");
-  link.href =
-    `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
-  link.target = "_blank";
-  link.rel = "noreferrer";
+  card.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  const button = node("button", "board-card-open");
+  button.type = "button";
+  const isSaving =
+    state.boardMove?.phase === "saving" &&
+    state.boardMove.taskSlug === task.slug;
+  button.disabled = isSaving;
+  card.classList.toggle("is-saving", isSaving);
+  card.setAttribute("aria-grabbed", "false");
   const heading = node("span", "board-card-heading");
   heading.append(
     node("span", `task-state-dot ${taskUiStatus(task)}`),
@@ -1004,22 +1051,52 @@ function agentBoardCard(task) {
     node("span", "", task.project || "Agent work"),
     node("span", `priority-badge ${task.priority}`, task.priority),
   );
-  link.append(
+  button.append(
     agentOwnerBadge(task.owner),
     heading,
     node("span", "board-card-next", task.next_action || "Next action not set"),
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
-  appendTaskProgress(link, task);
-  card.append(
-    link,
-    node(
-      "span",
-      "agent-read-only",
-      "Read-only in GTasks · status changes stay in the owning agent workflow",
-    ),
+  appendTaskProgress(button, task);
+  button.addEventListener("click", () => selectTask(task.slug));
+
+  const moveControl = node("label", "board-card-move");
+  moveControl.append(node("span", "", "Move to"));
+  const statusSelect = node("select");
+  statusSelect.setAttribute(
+    "aria-label",
+    `Move ${task.title || task.summary} for ${task.owner.name} to another status`,
   );
+  editableTaskStatuses.forEach((status) => {
+    const option = node("option", "", status.label);
+    option.value = status.value;
+    statusSelect.append(option);
+  });
+  statusSelect.value = taskUiStatus(task);
+  statusSelect.disabled = isSaving;
+  statusSelect.addEventListener("change", () => {
+    moveBoardTask(task.slug, statusSelect.value);
+  });
+  moveControl.append(statusSelect);
+  card.append(button, moveControl);
+  if (isSaving) {
+    card.append(node("span", "board-card-saving", "Saving in GBrain…"));
+  }
+  card.addEventListener("dragstart", (event) => {
+    if (!event.dataTransfer || isSaving) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", task.slug);
+    card.classList.add("is-dragging");
+    card.setAttribute("aria-grabbed", "true");
+  });
+  card.addEventListener("dragend", () => {
+    card.classList.remove("is-dragging");
+    card.setAttribute("aria-grabbed", "false");
+  });
   return card;
 }
 
@@ -2331,7 +2408,7 @@ function render() {
 }
 
 function selectTask(slug) {
-  const task = state.snapshot?.tasks.find((item) => item.slug === slug);
+  const task = findTaskBySlug(slug);
   if (!task) return;
   state.selectedSlug = slug;
   state.selectedKind = "task";
@@ -2351,6 +2428,29 @@ function selectTask(slug) {
   elements.taskNextActionError.classList.add("is-hidden");
   elements.detailTitle.textContent = task.title || task.summary;
   elements.detailCopy.textContent = task.detail || "No additional detail yet.";
+  const owner = task.owner || (
+    task.owner_agent
+      ? {
+        name:
+          state.agents.find((agent) => agent.slug === task.owner_agent)?.name ||
+          task.owner_agent,
+        avatar:
+          state.agents.find((agent) => agent.slug === task.owner_agent)?.avatar ||
+          { value: "A" },
+      }
+      : null
+  );
+  elements.taskOwner.classList.toggle("is-hidden", !owner);
+  if (owner) {
+    elements.taskOwnerAvatar.textContent =
+      owner.avatar?.value || owner.name.slice(0, 1);
+    elements.taskOwnerName.textContent = owner.name;
+  }
+  const isAgentTask = Boolean(task.agent_work || task.owner_agent);
+  elements.taskNextActionEditor.classList.toggle("is-hidden", isAgentTask);
+  elements.taskProjectEditor.classList.toggle("is-hidden", isAgentTask);
+  elements.taskGoalEditor.classList.toggle("is-hidden", isAgentTask);
+  elements.taskDuplicateButton.classList.toggle("is-hidden", isAgentTask);
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -2634,7 +2734,7 @@ function statusErrorMessage(error) {
 }
 
 async function moveBoardTask(taskSlug, status) {
-  const task = state.snapshot?.tasks.find((item) => item.slug === taskSlug);
+  const task = findTaskBySlug(taskSlug);
   const definition = boardColumns.find((column) => column.status === status);
   if (!task || !definition || state.boardMove?.phase === "saving") return;
   if (task.status === status) return;
@@ -2677,9 +2777,7 @@ async function saveTaskStatus() {
   elements.taskStatusSave.disabled = true;
   elements.taskStatusSave.textContent = "Saving…";
   try {
-    const currentTask = state.snapshot.tasks.find(
-      (task) => task.slug === taskSlug,
-    );
+    const currentTask = findTaskBySlug(taskSlug);
     if (currentTask?.status === status) return;
     const receipt = await requestTaskStatus(taskSlug, status);
     reconcileVerifiedTask(receipt.task);
@@ -2961,6 +3059,8 @@ function openCreateTask() {
     "GTasks reports success only after exact GBrain page and relationship readback.";
   elements.taskEditorDue.value = state.snapshot?.as_of || "";
   elements.taskEditorPriority.value = "normal";
+  elements.taskEditorAssignee.value = "tony";
+  elements.taskEditorAssigneeField.classList.remove("is-hidden");
   populateTaskEditorRelationships();
   resetTaskEditorMetric();
   elements.taskEditorError.classList.add("is-hidden");
@@ -2984,6 +3084,8 @@ function openDuplicateTask() {
   elements.taskEditorDetail.value = task.detail || "";
   elements.taskEditorPriority.value = task.priority;
   elements.taskEditorNextAction.value = task.next_action || "";
+  elements.taskEditorAssignee.value = "tony";
+  elements.taskEditorAssigneeField.classList.add("is-hidden");
   elements.taskEditorDue.value = dayAfter(state.snapshot?.as_of);
   populateTaskEditorRelationships(task);
   resetTaskEditorMetric(task.progress_metric);
@@ -3037,6 +3139,9 @@ async function submitTaskEditor(event) {
       project_slug: elements.taskEditorProject.value || null,
       goal_slug: elements.taskEditorGoal.value || null,
       progress_metric: taskEditorMetricPayload(),
+      ...(state.taskEditorMode === "create"
+        ? { assignee_slug: elements.taskEditorAssignee.value }
+        : {}),
     };
     const endpoint =
       state.taskEditorMode === "duplicate"
@@ -3060,13 +3165,28 @@ async function submitTaskEditor(event) {
       throw error;
     }
     elements.taskEditorDialog.close();
-    showToast(
-      state.taskEditorMode === "duplicate"
-        ? `Created a clean copy of “${result.task.title}” in GBrain.`
-        : `Created “${result.task.title}” in GBrain.`,
-    );
-    await loadTasks();
-    selectTask(result.task.slug);
+    if (result.task.owner_agent) {
+      await loadAgentWork();
+      state.showAgentTasks = true;
+      elements.showAgentTasks.checked = true;
+      state.activeView = "board";
+      render();
+      selectTask(result.task.slug);
+      const agent = state.agents.find(
+        (candidate) => candidate.slug === result.task.owner_agent,
+      );
+      showToast(
+        `Created queued work for ${agent?.name || "the selected agent"} and verified its assignment in GBrain.`,
+      );
+    } else {
+      showToast(
+        state.taskEditorMode === "duplicate"
+          ? `Created a clean copy of “${result.task.title}” in GBrain.`
+          : `Created “${result.task.title}” in GBrain.`,
+      );
+      await loadTasks();
+      selectTask(result.task.slug);
+    }
   } catch (error) {
     elements.taskEditorError.textContent =
       error.code === "partial_write" && error.slug

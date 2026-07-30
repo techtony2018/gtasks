@@ -2733,6 +2733,37 @@ kbd {
   flex-wrap: wrap;
 }
 
+.task-owner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-muted);
+}
+
+.task-owner div {
+  display: grid;
+  gap: 2px;
+}
+
+.task-owner small {
+  color: var(--muted);
+}
+
+#task-editor-assignee-field {
+  display: grid;
+  gap: 7px;
+}
+
+#task-editor-assignee-field p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
 .proposed-work-heading h2,
 .proposal-agent-group h3,
 .proposal-card h4 {

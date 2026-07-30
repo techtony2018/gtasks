@@ -185,6 +185,60 @@ class TaskParsingTests(unittest.TestCase):
             "goals/happier-and-healthier",
         )
 
+    def test_agent_task_requires_matching_scope_and_assigned_to_relation(
+        self,
+    ) -> None:
+        page = task_page(
+            "tasks/agent-work",
+            links=[
+                {
+                    "to": "collections/toddys-tasks",
+                    "type": "member_of",
+                }
+            ]
+        )
+        page["frontmatter"]["links"] = [
+            {
+                "to": "collections/toddys-tasks",
+                "type": "member_of",
+            }
+        ]
+        assigned = Task.from_page(
+            page,
+            edges=[
+                {
+                    "from_slug": page["slug"],
+                    "to_slug": "collections/toddys-tasks",
+                    "link_type": "member_of",
+                },
+                {
+                    "from_slug": page["slug"],
+                    "to_slug": "agents/toddy",
+                    "link_type": "assigned_to",
+                },
+            ],
+        )
+        self.assertEqual(assigned.owner_agent, "agents/toddy")
+        self.assertEqual(
+            assigned.lifecycle_root,
+            "collections/toddys-tasks",
+        )
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "matching its work collection",
+        ):
+            Task.from_page(
+                page,
+                edges=[
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": "agents/timmy",
+                        "link_type": "assigned_to",
+                    },
+                ],
+            )
+
     def test_rejects_invalid_progress_metric_contracts(self) -> None:
         valid = {
             "kind": "count",

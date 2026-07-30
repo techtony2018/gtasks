@@ -67,6 +67,7 @@ class FakeAdapter:
         self.agent_work = agent_work
         self.proposals = proposals
         self.created: list[Task] = []
+        self.created_agent_tasks: list[tuple[Task, str]] = []
         self.duplicated_from: list[str] = []
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
@@ -92,6 +93,14 @@ class FakeAdapter:
 
     def create_task(self, task: Task) -> MutationReceipt:
         return self.create_inbox(task)
+
+    def create_agent_task(
+        self,
+        task: Task,
+        agent_slug: str,
+    ) -> MutationReceipt:
+        self.created_agent_tasks.append((task, agent_slug))
+        return MutationReceipt(slug=task.slug, verified=True)
 
     def duplicate_task(
         self,
@@ -469,7 +478,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.11")
+        self.assertEqual(payload["version"], "V0.0.12")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -477,11 +486,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.11")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.11")
+        self.assertEqual(payload["current_version"], "V0.0.12")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.12")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.12",
                 "V0.0.11",
                 "V0.0.10",
                 "V0.0.9",
@@ -1049,6 +1059,95 @@ class QuickAddApiTests(unittest.TestCase):
 
 
 class FullTaskCreationApiTests(unittest.TestCase):
+    def test_default_assignee_preserves_the_tony_task_path(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Prepare interview notes",
+                "detail": "",
+                "priority": "normal",
+                "next_action": "",
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": None,
+                "assignee_slug": "tony",
+            },
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(len(adapter.created), 1)
+        self.assertEqual(adapter.created_agent_tasks, [])
+        self.assertIsNone(payload["task"]["owner_agent"])
+        self.assertEqual(payload["task"]["lifecycle_root"], ACTIVE_ROOT)
+
+    def test_each_agent_assignee_creates_only_one_scoped_agent_task(self) -> None:
+        for agent_slug, work_root in (
+            ("agents/toddy", "collections/toddys-tasks"),
+            ("agents/timmy", "collections/timmys-tasks"),
+            ("agents/tammy", "collections/tammys-tasks"),
+        ):
+            with self.subTest(agent=agent_slug):
+                adapter = FakeAdapter()
+                harness = ServerHarness(self, adapter)
+
+                status, payload, _ = harness.request(
+                    "POST",
+                    "/api/tasks",
+                    {
+                        "title": "Prepare a goal update",
+                        "detail": "",
+                        "priority": "normal",
+                        "next_action": "Draft the update",
+                        "due_day": "2026-07-31",
+                        "project_slug": None,
+                        "goal_slug": None,
+                        "progress_metric": None,
+                        "assignee_slug": agent_slug,
+                    },
+                )
+
+                self.assertEqual(status, 201)
+                self.assertEqual(adapter.created, [])
+                self.assertEqual(len(adapter.created_agent_tasks), 1)
+                task, stored_agent = adapter.created_agent_tasks[0]
+                self.assertEqual(stored_agent, agent_slug)
+                self.assertEqual(task.owner_agent, agent_slug)
+                self.assertEqual(task.lifecycle_root, work_root)
+                self.assertEqual(task.status, "planned")
+                self.assertTrue(task.inbox)
+                self.assertEqual(payload["task"]["owner_agent"], agent_slug)
+                harness.close()
+
+    def test_rejects_unknown_agent_assignment_without_writing(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Unsafe assignment",
+                "detail": "",
+                "priority": "normal",
+                "next_action": "",
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": None,
+                "assignee_slug": "agents/unknown",
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_task")
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.created_agent_tasks, [])
+
     def test_creates_an_optional_manual_metric_without_auto_completion(self) -> None:
         adapter = FakeAdapter(
             projects=(sample_project(),),
