@@ -3195,6 +3195,12 @@ function selectTask(slug) {
     elements.taskGoalValue.textContent = task.goal ? task.goal : "No associated goal";
   }
   render();
+  if (window.matchMedia("(max-width: 760px)").matches) {
+    window.requestAnimationFrame(() => {
+      elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+      elements.detailTitle.focus({ preventScroll: true });
+    });
+  }
 }
 
 function goalTaskLinks(container, tasks, emptyCopy) {

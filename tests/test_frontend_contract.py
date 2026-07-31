@@ -294,6 +294,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", css)
         self.assertIn(".proposal-agent-group { grid-template-columns: 1fr; }", css)
 
+    def test_mobile_task_selection_reveals_and_focuses_detail_panel(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        body = javascript[javascript.index("function selectTask") : javascript.index("function goalTaskLinks")]
+
+        self.assertIn('id="detail-title" tabindex="-1"', html)
+        self.assertIn('window.matchMedia("(max-width: 760px)").matches', body)
+        self.assertIn('elements.detailPanel.scrollIntoView', body)
+        self.assertIn('elements.detailTitle.focus({ preventScroll: true })', body)
+
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
