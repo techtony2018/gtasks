@@ -450,6 +450,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("overflow-x: clip", mobile)
         self.assertIn(".nav-list {", mobile)
         self.assertIn("max-width: 100%", mobile)
+        self.assertIn(".app-shell {", css)
+        self.assertIn("overflow-x: clip", css)
 
     def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

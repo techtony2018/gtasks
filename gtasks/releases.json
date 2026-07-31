@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.44",
+  "current_version": "V0.0.45",
   "releases": [
     {
       "version": "V0.0.1",
@@ -264,6 +264,12 @@
       "date": "2026-07-31",
       "title": "Stable desktop detail layout",
       "summary": "Prevents a closed detail pane from expanding the desktop canvas, keeping compact content and local scroll areas contained."
+    },
+    {
+      "version": "V0.0.45",
+      "date": "2026-07-31",
+      "title": "Contained Mission Control canvas",
+      "summary": "Keeps offscreen card rails from widening the Mission Control desktop canvas while preserving local scrolling."
     }
   ]
 }

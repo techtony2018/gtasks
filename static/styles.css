@@ -65,6 +65,9 @@ a:focus-visible {
   min-height: 100dvh;
   display: grid;
   grid-template-columns: 92px minmax(520px, 1fr) 0;
+  /* Horizontal rails such as goal cards manage their own scrolling; their
+     offscreen children must not widen the application document. */
+  overflow-x: clip;
   transition: grid-template-columns 180ms ease;
 }
 
