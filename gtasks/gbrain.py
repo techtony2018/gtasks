@@ -1909,6 +1909,22 @@ class GBrainAdapter:
             raise PartialMutationError(ticket.slug, "System Ticket creation was not verified.")
         return MutationReceipt(ticket.slug, True)
 
+    def next_planned_system_ticket(self) -> SystemTicket | None:
+        """Return one bounded nightly-build candidate without changing it.
+
+        Scheduling and dispatch intentionally live outside Mission Control.
+        This selector protects that boundary: only normal planned tasks in the
+        dedicated System Tickets collection can be handed to a nightly runner.
+        """
+        tickets = self.list_system_tickets().tickets
+        planned = [ticket for ticket in tickets if ticket.status == "planned"]
+        if not planned:
+            return None
+        return min(
+            planned,
+            key=lambda ticket: (ticket.created_at or datetime.max, ticket.slug),
+        )
+
     def list_projects(self) -> ProjectRead:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})
         if not isinstance(raw_backlinks, list):

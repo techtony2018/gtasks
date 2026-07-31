@@ -13,6 +13,8 @@ from gtasks.domain import (
     GOALS_ROOT,
     PROJECTS_ROOT,
     PROPOSALS_ROOT,
+    SYSTEM_TICKETS_ROOT,
+    SystemTicket,
     ProgressMetric,
     new_goal,
     new_inbox_task,
@@ -2305,6 +2307,71 @@ class TaskNextActionMutationTests(unittest.TestCase):
             [tool for tool, _params in runner.calls].count("put_page"),
             2,
         )
+
+
+class SystemTicketAdapterTests(unittest.TestCase):
+    def test_create_ticket_writes_task_type_typed_membership_and_exact_readback(self) -> None:
+        now = datetime(2026, 7, 31, 9, 0, tzinfo=timezone.utc)
+        ticket = SystemTicket(
+            slug="tasks/system-tickets/calendar-selection-a1b2c3",
+            title="Improve Calendar selection",
+            status="planned",
+            verbatim_request="Highlight the selected Calendar task.",
+            target_subsystem="mission_control",
+            priority="high",
+            acceptance_criteria="The selected task is clear.",
+            created_at=now,
+            updated_at=now,
+        )
+        root = {"slug": SYSTEM_TICKETS_ROOT, "type": "collection"}
+        stored = {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "frontmatter": {
+                "type": "task", "title": ticket.title, "status": "planned",
+                "priority": "high", "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": "mission_control",
+                "acceptance_criteria": ticket.acceptance_criteria,
+                "linked_evidence": [], "implementation_receipts": [], "qa_receipts": [],
+                "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        edge = {"from_slug": ticket.slug, "to_slug": SYSTEM_TICKETS_ROOT, "link_type": "member_of"}
+        runner = FakeRunner({
+            "get_page": [root, stored], "put_page": [{"slug": ticket.slug}],
+            "add_link": [{}], "get_links": [[edge]],
+        })
+
+        receipt = GBrainAdapter(runner).create_system_ticket(ticket)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.slug, ticket.slug)
+        content = next(params["content"] for tool, params in runner.calls if tool == "put_page")
+        self.assertIn("type: task", content)
+        self.assertIn(SYSTEM_TICKETS_ROOT, content)
+        self.assertEqual(
+            next(params for tool, params in runner.calls if tool == "add_link")["link_type"],
+            "member_of",
+        )
+
+    def test_nightly_selector_returns_only_the_oldest_planned_ticket(self) -> None:
+        first = SystemTicket("tasks/system-tickets/first-aaaaaa", "First", "planned", "A request", "mission_control", "normal", created_at=datetime(2026, 7, 30, tzinfo=timezone.utc))
+        active = SystemTicket("tasks/system-tickets/active-bbbbbb", "Active", "active", "Another request", "mission_control", "normal", created_at=datetime(2026, 7, 29, tzinfo=timezone.utc))
+        second = SystemTicket("tasks/system-tickets/second-cccccc", "Second", "planned", "Later request", "career_path", "normal", created_at=datetime(2026, 7, 31, tzinfo=timezone.utc))
+        def page(ticket: SystemTicket) -> dict:
+            return {"slug": ticket.slug, "type": "task", "title": ticket.title, "frontmatter": {"type":"task", "title":ticket.title, "status":ticket.status, "priority":ticket.priority, "verbatim_request":ticket.verbatim_request, "target_subsystem":ticket.target_subsystem, "acceptance_criteria":"", "linked_evidence":[], "implementation_receipts":[], "qa_receipts":[], "created_at":ticket.created_at.isoformat(), "links":[{"to":SYSTEM_TICKETS_ROOT,"type":"member_of"}]}}
+        edges = lambda ticket: [{"from_slug":ticket.slug,"to_slug":SYSTEM_TICKETS_ROOT,"link_type":"member_of"}]
+        runner = FakeRunner({
+            "get_backlinks": [[*edges(first), *edges(active), *edges(second)]],
+            "get_page": [page(first), page(active), page(second)],
+            "get_links": [edges(first), edges(active), edges(second)],
+        })
+
+        selected = GBrainAdapter(runner).next_planned_system_ticket()
+
+        self.assertEqual(selected.slug, first.slug)
 
 
 class TaskProgressMetricMutationTests(unittest.TestCase):

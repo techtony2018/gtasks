@@ -19,6 +19,7 @@ from gtasks.domain import (
     Project,
     Task,
     TaskProposal,
+    SystemTicket,
     new_inbox_task,
     new_task,
 )
@@ -42,6 +43,7 @@ from gtasks.gbrain import (
     ProjectRead,
     ProposalRead,
     ProposalMutationReceipt,
+    SystemTicketRead,
 )
 from gtasks.server import build_server
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
@@ -58,6 +60,7 @@ class FakeAdapter:
         agents: tuple[AgentProfile, ...] = (),
         agent_work: tuple[dict, ...] = (),
         proposals: tuple[TaskProposal, ...] = (),
+        system_tickets: tuple[SystemTicket, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
@@ -66,6 +69,8 @@ class FakeAdapter:
         self.agents = agents
         self.agent_work = agent_work
         self.proposals = proposals
+        self.system_tickets = system_tickets
+        self.created_system_tickets: list[SystemTicket] = []
         self.created: list[Task] = []
         self.created_agent_tasks: list[tuple[Task, str]] = []
         self.duplicated_from: list[str] = []
@@ -188,6 +193,14 @@ class FakeAdapter:
 
     def list_proposals(self) -> ProposalRead:
         return ProposalRead(proposals=self.proposals)
+
+    def list_system_tickets(self) -> SystemTicketRead:
+        return SystemTicketRead(tickets=self.system_tickets)
+
+    def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
+        self.created_system_tickets.append(ticket)
+        self.system_tickets = (*self.system_tickets, ticket)
+        return MutationReceipt(slug=ticket.slug, verified=True)
 
     def review_proposal(
         self,
@@ -517,7 +530,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.38")
+        self.assertEqual(payload["version"], "V0.0.39")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -525,11 +538,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.38")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.38")
+        self.assertEqual(payload["current_version"], "V0.0.39")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.39")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.39",
                 "V0.0.38",
                 "V0.0.37",
                 "V0.0.36",
@@ -1743,6 +1757,69 @@ class TaskRelationshipRepairApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(adapter.membership_repairs, ["tasks/legacy"])
         self.assertTrue(payload["receipt"]["verified"])
+
+
+class SystemTicketApiTests(unittest.TestCase):
+    def test_lists_separate_canonical_system_tickets(self) -> None:
+        ticket = SystemTicket(
+            slug="tasks/system-tickets/calendar-highlight-a1b2c3",
+            title="Highlight selected Calendar task",
+            status="planned",
+            verbatim_request="Highlight the selected task in Calendar.",
+            target_subsystem="mission_control",
+            priority="high",
+            acceptance_criteria="Selected task has a clear accessible treatment.",
+        )
+        adapter = FakeAdapter(system_tickets=(ticket,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request("GET", "/api/system-tickets")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["root_slug"], "collections/mission-control-system-tickets")
+        self.assertEqual(payload["tickets"][0]["status"], "planned")
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.created_agent_tasks, [])
+
+    def test_creates_a_normal_planned_task_with_verified_receipt(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/system-tickets",
+            {
+                "title": "Improve Calendar selection",
+                "verbatim_request": "Make the selected Calendar task clearer.",
+                "target_subsystem": "mission_control",
+                "priority": "high",
+                "acceptance_criteria": "Selection is visible on desktop and mobile.",
+            },
+        )
+
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(payload["ticket"]["status"], "planned")
+        self.assertEqual(payload["ticket"]["target_subsystem"], "mission_control")
+        self.assertEqual(len(adapter.created_system_tickets), 1)
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.created_agent_tasks, [])
+
+    def test_rejects_proposed_as_a_system_ticket_status_or_unknown_fields(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/system-tickets",
+            {
+                "title": "Do not create a proposal",
+                "verbatim_request": "System Tickets use standard statuses.",
+                "status": "proposed",
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_system_ticket")
 
 
 class ProposalApiTests(unittest.TestCase):

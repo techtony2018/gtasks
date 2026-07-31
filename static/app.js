@@ -55,6 +55,9 @@ const state = {
   icalStatus: "not_determined",
   icalRange: "",
   icalLoading: false,
+  systemTickets: [],
+  systemTicketsLoading: false,
+  systemTicketsError: "",
   boardMove: null,
   loading: true,
   releases: null,
@@ -117,6 +120,7 @@ const viewMeta = {
     emptyTitle: "No agent work yet",
     emptyCopy: "No active agent has typed work items in its canonical GBrain collection.",
   },
+  "system-tickets": { title: "Mission Control System Tickets" },
   blocked: {
     title: "Blocked",
     emptyTitle: "No blocked work",
@@ -155,6 +159,17 @@ const elements = {
   storeDot: document.querySelector("#store-dot"),
   storeLabel: document.querySelector("#store-label"),
   createTaskButton: document.querySelector("#create-task-button"),
+  systemTicketsButton: document.querySelector("#system-tickets-button"),
+  systemTicketsCount: document.querySelector("#system-tickets-count"),
+  systemTicketDialog: document.querySelector("#system-ticket-dialog"),
+  systemTicketForm: document.querySelector("#system-ticket-form"),
+  systemTicketClose: document.querySelector("#system-ticket-close"),
+  systemTicketTitle: document.querySelector("#system-ticket-title"),
+  systemTicketRequest: document.querySelector("#system-ticket-request"),
+  systemTicketTarget: document.querySelector("#system-ticket-target"),
+  systemTicketPriority: document.querySelector("#system-ticket-priority"),
+  systemTicketCriteria: document.querySelector("#system-ticket-criteria"),
+  systemTicketError: document.querySelector("#system-ticket-error"),
   taskEditorDialog: document.querySelector("#task-editor-dialog"),
   taskEditorForm: document.querySelector("#task-editor-form"),
   taskEditorMode: document.querySelector("#task-editor-mode"),
@@ -3098,6 +3113,8 @@ function render() {
         ? renderBoard()
       : view === "agent-work"
         ? renderAgentWorkView()
+      : view === "system-tickets"
+        ? renderSystemTicketsView()
       : view === "projects"
         ? renderProjectsView()
       : view === "goals"
@@ -3118,6 +3135,50 @@ function render() {
     month: "long",
     day: "numeric",
   }).format(date);
+}
+
+function renderSystemTicketsView() {
+  const section = node("section", "projects-view");
+  const heading = node("div", "projects-view-heading");
+  const copy = node("div");
+  copy.append(node("h2", "", "Mission Control System Tickets"), node("p", "", "Separate canonical change requests. Nightly work selects only Planned tickets; implementation and independent QA receipts remain with the ticket."));
+  const create = node("button", "submit-button", "New Ticket"); create.type = "button"; create.addEventListener("click", openSystemTicketDialog);
+  heading.append(copy, create); section.append(heading);
+  if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }
+  if (state.systemTicketsError) { section.append(node("div", "section-empty", state.systemTicketsError)); return section; }
+  if (!state.systemTickets.length) { section.append(node("div", "section-empty", "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
+  const list = node("div", "task-list");
+  state.systemTickets.forEach((ticket) => {
+    const card = node("article", "task-row");
+    card.append(node("div", "", ticket.title), node("span", `priority-badge ${ticket.priority}`, ticket.status));
+    card.append(node("p", "", `${ticket.target_subsystem.replace(/_/g, " ")} · ${ticket.acceptance_criteria || "No acceptance criteria recorded."}`));
+    card.append(node("p", "", `Implementation receipts: ${ticket.implementation_receipts.length} · QA receipts: ${ticket.qa_receipts.length}`));
+    const detail = node("details", "system-ticket-detail");
+    detail.append(node("summary", "", "Details"), node("p", "", ticket.verbatim_request), node("p", "", `Evidence: ${ticket.linked_evidence.length ? ticket.linked_evidence.join(", ") : "None recorded."}`), node("p", "", `Implementation: ${ticket.implementation_receipts.length ? ticket.implementation_receipts.join(", ") : "No receipt yet."}`), node("p", "", `Independent UX QA: ${ticket.qa_receipts.length ? ticket.qa_receipts.join(", ") : "No receipt yet."}`));
+    card.append(detail);
+    list.append(card);
+  });
+  section.append(list); return section;
+}
+
+function openSystemTicketDialog() {
+  elements.systemTicketError.classList.add("is-hidden");
+  elements.systemTicketForm.reset();
+  elements.systemTicketDialog.showModal();
+  window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
+}
+
+async function loadSystemTickets() {
+  state.systemTicketsLoading = true;
+  try { const response = await fetch("/api/system-tickets", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketsError = ""; }
+  catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
+  finally { state.systemTicketsLoading = false; elements.systemTicketsCount.textContent = String(state.systemTickets.length); if (state.activeView === "system-tickets") render(); }
+}
+
+async function submitSystemTicket(event) {
+  event.preventDefault(); elements.systemTicketError.classList.add("is-hidden");
+  try { const response = await fetch("/api/system-tickets", { method:"POST", headers:{"Content-Type":"application/json",Accept:"application/json"}, body:JSON.stringify({title:elements.systemTicketTitle.value,verbatim_request:elements.systemTicketRequest.value,target_subsystem:elements.systemTicketTarget.value,priority:elements.systemTicketPriority.value,acceptance_criteria:elements.systemTicketCriteria.value})}); const payload=await response.json(); if(!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Ticket creation was not verified."); elements.systemTicketDialog.close(); await loadSystemTickets(); state.activeView="system-tickets"; render(); showToast("System Ticket created and verified in GBrain."); }
+  catch(error){ elements.systemTicketError.textContent=error.message; elements.systemTicketError.classList.remove("is-hidden"); }
 }
 
 function selectTask(slug) {
@@ -4119,6 +4180,9 @@ elements.aboutDialog.addEventListener("close", () => {
   state.aboutReturnFocus = null;
 });
 elements.logsButton.addEventListener("click", openLogsDialog);
+elements.systemTicketsButton.addEventListener("click", () => { state.activeView = "system-tickets"; render(); loadSystemTickets(); });
+elements.systemTicketClose.addEventListener("click", () => elements.systemTicketDialog.close());
+elements.systemTicketForm.addEventListener("submit", submitSystemTicket);
 elements.logsClose.addEventListener("click", closeLogsDialog);
 elements.logsRefresh.addEventListener("click", () => loadOperationalLogs());
 elements.logsLoadMore.addEventListener("click", () => {
@@ -4189,3 +4253,4 @@ loadTasks({ reason: "initial" });
 loadProjects();
 loadAgents();
 loadProposals();
+loadSystemTickets();

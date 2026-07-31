@@ -413,6 +413,24 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("nav-glyph", html)
         self.assertNotIn("brand-mark", html)
 
+    def test_system_tickets_have_a_separate_planned_task_surface_above_logs(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        tickets_at = html.index('id="system-tickets-button"')
+        logs_at = html.index('id="logs-button"')
+        self.assertLess(tickets_at, logs_at)
+        self.assertIn("Mission Control System Tickets", html)
+        self.assertIn('id="system-ticket-dialog"', html)
+        self.assertIn('id="system-ticket-request"', html)
+        self.assertIn('id="system-ticket-target"', html)
+        self.assertIn('id="system-ticket-criteria"', html)
+        self.assertIn('id="system-ticket-priority"', html)
+        self.assertIn("function renderSystemTicketsView()", javascript)
+        self.assertIn('fetch("/api/system-tickets"', javascript)
+        self.assertIn("Nightly work selects only Planned tickets", javascript)
+        self.assertNotIn('value="proposed"', html[html.index('id="system-ticket-dialog"'):html.index('id="task-editor-dialog"')])
+
     def test_week_view_groups_canonical_due_dates_without_a_write_path(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

@@ -84,7 +84,10 @@ class SystemTicket:
             isinstance(edge, Mapping) and edge.get("from_slug") == slug and edge.get("to_slug") == SYSTEM_TICKETS_ROOT and edge.get("link_type") == "member_of" for edge in edges)
         if not typed_member:
             raise DomainValidationError("system ticket requires typed System Tickets membership")
-        title = page.get("title") or frontmatter.get("title")
+        # GBrain's raw row title can be a stale storage label.  The compiled
+        # frontmatter is the canonical display contract, just as it is for
+        # Goals, so a title edit remains visible after a readback.
+        title = frontmatter.get("title") or page.get("title")
         if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
             raise DomainValidationError("system ticket title must be 1 to 160 characters")
         request = frontmatter.get("verbatim_request")

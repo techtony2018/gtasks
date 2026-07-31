@@ -69,6 +69,10 @@
           </div>
           <p>Every task stays in GBrain. Mission Control keeps no separate task database.</p>
         </div>
+        <button class="about-button" id="system-tickets-button" type="button">
+          <span>Mission Control System Tickets</span>
+          <strong id="system-tickets-count">0</strong>
+        </button>
         <button class="about-button" id="logs-button" type="button">
           <span>Logs</span>
           <strong>Read-only</strong>
@@ -244,6 +248,19 @@
         </div>
       </aside>
     </div>
+
+    <dialog class="task-editor-dialog" id="system-ticket-dialog" aria-labelledby="system-ticket-heading">
+      <form method="dialog" class="task-editor-form" id="system-ticket-form">
+        <div class="dialog-heading"><div><p>Read-only GBrain-backed change request</p><h2 id="system-ticket-heading">New Mission Control System Ticket</h2></div><button class="icon-button" id="system-ticket-close" type="button" aria-label="Close System Ticket editor">×</button></div>
+        <label for="system-ticket-title">Title</label><input id="system-ticket-title" maxlength="160" required>
+        <label for="system-ticket-request">Tony’s verbatim request</label><textarea id="system-ticket-request" rows="5" required></textarea>
+        <label for="system-ticket-target">Target subsystem/project</label><select id="system-ticket-target"><option value="mission_control">Mission Control</option><option value="memory_stargraph">Memory Stargraph</option><option value="career_path">Career Path</option><option value="unknown">Unknown — nightly builder will block with a question</option></select>
+        <label for="system-ticket-priority">Priority</label><select id="system-ticket-priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option></select>
+        <label for="system-ticket-criteria">Acceptance criteria</label><textarea id="system-ticket-criteria" rows="3"></textarea>
+        <p>New tickets are normal canonical tasks in Mission Control System Tickets with status Planned. Nightly work selects only planned System Tickets.</p><p class="form-error is-hidden" id="system-ticket-error" role="alert"></p>
+        <div class="dialog-footer"><p>Success is shown only after canonical page and typed membership readback.</p><button class="submit-button" type="submit">Create Ticket</button></div>
+      </form>
+    </dialog>
 
     <dialog class="task-editor-dialog" id="task-editor-dialog" aria-labelledby="task-editor-heading">
       <form method="dialog" class="task-editor-form" id="task-editor-form">

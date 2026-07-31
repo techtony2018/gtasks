@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.38",
+  "current_version": "V0.0.39",
   "releases": [
     {
       "version": "V0.0.1",
@@ -228,6 +228,12 @@
       "date": "2026-07-31",
       "title": "Reliable canonical Goal reading",
       "summary": "Goals now read their validated compiled Markdown contract when GBrain exposes a generic raw storage type, preserving renamed display labels, linked task navigation, and progress without false data warnings."
+    },
+    {
+      "version": "V0.0.39",
+      "date": "2026-07-31",
+      "title": "Mission Control System Tickets",
+      "summary": "Added a separate GBrain-backed System Tickets surface with verified canonical task creation, target subsystem, verbatim request, acceptance criteria, priority, and implementation and independent UX QA receipt visibility."
     }
   ]
 }
