@@ -2310,6 +2310,26 @@ class TaskNextActionMutationTests(unittest.TestCase):
 
 
 class SystemTicketAdapterTests(unittest.TestCase):
+    def test_reads_pre_ui_system_ticket_from_its_existing_task_detail(self) -> None:
+        page = {
+            "slug": "tasks/calendar-view-selected-task-highlight",
+            "type": "task",
+            "title": "Highlight selected task in Calendar View",
+            "frontmatter": {
+                "status": "planned", "priority": "normal",
+                "detail": "Tony requested a visible selected state.",
+                "target_subsystem": "mission-control-calendar",
+                "acceptance_criteria": "The state is accessible.",
+            },
+            "created_at": "2026-07-31T17:00:00+00:00",
+        }
+        edge = {"from_slug": page["slug"], "to_slug": SYSTEM_TICKETS_ROOT, "link_type": "member_of"}
+
+        ticket = SystemTicket.from_page(page, [edge])
+
+        self.assertEqual(ticket.status, "planned")
+        self.assertEqual(ticket.target_subsystem, "mission_control")
+        self.assertEqual(ticket.verbatim_request, "Tony requested a visible selected state.")
     def test_create_ticket_writes_task_type_typed_membership_and_exact_readback(self) -> None:
         now = datetime(2026, 7, 31, 9, 0, tzinfo=timezone.utc)
         ticket = SystemTicket(

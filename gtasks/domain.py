@@ -90,13 +90,25 @@ class SystemTicket:
         title = frontmatter.get("title") or page.get("title")
         if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
             raise DomainValidationError("system ticket title must be 1 to 160 characters")
-        request = frontmatter.get("verbatim_request")
+        # The first manually captured System Ticket predates the explicit
+        # verbatim_request field.  Its task detail is already Tony's original
+        # request, so read it without rewriting or inventing new content.
+        request = (
+            frontmatter.get("verbatim_request")
+            or frontmatter.get("detail")
+            or frontmatter.get("summary")
+        )
         if not isinstance(request, str) or not request.strip():
             raise DomainValidationError("system ticket verbatim_request is required")
         status = frontmatter.get("status")
         if status not in SYSTEM_TICKET_STATUSES:
             raise DomainValidationError("system ticket status is invalid")
         target = frontmatter.get("target_subsystem", "unknown")
+        # Compatibility for the pre-UI ticket capture.  New Ticket emits the
+        # stable enum, while this narrow map keeps the existing calendar
+        # request visible and dispatchable without a live migration.
+        if target == "mission-control-calendar":
+            target = "mission_control"
         if target not in SYSTEM_TICKET_TARGETS:
             raise DomainValidationError("system ticket target_subsystem is invalid")
         priority = frontmatter.get("priority", "normal")
@@ -111,7 +123,7 @@ class SystemTicket:
         criteria = frontmatter.get("acceptance_criteria", "")
         if not isinstance(criteria, str):
             raise DomainValidationError("system ticket acceptance_criteria must be text")
-        return cls(slug, title.strip(), status, request.strip(), target, priority, criteria.strip(), strings("linked_evidence"), strings("implementation_receipts"), strings("qa_receipts"), _optional_datetime(frontmatter.get("created_at"), "created_at"), _optional_datetime(frontmatter.get("updated_at"), "updated_at"))
+        return cls(slug, title.strip(), status, request.strip(), target, priority, criteria.strip(), strings("linked_evidence"), strings("implementation_receipts"), strings("qa_receipts"), _optional_datetime(frontmatter.get("created_at") or page.get("created_at"), "created_at"), _optional_datetime(frontmatter.get("updated_at") or page.get("updated_at"), "updated_at"))
 
     def to_dict(self) -> dict[str, Any]:
         return {"slug":self.slug,"title":self.title,"status":self.status,"verbatim_request":self.verbatim_request,"target_subsystem":self.target_subsystem,"priority":self.priority,"acceptance_criteria":self.acceptance_criteria,"linked_evidence":list(self.linked_evidence),"implementation_receipts":list(self.implementation_receipts),"qa_receipts":list(self.qa_receipts),"created_at":self.created_at.isoformat() if self.created_at else None,"updated_at":self.updated_at.isoformat() if self.updated_at else None}
