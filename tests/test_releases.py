@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.21")
+        self.assertEqual(__version__, "V0.0.22")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -65,6 +65,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.19",
                 "V0.0.20",
                 "V0.0.21",
+                "V0.0.22",
             ],
         )
 
@@ -206,6 +207,11 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(release["version"], "V0.0.21")
         self.assertIn("Monday-to-Sunday", release["summary"])
         self.assertIn("canonical GBrain due date", release["summary"])
+
+    def test_v0_0_22_records_goal_editing(self) -> None:
+        release = RELEASES[21]
+        self.assertEqual(release["version"], "V0.0.22")
+        self.assertIn("Goal details now include Edit", release["summary"])
 
 
 if __name__ == "__main__":

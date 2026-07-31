@@ -26,6 +26,7 @@ const state = {
   projectsLoading: true,
   projectsError: "",
   goalAction: null,
+  goalEditorSlug: null,
   pendingWarning: null,
   showDismissedWarnings: false,
   taskEditorMode: "create",
@@ -251,9 +252,12 @@ const elements = {
   newGoalCadence: document.querySelector("#new-goal-cadence"),
   newGoalTarget: document.querySelector("#new-goal-target"),
   newGoalSubmit: document.querySelector("#new-goal-submit"),
+  newGoalHeading: document.querySelector("#new-goal-heading"),
+  goalEditorMode: document.querySelector("#goal-editor-mode"),
   newGoalClose: document.querySelector("#new-goal-close"),
   newGoalError: document.querySelector("#new-goal-error"),
   goalPauseButton: document.querySelector("#goal-pause-button"),
+  goalEditButton: document.querySelector("#goal-edit-button"),
   goalDeleteButton: document.querySelector("#goal-delete-button"),
   goalActionError: document.querySelector("#goal-action-error"),
   goalConfirmDialog: document.querySelector("#goal-confirm-dialog"),
@@ -1984,8 +1988,30 @@ async function submitNewProject(event) {
 }
 
 function openNewGoal() {
+  state.goalEditorSlug = null;
   elements.newGoalForm.reset();
+  elements.newGoalHeading.textContent = "Create a goal";
+  elements.goalEditorMode.textContent = "New canonical goal";
   elements.newGoalCadence.value = "weekly";
+  elements.newGoalError.classList.add("is-hidden");
+  elements.newGoalDialog.showModal();
+  window.setTimeout(() => elements.newGoalTitle.focus(), 0);
+}
+
+function openEditGoal() {
+  const goal = state.snapshot?.goals.find((item) => item.slug === state.selectedSlug);
+  if (!goal) return;
+  state.goalEditorSlug = goal.slug;
+  elements.newGoalTitle.value = goal.title;
+  elements.newGoalOutcome.value = goal.outcome;
+  elements.newGoalSuccess.value = goal.success_criteria;
+  elements.newGoalStrategy.value = goal.strategy;
+  elements.newGoalConstraints.value = goal.constraints;
+  elements.newGoalCadence.value = goal.review_cadence;
+  elements.newGoalTarget.value = goal.target_day;
+  elements.newGoalHeading.textContent = "Edit goal";
+  elements.goalEditorMode.textContent = "Canonical GBrain goal";
+  elements.newGoalSubmit.textContent = "Save changes";
   elements.newGoalError.classList.add("is-hidden");
   elements.newGoalDialog.showModal();
   window.setTimeout(() => elements.newGoalTitle.focus(), 0);
@@ -1995,7 +2021,8 @@ async function submitNewGoal(event) {
   event.preventDefault();
   elements.newGoalError.classList.add("is-hidden");
   elements.newGoalSubmit.disabled = true;
-  elements.newGoalSubmit.textContent = "Creating in GBrain…";
+  const editing = Boolean(state.goalEditorSlug);
+  elements.newGoalSubmit.textContent = editing ? "Saving in GBrain…" : "Creating in GBrain…";
   const payload = {
     title: elements.newGoalTitle.value,
     outcome: elements.newGoalOutcome.value,
@@ -2007,9 +2034,16 @@ async function submitNewGoal(event) {
   if (elements.newGoalTarget.value) {
     payload.target_day = elements.newGoalTarget.value;
   }
+  if (editing && !payload.target_day) {
+    elements.newGoalError.textContent = "A target date is required when editing a goal.";
+    elements.newGoalError.classList.remove("is-hidden");
+    elements.newGoalSubmit.disabled = false;
+    elements.newGoalSubmit.textContent = "Save changes";
+    return;
+  }
   try {
-    const response = await fetch("/api/goals", {
-      method: "POST",
+    const response = await fetch(editing ? `/api/goals/${encodeURIComponent(state.goalEditorSlug)}` : "/api/goals", {
+      method: editing ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
@@ -2024,17 +2058,15 @@ async function submitNewGoal(event) {
       throw error;
     }
     await loadTasks();
-    const created = state.snapshot.goals.some(
-      (goal) => goal.slug === result.goal.slug,
-    );
-    if (!created) {
+    const saved = state.snapshot.goals.find((goal) => goal.slug === result.goal.slug);
+    if (!saved || saved.title !== result.goal.title) {
       throw new Error(
         "GBrain accepted the goal, but it was not present after Tony’s Goals refresh.",
       );
     }
     elements.newGoalDialog.close();
     state.activeView = "goals";
-    showToast("Goal created, linked, and verified in GBrain.");
+    showToast(editing ? "Goal changes verified in GBrain." : "Goal created, linked, and verified in GBrain.");
     selectGoal(result.goal.slug);
   } catch (error) {
     elements.newGoalError.textContent =
@@ -2044,7 +2076,7 @@ async function submitNewGoal(event) {
     elements.newGoalError.classList.remove("is-hidden");
   } finally {
     elements.newGoalSubmit.disabled = false;
-    elements.newGoalSubmit.textContent = "Create goal";
+    elements.newGoalSubmit.textContent = editing ? "Save changes" : "Create goal";
   }
 }
 
@@ -3026,6 +3058,7 @@ function selectGoal(slug) {
   elements.goalPauseButton.disabled = goal.status === "paused";
   elements.goalPauseButton.textContent =
     goal.status === "paused" ? "Paused" : "Pause";
+  elements.goalEditButton.disabled = false;
   elements.goalActionError.classList.add("is-hidden");
   elements.goalDetailTitle.textContent = goal.title;
   elements.goalDetailOutcome.textContent = goal.outcome;
@@ -3504,7 +3537,7 @@ function openDuplicateTask() {
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
   elements.taskEditorMode.textContent = "Review a safe copy";
-  elements.taskEditorHeading.textContent = "Duplicate Task";
+  elements.taskEditorHeading.textContent = "Duplicate";
   elements.taskEditorSubmit.textContent = "Create Duplicate";
   elements.taskEditorSafety.textContent =
     "The copy starts Planned with no completion time, prior progress, evidence, or event receipts.";
@@ -3748,6 +3781,7 @@ elements.newGoalClose.addEventListener("click", () => {
   elements.newGoalDialog.close();
 });
 elements.newGoalForm.addEventListener("submit", submitNewGoal);
+elements.goalEditButton.addEventListener("click", openEditGoal);
 elements.goalPauseButton.addEventListener("click", () => {
   openGoalConfirmation("pause");
 });

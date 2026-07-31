@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.21",
+  "current_version": "V0.0.22",
   "releases": [
     {
       "version": "V0.0.1",
@@ -126,6 +126,12 @@
       "date": "2026-07-30",
       "title": "Weekly due-date view",
       "summary": "Added Week: a read-only Monday-to-Sunday view of Tony’s active tasks grouped by their canonical GBrain due date, with previous, next, and current-week controls plus clear empty days."
+    },
+    {
+      "version": "V0.0.22",
+      "date": "2026-07-31",
+      "title": "Editable goals and simpler duplication",
+      "summary": "Goal details now include Edit for verified canonical updates to goal fields while preserving relationships and lifecycle state. Task details now label the copy action simply Duplicate."
     }
   ]
 }

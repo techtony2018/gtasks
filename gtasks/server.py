@@ -1254,6 +1254,34 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             goal_prefix = "/api/goals/"
+            if path.startswith(goal_prefix) and "/" not in path[len(goal_prefix):]:
+                goal_slug = unquote(path[len(goal_prefix):])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {"title", "outcome", "success_criteria", "strategy", "review_cadence", "constraints", "target_day"}
+                if set(payload) != required or any(not isinstance(payload[field], str) for field in required):
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Goal edit requires all goal fields and a target date.", "code": "invalid_goal"})
+                    return
+                try:
+                    receipt = adapter.update_goal(
+                        goal_slug, title=payload["title"], outcome=payload["outcome"],
+                        success_criteria=payload["success_criteria"], strategy=payload["strategy"],
+                        review_cadence=payload["review_cadence"], constraints=payload["constraints"],
+                        target_day=date.fromisoformat(payload["target_day"]),
+                    )
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_goal"})
+                    return
+                except PartialMutationError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
+                    return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"goal": receipt.goal.to_dict(), "receipt": receipt.to_dict()})
+                return
             goal_status_suffix = "/status"
             if path.startswith(goal_prefix) and path.endswith(goal_status_suffix):
                 goal_slug = unquote(

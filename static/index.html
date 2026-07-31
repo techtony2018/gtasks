@@ -128,7 +128,7 @@
           <div class="detail-toolbar">
             <span class="detail-status" id="task-detail-status"></span>
             <button class="secondary-button" id="task-edit-button" type="button">Edit</button>
-            <button class="secondary-button" id="task-duplicate-button" type="button">Duplicate Task</button>
+            <button class="secondary-button" id="task-duplicate-button" type="button">Duplicate</button>
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
           <div class="task-owner is-hidden" id="task-owner">
@@ -177,6 +177,7 @@
             <button class="icon-button" id="goal-detail-close" type="button" aria-label="Close goal details">×</button>
           </div>
           <div class="goal-detail-actions">
+            <button class="secondary-button" id="goal-edit-button" type="button">Edit</button>
             <button class="secondary-button" id="goal-pause-button" type="button">
               Pause
             </button>
@@ -438,8 +439,8 @@
       <form method="dialog" class="quick-add-form" id="new-goal-form">
         <div class="dialog-heading">
           <div>
-            <p>New canonical goal</p>
-            <h2>Create a goal</h2>
+            <p id="goal-editor-mode">New canonical goal</p>
+            <h2 id="new-goal-heading">Create a goal</h2>
           </div>
           <button class="icon-button" id="new-goal-close" type="button" aria-label="Close New Goal">×</button>
         </div>

@@ -1596,6 +1596,61 @@ class GBrainAdapter:
             verified=True,
         )
 
+    def update_goal(self, goal_slug: str, *, title: str, outcome: str,
+                    success_criteria: str, strategy: str,
+                    review_cadence: str, constraints: str,
+                    target_day: date) -> GoalMutationReceipt:
+        """Update goal fields while preserving canonical type and relationships."""
+        page = self.runner.run("get_page", {"slug": goal_slug})
+        links = self.runner.run("get_links", {"slug": goal_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("goal edit snapshot was not structured")
+        goal = Goal.from_page(page, edges=links)
+        values = {
+            "title": title.strip(), "outcome": outcome.strip(),
+            "success_criteria": success_criteria.strip(), "strategy": strategy.strip(),
+            "review_cadence": review_cadence.strip(), "constraints": constraints.strip(),
+        }
+        if any(not value for value in values.values()):
+            raise DomainValidationError("all goal fields are required")
+        if len(values["title"]) > 160:
+            raise DomainValidationError("goal title must be 160 characters or fewer")
+        desired = replace(goal, **values, target_day=target_day)
+        original_frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
+        original_frontmatter["type"] = "goal"
+        original_content = _render_preserved_page(page, original_frontmatter)
+        desired_frontmatter = deepcopy(original_frontmatter)
+        desired_frontmatter.update({**values, "target_day": target_day.isoformat()})
+        write_succeeded = False
+        try:
+            self.runner.run("put_page", {"slug": goal_slug, "content": _render_preserved_page(page, desired_frontmatter)})
+            write_succeeded = True
+            stored_page = self.runner.run("get_page", {"slug": goal_slug})
+            stored_links = self.runner.run("get_links", {"slug": goal_slug})
+            if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+                raise GBrainProtocolError("goal edit readback was not structured")
+            stored_goal = Goal.from_page(stored_page, edges=stored_links)
+            if stored_page.get("type") != "goal" or stored_goal.to_dict() != desired.to_dict():
+                raise GBrainProtocolError("goal edit readback did not match the write")
+            for expected in links:
+                if isinstance(expected, Mapping) and not any(
+                    isinstance(actual, Mapping)
+                    and actual.get("from_slug") == expected.get("from_slug")
+                    and actual.get("to_slug") == expected.get("to_slug")
+                    and actual.get("link_type") == expected.get("link_type")
+                    for actual in stored_links
+                ):
+                    raise GBrainProtocolError("a goal relationship was missing after edit")
+        except (DomainValidationError, GBrainError) as exc:
+            if write_succeeded:
+                try:
+                    self.runner.run("put_page", {"slug": goal_slug, "content": original_content})
+                except GBrainError:
+                    pass
+                raise PartialMutationError(goal_slug, "Goal edit was not verified. Inspect the goal before retrying.") from exc
+            raise
+        return GoalMutationReceipt(goal_slug=goal_slug, goal=stored_goal, verified=True)
+
     def delete_goal(self, goal_slug: str) -> GoalDeletionReceipt:
         page = self.runner.run("get_page", {"slug": goal_slug})
         outgoing = self.runner.run("get_links", {"slug": goal_slug})

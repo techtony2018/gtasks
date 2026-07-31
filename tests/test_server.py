@@ -139,6 +139,12 @@ class FakeAdapter:
         self.paused_goals.append(goal_slug)
         return GoalMutationReceipt(goal_slug=goal_slug, goal=paused, verified=True)
 
+    def update_goal(self, goal_slug: str, **changes) -> GoalMutationReceipt:
+        goal = next(goal for goal in self.goals if goal.slug == goal_slug)
+        updated = replace(goal, **changes)
+        self.goals = tuple(updated if item.slug == goal_slug else item for item in self.goals)
+        return GoalMutationReceipt(goal_slug=goal_slug, goal=updated, verified=True)
+
     def delete_goal(self, goal_slug: str) -> GoalDeletionReceipt:
         self.goals = tuple(goal for goal in self.goals if goal.slug != goal_slug)
         self.deleted_goals.append(goal_slug)
@@ -511,7 +517,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.21")
+        self.assertEqual(payload["version"], "V0.0.22")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -519,11 +525,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.21")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.21")
+        self.assertEqual(payload["current_version"], "V0.0.22")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.22")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.22",
                 "V0.0.21",
                 "V0.0.20",
                 "V0.0.19",
@@ -1044,6 +1051,22 @@ class GoalRelationshipApiTests(unittest.TestCase):
 
 
 class GoalMutationApiTests(unittest.TestCase):
+    def test_edits_goal_with_verified_receipt(self) -> None:
+        goal = sample_goal()
+        harness = ServerHarness(self, FakeAdapter(goals=(goal,)))
+        payload = {
+            "title": "Ship the verified product",
+            "outcome": "The verified product is live.",
+            "success_criteria": "Ten users complete the workflow.",
+            "strategy": "Ship one slice.",
+            "review_cadence": "weekly",
+            "constraints": "Keep data local.",
+            "target_day": "2026-10-31",
+        }
+        status, response, _ = harness.request("PATCH", "/api/goals/goals%2Fship-product", payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(response["receipt"]["verified"])
+        self.assertEqual(response["goal"]["title"], payload["title"])
     def test_creates_goal_with_quarter_end_default_and_exact_user_fields(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
