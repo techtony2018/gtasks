@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.16",
+  "current_version": "V0.0.17",
   "releases": [
     {
       "version": "V0.0.1",
@@ -96,6 +96,12 @@
       "date": "2026-07-30",
       "title": "Safer agents and goal ownership",
       "summary": "Avatar upload now validates the exact selected Agent Directory slug and typed agent page before sending any image to Memory Stargraph. Validated local previews render immediately with an accessible file name and clear safely after cancellation, failure, or verified upload. Agent Profiles can assign or unassign default goals through the same verified GBrain relationship shown in Goal details."
+    },
+    {
+      "version": "V0.0.17",
+      "date": "2026-07-30",
+      "title": "Reliable agent avatar identity",
+      "summary": "Agent avatars now preserve each profile’s canonical Agent identity after Memory Stargraph attachment verification, so avatar changes cannot make Toddy, Timmy, or Tammy disappear from Agent Work."
     }
   ]
 }

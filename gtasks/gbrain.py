@@ -1138,6 +1138,11 @@ class GBrainAdapter:
             raise GBrainProtocolError("agent avatar snapshot was not structured")
         AgentProfile.from_page(page, work_root=work_root, edges=links)
         frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
+        # Memory Stargraph's attachment boundary may rewrite its page snapshot
+        # with the generic `concept` type.  Reassert the canonical agent
+        # identity in the follow-up page write so an avatar replacement cannot
+        # make the profile disappear from the Agent Directory.
+        frontmatter["type"] = "agent"
         frontmatter["avatar"] = {"kind": "attachment", "value": served_url}
         content = _render_preserved_page(page, frontmatter)
         self.runner.run("put_page", {"slug": agent_slug, "content": content})

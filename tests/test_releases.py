@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.16")
+        self.assertEqual(__version__, "V0.0.17")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -60,6 +60,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.14",
                 "V0.0.15",
                 "V0.0.16",
+                "V0.0.17",
             ],
         )
 
@@ -165,6 +166,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("exact selected Agent Directory slug", release["summary"])
         self.assertIn("local previews", release["summary"])
         self.assertIn("assign or unassign default goals", release["summary"])
+
+    def test_v0_0_17_records_avatar_identity_preservation(self) -> None:
+        release = RELEASES[16]
+
+        self.assertEqual(release["version"], "V0.0.17")
+        self.assertIn("canonical Agent identity", release["summary"])
+        self.assertIn("cannot make Toddy, Timmy, or Tammy disappear", release["summary"])
 
 
 if __name__ == "__main__":

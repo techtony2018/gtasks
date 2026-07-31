@@ -213,6 +213,40 @@ class AgentProfileReadTests(unittest.TestCase):
         self.assertIn(("get_page", {"slug": "agents/timmy"}), runner.calls)
         self.assertNotIn(("get_page", {"slug": "agents/Timmy"}), runner.calls)
 
+    def test_avatar_write_reasserts_agent_type_after_attachment_snapshot(self) -> None:
+        page = {
+            "slug": "agents/timmy",
+            "type": "agent",
+            "title": "Agent Timmy",
+            "compiled_truth": "# Agent Timmy",
+            "frontmatter": {"work_root": "collections/timmys-tasks"},
+        }
+        stored = deepcopy(page)
+        stored["frontmatter"] = {
+            "work_root": "collections/timmys-tasks",
+            "avatar": {"kind": "attachment", "value": "/media/agents/timmy/avatar.jpg"},
+        }
+        runner = FakeRunner(
+            {
+                "list_pages": [[page]],
+                "get_page": [page, page, stored],
+                "get_links": [[], [], []],
+                "put_page": [{"slug": "agents/timmy"}],
+            }
+        )
+
+        profile = GBrainAdapter(runner).set_agent_avatar(
+            "agents/timmy", "/media/agents/timmy/avatar.jpg"
+        )
+
+        self.assertEqual(profile.avatar_value, "/media/agents/timmy/avatar.jpg")
+        content = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"type": "agent"', content)
+
 
 class ProjectPersistenceTests(unittest.TestCase):
     def test_lists_only_typed_g_tasks_scope_members_without_tasks(self) -> None:
