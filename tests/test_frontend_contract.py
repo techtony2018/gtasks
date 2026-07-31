@@ -307,6 +307,10 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="agent-profile-dialog"', html)
+        self.assertIn('id="agent-avatar-section"', html)
+        self.assertIn('id="agent-current-avatar"', html)
+        self.assertIn('id="agent-current-avatar-image"', html)
+        self.assertIn('id="agent-current-avatar-filename"', html)
         self.assertIn('id="agent-avatar-file"', html)
         self.assertIn('id="agent-avatar-filename"', html)
         self.assertIn("PNG, JPEG, GIF, or WebP", html)
@@ -314,11 +318,48 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Memory Stargraph", javascript)
         self.assertIn("URL.createObjectURL", javascript)
         self.assertIn("clearAgentAvatarPreview", javascript)
+        self.assertIn("renderCurrentAgentAvatar(agent)", javascript)
         self.assertIn('id="agent-profile-goals"', html)
         self.assertIn('id="agent-goal-select"', html)
         self.assertIn('id="agent-goal-add"', html)
         self.assertIn("/default-goals", javascript)
         self.assertIn("saveAgentGoalAssignment", javascript)
+
+        avatar_section = html[
+            html.index('<section class="agent-avatar-editor"')
+            : html.index("</section>", html.index('<section class="agent-avatar-editor"'))
+        ]
+        self.assertIn('id="agent-avatar-submit"', avatar_section)
+        self.assertNotIn(
+            '<div class="dialog-footer"><p id="agent-avatar-state">',
+            html,
+        )
+
+    def test_agent_profile_renders_markdown_as_safe_profile_content(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('class="agent-profile-summary"', html)
+        self.assertIn("function renderAgentProfileSummary", javascript)
+        self.assertIn("renderAgentProfileSummary(agent)", javascript)
+        self.assertIn("document.createTextNode", javascript)
+        self.assertIn(r"line.match(/^(#{1,3})\s+(.+)$/)", javascript)
+        self.assertNotIn(
+            "elements.agentProfileSummary.textContent = agent.summary",
+            javascript,
+        )
+
+    def test_agent_work_navigation_is_named_agents(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        agent_nav = html[
+            html.index('<button class="nav-item" data-view="agent-work"')
+            : html.index("</button>", html.index('<button class="nav-item" data-view="agent-work"'))
+        ]
+        self.assertIn("<span>Agents</span>", agent_nav)
+        self.assertNotIn("<span>Agent Work</span>", agent_nav)
+        self.assertIn('"agent-work": {\n    title: "Agents"', javascript)
 
     def test_full_task_creation_is_the_only_visible_creation_flow(
         self,

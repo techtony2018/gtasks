@@ -59,7 +59,7 @@ const viewMeta = {
     title: "Board",
   },
   "agent-work": {
-    title: "Agent Work",
+    title: "Agents",
     emptyTitle: "No agent work yet",
     emptyCopy: "No active agent has typed work items in its canonical GBrain collection.",
   },
@@ -139,6 +139,10 @@ const elements = {
   agentGoalAdd: document.querySelector("#agent-goal-add"),
   agentGoalError: document.querySelector("#agent-goal-error"),
   agentAvatarForm: document.querySelector("#agent-avatar-form"),
+  agentCurrentAvatar: document.querySelector("#agent-current-avatar"),
+  agentCurrentAvatarImage: document.querySelector("#agent-current-avatar-image"),
+  agentCurrentAvatarInitials: document.querySelector("#agent-current-avatar-initials"),
+  agentCurrentAvatarFilename: document.querySelector("#agent-current-avatar-filename"),
   agentAvatarFile: document.querySelector("#agent-avatar-file"),
   agentAvatarPreview: document.querySelector("#agent-avatar-preview"),
   agentAvatarFilename: document.querySelector("#agent-avatar-filename"),
@@ -1256,9 +1260,10 @@ function renderBoard() {
 function openAgentProfile(agent) {
   state.profileAgentSlug = agent.slug;
   elements.agentProfileHeading.textContent = agent.name;
-  elements.agentProfileSummary.textContent = agent.summary || "No profile summary is available.";
+  renderAgentProfileSummary(agent);
   elements.agentAvatarForm.reset();
   clearAgentAvatarPreview();
+  renderCurrentAgentAvatar(agent);
   elements.agentAvatarError.classList.add("is-hidden");
   elements.agentGoalError.classList.add("is-hidden");
   renderAgentProfileGoals(agent);
@@ -1266,7 +1271,138 @@ function openAgentProfile(agent) {
     ? "A verified avatar is currently attached. Uploading a different image requires confirmation."
     : "Initials remain in use until a verified replacement succeeds.";
   elements.agentProfileDialog.showModal();
-  window.setTimeout(() => elements.agentAvatarFile.focus(), 0);
+  window.setTimeout(() => elements.agentProfileHeading.focus(), 0);
+}
+
+function appendAgentProfileInlineMarkdown(container, source) {
+  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) {
+      container.append(document.createTextNode(source.slice(cursor, match.index)));
+    }
+    const token = match[0];
+    if (token.startsWith("`")) {
+      container.append(node("code", "", token.slice(1, -1)));
+    } else if (token.startsWith("**")) {
+      container.append(node("strong", "", token.slice(2, -2)));
+    } else if (token.startsWith("*")) {
+      container.append(node("em", "", token.slice(1, -1)));
+    } else {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      const href = link?.[2] || "";
+      if (link && /^(https?:\/\/|http:\/\/127\.0\.0\.1:)/.test(href)) {
+        const anchor = node("a", "", link[1]);
+        anchor.href = href;
+        anchor.target = "_blank";
+        anchor.rel = "noreferrer";
+        container.append(anchor);
+      } else {
+        container.append(document.createTextNode(token));
+      }
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) {
+    container.append(document.createTextNode(source.slice(cursor)));
+  }
+}
+
+function renderAgentProfileSummary(agent) {
+  const source = agent.summary?.trim() || "";
+  if (!source) {
+    elements.agentProfileSummary.replaceChildren(
+      node("p", "agent-profile-empty", "No profile summary is available."),
+    );
+    return;
+  }
+  const lines = source.split(/\r?\n/);
+  const content = [];
+  let paragraph = [];
+  let list = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const element = node("p");
+    appendAgentProfileInlineMarkdown(element, paragraph.join(" "));
+    content.push(element);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    content.push(list);
+    list = null;
+  };
+  for (const line of lines) {
+    if (/^##\s+Attachments\s*$/i.test(line)) {
+      flushParagraph();
+      flushList();
+      break;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      if (
+        heading[1].length === 1 &&
+        heading[2].trim().toLowerCase() === `agent ${agent.name}`.toLowerCase()
+      ) {
+        continue;
+      }
+      const element = node(`h${Math.min(heading[1].length + 2, 4)}`);
+      appendAgentProfileInlineMarkdown(element, heading[2].trim());
+      content.push(element);
+      continue;
+    }
+    const listItem = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      if (!list) list = node(/^\s*\d+\./.test(line) ? "ol" : "ul");
+      const item = node("li");
+      appendAgentProfileInlineMarkdown(item, listItem[1]);
+      list.append(item);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  flushParagraph();
+  flushList();
+  elements.agentProfileSummary.replaceChildren(...content);
+}
+
+function renderCurrentAgentAvatar(agent) {
+  const avatar = agent.avatar || {};
+  const hasAttachment =
+    avatar.kind === "attachment" &&
+    typeof avatar.value === "string" &&
+    avatar.value.startsWith("/media/");
+  elements.agentCurrentAvatarImage.classList.toggle("is-hidden", !hasAttachment);
+  elements.agentCurrentAvatarInitials.classList.toggle("is-hidden", hasAttachment);
+  if (hasAttachment) {
+    elements.agentCurrentAvatarImage.src = `http://127.0.0.1:8788${avatar.value}`;
+    elements.agentCurrentAvatarImage.alt = `Current avatar for ${agent.name}`;
+    elements.agentCurrentAvatarInitials.textContent = "";
+    const encodedName = avatar.value.split("/").pop() || "avatar";
+    let filename = encodedName;
+    try {
+      filename = decodeURIComponent(encodedName);
+    } catch (_error) {
+      filename = encodedName;
+    }
+    elements.agentCurrentAvatarFilename.textContent = filename;
+  } else {
+    elements.agentCurrentAvatarImage.removeAttribute("src");
+    elements.agentCurrentAvatarImage.alt = "";
+    elements.agentCurrentAvatarInitials.textContent =
+      avatar.value || agent.name.slice(0, 2).toUpperCase();
+    elements.agentCurrentAvatarFilename.textContent =
+      "Using initials until an image is uploaded.";
+  }
 }
 
 function renderAgentProfileGoals(agent) {

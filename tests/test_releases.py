@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.19")
+        self.assertEqual(__version__, "V0.0.20")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -63,6 +63,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.17",
                 "V0.0.18",
                 "V0.0.19",
+                "V0.0.20",
             ],
         )
 
@@ -189,6 +190,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(release["version"], "V0.0.19")
         self.assertIn("Agent Work and Proposed Tasks", release["summary"])
         self.assertIn("previous view visible", release["summary"])
+
+    def test_v0_0_20_records_clear_agent_profiles(self) -> None:
+        release = RELEASES[19]
+
+        self.assertEqual(release["version"], "V0.0.20")
+        self.assertIn("current verified avatar", release["summary"])
+        self.assertIn("structured content", release["summary"])
+        self.assertIn("Agents navigation label", release["summary"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.19",
+  "current_version": "V0.0.20",
   "releases": [
     {
       "version": "V0.0.1",
@@ -114,6 +114,12 @@
       "date": "2026-07-30",
       "title": "Reliable Agent Work rendering",
       "summary": "Fixed Agent Work and Proposed Tasks to use the shared owner/avatar renderer, preventing a JavaScript exception that left the previous view visible after navigation; added regression coverage for both agent surfaces."
+    },
+    {
+      "version": "V0.0.20",
+      "date": "2026-07-30",
+      "title": "Clear agent profiles",
+      "summary": "Agents now show their current verified avatar with a focused replacement control, render canonical profile Markdown as readable structured content without duplicating the attachment block, and use the simpler Agents navigation label."
     }
   ]
 }
