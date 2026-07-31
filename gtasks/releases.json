@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.31",
+  "current_version": "V0.0.32",
   "releases": [
     {
       "version": "V0.0.1",
@@ -186,6 +186,12 @@
       "date": "2026-07-31",
       "title": "Compact Calendar Week cards",
       "summary": "Calendar Week cards now use compact, readable task typography that wraps safely inside each day at narrow desktop widths and on mobile, without changing Month view."
+    },
+    {
+      "version": "V0.0.32",
+      "date": "2026-07-31",
+      "title": "Readable narrow Calendar Week",
+      "summary": "Week cards now retain compact Goal metadata and use a horizontally scrollable row of equal-width days when an open detail panel would otherwise make desktop cards unreadable."
     }
   ]
 }

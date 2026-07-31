@@ -1349,6 +1349,17 @@ kbd {
   line-height: 1.3;
 }
 
+.week-task-list .task-goal {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
 .week-task-list .task-state-dot { width: 7px; height: 7px; margin-top: 3px; }
 
 @container (max-width: 105px) {
@@ -1356,6 +1367,16 @@ kbd {
   .week-day-heading { gap: 3px; padding-bottom: 6px; }
   .week-task-list .task-row-open { padding: 3px; }
   .week-task-list .task-title { font-size: 9px; line-height: 1.3; }
+}
+
+/* With both navigation and detail panels visible, protect readable Calendar
+   cards by scrolling equal-width days instead of compressing text to slivers. */
+@media (max-width: 1300px) {
+  .app-shell:has(.detail-panel[aria-hidden="false"]) .week-grid {
+    grid-template-columns: repeat(7, minmax(135px, 1fr));
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
 }
 
 .week-task-list .task-next,
@@ -3070,6 +3091,11 @@ kbd {
     grid-auto-columns: minmax(230px, 78vw);
     grid-auto-flow: column;
     scroll-snap-type: x proximity;
+  }
+
+  .app-shell:has(.detail-panel[aria-hidden="false"]) .week-grid {
+    grid-template-columns: none;
+    grid-auto-columns: minmax(230px, 78vw);
   }
 
   .week-day {

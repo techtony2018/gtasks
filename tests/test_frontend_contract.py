@@ -300,6 +300,11 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("@container (max-width: 105px)", css)
         self.assertIn(".week-task-list .task-title {", css)
         self.assertIn(".week-task-list .task-project {", css)
+        self.assertIn(".week-task-list .task-goal {", css)
+        self.assertIn("repeat(7, minmax(135px, 1fr))", css)
+        self.assertIn("grid-auto-columns: minmax(230px, 78vw)", css)
+        self.assertIn("calendarWeek: true", javascript)
+        self.assertIn("Goal: ${goal?.title || task.goal}", javascript)
         self.assertIn("font-size: 10px", css)
 
     def test_agent_cards_have_one_direct_profile_control_and_structured_current_work(self) -> None:

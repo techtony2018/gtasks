@@ -817,7 +817,7 @@ function renderNavigation() {
   });
 }
 
-function taskRow(task, { todayActions = false } = {}) {
+function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
   row.classList.toggle("is-selected", state.selectedSlug === task.slug);
@@ -834,6 +834,12 @@ function taskRow(task, { todayActions = false } = {}) {
     node("span", "task-title", task.title || task.summary),
     node("span", "task-project", task.project || (task.inbox ? "Inbox · No project" : "No project")),
   );
+  if (calendarWeek && task.goal) {
+    const goal = state.snapshot?.goals.find((item) => item.slug === task.goal);
+    titleText.append(
+      node("span", "task-goal", `Goal: ${goal?.title || task.goal}`),
+    );
+  }
   titleWrap.append(dot, titleText);
 
   const nextAction = node(
@@ -1121,7 +1127,7 @@ function renderWeekView() {
     } else {
       const list = node("div", "week-task-list");
       list.setAttribute("role", "list");
-      due.forEach((task) => list.append(taskRow(task)));
+      due.forEach((task) => list.append(taskRow(task, { calendarWeek: true })));
       column.append(list);
     }
     grid.append(column);
