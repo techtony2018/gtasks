@@ -499,8 +499,13 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('/assets/mission-control-word-art.png', html)
         self.assertIn('class="mission-word-art"', html)
         self.assertIn('--canvas: #020816', css)
+        self.assertIn('color-scheme: dark', css)
         self.assertIn('/* Memory Stargraph family dark theme. */', css)
         self.assertIn('grid-template-columns: 92px minmax(520px, 1fr) 0', css)
+        mobile = css[css.rindex("@media (max-width: 760px)") :]
+        self.assertIn("min-width: 44px", mobile)
+        self.assertIn("min-height: 44px", mobile)
+        self.assertIn("font-size: 14px", mobile)
 
     def test_navigation_has_no_counts_and_pages_show_in_context_counts(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

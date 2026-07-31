@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.52",
+  "current_version": "V0.0.53",
   "releases": [
     {
       "version": "V0.0.1",
@@ -312,6 +312,12 @@
       "date": "2026-07-31",
       "title": "Reliable agent work on Board",
       "summary": "Board now preserves the Show agent tasks preference and reliably loads eligible agent work whenever you return or refresh."
+    },
+    {
+      "version": "V0.0.53",
+      "date": "2026-07-31",
+      "title": "Accessible North Star command center",
+      "summary": "Mission Control's dark North Star HUD now gives every visible mobile action a full 44-pixel touch target while preserving the compact desktop rail and centered celestial artwork."
     }
   ]
 }

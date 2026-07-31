@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --canvas: #020816;
   --panel: #07111f;
   --surface: #0b172a;
@@ -4442,9 +4443,37 @@ button:active {
     text-align: left;
   }
 
+  .create-task-button,
+  .refresh-button,
+  .row-action-button,
+  .action-icon-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .nav-item,
+  .about-button,
+  .goals-link-button {
+    min-height: 44px;
+  }
+
+  .goals-link-button {
+    padding-inline: 8px;
+  }
+
   .sync-label,
   .auto-refresh-label {
     overflow-wrap: anywhere;
+  }
+
+  .sync-label {
+    font-size: 11px;
+  }
+
+  .auto-refresh-label {
+    font-size: 10px;
   }
 
   .view-surface {
@@ -4457,11 +4486,26 @@ button:active {
     gap: 6px;
   }
 
+  .task-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding-block: 8px;
+  }
+
   .task-title {
     display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    font-size: 14px;
+    line-height: 1.3;
+  }
+
+  .task-project,
+  .due-badge,
+  .priority-badge,
+  .metric-progress {
+    font-size: 12px;
   }
 
   .task-title-wrap,
@@ -4470,10 +4514,11 @@ button:active {
   }
 
   .task-title-wrap {
-    overflow: hidden;
+    overflow: visible;
   }
 
   .task-row-actions {
+    justify-self: end;
     gap: 3px;
   }
 }
