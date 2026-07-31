@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.40",
+  "current_version": "V0.0.41",
   "releases": [
     {
       "version": "V0.0.1",
@@ -240,6 +240,12 @@
       "date": "2026-07-31",
       "title": "System Ticket compatibility",
       "summary": "Existing Mission Control System Tickets now remain visible when their original request is stored in the canonical task detail field, without rewriting the ticket."
+    },
+    {
+      "version": "V0.0.41",
+      "date": "2026-07-31",
+      "title": "Reliable System Ticket visibility",
+      "summary": "System Tickets now retry their canonical read after the initial task sync and clearly show any malformed ticket data with a safe inspection path instead of a silent empty state."
     }
   ]
 }

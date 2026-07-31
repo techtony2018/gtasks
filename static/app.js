@@ -56,8 +56,10 @@ const state = {
   icalRange: "",
   icalLoading: false,
   systemTickets: [],
+  systemTicketIssues: [],
   systemTicketsLoading: false,
   systemTicketsError: "",
+  systemTicketsLoadPromise: null,
   boardMove: null,
   loading: true,
   releases: null,
@@ -3146,7 +3148,25 @@ function renderSystemTicketsView() {
   heading.append(copy, create); section.append(heading);
   if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }
   if (state.systemTicketsError) { section.append(node("div", "section-empty", state.systemTicketsError)); return section; }
-  if (!state.systemTickets.length) { section.append(node("div", "section-empty", "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
+  if (state.systemTicketIssues.length) {
+    const issues = node("section", "needs-attention system-ticket-issues");
+    issues.append(node("h3", "", "Ticket data needs attention"), node("p", "attention-intro", "These tickets remain separate from Tony and agent work. Inspect the canonical page before any repair; Mission Control will not rewrite it automatically."));
+    const issueList = node("div", "attention-list");
+    state.systemTicketIssues.forEach((issue) => {
+      const item = node("article", "attention-item");
+      item.append(node("strong", "", issue.slug || "Unknown System Ticket"), node("p", "", issue.message || "This System Ticket has invalid canonical data."), node("p", "", issue.impact || "Nightly dispatch is blocked until the ticket is repaired."));
+      if (issue.slug) {
+        const inspect = node("a", "detail-link", "Inspect in Memory Stargraph");
+        inspect.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(issue.slug)}`;
+        inspect.target = "_blank";
+        inspect.rel = "noreferrer";
+        item.append(inspect);
+      }
+      issueList.append(item);
+    });
+    issues.append(issueList); section.append(issues);
+  }
+  if (!state.systemTickets.length) { section.append(node("div", "section-empty", state.systemTicketIssues.length ? "No valid System Tickets are ready to display until the ticket data above is repaired." : "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
   const list = node("div", "task-list");
   state.systemTickets.forEach((ticket) => {
     const card = node("article", "task-row");
@@ -3168,9 +3188,17 @@ function openSystemTicketDialog() {
   window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
 }
 
-async function loadSystemTickets() {
+function loadSystemTickets({ force = false } = {}) {
+  if (state.systemTicketsLoadPromise && !force) return state.systemTicketsLoadPromise;
+  state.systemTicketsLoadPromise = performSystemTicketLoad().finally(() => {
+    state.systemTicketsLoadPromise = null;
+  });
+  return state.systemTicketsLoadPromise;
+}
+
+async function performSystemTicketLoad() {
   state.systemTicketsLoading = true;
-  try { const response = await fetch("/api/system-tickets", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketsError = ""; }
+  try { const response = await fetch("/api/system-tickets", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : []; state.systemTicketsError = ""; }
   catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
   finally { state.systemTicketsLoading = false; elements.systemTicketsCount.textContent = String(state.systemTickets.length); if (state.activeView === "system-tickets") render(); }
 }
@@ -4249,7 +4277,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 loadReleases();
-loadTasks({ reason: "initial" });
+loadTasks({ reason: "initial" }).finally(() => loadSystemTickets({ force: true }));
 loadProjects();
 loadAgents();
 loadProposals();

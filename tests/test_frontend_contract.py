@@ -429,6 +429,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function renderSystemTicketsView()", javascript)
         self.assertIn('fetch("/api/system-tickets"', javascript)
         self.assertIn("Nightly work selects only Planned tickets", javascript)
+        self.assertIn("state.systemTicketIssues", javascript)
+        self.assertIn("state.systemTicketsLoadPromise", javascript)
+        self.assertIn("loadSystemTickets({ force: true })", javascript)
+        self.assertIn("Ticket data needs attention", javascript)
+        self.assertIn("Inspect in Memory Stargraph", javascript)
+        self.assertIn("No valid System Tickets are ready to display", javascript)
         self.assertNotIn('value="proposed"', html[html.index('id="system-ticket-dialog"'):html.index('id="task-editor-dialog"')])
 
     def test_week_view_groups_canonical_due_dates_without_a_write_path(self) -> None:
