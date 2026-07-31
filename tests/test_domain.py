@@ -631,6 +631,23 @@ class GoalTests(unittest.TestCase):
         self.assertEqual(goal.review_cadence, "weekly")
         self.assertEqual(goal.advanced_by, ("tasks/apply-to-company",))
 
+    def test_parses_compiled_goal_when_raw_storage_type_is_concept(self) -> None:
+        page = {
+            "slug": "goals/renamed-stable-goal",
+            "type": "concept",
+            "title": "Career: New presentation label",
+            "frontmatter": {
+                "type": "goal", "collection": GOALS_ROOT, "status": "active",
+                "outcome": "Outcome.", "success_criteria": "Criteria.",
+                "target_day": "2026-09-30", "strategy": "Strategy.",
+                "review_cadence": "weekly", "constraints": "Constraints.",
+            },
+        }
+        goal = Goal.from_page(page, edges=[{"from_slug": page["slug"], "to_slug": "tasks/stable-task", "link_type": "advanced_by"}])
+        self.assertEqual(goal.slug, "goals/renamed-stable-goal")
+        self.assertEqual(goal.title, "Career: New presentation label")
+        self.assertEqual(goal.advanced_by, ("tasks/stable-task",))
+
     def test_rejects_goal_outside_tonys_goals_collection(self) -> None:
         with self.assertRaisesRegex(DomainValidationError, "collection"):
             Goal.from_page(

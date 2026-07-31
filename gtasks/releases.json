@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.37",
+  "current_version": "V0.0.38",
   "releases": [
     {
       "version": "V0.0.1",
@@ -222,6 +222,12 @@
       "date": "2026-07-31",
       "title": "Contained mobile Calendar scrolling",
       "summary": "Calendar Week now keeps its horizontal day strip inside the mobile Calendar area, so reaching later days never slides the Mission Control page or navigation sideways."
+    },
+    {
+      "version": "V0.0.38",
+      "date": "2026-07-31",
+      "title": "Reliable canonical Goal reading",
+      "summary": "Goals now read their validated compiled Markdown contract when GBrain exposes a generic raw storage type, preserving renamed display labels, linked task navigation, and progress without false data warnings."
     }
   ]
 }

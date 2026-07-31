@@ -76,9 +76,9 @@ class SystemTicket:
             raise DomainValidationError("system ticket slug must start with tasks/")
         if page.get("type") != "task":
             raise DomainValidationError(f"{slug} is not a task page")
-        frontmatter = page.get("frontmatter")
-        if not isinstance(frontmatter, Mapping):
-            raise DomainValidationError(f"{slug} has no frontmatter")
+        frontmatter = _compiled_frontmatter(page)
+        if not frontmatter:
+            raise DomainValidationError(f"{slug} has no canonical frontmatter")
         links = _links_from(frontmatter)
         typed_member = any(link["to"] == SYSTEM_TICKETS_ROOT and link["type"] == "member_of" for link in links) or any(
             isinstance(edge, Mapping) and edge.get("from_slug") == slug and edge.get("to_slug") == SYSTEM_TICKETS_ROOT and edge.get("link_type") == "member_of" for edge in edges)
@@ -435,6 +435,29 @@ def _links_from(frontmatter: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
     return tuple(links)
 
 
+def _compiled_frontmatter(page: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Parse the small scalar Goal contract when GBrain returns raw Markdown."""
+    supplied = page.get("frontmatter")
+    if isinstance(supplied, Mapping) and supplied:
+        return supplied
+    body = page.get("compiled_truth")
+    if not isinstance(body, str) or not body.startswith("---\n"):
+        return supplied if isinstance(supplied, Mapping) else {}
+    end = body.find("\n---", 4)
+    if end < 0:
+        return {}
+    parsed: dict[str, str] = {}
+    for line in body[4:end].splitlines():
+        if not line or line.startswith((" ", "\t")) or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip()
+        if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
+            value = value[1:-1]
+        parsed[key.strip()] = value
+    return parsed
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressMetric:
     kind: str
@@ -639,9 +662,9 @@ class Task:
         if page.get("type") != "task":
             raise DomainValidationError(f"{slug} is not a task page")
 
-        frontmatter = page.get("frontmatter")
-        if not isinstance(frontmatter, Mapping):
-            raise DomainValidationError(f"{slug} has no frontmatter")
+        frontmatter = _compiled_frontmatter(page)
+        if not frontmatter:
+            raise DomainValidationError(f"{slug} has no canonical frontmatter")
 
         if "detail" not in frontmatter:
             raise DomainValidationError("detail is required")
@@ -767,7 +790,7 @@ class Task:
         if not isinstance(next_action, str):
             raise DomainValidationError("next_action must be text")
 
-        title = page.get("title")
+        title = frontmatter.get("title") or page.get("title")
         if not isinstance(title, str) or not title.strip():
             title = summary
 
@@ -1074,11 +1097,15 @@ class Goal:
         slug = page.get("slug")
         if not isinstance(slug, str) or not slug.startswith("goals/"):
             raise DomainValidationError("goal slug must start with goals/")
-        if page.get("type") != "goal":
-            raise DomainValidationError(f"{slug} is not a goal page")
-        frontmatter = page.get("frontmatter")
-        if not isinstance(frontmatter, Mapping):
-            raise DomainValidationError(f"{slug} has no frontmatter")
+        frontmatter = _compiled_frontmatter(page)
+        if not frontmatter:
+            raise DomainValidationError(f"{slug} has no canonical frontmatter")
+        # GBrain's raw row can retain the generic concept type even when the
+        # compiled canonical Markdown contract is a validated Goal. Goal
+        # identity therefore comes from its slug + frontmatter contract, not
+        # from the raw storage row alone.
+        if frontmatter.get("type") != "goal" and page.get("type") != "goal":
+            raise DomainValidationError(f"{slug} is not a canonical goal page")
         if frontmatter.get("collection") != GOALS_ROOT:
             raise DomainValidationError(
                 f"goal collection must be {GOALS_ROOT}"
@@ -1105,7 +1132,7 @@ class Goal:
         if target_day is None:
             raise DomainValidationError("goal target_day is required")
 
-        title = page.get("title")
+        title = frontmatter.get("title") or page.get("title")
         if not isinstance(title, str) or not title.strip():
             title = required_text["outcome"].rstrip(".")
         advanced_by = tuple(
