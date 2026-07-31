@@ -295,6 +295,17 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("document.cookie = `${AGENT_TASKS_PREFERENCE_COOKIE}", javascript)
         self.assertIn('task.status !== "proposed"', javascript)
 
+    def test_board_keeps_tony_work_visible_when_agent_profiles_are_unavailable(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function agentWorkUnavailableMessage()", javascript)
+        self.assertIn('issue.slug.startsWith("agents/")', javascript)
+        self.assertIn("Agent work could not be read from GBrain. Tony’s Board is unchanged", javascript)
+        render_board = javascript[
+            javascript.index("function renderBoard()") : javascript.index("function openAgentProfile")
+        ]
+        self.assertLess(render_board.index(": unavailable"), render_board.index(": state.agentTasks.length"))
+
     def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         agent_work = javascript[

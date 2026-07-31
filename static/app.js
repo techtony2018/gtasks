@@ -1637,9 +1637,23 @@ function updateBoardStatus() {
   elements.boardStatusRetry.classList.remove("is-hidden");
 }
 
+function agentWorkUnavailableMessage() {
+  const unavailableProfile = state.agentIssues.find(
+    (issue) =>
+      issue?.task_visible === false &&
+      issue?.category === "core_data" &&
+      typeof issue.slug === "string" &&
+      issue.slug.startsWith("agents/"),
+  );
+  return unavailableProfile
+    ? "Agent work could not be read from GBrain. Tony’s Board is unchanged; use Refresh after GBrain recovers."
+    : "";
+}
+
 function renderBoard() {
   const wrapper = node("section", "agent-board-wrapper");
   if (state.showAgentTasks) {
+    const unavailable = agentWorkUnavailableMessage();
     wrapper.append(
       node(
         "p",
@@ -1648,6 +1662,8 @@ function renderBoard() {
           ? "Reading typed agent task collections…"
           : state.agentWorkError
             ? `Agent work is unavailable: ${state.agentWorkError}`
+            : unavailable
+              ? unavailable
             : state.agentTasks.length
               ? "Agent work is visible with an owner badge and remains distinct from Tony’s personal tasks."
               : "No typed agent work exists yet. Tony’s Board is unchanged.",

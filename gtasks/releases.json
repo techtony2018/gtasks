@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.55",
+  "current_version": "V0.0.56",
   "releases": [
     {
       "version": "V0.0.1",
@@ -330,6 +330,12 @@
       "date": "2026-07-31",
       "title": "Reliable dark command center startup",
       "summary": "Mission Control now initializes the persisted Board preference before the interface starts, so the North Star dark HUD renders reliably on every load."
+    },
+    {
+      "version": "V0.0.56",
+      "date": "2026-07-31",
+      "title": "Reliable agent work recovery",
+      "summary": "Board now keeps Tony’s work visible and explains when GBrain cannot read agent work, while preserving the selected agent-task filter across refreshes."
     }
   ]
 }
