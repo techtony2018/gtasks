@@ -478,7 +478,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.14")
+        self.assertEqual(payload["version"], "V0.0.15")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -486,11 +486,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.14")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.14")
+        self.assertEqual(payload["current_version"], "V0.0.15")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.15")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.15",
                 "V0.0.14",
                 "V0.0.13",
                 "V0.0.12",
@@ -714,10 +715,8 @@ class TasksApiTests(unittest.TestCase):
             [task["slug"] for task in payload["today"]["todays_actions"]],
             [today_task.slug],
         )
-        self.assertEqual(
-            [task["slug"] for task in payload["views"]["upcoming"]],
-            [future_task.slug],
-        )
+        self.assertNotIn("upcoming", payload["views"])
+        self.assertIn(future_task.slug, [task["slug"] for task in payload["tasks"]])
 
     def test_snapshot_preserves_visible_relationship_warnings(self) -> None:
         task = new_inbox_task(
@@ -862,10 +861,7 @@ class TasksApiTests(unittest.TestCase):
             [item["slug"] for item in payload["today"]["todays_actions"]],
             [task.slug],
         )
-        self.assertEqual(
-            [item["slug"] for item in payload["views"]["upcoming"]],
-            [upcoming.slug],
-        )
+        self.assertNotIn("upcoming", payload["views"])
         self.assertEqual(
             [item["slug"] for item in payload["tasks"]],
             [task.slug, upcoming.slug],
@@ -1094,7 +1090,18 @@ class FullTaskCreationApiTests(unittest.TestCase):
             ("agents/tammy", "collections/tammys-tasks"),
         ):
             with self.subTest(agent=agent_slug):
-                adapter = FakeAdapter()
+                adapter = FakeAdapter(
+                    agents=(
+                        AgentProfile(
+                            slug=agent_slug,
+                            name=agent_slug.split("/")[-1].title(),
+                            title=agent_slug.split("/")[-1].title(),
+                            summary="",
+                            work_root=work_root,
+                            default_goal_slugs=(),
+                        ),
+                    )
+                )
                 harness = ServerHarness(self, adapter)
 
                 status, payload, _ = harness.request(

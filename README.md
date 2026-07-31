@@ -280,7 +280,6 @@ configuration, or relationship repair mutates GBrain.
 - Today: In Progress (maximum three), Today's Actions, Blocked, Overdue
 - Board: Planned, In Progress, Blocked, Completed, Cancelled
 - Inbox
-- Upcoming
 - Blocked
 - Projects
 - Goals

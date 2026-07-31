@@ -100,11 +100,13 @@ class AgentProfile:
         if isinstance(avatar, Mapping):
             candidate_kind = avatar.get("kind")
             candidate_value = avatar.get("value")
-            if candidate_kind in {"initials", "identicon"} and isinstance(
+            if candidate_kind in {"initials", "identicon", "attachment"} and isinstance(
                 candidate_value, str
             ) and candidate_value.strip():
-                avatar_kind = candidate_kind
-                avatar_value = candidate_value.strip()[:32]
+                normalized_value = candidate_value.strip()
+                if candidate_kind != "attachment" or normalized_value.startswith("/media/"):
+                    avatar_kind = candidate_kind
+                    avatar_value = normalized_value[:512]
         goals = tuple(
             dict.fromkeys(
                 str(edge["to_slug"])

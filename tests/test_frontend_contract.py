@@ -159,7 +159,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("URLSearchParams", javascript)
         self.assertIn("state.logsNextCursor", javascript)
         self.assertIn("renderQueueReaderStatus", javascript)
-        self.assertIn("GTasks remains available", javascript)
+        self.assertIn("Mission Control remains available", javascript)
         self.assertIn(
             'event.key === "Escape" && elements.logsDialog.open',
             javascript,
@@ -172,9 +172,11 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn('id="task-next-action-value"', html)
         self.assertIn('id="task-edit-button"', html)
+        self.assertIn('id="task-duplicate-button"', html)
         self.assertIn('id="task-editor-next-action"', html)
         self.assertNotIn('id="task-next-action-save"', html)
         self.assertIn("function openEditTask", javascript)
+        self.assertIn("elements.taskDuplicateButton.addEventListener", javascript)
         self.assertIn('method: state.taskEditorMode === "edit" ? "PATCH" : "POST"', javascript)
 
     def test_full_create_and_duplicate_offer_optional_progress_metrics(self) -> None:
@@ -201,10 +203,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Current progress starts at 0", html)
         self.assertIn("function openCreateTask", javascript)
         self.assertIn("function openDuplicateTask", javascript)
+        self.assertIn('task-duplicate-button', html)
+        self.assertIn("todayActions: true", javascript)
+        self.assertIn("row-action-button", javascript)
+        self.assertIn("openDuplicateTask();", javascript)
         self.assertIn("function updateTaskMetricPreview", javascript)
         self.assertIn('"/api/tasks"', javascript)
         self.assertIn("/duplicate`", javascript)
         self.assertIn('elements.taskMetricCurrent.value = "0"', javascript)
+        self.assertIn("updateTaskMetricPreview();", javascript)
+        self.assertIn('populateTaskEditorAssignees(task.owner_agent || "tony")', javascript)
         self.assertIn("event_binding", javascript)
         self.assertIn("Job applications", javascript)
 
@@ -265,7 +273,27 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="goal-default-agent-name"', html)
         self.assertIn('id="goal-default-agent-link"', html)
         self.assertIn("default_goal_slugs", javascript)
-        self.assertIn("Open agent profile", javascript)
+        self.assertIn("Open Agent Profile", javascript)
+
+    def test_sidebar_is_text_first_and_does_not_offer_upcoming(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertNotIn('data-view="upcoming"', html)
+        self.assertNotIn("Upcoming", html)
+        self.assertNotIn("upcoming:", javascript)
+        self.assertNotIn("nav-glyph", html)
+        self.assertNotIn("brand-mark", html)
+
+    def test_agent_avatar_profile_uses_only_the_local_stargraph_boundary(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="agent-profile-dialog"', html)
+        self.assertIn('id="agent-avatar-file"', html)
+        self.assertIn("PNG, JPEG, GIF, or WebP", html)
+        self.assertIn("/api/agents/${encodeURIComponent(agent.slug)}/avatar", javascript)
+        self.assertIn("Memory Stargraph", javascript)
 
     def test_full_task_creation_is_the_only_visible_creation_flow(
         self,
@@ -275,9 +303,8 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn('id="task-editor-assignee"', html)
         self.assertIn('value="tony">Tony — personal task', html)
-        self.assertIn('value="agents/toddy"', html)
-        self.assertIn('value="agents/timmy"', html)
-        self.assertIn('value="agents/tammy"', html)
+        self.assertIn("function populateTaskEditorAssignees", javascript)
+        self.assertIn("state.agents.forEach", javascript)
         self.assertIn("creates one authorized, queued agent work item", html)
         self.assertIn("assignee_slug", javascript)
         self.assertIn("savedTask.owner_agent", javascript)

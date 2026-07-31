@@ -1078,6 +1078,8 @@ class InboxMutationTests(unittest.TestCase):
                 self.links: set[tuple[str, str, str]] = set()
 
             def run(self, tool: str, params: dict) -> object:
+                if tool == "list_pages":
+                    return [agent_page]
                 if tool == "put_page":
                     return {"slug": task.slug}
                 if tool == "get_page":

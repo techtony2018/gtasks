@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +16,8 @@ from threading import Condition
 from time import monotonic
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
+from urllib.request import Request, urlopen
 
 from . import __version__
 from .domain import (
@@ -50,6 +52,8 @@ from .warnings import WarningDismissalStore
 
 
 MAX_REQUEST_BYTES = 16 * 1024
+MAX_AVATAR_BYTES = 5 * 1024 * 1024
+ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
 
@@ -198,13 +202,6 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
                 for task in active
                 if task.inbox and task.status not in {"completed", "cancelled"}
             ],
-            "upcoming": [
-                task.to_dict()
-                for task in active
-                if task.due_day
-                and task.due_day > today
-                and task.status not in {"completed", "cancelled"}
-            ],
             "blocked": [
                 task.to_dict()
                 for task in active
@@ -229,6 +226,7 @@ def _handler_class(
     static_dir: Path,
     warning_store: WarningDismissalStore,
     log_reader: OperationalLogReader,
+    stargraph_url: str,
 ) -> type[BaseHTTPRequestHandler]:
     snapshot_condition = Condition()
     snapshot_payload: dict[str, Any] | None = None
@@ -299,7 +297,7 @@ def _handler_class(
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; style-src 'self'; "
-                "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+                "img-src 'self' data: http://127.0.0.1:8788; connect-src 'self'; frame-ancestors 'none'",
             )
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
@@ -358,6 +356,72 @@ def _handler_class(
                 )
                 return None
             return payload
+
+        def _read_avatar_upload(self) -> tuple[str, bytes, str] | None:
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.startswith("multipart/form-data;") or "boundary=" not in content_type:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Avatar upload must be a multipart image file."})
+                return None
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid upload length."})
+                return None
+            if length <= 0 or length > MAX_AVATAR_BYTES + 8192:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "Avatar images must be 5 MB or smaller."})
+                return None
+            boundary = content_type.split("boundary=", 1)[1].strip().strip('"').encode()
+            body = self.rfile.read(length)
+            marker = b"--" + boundary
+            for part in body.split(marker):
+                if b'name="file"' not in part:
+                    continue
+                try:
+                    header, file_bytes = part.split(b"\r\n\r\n", 1)
+                except ValueError:
+                    continue
+                file_bytes = file_bytes.rsplit(b"\r\n", 1)[0]
+                match = re.search(br'filename="([^"\r\n]+)"', header)
+                mime_match = re.search(br'Content-Type:\s*([^\r\n;]+)', header, re.I)
+                filename = (match.group(1).decode("utf-8", "replace") if match else "avatar")
+                mime = (mime_match.group(1).decode("ascii", "replace").lower() if mime_match else "")
+                if mime not in ALLOWED_AVATAR_TYPES or not file_bytes or len(file_bytes) > MAX_AVATAR_BYTES:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Choose a PNG, JPEG, GIF, or WebP avatar up to 5 MB."})
+                    return None
+                magic = (
+                    (mime == "image/jpeg" and file_bytes.startswith(b"\xff\xd8\xff"))
+                    or (mime == "image/png" and file_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+                    or (mime == "image/gif" and file_bytes.startswith((b"GIF87a", b"GIF89a")))
+                    or (mime == "image/webp" and file_bytes.startswith(b"RIFF") and file_bytes[8:12] == b"WEBP")
+                )
+                if not magic:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "The selected file does not match its image type."})
+                    return None
+                return filename, file_bytes, mime
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "Choose an avatar image file."})
+            return None
+
+        def _attach_avatar(self, agent_slug: str, filename: str, data: bytes, mime: str) -> dict[str, Any]:
+            boundary = f"gtasks-{uuid.uuid4().hex}"
+            payload = b"".join((
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="file"; filename="{filename.replace(chr(34), "")}"\r\n'.encode(),
+                f"Content-Type: {mime}\r\n\r\n".encode(), data, b"\r\n",
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"description\"\r\n\r\nGTasks agent avatar\r\n".encode(),
+                f"--{boundary}--\r\n".encode(),
+            ))
+            endpoint = f"{stargraph_url}/api/entity-attach-file/{quote(agent_slug, safe='')}"
+            request = Request(endpoint, data=payload, method="POST", headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Accept": "application/json"})
+            try:
+                with urlopen(request, timeout=30) as response:
+                    result = json.loads(response.read())
+            except Exception as exc:
+                raise GBrainError("Memory Stargraph avatar storage is unavailable") from exc
+            local_media = result.get("local_media") if isinstance(result, dict) else None
+            served_url = local_media.get("served_url") if isinstance(local_media, dict) else None
+            if not result.get("ok") or not isinstance(served_url, str) or not served_url.startswith("/media/"):
+                raise GBrainError("Memory Stargraph did not return durable avatar evidence")
+            return result
 
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
@@ -531,6 +595,28 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            avatar_prefix = "/api/agents/"
+            avatar_suffix = "/avatar"
+            if path.startswith(avatar_prefix) and path.endswith(avatar_suffix):
+                agent_slug = unquote(path[len(avatar_prefix) : -len(avatar_suffix)])
+                if agent_slug not in {
+                    agent.slug for agent in adapter.list_agent_profiles().agents
+                }:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "Active GTasks agent was not found."})
+                    return
+                upload = self._read_avatar_upload()
+                if upload is None:
+                    return
+                filename, data, mime = upload
+                try:
+                    attachment = self._attach_avatar(agent_slug, filename, data, mime)
+                    local_media = attachment["local_media"]
+                    agent = adapter.set_agent_avatar(agent_slug, local_media["served_url"])
+                except (ValueError, GBrainError) as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "avatar_upload_unavailable"})
+                    return
+                self._json(HTTPStatus.OK, {"agent": agent.to_dict(), "verified": True, "avatar": {"served_url": local_media["served_url"], "remote_read_verified": bool(local_media.get("remote_read_verified"))}})
+                return
             proposal_prefix = "/api/proposals/"
             proposal_decision_suffix = "/decision"
             if (
@@ -808,6 +894,7 @@ def _handler_class(
                     "project_slug",
                     "goal_slug",
                     "progress_metric",
+                    "assignee_slug",
                 }
                 if set(payload) - allowed_fields:
                     self._json(
@@ -839,6 +926,13 @@ def _handler_class(
                         return
                     due_source = "explicit"
                 try:
+                    assignee_slug = payload.get("assignee_slug", "tony")
+                    available_agents = {
+                        agent.slug: agent.work_root
+                        for agent in adapter.list_agent_profiles().agents
+                    }
+                    if assignee_slug != "tony" and assignee_slug not in available_agents:
+                        raise DomainValidationError("assignee is not an active GTasks agent")
                     progress_metric, event_progress = (
                         _progress_metric_from_request(
                             payload.get("progress_metric"),
@@ -858,7 +952,15 @@ def _handler_class(
                         now=now,
                         identity=identity_factory(),
                     )
-                    receipt = adapter.duplicate_task(source_slug, task)
+                    if assignee_slug != "tony":
+                        task = replace(
+                            task,
+                            lifecycle_root=available_agents[assignee_slug],
+                            owner_agent=assignee_slug,
+                        )
+                        receipt = adapter.create_agent_task(task, assignee_slug)
+                    else:
+                        receipt = adapter.duplicate_task(source_slug, task)
                 except (DomainValidationError, ValueError) as exc:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -960,12 +1062,13 @@ def _handler_class(
                     project_slug = payload.get("project_slug") or None
                     goal_slug = payload.get("goal_slug") or None
                     assignee_slug = payload.get("assignee_slug", "tony")
-                    if assignee_slug not in {
-                        "tony",
-                        *(agent for agent, _root in AGENT_SCOPES),
-                    }:
+                    available_agents = {
+                        agent.slug: agent.work_root
+                        for agent in adapter.list_agent_profiles().agents
+                    }
+                    if assignee_slug != "tony" and assignee_slug not in available_agents:
                         raise DomainValidationError(
-                            "assignee must be Tony, Toddy, Timmy, or Tammy"
+                            "assignee must be Tony or an active Agent Directory profile"
                         )
                     task = new_task(
                         title=raw_title,
@@ -983,7 +1086,7 @@ def _handler_class(
                     if assignee_slug == "tony":
                         receipt = adapter.create_task(task)
                     else:
-                        work_root = dict(AGENT_SCOPES)[assignee_slug]
+                        work_root = available_agents[assignee_slug]
                         task = replace(
                             task,
                             lifecycle_root=work_root,
@@ -1626,7 +1729,10 @@ def build_server(
     static_dir: Path = STATIC_DIR,
     warning_store: WarningDismissalStore | None = None,
     log_reader: OperationalLogReader | None = None,
+    stargraph_url: str = "http://127.0.0.1:8788",
 ) -> ThreadingHTTPServer:
+    if not stargraph_url.startswith("http://127.0.0.1:"):
+        raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
     active_log_reader = log_reader or OperationalLogReader()
     active_log_reader.append_gtasks(
         severity="info",
@@ -1640,6 +1746,7 @@ def build_server(
         static_dir,
         warning_store or WarningDismissalStore(),
         active_log_reader,
+        stargraph_url.rstrip("/"),
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -1653,6 +1760,7 @@ def main() -> None:
     parser.add_argument("--warning-state-file", type=Path)
     parser.add_argument("--operation-log-file", type=Path)
     parser.add_argument("--queue-log-file", type=Path)
+    parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
     server = build_server(
@@ -1669,6 +1777,7 @@ def main() -> None:
         )
         if args.operation_log_file or args.queue_log_file
         else None,
+        stargraph_url=args.stargraph_url,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

@@ -150,12 +150,13 @@ class AgentRead:
 class AgentWorkRead:
     tasks: tuple[dict[str, Any], ...]
     issues: tuple[CollectionIssue, ...] = ()
+    roots: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "tasks": [dict(task) for task in self.tasks],
             "issues": [issue.to_dict() for issue in self.issues],
-            "roots": [root for _agent, root in AGENT_SCOPES],
+            "roots": list(self.roots),
         }
 
 
@@ -1051,6 +1052,32 @@ class GBrainAdapter:
             issues=tuple(issues),
         )
 
+    def _agent_scopes(self) -> tuple[tuple[str, str], ...]:
+        """Read agent work scopes from canonical Agent nodes with legacy fallback."""
+        legacy = dict(AGENT_SCOPES)
+        try:
+            raw = self.runner.run("list_pages", {"type": "agent"})
+        except (GBrainError, KeyError):
+            return tuple(AGENT_SCOPES)
+        pages = raw.get("pages", raw) if isinstance(raw, Mapping) else raw
+        if not isinstance(pages, list):
+            raise GBrainProtocolError("agent directory list was not a list")
+        scopes: list[tuple[str, str]] = []
+        for item in pages:
+            if not isinstance(item, Mapping):
+                continue
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug.startswith("agents/"):
+                continue
+            frontmatter = item.get("frontmatter")
+            frontmatter = frontmatter if isinstance(frontmatter, Mapping) else {}
+            work_root = frontmatter.get("work_root")
+            if not isinstance(work_root, str) or not work_root.startswith("collections/"):
+                work_root = legacy.get(slug)
+            if isinstance(work_root, str) and work_root.startswith("collections/"):
+                scopes.append((slug, work_root))
+        return tuple(dict.fromkeys(scopes))
+
     def list_agent_profiles(self) -> AgentRead:
         def read_agent(
             scope: tuple[str, str],
@@ -1083,12 +1110,41 @@ class GBrainAdapter:
 
         agents: list[AgentProfile] = []
         issues: list[CollectionIssue] = []
-        for agent, issue in self._bounded_map(read_agent, list(AGENT_SCOPES)):
+        for agent, issue in self._bounded_map(read_agent, list(self._agent_scopes())):
             if agent is not None:
                 agents.append(agent)
             if issue is not None:
                 issues.append(issue)
         return AgentRead(agents=tuple(agents), issues=tuple(issues))
+
+    def set_agent_avatar(self, agent_slug: str, served_url: str) -> AgentProfile:
+        """Store only Stargraph's verified attachment reference on an agent page."""
+        if not served_url.startswith("/media/"):
+            raise ValueError("avatar attachment must be a local Stargraph media reference")
+        scope_by_agent = {
+            agent.slug: agent.work_root
+            for agent in self.list_agent_profiles().agents
+        }
+        work_root = scope_by_agent.get(agent_slug)
+        if work_root is None:
+            raise ValueError("agent is not in the active GTasks Agent Directory")
+        page = self.runner.run("get_page", {"slug": agent_slug})
+        links = self.runner.run("get_links", {"slug": agent_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("agent avatar snapshot was not structured")
+        AgentProfile.from_page(page, work_root=work_root, edges=links)
+        frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
+        frontmatter["avatar"] = {"kind": "attachment", "value": served_url}
+        content = _render_preserved_page(page, frontmatter)
+        self.runner.run("put_page", {"slug": agent_slug, "content": content})
+        stored_page = self.runner.run("get_page", {"slug": agent_slug})
+        stored_links = self.runner.run("get_links", {"slug": agent_slug})
+        if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+            raise GBrainProtocolError("agent avatar readback was not structured")
+        stored = AgentProfile.from_page(stored_page, work_root=work_root, edges=stored_links)
+        if stored.avatar_kind != "attachment" or stored.avatar_value != served_url:
+            raise GBrainProtocolError("agent avatar reference did not read back from GBrain")
+        return stored
 
     def list_agent_work(self) -> AgentWorkRead:
         profiles = self.list_agent_profiles()
@@ -1183,6 +1239,7 @@ class GBrainAdapter:
         return AgentWorkRead(
             tasks=tuple(deduped.values()),
             issues=tuple(issues),
+            roots=tuple(agent.work_root for agent in profiles.agents),
         )
 
     def list_proposals(self) -> ProposalRead:
@@ -1904,7 +1961,10 @@ class GBrainAdapter:
         task: Task,
         agent_slug: str,
     ) -> MutationReceipt:
-        scope_by_agent = dict(AGENT_SCOPES)
+        scope_by_agent = {
+            agent.slug: agent.work_root
+            for agent in self.list_agent_profiles().agents
+        }
         work_root = scope_by_agent.get(agent_slug)
         if work_root is None:
             raise ValueError("assignee must be Tony, Toddy, Timmy, or Tammy")
@@ -2486,8 +2546,10 @@ class GBrainAdapter:
         task = Task.from_page(raw_page, edges=raw_links)
         if status not in EDITABLE_TASK_STATUSES:
             raise ValueError("task status is not supported")
-        if assignee_slug != "tony" and assignee_slug not in dict(AGENT_SCOPES):
-            raise ValueError("assignee must be Tony, Toddy, Timmy, or Tammy")
+        if assignee_slug != "tony" and assignee_slug not in {
+            agent.slug for agent in self.list_agent_profiles().agents
+        }:
+            raise ValueError("assignee is not an active Agent Directory profile")
         if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
             raise ValueError("title is required and must be 160 characters or fewer")
         if not isinstance(detail, str):
@@ -2570,7 +2632,14 @@ class GBrainAdapter:
         task = Task.from_page(page, edges=links)
         old_owner = task.owner_agent or "tony"
         old_root = task.lifecycle_root
-        target_root = ACTIVE_ROOT if assignee_slug == "tony" else dict(AGENT_SCOPES)[assignee_slug]
+        target_root = (
+            ACTIVE_ROOT
+            if assignee_slug == "tony"
+            else {
+                agent.slug: agent.work_root
+                for agent in self.list_agent_profiles().agents
+            }[assignee_slug]
+        )
         frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
         raw_frontmatter_links = frontmatter.get("links")
         if not isinstance(raw_frontmatter_links, list):

@@ -1,10 +1,10 @@
 {
-  "current_version": "V0.0.14",
+  "current_version": "V0.0.15",
   "releases": [
     {
       "version": "V0.0.1",
       "date": "2026-07-30",
-      "title": "Initial GTasks baseline",
+      "title": "Initial Mission Control baseline",
       "summary": "Introduced the local GBrain-backed task interface with Today, Inbox, Upcoming, Blocked, Projects, Goals, Completed, Quick Add, and verified task details."
     },
     {
@@ -47,7 +47,7 @@
       "version": "V0.0.8",
       "date": "2026-07-30",
       "title": "Privacy-safe operational Logs",
-      "summary": "Added a read-only Logs dialog beside About with newest-first filtering and pagination, fixed-message Event Queue Reader history and health, bounded redacted GTasks events, and graceful queue-unavailable status that never blocks core task workflows."
+      "summary": "Added a read-only Logs dialog beside About with newest-first filtering and pagination, fixed-message Event Queue Reader history and health, bounded redacted Mission Control events, and graceful queue-unavailable status that never blocks core task workflows."
     },
     {
       "version": "V0.0.9",
@@ -84,6 +84,12 @@
       "date": "2026-07-30",
       "title": "Unified task editing",
       "summary": "Task details are now read-only until Edit opens one full form for task fields, status, project, associated goal, optional metric, and assignee. Saves use canonical GBrain readback; agent handoffs retain the same task and a durable assignment history."
+    },
+    {
+      "version": "V0.0.15",
+      "date": "2026-07-30",
+      "title": "Mission Control, avatars, and simpler navigation",
+      "summary": "GTasks is now visibly Mission Control while preserving its local service and GBrain identity. Agent profiles can safely upload a verified avatar through local Memory Stargraph storage, while cards retain accessible text names and initials fallback. The sidebar is now text-first and Upcoming has been removed as a redundant top-level view; future tasks remain canonical and available through their details, projects, and goals."
     }
   ]
 }

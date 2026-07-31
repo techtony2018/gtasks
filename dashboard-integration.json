@@ -1,7 +1,7 @@
 {
   "dashboard": "All Things Codex Dashboard",
   "service_id": "gtasks",
-  "title": "GTasks",
+  "title": "Mission Control",
   "kind": "dashboard",
   "service_url": "http://127.0.0.1:4179/",
   "health_path": "/api/health",
@@ -27,5 +27,5 @@
   ],
   "canonical_store": "gbrain",
   "vendored_copy": false,
-  "summary": "Manages the existing local GTasks process while GBrain remains the canonical task and goal store."
+  "summary": "Manages the Mission Control process while GBrain remains the canonical task and goal store."
 }

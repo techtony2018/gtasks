@@ -87,23 +87,9 @@ a:focus-visible {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
   color: var(--ink);
   text-decoration: none;
   padding: 0 6px;
-}
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--ink);
-  color: white;
-  font-size: 15px;
-  font-weight: 750;
-  letter-spacing: -0.04em;
 }
 
 .brand strong,
@@ -183,7 +169,7 @@ kbd {
   width: 100%;
   min-height: 40px;
   display: grid;
-  grid-template-columns: 25px 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -206,23 +192,6 @@ kbd {
   color: var(--ink);
   box-shadow: 0 1px 1px rgba(41, 49, 39, 0.05);
   font-weight: 650;
-}
-
-.nav-glyph {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  font-size: 9px;
-  font-weight: 760;
-}
-
-.nav-item.is-active .nav-glyph {
-  border-color: #a9c4b3;
-  background: var(--accent-soft);
-  color: var(--accent-dark);
 }
 
 .nav-count {
@@ -724,20 +693,56 @@ kbd {
   width: 100%;
   min-height: 72px;
   display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(160px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 18px;
-  padding: 13px 9px;
-  border: 0;
+  gap: 8px;
+  padding: 0 9px;
   border-bottom: 1px solid var(--line);
   background: transparent;
-  cursor: pointer;
-  text-align: left;
 }
 
 .task-row:hover,
 .task-row.is-selected {
   background: var(--surface-muted);
+}
+
+.task-row-open {
+  min-width: 0;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(160px, 0.8fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-row-actions {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.row-action-button {
+  min-height: 29px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.row-action-button:hover,
+.row-action-button:focus-visible {
+  color: var(--ink);
+  border-color: var(--accent);
 }
 
 .metric-progress {
@@ -937,18 +942,6 @@ kbd {
   display: grid;
   align-content: center;
   justify-items: start;
-}
-
-.detail-empty-mark {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 16px;
-  border-radius: 11px;
-  background: var(--surface-muted);
-  color: var(--accent);
-  font-weight: 760;
 }
 
 .detail-empty h2 {
@@ -1462,6 +1455,21 @@ kbd {
     linear-gradient(135deg, #e6f0f7, #d7e6f0);
   font-size: 9px;
   font-weight: 820;
+}
+
+.agent-avatar.attachment {
+  background-position: center;
+  background-size: cover;
+  color: transparent;
+}
+
+.agent-avatar-preview {
+  width: min(220px, 100%);
+  max-height: 220px;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 10px;
 }
 
 .agent-read-only {
@@ -2554,7 +2562,6 @@ kbd {
     padding: 0 10px;
   }
 
-  .nav-item .nav-glyph,
   .nav-count {
     display: none;
   }
@@ -2638,6 +2645,15 @@ kbd {
   .task-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
+  }
+
+  .task-row-open {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .task-row-actions {
+    align-self: center;
   }
 
   .task-next {

@@ -42,6 +42,7 @@ const state = {
   proposalsError: "",
   proposalAgentFilter: "all",
   proposalAction: null,
+  profileAgentSlug: null,
 };
 
 const viewMeta = {
@@ -59,12 +60,7 @@ const viewMeta = {
   "agent-work": {
     title: "Agent Work",
     emptyTitle: "No agent work yet",
-    emptyCopy: "Toddy, Timmy, and Tammy have no typed work items in their GBrain collections.",
-  },
-  upcoming: {
-    title: "Upcoming",
-    emptyTitle: "Nothing is waiting ahead",
-    emptyCopy: "Tasks with a due date after today will collect here.",
+    emptyCopy: "No active agent has typed work items in its canonical GBrain collection.",
   },
   blocked: {
     title: "Blocked",
@@ -133,6 +129,16 @@ const elements = {
   taskEditorError: document.querySelector("#task-editor-error"),
   taskEditorSubmit: document.querySelector("#task-editor-submit"),
   taskEditorSafety: document.querySelector("#task-editor-safety"),
+  agentProfileDialog: document.querySelector("#agent-profile-dialog"),
+  agentProfileHeading: document.querySelector("#agent-profile-heading"),
+  agentProfileSummary: document.querySelector("#agent-profile-summary"),
+  agentProfileClose: document.querySelector("#agent-profile-close"),
+  agentAvatarForm: document.querySelector("#agent-avatar-form"),
+  agentAvatarFile: document.querySelector("#agent-avatar-file"),
+  agentAvatarPreview: document.querySelector("#agent-avatar-preview"),
+  agentAvatarError: document.querySelector("#agent-avatar-error"),
+  agentAvatarSubmit: document.querySelector("#agent-avatar-submit"),
+  agentAvatarState: document.querySelector("#agent-avatar-state"),
   proposalReviewDialog: document.querySelector("#proposal-review-dialog"),
   proposalReviewForm: document.querySelector("#proposal-review-form"),
   proposalReviewClose: document.querySelector("#proposal-review-close"),
@@ -158,6 +164,7 @@ const elements = {
   detailClose: document.querySelector("#detail-close"),
   taskDetailStatus: document.querySelector("#task-detail-status"),
   taskEditButton: document.querySelector("#task-edit-button"),
+  taskDuplicateButton: document.querySelector("#task-duplicate-button"),
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
@@ -375,7 +382,7 @@ function closeAboutDialog() {
 
 function componentLabel(component) {
   const labels = {
-    gtasks: "GTasks",
+    gtasks: "Mission Control",
     queue_reader: "Event Queue Reader",
     broker: "Event Queue Broker",
     consumer: "Durable Consumer",
@@ -458,7 +465,7 @@ function renderQueueReaderStatus(status) {
     `queue-reader-status ${stateName}`;
   const message =
     status?.message ||
-    "Event Queue Reader status is unavailable. GTasks remains available.";
+    "Event Queue Reader status is unavailable. Mission Control remains available.";
   const counts =
     stateName === "connected"
       ? ` ${status.pending || 0} waiting · ${status.ack_pending || 0} processing · ${status.redelivered || 0} redelivered.`
@@ -521,7 +528,7 @@ async function loadOperationalLogs({ append = false } = {}) {
   } catch (error) {
     if (!append) renderOperationalLogs();
     elements.logsError.textContent =
-      `${error.message || "Operational logs are unavailable."} GTasks remains available.`;
+      `${error.message || "Operational logs are unavailable."} Mission Control remains available.`;
     elements.logsError.classList.remove("is-hidden");
     renderQueueReaderStatus(null);
   } finally {
@@ -585,9 +592,6 @@ function rebuildDerivedTaskViews() {
   };
   state.snapshot.views = {
     inbox: active.filter((task) => task.inbox && unfinished(task)),
-    upcoming: active.filter(
-      (task) => task.due_day && task.due_day > asOf && unfinished(task),
-    ),
     blocked: active.filter((task) =>
       ["waiting", "blocked"].includes(task.status)),
     projects: active.filter((task) => task.project),
@@ -671,7 +675,7 @@ function reconcileVerifiedTask(task) {
   }
   {
     const error = new Error(
-      "GBrain returned a task that is not present in the current GTasks snapshot.",
+      "GBrain returned a task that is not present in the current Mission Control snapshot.",
     );
     error.code = "ambiguous_readback";
     throw error;
@@ -685,7 +689,6 @@ function navCounts() {
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
     board: state.snapshot.tasks.length,
     "agent-work": state.agentTasks.length,
-    upcoming: state.snapshot.views.upcoming.length,
     blocked: state.snapshot.views.blocked.length,
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
@@ -706,11 +709,14 @@ function renderNavigation() {
   });
 }
 
-function taskRow(task) {
-  const button = node("button", "task-row");
+function taskRow(task, { todayActions = false } = {}) {
+  const row = node("div", "task-row");
+  row.setAttribute("role", "listitem");
+  row.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  const button = node("button", "task-row-open");
   button.type = "button";
   button.dataset.slug = task.slug;
-  button.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  button.setAttribute("aria-label", `Open ${task.title || task.summary}`);
 
   const titleWrap = node("span", "task-title-wrap");
   const dot = node("span", `task-state-dot ${taskUiStatus(task)}`);
@@ -735,10 +741,30 @@ function taskRow(task) {
 
   button.append(titleWrap, nextAction, end);
   button.addEventListener("click", () => selectTask(task.slug));
-  return button;
+  row.append(button);
+  if (todayActions) {
+    const actions = node("div", "task-row-actions");
+    const edit = node("button", "row-action-button", "Edit");
+    edit.type = "button";
+    edit.setAttribute("aria-label", `Edit ${task.title || task.summary}`);
+    edit.addEventListener("click", () => {
+      selectTask(task.slug);
+      openEditTask();
+    });
+    const duplicate = node("button", "row-action-button", "Duplicate");
+    duplicate.type = "button";
+    duplicate.setAttribute("aria-label", `Duplicate ${task.title || task.summary}`);
+    duplicate.addEventListener("click", () => {
+      selectTask(task.slug);
+      openDuplicateTask();
+    });
+    actions.append(edit, duplicate);
+    row.append(actions);
+  }
+  return row;
 }
 
-function section(title, tasks, emptyCopy, overflow = 0) {
+function section(title, tasks, emptyCopy, overflow = 0, options = {}) {
   const wrapper = node("section", "task-section");
   const heading = node("div", "section-heading");
   heading.append(
@@ -757,7 +783,7 @@ function section(title, tasks, emptyCopy, overflow = 0) {
   }
   const list = node("div", "task-list");
   list.setAttribute("role", "list");
-  tasks.forEach((task) => list.append(taskRow(task)));
+  tasks.forEach((task) => list.append(taskRow(task, options)));
   wrapper.append(list);
   return wrapper;
 }
@@ -863,21 +889,28 @@ function renderToday() {
       groups.in_progress,
       "Start one task when you’re ready to focus.",
       groups.in_progress_overflow,
+      { todayActions: true },
     ),
     section(
       "Today’s Actions",
       groups.todays_actions,
       "No unstarted task is scheduled or due today.",
+      0,
+      { todayActions: true },
     ),
     section(
       "Blocked",
       groups.waiting_and_blocked,
       "Nothing is blocked.",
+      0,
+      { todayActions: true },
     ),
     section(
       "Overdue",
       groups.overdue,
       "No unstarted task is past its due date.",
+      0,
+      { todayActions: true },
     ),
     goalsHomeSection(),
   );
@@ -888,7 +921,6 @@ function simpleEmpty(meta) {
   const wrapper = node("section", "simple-empty");
   const content = node("div");
   content.append(
-    node("span", "simple-empty-mark", "G"),
     node("h2", "", meta.emptyTitle),
     node("p", "", meta.emptyCopy),
   );
@@ -1026,14 +1058,32 @@ function boardCard(task) {
 
 function agentOwnerBadge(owner) {
   const badge = node("span", "agent-owner-badge");
-  const avatar = node(
-    "span",
-    `agent-avatar ${owner.avatar?.kind || "initials"}`,
-    owner.avatar?.value || owner.name.slice(0, 1),
-  );
-  avatar.setAttribute("aria-hidden", "true");
+  const avatar = owner.avatar?.kind === "attachment"
+    ? document.createElement("img")
+    : node("span", `agent-avatar ${owner.avatar?.kind || "initials"}`, owner.avatar?.value || owner.name.slice(0, 1));
+  if (owner.avatar?.kind === "attachment") {
+    avatar.className = "agent-avatar attachment";
+    avatar.src = `http://127.0.0.1:8788${owner.avatar.value}`;
+    avatar.alt = `${owner.name} avatar`;
+  } else {
+    avatar.setAttribute("aria-hidden", "true");
+  }
   badge.append(avatar, node("span", "", owner.name));
   return badge;
+}
+
+function setCompactAgentAvatar(element, owner) {
+  element.classList.remove("attachment");
+  element.style.backgroundImage = "";
+  if (owner.avatar?.kind === "attachment") {
+    element.textContent = "";
+    element.classList.add("attachment");
+    element.style.backgroundImage = `url("http://127.0.0.1:8788${owner.avatar.value}")`;
+    element.setAttribute("aria-label", `${owner.name} avatar`);
+    return;
+  }
+  element.textContent = owner.avatar?.value || owner.name.slice(0, 1);
+  element.removeAttribute("aria-label");
 }
 
 function agentBoardCard(task) {
@@ -1193,11 +1243,66 @@ function renderBoard() {
   return wrapper;
 }
 
+function openAgentProfile(agent) {
+  state.profileAgentSlug = agent.slug;
+  elements.agentProfileHeading.textContent = agent.name;
+  elements.agentProfileSummary.textContent = agent.summary || "No profile summary is available.";
+  elements.agentAvatarForm.reset();
+  elements.agentAvatarPreview.classList.add("is-hidden");
+  elements.agentAvatarError.classList.add("is-hidden");
+  elements.agentAvatarState.textContent = agent.avatar?.kind === "attachment"
+    ? "A verified avatar is currently attached. Uploading a different image requires confirmation."
+    : "Initials remain in use until a verified replacement succeeds.";
+  elements.agentProfileDialog.showModal();
+  window.setTimeout(() => elements.agentAvatarFile.focus(), 0);
+}
+
+function previewAgentAvatar() {
+  const file = elements.agentAvatarFile.files?.[0];
+  elements.agentAvatarError.classList.add("is-hidden");
+  if (!file) {
+    elements.agentAvatarPreview.classList.add("is-hidden");
+    return;
+  }
+  if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    elements.agentAvatarError.textContent = "Choose a PNG, JPEG, GIF, or WebP image no larger than 5 MB.";
+    elements.agentAvatarError.classList.remove("is-hidden");
+    elements.agentAvatarPreview.classList.add("is-hidden");
+    return;
+  }
+  elements.agentAvatarPreview.src = URL.createObjectURL(file);
+  elements.agentAvatarPreview.classList.remove("is-hidden");
+}
+
+async function submitAgentAvatar(event) {
+  event.preventDefault();
+  const agent = state.agents.find((item) => item.slug === state.profileAgentSlug);
+  const file = elements.agentAvatarFile.files?.[0];
+  if (!agent || !file) return;
+  if (agent.avatar?.kind === "attachment" && !window.confirm("Replace the current avatar with this selected image? The prior attachment is preserved by Memory Stargraph.")) return;
+  elements.agentAvatarSubmit.disabled = true;
+  elements.agentAvatarError.classList.add("is-hidden");
+  try {
+    const body = new FormData(); body.append("file", file);
+    const response = await fetch(`/api/agents/${encodeURIComponent(agent.slug)}/avatar`, { method: "POST", body });
+    const result = await response.json();
+    if (!response.ok || !result.verified || !result.agent) throw new Error(result.error || "Avatar upload did not receive verified readback.");
+    state.agents = state.agents.map((item) => item.slug === agent.slug ? result.agent : item);
+    await loadAgentWork();
+    elements.agentProfileDialog.close();
+    render();
+    showToast(`Avatar for ${agent.name} was stored and verified through Memory Stargraph.`);
+  } catch (error) {
+    elements.agentAvatarError.textContent = error.message || "Avatar upload is unavailable.";
+    elements.agentAvatarError.classList.remove("is-hidden");
+  } finally { elements.agentAvatarSubmit.disabled = false; }
+}
+
 function renderAgentWorkView() {
   const wrapper = node("section", "agent-work-view");
   const intro = node("div", "agent-work-intro");
   intro.append(
-    node("h2", "", "Existing Codex coordinators"),
+    node("h2", "", "Agent Directory"),
     node(
       "p",
       "",
@@ -1242,11 +1347,9 @@ function renderAgentWorkView() {
       item.append(button);
       goalList.append(item);
     });
-    const profile = node("a", "secondary-button", "Open agent profile");
-    profile.href =
-      `http://127.0.0.1:8788/?slug=${encodeURIComponent(agent.slug)}`;
-    profile.target = "_blank";
-    profile.rel = "noreferrer";
+    const profile = node("button", "secondary-button", "Open Agent Profile");
+    profile.type = "button";
+    profile.addEventListener("click", () => openAgentProfile(agent));
     card.append(
       heading,
       node(
@@ -1368,7 +1471,7 @@ function renderProjectsView() {
       node(
         "div",
         "section-empty",
-        "No durable GTasks projects yet. Create one, then assign tasks separately.",
+        "No durable Mission Control projects yet. Create one, then assign tasks separately.",
       ),
     );
     return fragment;
@@ -1627,7 +1730,7 @@ function openGoalConfirmation(action) {
   } else {
     elements.goalConfirmTitle.textContent = `Delete “${goal.title}”?`;
     elements.goalConfirmCopy.textContent =
-      "GTasks will remove only this goal’s paired advances_goal and advanced_by links, without deleting or changing the status/content of linked tasks. The goal page is then soft-deleted and recoverable in GBrain for 72 hours.";
+      "Mission Control will remove only this goal’s paired advances_goal and advanced_by links, without deleting or changing the status/content of linked tasks. The goal page is then soft-deleted and recoverable in GBrain for 72 hours.";
     elements.goalConfirmSubmit.textContent = "Delete goal";
     elements.goalConfirmSubmit.classList.add("is-destructive");
   }
@@ -2443,8 +2546,7 @@ function selectTask(slug) {
   );
   elements.taskOwner.classList.toggle("is-hidden", !owner);
   if (owner) {
-    elements.taskOwnerAvatar.textContent =
-      owner.avatar?.value || owner.name.slice(0, 1);
+    setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
   elements.taskNextActionValue.textContent = task.next_action || "No next action set.";
@@ -2462,7 +2564,7 @@ function selectTask(slug) {
     elements.taskProgressBar.style.width = `${percent}%`;
     elements.taskProgressBinding.textContent =
       metric.event_binding === "job_applied"
-        ? "Updated by distinct verified job-applied events. At 5 / 5, GTasks completes this task after canonical readback."
+        ? "Updated by distinct verified job-applied events. At 5 / 5, Mission Control completes this task after canonical readback."
         : "Manual count metric. Reaching the target does not automatically change task status.";
   }
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
@@ -2594,8 +2696,7 @@ function selectGoal(slug) {
     agent.default_goal_slugs.includes(goal.slug));
   elements.goalDefaultAgent.classList.toggle("is-hidden", !defaultAgent);
   if (defaultAgent) {
-    elements.goalDefaultAgentAvatar.textContent =
-      defaultAgent.avatar?.value || defaultAgent.name.slice(0, 1);
+    setCompactAgentAvatar(elements.goalDefaultAgentAvatar, defaultAgent);
     elements.goalDefaultAgentName.textContent = defaultAgent.name;
     elements.goalDefaultAgentLink.href =
       `http://127.0.0.1:8788/?slug=${encodeURIComponent(defaultAgent.slug)}`;
@@ -2840,7 +2941,7 @@ function showLoadError(error) {
     node(
       "p",
       "",
-      error.message || "GTasks could not read the approved task collections.",
+      error.message || "Mission Control could not read the approved task collections.",
     ),
   );
   const retry = node("button", "submit-button", "Try again");
@@ -2991,6 +3092,22 @@ function populateTaskEditorRelationships(task = null) {
   elements.taskEditorGoal.value = task?.goal || "";
 }
 
+function populateTaskEditorAssignees(selected = "tony") {
+  elements.taskEditorAssignee.replaceChildren();
+  const personal = node("option", "", "Tony — personal task");
+  personal.value = "tony";
+  elements.taskEditorAssignee.append(personal);
+  state.agents.forEach((agent) => {
+    const option = node("option", "", `${agent.name} — agent work`);
+    option.value = agent.slug;
+    elements.taskEditorAssignee.append(option);
+  });
+  elements.taskEditorAssignee.value =
+    [...elements.taskEditorAssignee.options].some((option) => option.value === selected)
+      ? selected
+      : "tony";
+}
+
 function updateTaskMetricPreview() {
   const enabled = elements.taskTrackMetric.checked;
   elements.taskMetricFields.classList.toggle("is-hidden", !enabled);
@@ -3027,10 +3144,10 @@ function openCreateTask() {
   elements.taskEditorHeading.textContent = "Create Task";
   elements.taskEditorSubmit.textContent = "Create Task";
   elements.taskEditorSafety.textContent =
-    "GTasks reports success only after exact GBrain page and relationship readback.";
+    "Mission Control reports success only after exact GBrain page and relationship readback.";
   elements.taskEditorDue.value = state.snapshot?.as_of || "";
   elements.taskEditorPriority.value = "normal";
-  elements.taskEditorAssignee.value = "tony";
+  populateTaskEditorAssignees();
   elements.taskEditorAssigneeField.classList.remove("is-hidden");
   elements.taskEditorStatusField.classList.add("is-hidden");
   elements.taskEditorHandoffField.classList.add("is-hidden");
@@ -3058,15 +3175,18 @@ function openDuplicateTask() {
   elements.taskEditorDetail.value = task.detail || "";
   elements.taskEditorPriority.value = task.priority;
   elements.taskEditorNextAction.value = task.next_action || "";
-  elements.taskEditorAssignee.value = "tony";
-  elements.taskEditorAssigneeField.classList.add("is-hidden");
+  populateTaskEditorAssignees(task.owner_agent || "tony");
+  elements.taskEditorAssigneeField.classList.remove("is-hidden");
   elements.taskEditorStatusField.classList.add("is-hidden");
   elements.taskEditorHandoffField.classList.add("is-hidden");
   elements.taskEditorHandoffReason.classList.add("is-hidden");
   elements.taskEditorDue.value = dayAfter(state.snapshot?.as_of);
   populateTaskEditorRelationships(task);
   resetTaskEditorMetric(task.progress_metric);
-  if (task.progress_metric) elements.taskMetricCurrent.value = "0";
+  if (task.progress_metric) {
+    elements.taskMetricCurrent.value = "0";
+    updateTaskMetricPreview();
+  }
   elements.taskEditorError.classList.add("is-hidden");
   elements.taskEditorDialog.showModal();
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
@@ -3082,7 +3202,7 @@ function openEditTask() {
   elements.taskEditorMode.textContent = "Review and save one canonical change";
   elements.taskEditorHeading.textContent = "Edit Task";
   elements.taskEditorSubmit.textContent = "Save changes";
-  elements.taskEditorSafety.textContent = "Every saved field and typed relationship is read back from GBrain before GTasks reports success.";
+  elements.taskEditorSafety.textContent = "Every saved field and typed relationship is read back from GBrain before Mission Control reports success.";
   elements.taskEditorTitle.value = task.title || task.summary;
   elements.taskEditorDetail.value = task.detail || "";
   elements.taskEditorPriority.value = task.priority;
@@ -3091,7 +3211,7 @@ function openEditTask() {
   elements.taskEditorDue.value = task.due_day || "";
   elements.taskEditorNextAction.value = task.next_action || "";
   elements.taskEditorAssigneeField.classList.remove("is-hidden");
-  elements.taskEditorAssignee.value = task.owner_agent || "tony";
+  populateTaskEditorAssignees(task.owner_agent || "tony");
   elements.taskEditorHandoffField.classList.remove("is-hidden");
   elements.taskEditorHandoffReason.classList.remove("is-hidden");
   elements.taskEditorHandoffReason.value = "";
@@ -3147,6 +3267,7 @@ async function submitTaskEditor(event) {
       goal_slug: elements.taskEditorGoal.value || null,
       progress_metric: taskEditorMetricPayload(),
       ...(state.taskEditorMode === "create"
+        || state.taskEditorMode === "duplicate"
         ? { assignee_slug: elements.taskEditorAssignee.value }
         : {}),
       ...(state.taskEditorMode === "edit" ? {
@@ -3241,6 +3362,11 @@ elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
 elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.agentProfileClose.addEventListener("click", () => {
+  elements.agentProfileDialog.close();
+});
+elements.agentAvatarFile.addEventListener("change", previewAgentAvatar);
+elements.agentAvatarForm.addEventListener("submit", submitAgentAvatar);
 elements.taskTrackMetric.addEventListener("change", updateTaskMetricPreview);
 [
   elements.taskMetricLabel,
@@ -3272,6 +3398,7 @@ elements.showAgentTasks.addEventListener("change", () => {
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskEditButton.addEventListener("click", openEditTask);
+elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);
 elements.newProjectClose.addEventListener("click", () => {
   elements.newProjectDialog.close();
 });
