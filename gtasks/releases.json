@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.54",
+  "current_version": "V0.0.55",
   "releases": [
     {
       "version": "V0.0.1",
@@ -324,6 +324,12 @@
       "date": "2026-07-31",
       "title": "Persistent agent-task Board filter",
       "summary": "Show agent tasks now survives browser refresh with a durable local preference, while keeping the Board separate from Tony’s personal task list by default."
+    },
+    {
+      "version": "V0.0.55",
+      "date": "2026-07-31",
+      "title": "Reliable dark command center startup",
+      "summary": "Mission Control now initializes the persisted Board preference before the interface starts, so the North Star dark HUD renders reliably on every load."
     }
   ]
 }
