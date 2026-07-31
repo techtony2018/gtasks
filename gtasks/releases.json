@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.33",
+  "current_version": "V0.0.34",
   "releases": [
     {
       "version": "V0.0.1",
@@ -198,6 +198,12 @@
       "date": "2026-07-31",
       "title": "Accurate planned Agent Work",
       "summary": "Historical approved or rejected proposal records no longer appear in active Proposed Tasks, so the canonical planned Agent work remains visible through its intended work surfaces."
+    },
+    {
+      "version": "V0.0.34",
+      "date": "2026-07-31",
+      "title": "Contained narrow Calendar scrolling",
+      "summary": "Calendar Week now keeps its own horizontal scroller within the visible workspace when task details are open at narrow desktop widths, so every day through Sunday remains reachable without moving the app shell."
     }
   ]
 }

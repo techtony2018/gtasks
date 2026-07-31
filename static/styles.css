@@ -2874,7 +2874,10 @@ kbd {
 
 @media (max-width: 1080px) {
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
-    grid-template-columns: 210px minmax(440px, 1fr);
+    /* Keep the detail drawer in the layout flow at narrow desktop widths.
+       A fixed drawer covered the right edge of Calendar's own scroller, so
+       its final days could never be reached. */
+    grid-template-columns: 210px minmax(0, 1fr) minmax(300px, 360px);
   }
 
   .sidebar {
@@ -2883,11 +2886,11 @@ kbd {
   }
 
   .detail-panel {
-    position: fixed;
-    right: 0;
-    z-index: 10;
-    width: min(380px, calc(100vw - 40px));
-    box-shadow: var(--shadow);
+    position: sticky;
+    right: auto;
+    z-index: auto;
+    width: 100%;
+    box-shadow: none;
   }
 }
 

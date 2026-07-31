@@ -6,6 +6,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendContractTests(unittest.TestCase):
+
+    def test_narrow_desktop_calendar_keeps_detail_panel_in_layout_flow(self) -> None:
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(
+            encoding="utf-8"
+        )
+
+        breakpoint = stylesheet[stylesheet.index("@media (max-width: 1080px)") : stylesheet.index("@media (max-width: 760px)")]
+        self.assertIn(
+            "grid-template-columns: 210px minmax(0, 1fr) minmax(300px, 360px)",
+            breakpoint,
+        )
+        self.assertIn(".detail-panel", breakpoint)
+        self.assertIn("position: sticky", breakpoint)
+        self.assertNotIn("position: fixed", breakpoint)
+        self.assertIn("overscroll-behavior-inline: contain", stylesheet)
     def test_board_and_status_editor_are_first_class_navigation(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
