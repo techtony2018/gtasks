@@ -50,6 +50,11 @@ const state = {
   weekStart: null,
   calendarMode: "week",
   calendarMonth: null,
+  showIcalEvents: true,
+  icalEvents: [],
+  icalStatus: "not_determined",
+  icalRange: "",
+  icalLoading: false,
   boardMove: null,
   loading: true,
   releases: null,
@@ -409,8 +414,15 @@ function relativeDue(task) {
   return { label: formatDay(task.due_day), className: "" };
 }
 
+function isOverdueExecutable(task) {
+  return Boolean(
+    state.snapshot && task.due_day && task.due_day < state.snapshot.as_of &&
+    !["completed", "cancelled"].includes(task.status),
+  );
+}
+
 function taskUiStatus(task) {
-  return task.status === "waiting" ? "blocked" : task.status;
+  return task.status;
 }
 
 function showToast(message) {
@@ -665,16 +677,15 @@ function rebuildDerivedTaskViews() {
     in_progress_overflow: Math.max(0, inProgress.length - 3),
     todays_actions: active.filter(
       (task) =>
-        !["active", "waiting", "blocked", "completed", "cancelled"].includes(
+        !["active", "blocked", "completed", "cancelled"].includes(
           task.status,
         ) &&
         (task.due_day === asOf || task.scheduled_day === asOf),
     ),
-    waiting_and_blocked: active.filter((task) =>
-      ["waiting", "blocked"].includes(task.status)),
+    waiting_and_blocked: active.filter((task) => task.status === "blocked"),
     overdue: active.filter(
       (task) =>
-        !["active", "waiting", "blocked", "completed", "cancelled"].includes(
+        !["active", "blocked", "completed", "cancelled"].includes(
           task.status,
         ) &&
         task.due_day &&
@@ -684,7 +695,7 @@ function rebuildDerivedTaskViews() {
   state.snapshot.views = {
     inbox: active.filter((task) => task.inbox && unfinished(task)),
     blocked: active.filter((task) =>
-      ["waiting", "blocked"].includes(task.status)),
+      task.status === "blocked"),
     projects: active.filter((task) => task.project),
     completed: state.snapshot.tasks.filter(
       (task) =>
@@ -717,11 +728,30 @@ function rebuildDerivedTaskViews() {
 }
 
 function findTaskBySlug(slug) {
-  return (
+  const canonical = (
     state.snapshot?.tasks.find((candidate) => candidate.slug === slug) ||
-    state.agentTasks.find((candidate) => candidate.slug === slug) ||
-    null
+    state.agentTasks.find((candidate) => candidate.slug === slug)
   );
+  if (canonical) return canonical;
+  const proposal = state.proposals.find((candidate) => candidate.slug === slug);
+  if (!proposal) return null;
+  // Proposal reads are deliberately compact for Inbox.  This projection makes
+  // a non-action row click immediately useful even while Agent Work is still
+  // loading; later canonical agent-work reads reconcile the same slug.
+  return {
+    ...proposal,
+    summary: proposal.title,
+    detail: proposal.rationale || "",
+    next_action: proposal.proposed_next_step || "",
+    priority: "normal",
+    due_day: proposal.due_day,
+    goal: proposal.linked_goal || null,
+    project: null,
+    owner_agent: proposal.proposing_agent || null,
+    owner: state.agents.find((agent) => agent.slug === proposal.proposing_agent) || null,
+    lifecycle_root: null,
+    inbox: false,
+  };
 }
 
 function reconcileVerifiedTask(task) {
@@ -821,6 +851,7 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
   row.classList.toggle("is-selected", state.selectedSlug === task.slug);
+  row.classList.toggle("is-overdue-task", isOverdueExecutable(task));
   const button = node("button", "task-row-open");
   button.type = "button";
   button.dataset.slug = task.slug;
@@ -1097,6 +1128,7 @@ function renderWeekView() {
     state.weekStart = shiftWeek(start, 1);
     render();
   });
+  const icalFilter = calendarEventsFilter();
   controls.append(
     node("p", "week-range", `${formatDay(isoDay(startDay), "long")} – ${formatDay(isoDay(new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() - 1)), "long")}`),
     weekMode,
@@ -1104,8 +1136,10 @@ function renderWeekView() {
     previous,
     current,
     next,
+    icalFilter,
   );
   wrapper.append(controls);
+  void ensureIcalEvents(start, shiftWeek(start, 1));
 
   const grid = node("div", "week-grid");
   const tasks = currentWeekTasks();
@@ -1130,10 +1164,63 @@ function renderWeekView() {
       due.forEach((task) => list.append(taskRow(task, { calendarWeek: true })));
       column.append(list);
     }
+    icalEventsForDay(key).forEach((event) => column.append(node("p", "ical-event", event.title || "Calendar event")));
     grid.append(column);
   }
   wrapper.append(grid);
   return wrapper;
+}
+
+function calendarEventsFilter() {
+  const label = node("label", "calendar-events-filter");
+  const input = node("input");
+  input.type = "checkbox";
+  input.checked = state.showIcalEvents;
+  input.addEventListener("change", () => {
+    state.showIcalEvents = input.checked;
+    render();
+  });
+  label.append(input, node("span", "", "Show iCal Events"));
+  const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? "Read-only local Calendar" : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
+  label.append(node("small", "calendar-events-status", calendarStatus));
+  if (state.icalStatus === "not_determined") {
+    const connect = node("button", "secondary-button", "Connect Calendar");
+    connect.type = "button";
+    connect.addEventListener("click", async () => {
+      state.icalRange = "";
+      const start = state.calendarMode === "week" ? currentWeekStart() : isoDay(new Date(parseDay(state.calendarMonth || state.snapshot.as_of).getFullYear(), parseDay(state.calendarMonth || state.snapshot.as_of).getMonth(), 1));
+      const end = state.calendarMode === "week" ? shiftWeek(start, 1) : isoDay(new Date(parseDay(start).getFullYear(), parseDay(start).getMonth() + 1, 1));
+      state.icalLoading = true; render();
+      try {
+        const response = await fetch(`/api/ical-events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&request_access=1`, { headers: { Accept: "application/json" } });
+        const payload = await response.json(); state.icalStatus = payload.status || "unavailable"; state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
+      } catch (_) { state.icalStatus = "unavailable"; }
+      finally { state.icalLoading = false; render(); }
+    });
+    label.append(connect);
+  }
+  return label;
+}
+
+async function ensureIcalEvents(start, end) {
+  if (!state.showIcalEvents) return;
+  const range = `${start}/${end}`;
+  if (state.icalRange === range || state.icalLoading) return;
+  state.icalLoading = true;
+  try {
+    const response = await fetch(`/api/ical-events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Calendar is unavailable.");
+    state.icalRange = range;
+    state.icalStatus = payload.status || "unavailable";
+    state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
+  } catch (_) { state.icalStatus = "unavailable"; state.icalEvents = []; }
+  finally { state.icalLoading = false; render(); }
+}
+
+function icalEventsForDay(day) {
+  if (!state.showIcalEvents || state.icalStatus !== "authorized") return [];
+  return state.icalEvents.filter((event) => event.day === day);
 }
 
 function renderMonthCalendar() {
@@ -1148,8 +1235,9 @@ function renderMonthCalendar() {
   const previous = node("button", "secondary-button", "Previous month"); previous.type = "button"; previous.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)); render(); });
   const current = node("button", "secondary-button", "This month"); current.type = "button"; current.disabled = monthStart.getFullYear() === parseDay(state.snapshot.as_of).getFullYear() && monthStart.getMonth() === parseDay(state.snapshot.as_of).getMonth(); current.addEventListener("click", () => { state.calendarMonth = null; render(); });
   const next = node("button", "secondary-button", "Next month"); next.type = "button"; next.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)); render(); });
-  controls.append(node("p", "week-range", new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(monthStart)), week, month, previous, current, next);
+  controls.append(node("p", "week-range", new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(monthStart)), week, month, previous, current, next, calendarEventsFilter());
   wrapper.append(controls);
+  void ensureIcalEvents(isoDay(first), isoDay(new Date(first.getFullYear(), first.getMonth(), first.getDate() + 42)));
   const grid = node("div", "month-grid");
   for (let index = 0; index < 42; index += 1) {
     const day = new Date(first); day.setDate(day.getDate() + index);
@@ -1159,8 +1247,10 @@ function renderMonthCalendar() {
     cell.append(node("span", "", String(day.getDate())));
     state.snapshot.tasks.filter((task) => task.due_day === key && !["completed", "cancelled"].includes(task.status)).forEach((task) => {
       const taskButton = node("button", "month-task", task.title || task.summary);
+      taskButton.classList.toggle("is-overdue-task", isOverdueExecutable(task));
       taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
     });
+    icalEventsForDay(key).forEach((event) => cell.append(node("p", "ical-event", event.title || "Calendar event")));
     grid.append(cell);
   }
   wrapper.append(grid); return wrapper;
@@ -1794,7 +1884,7 @@ function renderAgentWorkView() {
     });
     const work = state.agentTasks.filter((task) => task.owner?.slug === agent.slug && task.status !== "proposed");
     const working = work.filter((task) => task.status === "active");
-    const blocked = work.filter((task) => ["blocked", "waiting"].includes(task.status));
+    const blocked = work.filter((task) => task.status === "blocked");
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
@@ -1838,7 +1928,7 @@ function renderCoordinatorSummary() {
     const counts = {
       active: work.filter((task) => task.status === "active").length,
       proposed: work.filter((task) => task.status === "proposed").length,
-      blocked: work.filter((task) => ["blocked", "waiting"].includes(task.status)).length,
+      blocked: work.filter((task) => task.status === "blocked").length,
       completed: work.filter((task) => task.status === "completed").length,
     };
     const card = node("article", "coordinator-agent-card");
@@ -1849,7 +1939,7 @@ function renderCoordinatorSummary() {
     list.append(card);
   });
   section.append(list);
-  const blockers = state.agentTasks.filter((task) => ["blocked", "waiting", "proposed"].includes(task.status));
+  const blockers = state.agentTasks.filter((task) => ["blocked", "proposed"].includes(task.status));
   const issueCount = state.agentIssues.length;
   section.append(node("p", "coordinator-notice", blockers.length || issueCount ? `${blockers.length} material blocker or waiting-for-Tony item${blockers.length === 1 ? "" : "s"}; ${issueCount} malformed or missing-state issue${issueCount === 1 ? "" : "s"}. Details stay in Inbox Needs Attention.` : "No material blockers, waiting-for-Tony items, or malformed agent-work issues."));
   return section;

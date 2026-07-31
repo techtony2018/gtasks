@@ -29,6 +29,8 @@ from .domain import (
     ProgressMetric,
     Project,
     PROPOSALS_ROOT,
+    SYSTEM_TICKETS_ROOT,
+    SystemTicket,
     TASK_SCOPE_ROOTS,
     Task,
     TaskProposal,
@@ -239,6 +241,15 @@ class ProjectRead:
             "projects": [project.to_dict() for project in self.projects],
             "issues": [issue.to_dict() for issue in self.issues],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class SystemTicketRead:
+    tickets: tuple[SystemTicket, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"root_slug": SYSTEM_TICKETS_ROOT, "tickets": [ticket.to_dict() for ticket in self.tickets], "issues": [issue.to_dict() for issue in self.issues]}
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,6 +632,25 @@ def render_project_page(project: Project) -> str:
             "",
         ]
     )
+
+
+def render_system_ticket_page(ticket: SystemTicket) -> str:
+    """Render the dedicated ticket projection while retaining canonical task type."""
+    lines = [
+        "---", "type: task", f"title: {_yaml_scalar(ticket.title)}",
+        f"status: {_yaml_scalar(ticket.status)}", f"priority: {_yaml_scalar(ticket.priority)}",
+        f"verbatim_request: {_yaml_scalar(ticket.verbatim_request)}",
+        f"target_subsystem: {_yaml_scalar(ticket.target_subsystem)}",
+        f"acceptance_criteria: {_yaml_scalar(ticket.acceptance_criteria)}",
+        "linked_evidence:", *[f"  - {_yaml_scalar(value)}" for value in ticket.linked_evidence],
+        "implementation_receipts:", *[f"  - {_yaml_scalar(value)}" for value in ticket.implementation_receipts],
+        "qa_receipts:", *[f"  - {_yaml_scalar(value)}" for value in ticket.qa_receipts],
+        f"created_at: {_yaml_scalar(ticket.created_at.isoformat() if ticket.created_at else None)}",
+        f"updated_at: {_yaml_scalar(ticket.updated_at.isoformat() if ticket.updated_at else None)}",
+        "links:", f"  - to: {_yaml_scalar(SYSTEM_TICKETS_ROOT)}", "    type: member_of",
+        "    context: This task is a Mission Control System Ticket.", "---", "", f"# {ticket.title}", "", ticket.verbatim_request, "",
+    ]
+    return "\n".join(lines)
 
 
 def render_goal_page(goal: Goal) -> str:
@@ -1845,6 +1875,39 @@ class GBrainAdapter:
             recoverable_until_hours=72,
             verified=True,
         )
+
+    def list_system_tickets(self) -> SystemTicketRead:
+        raw_backlinks = self.runner.run("get_backlinks", {"slug": SYSTEM_TICKETS_ROOT})
+        if not isinstance(raw_backlinks, list):
+            raise GBrainProtocolError("system tickets get_backlinks did not return a list")
+        slugs = list(dict.fromkeys(str(link["from_slug"]) for link in raw_backlinks if isinstance(link, Mapping) and link.get("to_slug") == SYSTEM_TICKETS_ROOT and link.get("link_type") == "member_of" and isinstance(link.get("from_slug"), str) and str(link["from_slug"]).startswith("tasks/")))
+        def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None]:
+            try:
+                page = self.runner.run("get_page", {"slug": slug})
+                links = self.runner.run("get_links", {"slug": slug})
+                if not isinstance(page, Mapping) or not isinstance(links, list):
+                    raise GBrainProtocolError("system ticket page or links were not structured")
+                return SystemTicket.from_page(page, links), None
+            except (DomainValidationError, GBrainError) as exc:
+                return None, CollectionIssue(slug=slug, message=str(exc), category="system_ticket_data", impact="This System Ticket cannot be dispatched until its canonical task data is repaired.")
+        tickets, issues = [], []
+        for ticket, issue in self._bounded_map(read, slugs):
+            if ticket: tickets.append(ticket)
+            if issue: issues.append(issue)
+        tickets.sort(key=lambda ticket: ((ticket.updated_at or datetime.min), ticket.title.casefold()), reverse=True)
+        return SystemTicketRead(tuple(tickets), tuple(issues))
+
+    def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
+        root = self.runner.run("get_page", {"slug": SYSTEM_TICKETS_ROOT})
+        if not isinstance(root, Mapping) or root.get("type") != "collection":
+            raise GBrainProtocolError("Mission Control System Tickets root is not a canonical collection")
+        self.runner.run("put_page", {"slug": ticket.slug, "content": render_system_ticket_page(ticket)})
+        self.runner.run("add_link", {"from": ticket.slug, "to": SYSTEM_TICKETS_ROOT, "link_type":"member_of", "context":"This task is a Mission Control System Ticket.", "link_source":"gtasks"})
+        page = self.runner.run("get_page", {"slug": ticket.slug})
+        links = self.runner.run("get_links", {"slug": ticket.slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list) or SystemTicket.from_page(page, links).to_dict() != ticket.to_dict():
+            raise PartialMutationError(ticket.slug, "System Ticket creation was not verified.")
+        return MutationReceipt(ticket.slug, True)
 
     def list_projects(self) -> ProjectRead:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})

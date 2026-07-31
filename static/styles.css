@@ -706,6 +706,24 @@ kbd {
   background: var(--surface-muted);
 }
 
+/* Canonical due_day is already evaluated in local Mission Control time. */
+.task-row.is-overdue-task,
+.month-task.is-overdue-task {
+  color: #722b26;
+  background: #f9e3df;
+}
+
+.task-row.is-overdue-task:hover,
+.task-row.is-overdue-task.is-selected,
+.task-row.is-overdue-task:focus-within,
+.month-task.is-overdue-task:hover,
+.month-task.is-overdue-task:focus-visible {
+  background: #f3cfca;
+}
+
+.task-row.is-overdue-task .task-project,
+.task-row.is-overdue-task .task-goal { color: #873b34; }
+
 .task-row-open {
   min-width: 0;
   min-height: 72px;
@@ -783,11 +801,6 @@ kbd {
 .task-state-dot.blocked {
   border-color: var(--danger);
   background: var(--danger);
-}
-
-.task-state-dot.waiting {
-  border-color: var(--warning);
-  background: var(--warning);
 }
 
 .task-state-dot.completed {
@@ -1234,6 +1247,24 @@ kbd {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.calendar-events-filter {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.calendar-events-filter input { accent-color: var(--accent); }
+.calendar-events-status { color: var(--faint); font-size: 9px; }
+.ical-event { margin: 5px 0 0; padding: 4px 5px; border-left: 3px solid #5a7fb8; border-radius: 4px; background: #e9f0fb; color: #294c7e; font-size: 9px; line-height: 1.3; overflow-wrap: anywhere; }
 
 .week-range {
   flex: 1 1 260px;
@@ -3187,8 +3218,11 @@ kbd {
 
 .proposal-agent-group {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
+.proposal-agent-group > h3 { grid-column: 1 / -1; }
 
 .proposal-card {
   display: grid;
@@ -3246,6 +3280,8 @@ kbd {
   .proposal-agent-filter select {
     width: 100%;
   }
+
+  .proposal-agent-group { grid-template-columns: 1fr; }
 
   .proposal-actions > button {
     flex: 1 1 100%;

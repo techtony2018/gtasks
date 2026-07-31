@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.34",
+  "current_version": "V0.0.35",
   "releases": [
     {
       "version": "V0.0.1",
@@ -204,6 +204,12 @@
       "date": "2026-07-31",
       "title": "Contained narrow Calendar scrolling",
       "summary": "Calendar Week now keeps its own horizontal scroller within the visible workspace when task details are open at narrow desktop widths, so every day through Sunday remains reachable without moving the app shell."
+    },
+    {
+      "version": "V0.0.35",
+      "date": "2026-07-31",
+      "title": "Calendar safety and clearer work states",
+      "summary": "Calendar adds an opt-in read-only local iCalendar overlay with explicit permission states, while overdue executable tasks are highlighted consistently. Proposed Task cards open details directly, and legacy waiting tasks now display as Blocked without changing canonical data."
     }
   ]
 }

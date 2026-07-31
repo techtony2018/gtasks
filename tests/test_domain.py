@@ -373,7 +373,7 @@ class TaskParsingTests(unittest.TestCase):
     def test_parses_waiting_as_a_legacy_compatible_status(self) -> None:
         task = Task.from_page(task_page("tasks/legacy-waiting", status="waiting"))
 
-        self.assertEqual(task.status, "waiting")
+        self.assertEqual(task.status, "blocked")
 
     def test_rejects_unknown_priority(self) -> None:
         with self.assertRaisesRegex(DomainValidationError, "priority"):

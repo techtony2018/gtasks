@@ -57,7 +57,7 @@ class FrontendContractTests(unittest.TestCase):
         ]
         self.assertEqual(lane_titles, sorted(lane_titles))
         self.assertIn('status: "blocked"', javascript)
-        self.assertIn('task.status === "waiting" ? "blocked"', javascript)
+        self.assertNotIn('task.status === "waiting" ? "blocked"', javascript)
         self.assertIn(
             '`task-state-dot ${taskUiStatus(task)}`',
             javascript,
@@ -279,7 +279,42 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("ownerBadge({", proposal_card)
         self.assertIn('node("h4", "", proposal.title)', proposal_card)
         self.assertIn('node("button", "secondary-button", "Edit")', proposal_card)
+        self.assertIn('card.addEventListener("click", open)', proposal_card)
+        self.assertIn("event.stopPropagation(); selectTask(proposal.slug); openEditTask()", proposal_card)
         self.assertNotIn("agentOwnerBadge", javascript)
+
+    def test_proposed_task_cards_open_details_and_use_two_columns_on_desktop(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        finder = javascript[javascript.index("function findTaskBySlug") : javascript.index("function reconcileVerifiedTask")]
+
+        self.assertIn("state.proposals.find", finder)
+        self.assertIn("detail: proposal.rationale", finder)
+        self.assertIn("next_action: proposal.proposed_next_step", finder)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", css)
+        self.assertIn(".proposal-agent-group { grid-template-columns: 1fr; }", css)
+
+    def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function isOverdueExecutable", javascript)
+        self.assertIn('!["completed", "cancelled"].includes(task.status)', javascript)
+        self.assertIn('row.classList.toggle("is-overdue-task", isOverdueExecutable(task))', javascript)
+        self.assertIn('taskButton.classList.toggle("is-overdue-task", isOverdueExecutable(task))', javascript)
+        self.assertIn(".task-row.is-overdue-task", css)
+        self.assertIn(".month-task.is-overdue-task", css)
+
+    def test_calendar_has_default_on_ical_events_filter(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("showIcalEvents: true", javascript)
+        self.assertIn("function calendarEventsFilter", javascript)
+        self.assertIn('"Show iCal Events"', javascript)
+        self.assertIn("input.checked = state.showIcalEvents", javascript)
+        self.assertIn("Connect Calendar", javascript)
+        self.assertIn("Calendar permission was not granted", javascript)
+        self.assertIn("Local Calendar is unavailable", javascript)
+        self.assertIn("icalEventsForDay", javascript)
 
     def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(
         self,

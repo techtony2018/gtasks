@@ -29,6 +29,7 @@ from .domain import (
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    SYSTEM_TICKET_TARGETS,
     PROPOSALS_ROOT,
     ProgressMetric,
     Task,
@@ -37,8 +38,10 @@ from .domain import (
     new_inbox_task,
     new_project,
     new_task,
+    new_system_ticket,
 )
 from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
+from .ical import ICalendarError, ICalendarReader
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -216,7 +219,7 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
             "blocked": [
                 task.to_dict()
                 for task in active
-                if task.status in {"waiting", "blocked"}
+                if task.status == "blocked"
             ],
             "projects": [
                 task.to_dict() for task in active if task.project is not None
@@ -238,11 +241,13 @@ def _handler_class(
     warning_store: WarningDismissalStore,
     log_reader: OperationalLogReader,
     stargraph_url: str,
+    ical_reader: ICalendarReader | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     snapshot_condition = Condition()
     snapshot_payload: dict[str, Any] | None = None
     snapshot_created_at = 0.0
     snapshot_loading = False
+    active_ical_reader = ical_reader or ICalendarReader()
 
     def decorate_issues(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -581,6 +586,27 @@ def _handler_class(
                     )
                     return
                 self._json(HTTPStatus.OK, decorate_issues(payload))
+                return
+            if path == "/api/ical-events":
+                query = parse_qs(urlsplit(self.path).query)
+                try:
+                    start = date.fromisoformat(query.get("start", [""])[0])
+                    end = date.fromisoformat(query.get("end", [""])[0])
+                    if end <= start or (end - start).days > 45:
+                        raise ValueError
+                except ValueError:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Calendar range must be a valid local range of up to 45 days.", "code": "invalid_calendar_range"})
+                    return
+                try:
+                    self._json(HTTPStatus.OK, active_ical_reader.read(start, end, request_access=query.get("request_access") == ["1"]))
+                except ICalendarError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "calendar_unavailable"})
+                return
+            if path == "/api/system-tickets":
+                try:
+                    self._json(HTTPStatus.OK, decorate_issues(adapter.list_system_tickets().to_dict()))
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                 return
             goal_prefix = "/api/goals/"
             goal_suffix = "/relationships"
@@ -929,6 +955,22 @@ def _handler_class(
                     },
                 )
                 return
+            if path == "/api/system-tickets":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) - {"title", "verbatim_request", "target_subsystem", "priority", "acceptance_criteria"}:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error":"System Ticket contains unsupported fields.", "code":"invalid_system_ticket"}); return
+                try:
+                    ticket = new_system_ticket(title=payload.get("title", ""), verbatim_request=payload.get("verbatim_request", ""), target_subsystem=payload.get("target_subsystem", "unknown"), priority=payload.get("priority", "normal"), acceptance_criteria=payload.get("acceptance_criteria", ""), now=clock(), identity=identity_factory())
+                    receipt = adapter.create_system_ticket(ticket)
+                except DomainValidationError as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error":str(exc), "code":"invalid_system_ticket"}); return
+                except PartialMutationError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error":str(exc), "code":"partial_write", "slug":exc.slug}); return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error":str(exc), "code":"gbrain_unavailable"}); return
+                self._json(HTTPStatus.CREATED, {"ticket": ticket.to_dict(), "receipt": receipt.to_dict()}); return
             duplicate_prefix = "/api/tasks/"
             duplicate_suffix = "/duplicate"
             if (

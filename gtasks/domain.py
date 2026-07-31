@@ -13,6 +13,7 @@ COMPLETED_ROOT = "collections/tonys-completed-tasks"
 GOALS_ROOT = "collections/tonys-goals"
 PROJECTS_ROOT = "collections/tonys-projects"
 PROPOSALS_ROOT = "collections/gtasks-proposed-work"
+SYSTEM_TICKETS_ROOT = "collections/mission-control-system-tickets"
 AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
@@ -26,12 +27,18 @@ AGENT_BY_WORK_ROOT = {
 }
 
 TASK_STATUSES = frozenset(
-    {"proposed", "planned", "active", "waiting", "blocked", "completed", "cancelled"}
+    {"proposed", "planned", "active", "blocked", "completed", "cancelled"}
 )
 EDITABLE_TASK_STATUSES = frozenset(
     {"planned", "active", "blocked", "completed", "cancelled"}
 )
 TASK_PRIORITIES = frozenset({"low", "normal", "high", "urgent"})
+SYSTEM_TICKET_STATUSES = frozenset({
+    "planned", "active", "blocked", "completed", "cancelled",
+})
+SYSTEM_TICKET_TARGETS = frozenset({
+    "mission_control", "memory_stargraph", "career_path", "unknown",
+})
 TASK_RELATIONSHIPS = frozenset(
     {"member_of", "child_of", "depends_on", "blocked_by", "advances_goal"}
 )
@@ -43,6 +50,68 @@ PROPOSAL_RECIPIENTS = frozenset({"tony", "agent"})
 
 class DomainValidationError(ValueError):
     """Raised when a GBrain page cannot safely be treated as a GTasks task."""
+
+
+@dataclass(frozen=True, slots=True)
+class SystemTicket:
+    """A normal canonical task scoped only to Mission Control System Tickets."""
+
+    slug: str
+    title: str
+    status: str
+    verbatim_request: str
+    target_subsystem: str
+    priority: str
+    acceptance_criteria: str = ""
+    linked_evidence: tuple[str, ...] = ()
+    implementation_receipts: tuple[str, ...] = ()
+    qa_receipts: tuple[str, ...] = ()
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @classmethod
+    def from_page(cls, page: Mapping[str, Any], edges: Iterable[Mapping[str, Any]] = ()) -> "SystemTicket":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("tasks/"):
+            raise DomainValidationError("system ticket slug must start with tasks/")
+        if page.get("type") != "task":
+            raise DomainValidationError(f"{slug} is not a task page")
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise DomainValidationError(f"{slug} has no frontmatter")
+        links = _links_from(frontmatter)
+        typed_member = any(link["to"] == SYSTEM_TICKETS_ROOT and link["type"] == "member_of" for link in links) or any(
+            isinstance(edge, Mapping) and edge.get("from_slug") == slug and edge.get("to_slug") == SYSTEM_TICKETS_ROOT and edge.get("link_type") == "member_of" for edge in edges)
+        if not typed_member:
+            raise DomainValidationError("system ticket requires typed System Tickets membership")
+        title = page.get("title") or frontmatter.get("title")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+            raise DomainValidationError("system ticket title must be 1 to 160 characters")
+        request = frontmatter.get("verbatim_request")
+        if not isinstance(request, str) or not request.strip():
+            raise DomainValidationError("system ticket verbatim_request is required")
+        status = frontmatter.get("status")
+        if status not in SYSTEM_TICKET_STATUSES:
+            raise DomainValidationError("system ticket status is invalid")
+        target = frontmatter.get("target_subsystem", "unknown")
+        if target not in SYSTEM_TICKET_TARGETS:
+            raise DomainValidationError("system ticket target_subsystem is invalid")
+        priority = frontmatter.get("priority", "normal")
+        if priority not in TASK_PRIORITIES:
+            raise DomainValidationError("system ticket priority is invalid")
+        def strings(field: str) -> tuple[str, ...]:
+            value = frontmatter.get(field, [])
+            if value is None: return ()
+            if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+                raise DomainValidationError(f"system ticket {field} must be a list of text values")
+            return tuple(dict.fromkeys(item.strip() for item in value))
+        criteria = frontmatter.get("acceptance_criteria", "")
+        if not isinstance(criteria, str):
+            raise DomainValidationError("system ticket acceptance_criteria must be text")
+        return cls(slug, title.strip(), status, request.strip(), target, priority, criteria.strip(), strings("linked_evidence"), strings("implementation_receipts"), strings("qa_receipts"), _optional_datetime(frontmatter.get("created_at"), "created_at"), _optional_datetime(frontmatter.get("updated_at"), "updated_at"))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"slug":self.slug,"title":self.title,"status":self.status,"verbatim_request":self.verbatim_request,"target_subsystem":self.target_subsystem,"priority":self.priority,"acceptance_criteria":self.acceptance_criteria,"linked_evidence":list(self.linked_evidence),"implementation_receipts":list(self.implementation_receipts),"qa_receipts":list(self.qa_receipts),"created_at":self.created_at.isoformat() if self.created_at else None,"updated_at":self.updated_at.isoformat() if self.updated_at else None}
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,6 +657,10 @@ class Task:
             raise DomainValidationError("detail must be text")
 
         status = frontmatter.get("status")
+        # Read-only compatibility for old GBrain pages. A future explicit task
+        # edit normalizes the stored field; merely viewing never writes it.
+        if status == "waiting":
+            status = "blocked"
         if status not in TASK_STATUSES:
             raise DomainValidationError(
                 f"status must be one of {', '.join(sorted(TASK_STATUSES))}"
@@ -842,7 +915,7 @@ def group_today(tasks: Iterable[Task], today: date) -> TodayGroups:
             continue
         if task.status == "active":
             in_progress.append(task)
-        elif task.status in {"waiting", "blocked"}:
+        elif task.status == "blocked":
             waiting_and_blocked.append(task)
         elif task.due_day == today or task.scheduled_day == today:
             todays_actions.append(task)
@@ -1227,6 +1300,24 @@ def new_project(
         created_at=now,
         updated_at=now,
     )
+
+
+def new_system_ticket(*, title: str, verbatim_request: str, target_subsystem: str,
+                      priority: str, now: datetime, identity: str,
+                      acceptance_criteria: str = "") -> SystemTicket:
+    clean_title, request = title.strip(), verbatim_request.strip()
+    if not clean_title or len(clean_title) > 160:
+        raise DomainValidationError("system ticket title must be 1 to 160 characters")
+    if not request:
+        raise DomainValidationError("system ticket verbatim_request is required")
+    if target_subsystem not in SYSTEM_TICKET_TARGETS:
+        raise DomainValidationError("system ticket target_subsystem is invalid")
+    if priority not in TASK_PRIORITIES:
+        raise DomainValidationError("system ticket priority is invalid")
+    safe_identity = re.sub(r"[^a-z0-9]", "", identity.lower())[:12]
+    if len(safe_identity) < 6:
+        raise DomainValidationError("identity must contain at least 6 letters or numbers")
+    return SystemTicket(f"tasks/system-tickets/{_slugify_title(clean_title)}-{safe_identity}", clean_title, "planned", request, target_subsystem, priority, acceptance_criteria.strip(), created_at=now, updated_at=now)
 
 
 def new_goal(
