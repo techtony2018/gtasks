@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.41",
+  "current_version": "V0.0.42",
   "releases": [
     {
       "version": "V0.0.1",
@@ -246,6 +246,12 @@
       "date": "2026-07-31",
       "title": "Reliable System Ticket visibility",
       "summary": "System Tickets now retry their canonical read after the initial task sync and clearly show any malformed ticket data with a safe inspection path instead of a silent empty state."
+    },
+    {
+      "version": "V0.0.42",
+      "date": "2026-07-31",
+      "title": "Compact Mission Control actions",
+      "summary": "Mission Control now uses accessible icon controls with clear hover and keyboard labels for standard actions, a narrower navigation rail, and more compact first-view ticket cards while keeping full details available on demand."
     }
   ]
 }

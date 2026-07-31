@@ -864,6 +864,20 @@ function renderNavigation() {
   });
 }
 
+function actionIcon(symbol, label, { primary = false, className = "" } = {}) {
+  const button = node(
+    "button",
+    `action-icon-button has-tooltip${primary ? " action-icon-primary" : ""}${className ? ` ${className}` : ""}`,
+  );
+  button.type = "button";
+  button.setAttribute("aria-label", label);
+  button.dataset.tooltip = label;
+  const glyph = node("span", "action-icon-glyph", symbol);
+  glyph.setAttribute("aria-hidden", "true");
+  button.append(glyph);
+  return button;
+}
+
 function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
@@ -906,16 +920,12 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   row.append(button);
   if (todayActions) {
     const actions = node("div", "task-row-actions");
-    const edit = node("button", "row-action-button", "Edit");
-    edit.type = "button";
-    edit.setAttribute("aria-label", `Edit ${task.title || task.summary}`);
+    const edit = actionIcon("✎", `Edit ${task.title || task.summary}`, { className: "row-action-button" });
     edit.addEventListener("click", () => {
       selectTask(task.slug);
       openEditTask();
     });
-    const duplicate = node("button", "row-action-button", "Duplicate");
-    duplicate.type = "button";
-    duplicate.setAttribute("aria-label", `Duplicate ${task.title || task.summary}`);
+    const duplicate = actionIcon("⧉", `Duplicate ${task.title || task.summary}`, { className: "row-action-button" });
     duplicate.addEventListener("click", () => {
       selectTask(task.slug);
       openDuplicateTask();
@@ -962,8 +972,7 @@ function emptyActionState() {
     ),
   );
   const actions = node("div", "inline-actions");
-  const addButton = node("button", "submit-button", "Create Task");
-  addButton.type = "button";
+  const addButton = actionIcon("+", "Create Task", { primary: true });
   addButton.addEventListener("click", openCreateTask);
   const inboxButton = node("button", "secondary-button", "Choose from Inbox");
   inboxButton.type = "button";
@@ -985,8 +994,7 @@ function creationEntry(view) {
         : "Create a canonical task with its due date, assignee, and optional progress tracking.",
     ),
   );
-  const button = node("button", "submit-button", "Create Task");
-  button.type = "button";
+  const button = actionIcon("+", "Create Task", { primary: true });
   button.addEventListener("click", openCreateTask);
   entry.append(button);
   return entry;
@@ -1086,8 +1094,7 @@ function simpleEmpty(meta) {
     node("h2", "", meta.emptyTitle),
     node("p", "", meta.emptyCopy),
   );
-  const addButton = node("button", "submit-button", "Create Task");
-  addButton.type = "button";
+  const addButton = actionIcon("+", "Create Task", { primary: true });
   addButton.addEventListener("click", openCreateTask);
   content.append(addButton);
   wrapper.append(content);
@@ -1869,10 +1876,7 @@ function renderAgentWorkView() {
   const grid = node("div", "agent-profile-grid");
   state.agents.forEach((agent) => {
     const card = node("article", "agent-profile-card");
-    const profile = node("button", "agent-card-profile-button", "⋯");
-    profile.type = "button";
-    profile.setAttribute("aria-label", `Open ${agent.name} profile`);
-    profile.title = `Open ${agent.name} profile`;
+    const profile = actionIcon("⋯", `Open ${agent.name} profile`, { className: "agent-card-profile-button" });
     profile.addEventListener("click", () => openAgentProfile(agent));
     const heading = node("div", "agent-profile-heading");
     heading.append(
@@ -1991,8 +1995,7 @@ function renderGoalsView() {
     node("h2", "", "Tony’s Goals"),
     node("p", "", "Active goals stay prominent; paused goals remain available below."),
   );
-  const create = node("button", "submit-button", "New Goal");
-  create.type = "button";
+  const create = actionIcon("+", "New Goal", { primary: true });
   create.addEventListener("click", openNewGoal);
   heading.append(copy, create);
   fragment.append(heading);
@@ -2035,8 +2038,7 @@ function renderProjectsView() {
       "Projects remain here even before a task is assigned.",
     ),
   );
-  const create = node("button", "submit-button", "New Project");
-  create.type = "button";
+  const create = actionIcon("+", "New Project", { primary: true });
   create.addEventListener("click", openNewProject);
   heading.append(copy, create);
   fragment.append(heading);
@@ -2079,14 +2081,12 @@ function renderProjectsView() {
           ? `${tasks.length} assigned task${tasks.length === 1 ? "" : "s"}`
           : "No tasks assigned yet",
       ),
-      node("code", "", project.slug),
     );
     const goalNames = (project.supporting_goal_slugs || [])
       .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug)?.title)
       .filter(Boolean);
     card.append(node("p", "", goalNames.length ? `Supports: ${goalNames.join(", ")}` : "No supporting goals selected."));
-    const edit = node("button", "secondary-button", "Edit");
-    edit.type = "button";
+    const edit = actionIcon("✎", `Edit ${project.title}`);
     edit.addEventListener("click", () => openEditProject(project));
     card.append(edit);
     grid.append(card);
@@ -2890,9 +2890,9 @@ function proposalCard(proposal) {
   );
   if (proposal.source_kind === "task" && proposal.status === "proposed") {
     const actions = node("div", "proposal-actions");
-    const edit = node("button", "secondary-button", "Edit"); edit.type = "button";
+    const edit = actionIcon("✎", `Edit ${proposal.title}`);
     edit.addEventListener("click", (event) => { event.stopPropagation(); selectTask(proposal.slug); openEditTask(); });
-    const approve = node("button", "submit-button", "Approve"); approve.type = "button";
+    const approve = actionIcon("✓", `Approve ${proposal.title}`, { primary: true });
     approve.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "approve"); });
     const reject = node("button", "danger-button", "Reject"); reject.type = "button";
     reject.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "reject"); });
@@ -3144,7 +3144,7 @@ function renderSystemTicketsView() {
   const heading = node("div", "projects-view-heading");
   const copy = node("div");
   copy.append(node("h2", "", "Mission Control System Tickets"), node("p", "", "Separate canonical change requests. Nightly work selects only Planned tickets; implementation and independent QA receipts remain with the ticket."));
-  const create = node("button", "submit-button", "New Ticket"); create.type = "button"; create.addEventListener("click", openSystemTicketDialog);
+  const create = actionIcon("+", "New Ticket", { primary: true }); create.addEventListener("click", openSystemTicketDialog);
   heading.append(copy, create); section.append(heading);
   if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }
   if (state.systemTicketsError) { section.append(node("div", "section-empty", state.systemTicketsError)); return section; }
@@ -3169,12 +3169,13 @@ function renderSystemTicketsView() {
   if (!state.systemTickets.length) { section.append(node("div", "section-empty", state.systemTicketIssues.length ? "No valid System Tickets are ready to display until the ticket data above is repaired." : "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
   const list = node("div", "task-list");
   state.systemTickets.forEach((ticket) => {
-    const card = node("article", "task-row");
-    card.append(node("div", "", ticket.title), node("span", `priority-badge ${ticket.priority}`, ticket.status));
-    card.append(node("p", "", `${ticket.target_subsystem.replace(/_/g, " ")} · ${ticket.acceptance_criteria || "No acceptance criteria recorded."}`));
-    card.append(node("p", "", `Implementation receipts: ${ticket.implementation_receipts.length} · QA receipts: ${ticket.qa_receipts.length}`));
+    const card = node("article", "system-ticket-card");
+    const header = node("div", "system-ticket-card-header");
+    header.append(node("strong", "", ticket.title), node("span", `priority-badge ${ticket.priority}`, ticket.status));
+    const meta = node("p", "system-ticket-card-meta", `${ticket.target_subsystem.replace(/_/g, " ")} · ${ticket.priority} priority · ${ticket.implementation_receipts.length} implementation / ${ticket.qa_receipts.length} QA receipts`);
+    card.append(header, meta);
     const detail = node("details", "system-ticket-detail");
-    detail.append(node("summary", "", "Details"), node("p", "", ticket.verbatim_request), node("p", "", `Evidence: ${ticket.linked_evidence.length ? ticket.linked_evidence.join(", ") : "None recorded."}`), node("p", "", `Implementation: ${ticket.implementation_receipts.length ? ticket.implementation_receipts.join(", ") : "No receipt yet."}`), node("p", "", `Independent UX QA: ${ticket.qa_receipts.length ? ticket.qa_receipts.join(", ") : "No receipt yet."}`));
+    detail.append(node("summary", "", "Details"), node("p", "", `Acceptance criteria: ${ticket.acceptance_criteria || "None recorded."}`), node("p", "", ticket.verbatim_request), node("p", "", `Evidence: ${ticket.linked_evidence.length ? ticket.linked_evidence.join(", ") : "None recorded."}`), node("p", "", `Implementation: ${ticket.implementation_receipts.length ? ticket.implementation_receipts.join(", ") : "No receipt yet."}`), node("p", "", `Independent UX QA: ${ticket.qa_receipts.length ? ticket.qa_receipts.join(", ") : "No receipt yet."}`));
     card.append(detail);
     list.append(card);
   });

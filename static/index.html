@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light">
     <meta name="theme-color" content="#f4f5f0">
     <title>Mission Control</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" defer></script>
   </head>
@@ -13,72 +14,73 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="Mission Control navigation">
         <a class="brand" href="/" aria-label="Mission Control Today">
+          <span class="mc-mark" aria-hidden="true">MC</span>
           <span>
             <strong>Mission Control</strong>
             <small>GBrain-backed tasks</small>
           </span>
         </a>
 
-        <button class="create-task-button" id="create-task-button" type="button">
-          Create Task
+        <button class="create-task-button action-icon-button has-tooltip" id="create-task-button" type="button" aria-label="Create Task" data-tooltip="Create Task">
+          <span aria-hidden="true">+</span>
         </button>
 
         <nav class="nav-list" aria-label="Task views">
-          <button class="nav-item" data-view="inbox" type="button">
-            <span>Inbox</span>
+          <button class="nav-item has-tooltip" data-view="inbox" type="button" aria-label="Inbox" data-tooltip="Inbox">
+            <span class="nav-icon" aria-hidden="true">↓</span><span class="nav-label">Inbox</span>
             <span class="nav-count" data-count="inbox">0</span>
           </button>
-          <button class="nav-item is-active" data-view="today" type="button">
-            <span>Today</span>
+          <button class="nav-item is-active has-tooltip" data-view="today" type="button" aria-label="Today" data-tooltip="Today">
+            <span class="nav-icon" aria-hidden="true">●</span><span class="nav-label">Today</span>
             <span class="nav-count" data-count="today">0</span>
           </button>
-          <button class="nav-item" data-view="week" type="button">
-            <span>Calendar</span>
+          <button class="nav-item has-tooltip" data-view="week" type="button" aria-label="Calendar" data-tooltip="Calendar">
+            <span class="nav-icon" aria-hidden="true">□</span><span class="nav-label">Calendar</span>
             <span class="nav-count" data-count="week">0</span>
           </button>
-          <button class="nav-item" data-view="board" type="button">
-            <span>Board</span>
+          <button class="nav-item has-tooltip" data-view="board" type="button" aria-label="Board" data-tooltip="Board">
+            <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Board</span>
             <span class="nav-count" data-count="board">0</span>
           </button>
-          <button class="nav-item" data-view="agent-work" type="button">
-            <span>Agents</span>
+          <button class="nav-item has-tooltip" data-view="agent-work" type="button" aria-label="Agents" data-tooltip="Agents">
+            <span class="nav-icon" aria-hidden="true">◌</span><span class="nav-label">Agents</span>
             <span class="nav-count" data-count="agent-work">0</span>
           </button>
-          <button class="nav-item" data-view="blocked" type="button">
-            <span>Blocked</span>
+          <button class="nav-item has-tooltip" data-view="blocked" type="button" aria-label="Blocked" data-tooltip="Blocked">
+            <span class="nav-icon" aria-hidden="true">!</span><span class="nav-label">Blocked</span>
             <span class="nav-count" data-count="blocked">0</span>
           </button>
-          <button class="nav-item" data-view="projects" type="button">
-            <span>Projects</span>
+          <button class="nav-item has-tooltip" data-view="projects" type="button" aria-label="Projects" data-tooltip="Projects">
+            <span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Projects</span>
             <span class="nav-count" data-count="projects">0</span>
           </button>
-          <button class="nav-item" data-view="goals" type="button">
-            <span>Goals</span>
+          <button class="nav-item has-tooltip" data-view="goals" type="button" aria-label="Goals" data-tooltip="Goals">
+            <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Goals</span>
             <span class="nav-count" data-count="goals">0</span>
           </button>
-          <button class="nav-item" data-view="completed" type="button">
-            <span>Completed</span>
+          <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
+            <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
             <span class="nav-count" data-count="completed">0</span>
           </button>
         </nav>
 
-        <div class="store-card">
+        <div class="store-card has-tooltip" data-tooltip="GBrain connection status">
           <div class="store-status">
             <span class="status-dot" id="store-dot" aria-hidden="true"></span>
             <strong id="store-label">Connecting</strong>
           </div>
           <p>Every task stays in GBrain. Mission Control keeps no separate task database.</p>
         </div>
-        <button class="about-button" id="system-tickets-button" type="button">
-          <span>Mission Control System Tickets</span>
+        <button class="about-button has-tooltip" id="system-tickets-button" type="button" aria-label="Mission Control System Tickets" data-tooltip="Mission Control System Tickets">
+          <span class="rail-icon" aria-hidden="true">▤</span><span class="rail-label">Mission Control System Tickets</span>
           <strong id="system-tickets-count">0</strong>
         </button>
-        <button class="about-button" id="logs-button" type="button">
-          <span>Logs</span>
+        <button class="about-button has-tooltip" id="logs-button" type="button" aria-label="Logs" data-tooltip="Logs">
+          <span class="rail-icon" aria-hidden="true">≡</span><span class="rail-label">Logs</span>
           <strong>Read-only</strong>
         </button>
-        <button class="about-button" id="about-button" type="button">
-          <span>About</span>
+        <button class="about-button has-tooltip" id="about-button" type="button" aria-label="About" data-tooltip="About">
+          <span class="rail-icon" aria-hidden="true">i</span><span class="rail-label">About</span>
           <strong id="sidebar-version">Loading…</strong>
         </button>
       </aside>
@@ -102,8 +104,8 @@
                 data-interval-minutes="30"
               >Auto-refresh every 30 minutes</span>
             </div>
-            <button class="refresh-button" id="refresh-button" type="button">
-              Refresh
+            <button class="refresh-button action-icon-button has-tooltip" id="refresh-button" type="button" aria-label="Refresh canonical GBrain data" data-tooltip="Refresh canonical GBrain data">
+              <span aria-hidden="true">↻</span>
             </button>
           </div>
         </header>
@@ -131,9 +133,9 @@
         <div class="detail-content is-hidden" id="detail-content">
           <div class="detail-toolbar">
             <span class="detail-status" id="task-detail-status"></span>
-            <button class="secondary-button" id="task-edit-button" type="button">Edit</button>
-            <button class="secondary-button" id="task-duplicate-button" type="button">Duplicate</button>
-            <button class="submit-button is-hidden" id="task-approve-button" type="button">Approve</button>
+            <button class="action-icon-button has-tooltip" id="task-edit-button" type="button" aria-label="Edit task" data-tooltip="Edit task"><span aria-hidden="true">✎</span></button>
+            <button class="action-icon-button has-tooltip" id="task-duplicate-button" type="button" aria-label="Duplicate task" data-tooltip="Duplicate task"><span aria-hidden="true">⧉</span></button>
+            <button class="action-icon-button action-icon-primary has-tooltip is-hidden" id="task-approve-button" type="button" aria-label="Approve task" data-tooltip="Approve task"><span aria-hidden="true">✓</span></button>
             <button class="danger-button is-hidden" id="task-reject-button" type="button">Reject</button>
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
@@ -184,7 +186,7 @@
             <button class="icon-button" id="goal-detail-close" type="button" aria-label="Close goal details">×</button>
           </div>
           <div class="goal-detail-actions">
-            <button class="secondary-button" id="goal-edit-button" type="button">Edit</button>
+            <button class="action-icon-button has-tooltip" id="goal-edit-button" type="button" aria-label="Edit goal" data-tooltip="Edit goal"><span aria-hidden="true">✎</span></button>
             <button class="secondary-button" id="goal-pause-button" type="button">
               Pause
             </button>

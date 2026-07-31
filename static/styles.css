@@ -64,12 +64,12 @@ a:focus-visible {
 .app-shell {
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: 232px minmax(520px, 1fr) 0;
+  grid-template-columns: 92px minmax(520px, 1fr) 0;
   transition: grid-template-columns 180ms ease;
 }
 
 .app-shell:has(.detail-panel[aria-hidden="false"]) {
-  grid-template-columns: 232px minmax(500px, 1fr) 360px;
+  grid-template-columns: 92px minmax(500px, 1fr) 360px;
 }
 
 .sidebar {
@@ -78,7 +78,8 @@ a:focus-visible {
   height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding: 24px 18px 18px;
+  align-items: center;
+  padding: 18px 10px 12px;
   border-right: 1px solid var(--line);
   background: #eef0ea;
   overflow: auto;
@@ -87,9 +88,26 @@ a:focus-visible {
 .brand {
   display: flex;
   align-items: center;
+  gap: 0;
   color: var(--ink);
   text-decoration: none;
   padding: 0 6px;
+}
+
+.brand > span:not(.mc-mark) { display: none; }
+
+.mc-mark {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: #f4f5f0;
+  background: var(--accent);
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: .04em;
 }
 
 .brand strong,
@@ -115,16 +133,85 @@ a:focus-visible {
 }
 
 .create-task-button {
-  width: 100%;
-  min-height: 36px;
-  margin: 26px 0 18px;
+  width: 38px;
+  min-height: 38px;
+  margin: 22px 0 16px;
   border: 1px solid #bad0c0;
   border-radius: 9px;
   color: var(--accent-dark);
   background: var(--accent-soft);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 20px;
   font-weight: 720;
+}
+
+.action-icon-button {
+  position: relative;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.action-icon-button:hover,
+.action-icon-button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.action-icon-primary {
+  border-color: var(--accent);
+  color: white;
+  background: var(--accent);
+}
+
+.action-icon-primary:hover,
+.action-icon-primary:focus-visible {
+  color: white;
+  background: var(--accent-dark);
+}
+
+.action-icon-glyph { font-size: 17px; font-weight: 760; line-height: 1; }
+
+.has-tooltip::after,
+.icon-button[aria-label]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: calc(100% + 7px);
+  width: max-content;
+  max-width: min(220px, 80vw);
+  padding: 5px 7px;
+  border-radius: 6px;
+  color: white;
+  background: #2b312b;
+  box-shadow: 0 4px 12px rgba(32, 35, 31, .2);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.25;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.has-tooltip:hover::after,
+.has-tooltip:focus-visible::after,
+.icon-button[aria-label]:hover::after,
+.icon-button[aria-label]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .create-task-button:hover {
@@ -163,22 +250,24 @@ kbd {
 .nav-list {
   display: grid;
   gap: 3px;
+  width: 100%;
 }
 
 .nav-item {
+  position: relative;
   width: 100%;
-  min-height: 40px;
+  min-height: 38px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr;
   align-items: center;
   gap: 8px;
-  padding: 0 10px;
+  padding: 0;
   border: 0;
   border-radius: 9px;
   background: transparent;
   color: #565c54;
   cursor: pointer;
-  text-align: left;
+  text-align: center;
   font-size: 13px;
 }
 
@@ -195,15 +284,35 @@ kbd {
 }
 
 .nav-count {
-  min-width: 20px;
+  position: absolute;
+  top: 3px;
+  right: 7px;
+  min-width: 13px;
   color: var(--faint);
   font-size: 11px;
   text-align: right;
 }
 
+.nav-icon,
+.rail-icon {
+  display: inline-grid;
+  place-items: center;
+  font-size: 15px;
+  font-weight: 740;
+  line-height: 1;
+}
+
+.nav-label,
+.rail-label { display: none; }
+
 .store-card {
+  position: relative;
+  width: 36px;
+  min-height: 36px;
+  display: grid;
+  place-items: center;
   margin-top: auto;
-  padding: 13px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.48);
@@ -215,6 +324,9 @@ kbd {
   gap: 8px;
   font-size: 11px;
 }
+
+.store-status strong,
+.store-card p { display: none; }
 
 .status-dot {
   width: 7px;
@@ -242,13 +354,14 @@ kbd {
 }
 
 .about-button {
-  width: 100%;
-  min-height: 34px;
+  position: relative;
+  width: 36px;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 7px;
-  padding: 0 10px;
+  justify-content: center;
+  margin-top: 5px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   color: var(--muted);
@@ -264,6 +377,9 @@ kbd {
 }
 
 .about-button strong {
+  position: absolute;
+  top: 2px;
+  right: 3px;
   color: var(--accent-dark);
   font-size: 10px;
 }
@@ -347,12 +463,12 @@ kbd {
 
 .refresh-button {
   min-height: 34px;
-  padding: 0 12px;
+  padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
   background: var(--surface);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 18px;
   font-weight: 650;
 }
 
@@ -745,16 +861,16 @@ kbd {
 }
 
 .row-action-button {
+  width: 29px;
+  min-width: 29px;
+  height: 29px;
   min-height: 29px;
-  padding: 0 8px;
-  border: 1px solid var(--line-strong);
+  padding: 0;
   border-radius: 7px;
   background: var(--surface);
   color: var(--muted);
   cursor: pointer;
-  font: inherit;
   font-size: 10px;
-  font-weight: 700;
 }
 
 .row-action-button:hover,
@@ -1066,6 +1182,7 @@ kbd {
 }
 
 .icon-button {
+  position: relative;
   width: 34px;
   height: 34px;
   display: grid;
@@ -1079,6 +1196,39 @@ kbd {
   font-size: 20px;
   line-height: 1;
 }
+
+.system-ticket-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px 9px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.system-ticket-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.system-ticket-card-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.system-ticket-card-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.system-ticket-detail { font-size: 11px; }
+.system-ticket-detail summary { cursor: pointer; color: var(--accent-dark); font-weight: 700; }
+.system-ticket-detail p { margin: 7px 0 0; color: var(--muted); line-height: 1.45; }
 
 .detail-content h2,
 .goal-detail-content h2 {
@@ -2908,12 +3058,7 @@ kbd {
     /* Keep the detail drawer in the layout flow at narrow desktop widths.
        A fixed drawer covered the right edge of Calendar's own scroller, so
        its final days could never be reached. */
-    grid-template-columns: 210px minmax(0, 1fr) minmax(300px, 360px);
-  }
-
-  .sidebar {
-    padding-left: 14px;
-    padding-right: 14px;
+    grid-template-columns: 92px minmax(0, 1fr) minmax(300px, 360px);
   }
 
   .detail-panel {
@@ -2942,13 +3087,16 @@ kbd {
 
   .brand {
     display: inline-flex;
+    gap: 9px;
   }
 
+  .brand > span:not(.mc-mark) { display: block; }
+
   .create-task-button {
-    width: auto;
+    width: 34px;
     min-height: 32px;
     margin: 14px 0 0;
-    padding: 0 12px;
+    padding: 0;
   }
 
   .create-task-entry {
@@ -2956,8 +3104,8 @@ kbd {
     flex-direction: column;
   }
 
-  .create-task-entry .submit-button {
-    width: 100%;
+  .create-task-entry .action-icon-button {
+    align-self: flex-start;
   }
 
   .nav-list {
@@ -2973,15 +3121,21 @@ kbd {
     min-width: max-content;
     grid-template-columns: auto auto;
     padding: 0 10px;
+    gap: 7px;
   }
+
+  .nav-label,
+  .rail-label { display: inline; }
 
   .nav-count {
     display: none;
   }
 
   .store-card {
+    width: auto;
+    min-height: 30px;
     margin-top: 10px;
-    padding: 9px 11px;
+    padding: 0 11px;
   }
 
   .store-card p {
@@ -2989,10 +3143,16 @@ kbd {
   }
 
   .about-button {
+    width: auto;
+    min-width: 100%;
     min-height: 30px;
     margin-top: 3px;
     padding: 0 11px;
+    justify-content: flex-start;
+    gap: 7px;
   }
+
+  .about-button strong { position: static; margin-left: auto; }
 
   .logs-body {
     padding: 14px;

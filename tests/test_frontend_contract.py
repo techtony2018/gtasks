@@ -14,7 +14,7 @@ class FrontendContractTests(unittest.TestCase):
 
         breakpoint = stylesheet[stylesheet.index("@media (max-width: 1080px)") : stylesheet.index("@media (max-width: 760px)")]
         self.assertIn(
-            "grid-template-columns: 210px minmax(0, 1fr) minmax(300px, 360px)",
+            "grid-template-columns: 92px minmax(0, 1fr) minmax(300px, 360px)",
             breakpoint,
         )
         self.assertIn(".detail-panel", breakpoint)
@@ -137,7 +137,7 @@ class FrontendContractTests(unittest.TestCase):
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        store_end = html.index("</div>", html.index('class="store-card"'))
+        store_end = html.index("</div>", html.index('class="store-card'))
         about_button = html.index('id="about-button"')
         self.assertGreater(about_button, store_end)
         self.assertIn('id="sidebar-version"', html)
@@ -156,7 +156,7 @@ class FrontendContractTests(unittest.TestCase):
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        store_end = html.index("</div>", html.index('class="store-card"'))
+        store_end = html.index("</div>", html.index('class="store-card'))
         logs_button = html.index('id="logs-button"')
         about_button = html.index('id="about-button"')
         self.assertGreater(logs_button, store_end)
@@ -282,7 +282,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("ownerBadge({", agent_work)
         self.assertNotIn("ownerBadge({", proposal_card)
         self.assertIn('node("h4", "", proposal.title)', proposal_card)
-        self.assertIn('node("button", "secondary-button", "Edit")', proposal_card)
+        self.assertIn('actionIcon("✎", `Edit ${proposal.title}`)', proposal_card)
         self.assertIn('card.addEventListener("click", open)', proposal_card)
         self.assertIn("event.stopPropagation(); selectTask(proposal.slug); openEditTask()", proposal_card)
         self.assertNotIn("agentOwnerBadge", javascript)
@@ -338,7 +338,7 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn("Proposed Tasks", javascript)
         self.assertIn("All Agents", javascript)
-        self.assertIn('node("button", "submit-button", "Approve")', javascript)
+        self.assertIn('actionIcon("✓", `Approve ${proposal.title}`, { primary: true })', javascript)
         self.assertIn('node("button", "danger-button", "Reject")', javascript)
         self.assertIn('fetch("/api/proposals"', javascript)
         self.assertIn('id="proposal-review-dialog"', html)
@@ -377,7 +377,7 @@ class FrontendContractTests(unittest.TestCase):
             javascript.index("function renderAgentWorkView") : javascript.index("function renderCoordinatorSummary")
         ]
 
-        self.assertIn('node("button", "agent-card-profile-button", "⋯")', agent_work)
+        self.assertIn('actionIcon("⋯", `Open ${agent.name} profile`', agent_work)
         self.assertIn("openAgentProfile(agent)", agent_work)
         self.assertNotIn("node(\"details\"", agent_work)
         self.assertNotIn("Open Agent Profile", agent_work)
@@ -412,6 +412,49 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("upcoming:", javascript)
         self.assertNotIn("nav-glyph", html)
         self.assertNotIn("brand-mark", html)
+
+    def test_standard_actions_use_accessible_icon_controls_with_tooltips(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('rel="icon" href="/favicon.svg"', html)
+        self.assertIn('class="mc-mark"', html)
+        self.assertIn('data-tooltip="Create Task"', html)
+        self.assertIn('aria-label="Edit task"', html)
+        self.assertIn('aria-label="Duplicate task"', html)
+        self.assertIn('aria-label="Approve task"', html)
+        self.assertIn("function actionIcon", javascript)
+        self.assertIn("button.dataset.tooltip = label", javascript)
+        self.assertIn("actionIcon(\"✎\"", javascript)
+        self.assertIn("actionIcon(\"⧉\"", javascript)
+        self.assertIn("actionIcon(\"✓\"", javascript)
+        self.assertIn(".has-tooltip::after", css)
+        self.assertIn(".has-tooltip:focus-visible::after", css)
+        self.assertIn(".icon-button[aria-label]:focus-visible::after", css)
+
+    def test_navigation_uses_a_narrow_accessible_rail_and_expands_labels_on_mobile(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('aria-label="Inbox" data-tooltip="Inbox"', html)
+        self.assertIn('class="nav-icon" aria-hidden="true"', html)
+        self.assertIn('class="nav-label">Inbox</span>', html)
+        self.assertIn("grid-template-columns: 92px minmax(520px, 1fr) 0", css)
+        self.assertIn("grid-template-columns: 92px minmax(500px, 1fr) 360px", css)
+        mobile = css[css.index("@media (max-width: 760px)") :]
+        self.assertIn(".nav-label,", mobile)
+        self.assertIn(".rail-label { display: inline; }", mobile)
+
+    def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        tickets = javascript[javascript.index("function renderSystemTicketsView") : javascript.index("function openSystemTicketDialog")]
+        self.assertIn('node("details", "system-ticket-detail")', tickets)
+        self.assertIn("Acceptance criteria:", tickets)
+        self.assertIn(".system-ticket-card", css)
+        self.assertIn(".system-ticket-detail", css)
 
     def test_system_tickets_have_a_separate_planned_task_surface_above_logs(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -504,10 +547,10 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         agent_nav = html[
-            html.index('<button class="nav-item" data-view="agent-work"')
-            : html.index("</button>", html.index('<button class="nav-item" data-view="agent-work"'))
+            html.index('data-view="agent-work"')
+            : html.index("</button>", html.index('data-view="agent-work"'))
         ]
-        self.assertIn("<span>Agents</span>", agent_nav)
+        self.assertIn('<span class="nav-label">Agents</span>', agent_nav)
         self.assertNotIn("<span>Agent Work</span>", agent_nav)
         self.assertIn('"agent-work": {\n    title: "Agents"', javascript)
 
