@@ -191,6 +191,32 @@ class CollectionReadTests(unittest.TestCase):
 
 
 class AgentProfileReadTests(unittest.TestCase):
+    def test_reads_tony_board_avatar_from_canonical_person_attachment(self) -> None:
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "people/tony-guan",
+                        "type": "person",
+                        "title": "Tony Guan",
+                        "compiled_truth": (
+                            "# Tony Guan\n\n## Attachments\n\n"
+                            "![Tony Profile](people/tony-guan/Tony Profile.jpeg)"
+                        ),
+                        "frontmatter": {},
+                    }
+                ]
+            }
+        )
+
+        profile = GBrainAdapter(runner).get_tony_profile()
+
+        self.assertEqual(profile["slug"], "people/tony-guan")
+        self.assertEqual(profile["avatar"], {
+            "kind": "attachment",
+            "value": "/media/people/tony-guan/Tony%20Profile.jpeg",
+        })
+
     def test_timmy_uses_the_exact_lowercase_slug_and_rejects_a_non_agent_page(self) -> None:
         timmy_page = {
             "slug": "agents/timmy",

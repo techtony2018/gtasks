@@ -83,6 +83,16 @@ class FakeAdapter:
         self.proposal_decisions: list[tuple[str, str, str]] = []
         self.default_goal_updates: list[tuple[str, str, bool]] = []
 
+    def get_tony_profile(self) -> dict:
+        return {
+            "slug": "people/tony-guan",
+            "name": "Tony Guan",
+            "avatar": {
+                "kind": "attachment",
+                "value": "/media/people/tony-guan/Tony%20Profile.jpeg",
+            },
+        }
+
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         self.collection_reads.append(root_slug)
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
@@ -501,7 +511,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.17")
+        self.assertEqual(payload["version"], "V0.0.18")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -509,11 +519,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.17")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.17")
+        self.assertEqual(payload["current_version"], "V0.0.18")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.18")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.18",
                 "V0.0.17",
                 "V0.0.16",
                 "V0.0.15",
@@ -684,6 +695,11 @@ class LogsApiTests(unittest.TestCase):
         self.assertEqual(logs["queue_reader"]["status"], "unavailable")
         self.assertIn("GTasks remains available", logs["queue_reader"]["message"])
         self.assertEqual(tasks["tasks"], [])
+        self.assertEqual(tasks["owner"]["slug"], "people/tony-guan")
+        self.assertEqual(
+            tasks["owner"]["avatar"]["value"],
+            "/media/people/tony-guan/Tony%20Profile.jpeg",
+        )
 
     def test_logs_reject_unknown_filters(self) -> None:
         harness = ServerHarness(self, FakeAdapter())

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.17",
+  "current_version": "V0.0.18",
   "releases": [
     {
       "version": "V0.0.1",
@@ -102,6 +102,12 @@
       "date": "2026-07-30",
       "title": "Reliable agent avatar identity",
       "summary": "Agent avatars now preserve each profile’s canonical Agent identity after Memory Stargraph attachment verification, so avatar changes cannot make Toddy, Timmy, or Tammy disappear from Agent Work."
+    },
+    {
+      "version": "V0.0.18",
+      "date": "2026-07-30",
+      "title": "Tony avatar on Board",
+      "summary": "Board cards for Tony’s personal tasks now display Tony’s canonical GBrain profile avatar, with a safe initials fallback if the profile image is unavailable."
     }
   ]
 }

@@ -240,6 +240,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('fetch("/api/agents"', javascript)
         self.assertIn('fetch("/api/agent-work"', javascript)
         self.assertIn("function agentBoardCard", javascript)
+        self.assertIn("function ownerBadge", javascript)
+        self.assertIn("ownerBadge(state.snapshot?.owner", javascript)
         self.assertIn("agent-owner-badge", javascript)
         self.assertIn("owner.name", javascript)
         self.assertIn("owner.avatar", javascript)
@@ -335,7 +337,7 @@ class FrontendContractTests(unittest.TestCase):
             : javascript.index("function updateBoardStatus")
         ]
 
-        self.assertIn("agentOwnerBadge(task.owner)", body)
+        self.assertIn("ownerBadge(task.owner)", body)
         self.assertIn("Move to", body)
         self.assertIn("moveBoardTask(task.slug", body)
         self.assertIn("card.draggable = true", body)

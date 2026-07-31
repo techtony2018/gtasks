@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import hashlib
+import re
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from threading import BoundedSemaphore
 from typing import Any, Mapping, Protocol
+from urllib.parse import quote
 
 from .domain import (
     ACTIVE_ROOT,
@@ -35,6 +37,8 @@ from .domain import (
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
+TONY_PROFILE_SLUG = "people/tony-guan"
+_MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
 class GBrainError(RuntimeError):
@@ -943,6 +947,47 @@ def _normalize_collection_task(
 class GBrainAdapter:
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self.runner = runner or SubprocessCommandRunner()
+
+    def get_tony_profile(self) -> dict[str, Any]:
+        """Read Tony's Board identity from the canonical GBrain person page."""
+        page = self.runner.run("get_page", {"slug": TONY_PROFILE_SLUG})
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError("Tony profile readback was not structured")
+        if page.get("type") != "person":
+            raise DomainValidationError("people/tony-guan is not a person page")
+        title = page.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise DomainValidationError("Tony profile title is required")
+        name = title.strip()
+        avatar: dict[str, str] = {
+            "kind": "initials",
+            "value": "".join(part[0].upper() for part in name.split())[:2] or "T",
+        }
+        frontmatter = page.get("frontmatter")
+        frontmatter = frontmatter if isinstance(frontmatter, Mapping) else {}
+        configured_avatar = frontmatter.get("avatar")
+        if (
+            isinstance(configured_avatar, Mapping)
+            and configured_avatar.get("kind") == "attachment"
+            and isinstance(configured_avatar.get("value"), str)
+            and str(configured_avatar["value"]).startswith("/media/")
+        ):
+            avatar = {"kind": "attachment", "value": str(configured_avatar["value"])}
+        else:
+            body = page.get("compiled_truth")
+            if isinstance(body, str):
+                for match in _MARKDOWN_ATTACHMENT.finditer(body):
+                    relative_path = match.group(1).strip()
+                    if (
+                        relative_path.startswith(f"{TONY_PROFILE_SLUG}/")
+                        and ".." not in relative_path.split("/")
+                    ):
+                        avatar = {
+                            "kind": "attachment",
+                            "value": f"/media/{quote(relative_path, safe='/')}",
+                        }
+                        break
+        return {"slug": TONY_PROFILE_SLUG, "name": name, "avatar": avatar}
 
     def _bounded_map(self, function: Any, values: list[Any]) -> list[Any]:
         if len(values) < 2 or not isinstance(self.runner, SubprocessCommandRunner):

@@ -1013,6 +1013,10 @@ function boardCard(task) {
     node("span", `priority-badge ${task.priority}`, task.priority),
   );
   button.append(
+    ownerBadge(state.snapshot?.owner || {
+      name: "Tony",
+      avatar: { kind: "initials", value: "T" },
+    }),
     heading,
     node("span", "board-card-next", task.next_action || "Next action not set"),
     meta,
@@ -1062,7 +1066,7 @@ function boardCard(task) {
   return card;
 }
 
-function agentOwnerBadge(owner) {
+function ownerBadge(owner) {
   const badge = node("span", "agent-owner-badge");
   const avatar = owner.avatar?.kind === "attachment"
     ? document.createElement("img")
@@ -1117,7 +1121,7 @@ function agentBoardCard(task) {
     node("span", `priority-badge ${task.priority}`, task.priority),
   );
   button.append(
-    agentOwnerBadge(task.owner),
+    ownerBadge(task.owner),
     heading,
     node("span", "board-card-next", task.next_action || "Next action not set"),
     meta,

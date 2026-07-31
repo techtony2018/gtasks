@@ -132,16 +132,26 @@ def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
 
 
 def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         active_future = executor.submit(adapter.list_collection_tasks, ACTIVE_ROOT)
         completed_future = executor.submit(
             adapter.list_collection_tasks,
             COMPLETED_ROOT,
         )
         goals_future = executor.submit(adapter.list_goals)
+        owner_future = executor.submit(adapter.get_tony_profile)
         active_read = active_future.result()
         completed_read = completed_future.result()
         goal_read = goals_future.result()
+        try:
+            owner = owner_future.result()
+        except (DomainValidationError, GBrainError):
+            # Personal-avatar presentation must never block canonical tasks.
+            owner = {
+                "slug": "people/tony-guan",
+                "name": "Tony",
+                "avatar": {"kind": "initials", "value": "T"},
+            }
     active = _dedupe_tasks(list(active_read.tasks))
     archived = _dedupe_tasks(list(completed_read.tasks))
     all_tasks = _dedupe_tasks(active + archived)
@@ -193,6 +203,7 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
             "completed": COMPLETED_ROOT,
             "goals": GOALS_ROOT,
         },
+        "owner": owner,
         "tasks": [task.to_dict() for task in all_tasks],
         "goals": goal_progress,
         "today": group_today(active, today).to_dict(),
