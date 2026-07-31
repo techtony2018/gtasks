@@ -1578,7 +1578,10 @@ function agentBoardCard(task) {
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
   appendTaskProgress(button, task);
-  button.addEventListener("click", () => selectTask(task.slug));
+  // Agent work can be refreshed independently of the Board. Keep the exact
+  // canonical card payload as a selection fallback so a mobile tap cannot be
+  // lost if a read finishes between render and click.
+  button.addEventListener("click", () => selectTask(task.slug, task));
 
   const moveControl = node("label", "board-card-move");
   moveControl.append(node("span", "", "Move to"));
@@ -3358,8 +3361,8 @@ async function submitSystemTicket(event) {
   catch(error){ elements.systemTicketError.textContent=error.message; elements.systemTicketError.classList.remove("is-hidden"); }
 }
 
-function selectTask(slug) {
-  const task = findTaskBySlug(slug);
+function selectTask(slug, taskFallback = null) {
+  const task = findTaskBySlug(slug) || taskFallback;
   if (!task) return;
   state.selectedSlug = slug;
   state.selectedKind = "task";

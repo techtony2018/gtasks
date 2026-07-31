@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.56",
+  "current_version": "V0.0.57",
   "releases": [
     {
       "version": "V0.0.1",
@@ -336,6 +336,12 @@
       "date": "2026-07-31",
       "title": "Reliable agent work recovery",
       "summary": "Board now keeps Tony’s work visible and explains when GBrain cannot read agent work, while preserving the selected agent-task filter across refreshes."
+    },
+    {
+      "version": "V0.0.57",
+      "date": "2026-07-31",
+      "title": "Reliable mobile agent task details",
+      "summary": "Agent work cards now keep their verified detail available when selected on mobile, even if a background refresh finishes at the same time."
     }
   ]
 }

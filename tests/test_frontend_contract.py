@@ -306,6 +306,16 @@ class FrontendContractTests(unittest.TestCase):
         ]
         self.assertLess(render_board.index(": unavailable"), render_board.index(": state.agentTasks.length"))
 
+    def test_agent_board_card_keeps_its_detail_payload_for_mobile_selection(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        card = javascript[
+            javascript.index("function agentBoardCard") : javascript.index("function updateBoardStatus")
+        ]
+        self.assertIn("selectTask(task.slug, task)", card)
+        self.assertIn("function selectTask(slug, taskFallback = null)", javascript)
+        self.assertIn("findTaskBySlug(slug) || taskFallback", javascript)
+
     def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         agent_work = javascript[
