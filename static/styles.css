@@ -3207,6 +3207,20 @@ kbd {
     padding: 28px 18px 48px;
   }
 
+  /* On a phone, details are a focused sheet rather than a lower page section.
+     A selected Board card must be immediately usable without scrolling past
+     the Board columns. */
+  .detail-panel[aria-hidden="false"] {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    border-left: 0;
+    overflow: hidden auto;
+  }
+
   .coordinator-agent-grid { grid-template-columns: 1fr; }
 
   .topbar {

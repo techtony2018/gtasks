@@ -316,6 +316,15 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function selectTask(slug, taskFallback = null)", javascript)
         self.assertIn("findTaskBySlug(slug) || taskFallback", javascript)
 
+    def test_mobile_task_detail_is_a_visible_focused_sheet(self) -> None:
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('.detail-panel[aria-hidden="false"]', css)
+        detail_sheet = css[css.index('.detail-panel[aria-hidden="false"]', css.index("On a phone")) :]
+        self.assertIn("position: fixed", detail_sheet[:300])
+        self.assertIn("inset: 0", detail_sheet[:300])
+        self.assertIn("height: 100dvh", detail_sheet[:300])
+
     def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         agent_work = javascript[

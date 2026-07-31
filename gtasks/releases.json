@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.57",
+  "current_version": "V0.0.58",
   "releases": [
     {
       "version": "V0.0.1",
@@ -342,6 +342,12 @@
       "date": "2026-07-31",
       "title": "Reliable mobile agent task details",
       "summary": "Agent work cards now keep their verified detail available when selected on mobile, even if a background refresh finishes at the same time."
+    },
+    {
+      "version": "V0.0.58",
+      "date": "2026-07-31",
+      "title": "Usable mobile task details",
+      "summary": "Opening a task on a phone now presents its details in an immediate focused sheet, including agent work and its Markdown notes."
     }
   ]
 }
