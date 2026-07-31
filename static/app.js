@@ -42,6 +42,9 @@ function renderSafeMarkdown(container, value) {
   if (!container.childNodes.length) container.textContent = "No additional detail yet.";
 }
 
+const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
+const AGENT_TASKS_PREFERENCE_COOKIE = "mission-control-show-agent-tasks";
+
 const state = {
   snapshot: null,
   activeView: "today",
@@ -104,9 +107,23 @@ const state = {
   avatarPreviewUrl: null,
 };
 
-const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
+function agentTasksPreferenceCookie() {
+  const prefix = `${AGENT_TASKS_PREFERENCE_COOKIE}=`;
+  return document.cookie
+    .split(";")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(prefix))
+    ?.slice(prefix.length);
+}
 
 function readAgentTasksPreference() {
+  // Cookies are the durable fallback for browser surfaces that deliberately
+  // isolate localStorage across reloads. This remains a local view preference;
+  // it never reaches GBrain or any Mission Control write route.
+  const cookieValue = agentTasksPreferenceCookie();
+  if (cookieValue === "true" || cookieValue === "false") {
+    return cookieValue === "true";
+  }
   try {
     return window.localStorage.getItem(AGENT_TASKS_PREFERENCE_KEY) === "true";
   } catch (_) {
@@ -126,6 +143,7 @@ function setAgentTasksVisible(visible) {
     // A view preference is optional; unavailable browser storage must not
     // affect GBrain reads or board rendering for this page session.
   }
+  document.cookie = `${AGENT_TASKS_PREFERENCE_COOKIE}=${state.showAgentTasks}; Path=/; Max-Age=31536000; SameSite=Lax`;
   if (state.showAgentTasks && !state.agentWorkLoaded) {
     void loadAgentWork();
   }

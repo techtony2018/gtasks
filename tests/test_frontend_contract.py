@@ -260,6 +260,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Show agent tasks", html)
         self.assertIn("showAgentTasks: readAgentTasksPreference()", javascript)
         self.assertIn('AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks"', javascript)
+        self.assertIn('AGENT_TASKS_PREFERENCE_COOKIE = "mission-control-show-agent-tasks"', javascript)
+        self.assertLess(
+            javascript.index("const AGENT_TASKS_PREFERENCE_COOKIE"),
+            javascript.index("const state ="),
+        )
+        self.assertIn("function agentTasksPreferenceCookie()", javascript)
         self.assertIn("function setAgentTasksVisible(visible)", javascript)
         self.assertIn("window.localStorage.setItem", javascript)
         self.assertIn('fetch("/api/agents"', javascript)
@@ -286,6 +292,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('view === "board" && state.showAgentTasks', set_view)
         self.assertIn("void loadAgentWork();", set_view)
         self.assertIn("setAgentTasksVisible(elements.showAgentTasks.checked)", listener)
+        self.assertIn("document.cookie = `${AGENT_TASKS_PREFERENCE_COOKIE}", javascript)
         self.assertIn('task.status !== "proposed"', javascript)
 
     def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:

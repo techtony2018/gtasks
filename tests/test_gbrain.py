@@ -2027,6 +2027,61 @@ class TaskStatusMutationTests(unittest.TestCase):
         self.assertEqual(runner.page["type"], "task")
         self.assertEqual(runner.links, links)
 
+    def test_agent_status_update_keeps_notes_in_reopened_task_readback(
+        self,
+    ) -> None:
+        now = datetime(
+            2026,
+            7,
+            31,
+            9,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        notes = "## Tony's notes\n\nKeep the confirmed handoff context."
+        task = replace(
+            new_task(title="Prepare agent handoff", detail=notes, now=now, identity="agent-notes"),
+            status="blocked",
+            lifecycle_root="collections/tammys-tasks",
+            owner_agent="agents/tammy",
+        )
+        page = stored_page(task)
+        page["frontmatter"].update(
+            {
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "links": [
+                    {"to": "collections/tammys-tasks", "type": "member_of"},
+                    {"to": "agents/tammy", "type": "assigned_to"},
+                ],
+            }
+        )
+        links = [
+            {
+                "from_slug": task.slug,
+                "to_slug": "collections/tammys-tasks",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": task.slug,
+                "to_slug": "agents/tammy",
+                "link_type": "assigned_to",
+            },
+        ]
+        runner = StatefulTaskRunner(page, links)
+        adapter = GBrainAdapter(runner)
+
+        receipt = adapter.set_task_status(task.slug, "active", now + timedelta(minutes=3))
+        reopened = adapter.get_task(task.slug)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.detail, notes)
+        self.assertEqual(reopened.status, "active")
+        self.assertEqual(reopened.detail, notes)
+        self.assertEqual(reopened.owner_agent, "agents/tammy")
+        self.assertEqual(reopened.lifecycle_root, "collections/tammys-tasks")
+        self.assertEqual(runner.page["frontmatter"]["detail"], notes)
+
     def test_completion_sets_local_timestamp_and_keeps_active_membership(self) -> None:
         now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone(timedelta(hours=-7)))
         task = new_inbox_task("Finish GTasks", now, "a1b2c3")
