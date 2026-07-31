@@ -6,6 +6,7 @@ const state = {
   activeView: "today",
   selectedSlug: null,
   selectedKind: null,
+  weekStart: null,
   boardMove: null,
   loading: true,
   releases: null,
@@ -54,6 +55,9 @@ const viewMeta = {
   },
   today: {
     title: "Today’s Action List",
+  },
+  week: {
+    title: "Week",
   },
   board: {
     title: "Board",
@@ -278,6 +282,28 @@ function parseDay(value) {
   if (!value) return null;
   const [year, month, day] = value.slice(0, 10).split("-").map(Number);
   return new Date(year, month - 1, day);
+}
+
+function isoDay(day) {
+  const year = day.getFullYear();
+  const month = String(day.getMonth() + 1).padStart(2, "0");
+  const date = String(day.getDate()).padStart(2, "0");
+  return `${year}-${month}-${date}`;
+}
+
+function weekStartFor(value) {
+  const day = parseDay(value);
+  if (!day) return null;
+  const offset = (day.getDay() + 6) % 7;
+  day.setDate(day.getDate() - offset);
+  return isoDay(day);
+}
+
+function shiftWeek(start, amount) {
+  const day = parseDay(start);
+  if (!day) return null;
+  day.setDate(day.getDate() + amount * 7);
+  return isoDay(day);
 }
 
 function formatDay(value, style = "short") {
@@ -697,6 +723,7 @@ function navCounts() {
   return {
     inbox: state.snapshot.views.inbox.length,
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
+    week: currentWeekTasks().length,
     board: state.snapshot.tasks.length,
     "agent-work": state.agentTasks.length,
     blocked: state.snapshot.views.blocked.length,
@@ -704,6 +731,22 @@ function navCounts() {
     goals: state.snapshot.goals.length,
     completed: state.snapshot.views.completed.length,
   };
+}
+
+function currentWeekStart() {
+  if (!state.snapshot) return null;
+  return state.weekStart || weekStartFor(state.snapshot.as_of);
+}
+
+function currentWeekTasks() {
+  const start = currentWeekStart();
+  if (!start || !state.snapshot) return [];
+  const end = shiftWeek(start, 1);
+  return state.snapshot.tasks.filter((task) =>
+    task.due_day &&
+    task.due_day >= start &&
+    task.due_day < end &&
+    !["completed", "cancelled"].includes(task.status));
 }
 
 function renderNavigation() {
@@ -954,6 +997,72 @@ function renderListView(view) {
   if (view === "inbox") fragment.append(creationEntry("inbox"));
   fragment.append(section(viewMeta[view].title, tasks, ""));
   return fragment;
+}
+
+function renderWeekView() {
+  const start = currentWeekStart();
+  if (!start) return simpleEmpty({
+    emptyTitle: "Week is unavailable",
+    emptyCopy: "Refresh to read the current GBrain task dates.",
+  });
+  const startDay = parseDay(start);
+  const endDay = parseDay(shiftWeek(start, 1));
+  const wrapper = node("section", "week-view");
+  const controls = node("div", "week-controls");
+  const previous = node("button", "secondary-button", "Previous week");
+  previous.type = "button";
+  previous.addEventListener("click", () => {
+    state.weekStart = shiftWeek(start, -1);
+    render();
+  });
+  const current = node("button", "secondary-button", "This week");
+  current.type = "button";
+  current.disabled = start === weekStartFor(state.snapshot.as_of);
+  current.addEventListener("click", () => {
+    state.weekStart = null;
+    render();
+  });
+  const next = node("button", "secondary-button", "Next week");
+  next.type = "button";
+  next.addEventListener("click", () => {
+    state.weekStart = shiftWeek(start, 1);
+    render();
+  });
+  controls.append(
+    node("p", "week-range", `${formatDay(isoDay(startDay), "long")} – ${formatDay(isoDay(new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() - 1)), "long")}`),
+    previous,
+    current,
+    next,
+  );
+  wrapper.append(controls);
+
+  const grid = node("div", "week-grid");
+  const tasks = currentWeekTasks();
+  for (let offset = 0; offset < 7; offset += 1) {
+    const day = new Date(startDay);
+    day.setDate(day.getDate() + offset);
+    const key = isoDay(day);
+    const column = node("section", "week-day");
+    if (key === state.snapshot.as_of) column.classList.add("is-today");
+    const heading = node("div", "week-day-heading");
+    heading.append(
+      node("h2", "", new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(day)),
+      node("span", "", new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(day)),
+    );
+    column.append(heading);
+    const due = tasks.filter((task) => task.due_day === key);
+    if (!due.length) {
+      column.append(node("p", "week-day-empty", "No tasks due."));
+    } else {
+      const list = node("div", "week-task-list");
+      list.setAttribute("role", "list");
+      due.forEach((task) => list.append(taskRow(task)));
+      column.append(list);
+    }
+    grid.append(column);
+  }
+  wrapper.append(grid);
+  return wrapper;
 }
 
 const boardColumns = [
@@ -2719,6 +2828,8 @@ function render() {
   const content =
     view === "today"
       ? renderToday()
+      : view === "week"
+        ? renderWeekView()
       : view === "board"
         ? renderBoard()
       : view === "agent-work"
@@ -2737,7 +2848,7 @@ function render() {
       content,
     ],
   );
-  const date = parseDay(state.snapshot.as_of);
+  const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
   elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
     weekday: "long",
     month: "long",

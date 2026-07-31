@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.20",
+  "current_version": "V0.0.21",
   "releases": [
     {
       "version": "V0.0.1",
@@ -120,6 +120,12 @@
       "date": "2026-07-30",
       "title": "Clear agent profiles",
       "summary": "Agents now show their current verified avatar with a focused replacement control, render canonical profile Markdown as readable structured content without duplicating the attachment block, and use the simpler Agents navigation label."
+    },
+    {
+      "version": "V0.0.21",
+      "date": "2026-07-30",
+      "title": "Weekly due-date view",
+      "summary": "Added Week: a read-only Monday-to-Sunday view of Tony’s active tasks grouped by their canonical GBrain due date, with previous, next, and current-week controls plus clear empty days."
     }
   ]
 }

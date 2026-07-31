@@ -302,6 +302,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("nav-glyph", html)
         self.assertNotIn("brand-mark", html)
 
+    def test_week_view_groups_canonical_due_dates_without_a_write_path(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="week"', html)
+        self.assertIn('data-count="week"', html)
+        self.assertIn("function renderWeekView()", javascript)
+        self.assertIn("function weekStartFor(value)", javascript)
+        self.assertIn("function currentWeekTasks()", javascript)
+        self.assertIn("task.due_day >= start", javascript)
+        self.assertIn("task.due_day < end", javascript)
+        self.assertIn('!["completed", "cancelled"].includes(task.status)', javascript)
+        self.assertIn("state.weekStart = shiftWeek(start, -1)", javascript)
+        self.assertIn("state.weekStart = shiftWeek(start, 1)", javascript)
+
     def test_agent_avatar_profile_uses_only_the_local_stargraph_boundary(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

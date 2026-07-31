@@ -1223,6 +1223,91 @@ kbd {
   padding-bottom: 10px;
 }
 
+.week-view {
+  display: grid;
+  gap: 14px;
+}
+
+.week-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.week-range {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(170px, 1fr));
+  gap: 10px;
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 10px;
+}
+
+.week-day {
+  min-height: 220px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-muted);
+}
+
+.week-day.is-today {
+  border-color: var(--accent);
+  background: #eef5ef;
+}
+
+.week-day-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 10px;
+}
+
+.week-day-heading h2,
+.week-day-heading span {
+  margin: 0;
+  font-size: 11px;
+}
+
+.week-day-heading span,
+.week-day-empty {
+  color: var(--faint);
+}
+
+.week-day-empty {
+  margin: 10px 2px;
+  font-size: 10px;
+}
+
+.week-task-list {
+  display: grid;
+  gap: 7px;
+}
+
+.week-task-list .task-row {
+  min-width: 0;
+}
+
+.week-task-list .task-row-open {
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.week-task-list .task-next,
+.week-task-list .task-end {
+  display: none;
+}
+
 .board-column {
   min-height: 330px;
   padding: 12px;
@@ -2858,6 +2943,17 @@ kbd {
     grid-auto-columns: minmax(230px, 78vw);
     grid-auto-flow: column;
     scroll-snap-type: x proximity;
+  }
+
+  .week-grid {
+    grid-template-columns: none;
+    grid-auto-columns: minmax(230px, 78vw);
+    grid-auto-flow: column;
+    scroll-snap-type: x proximity;
+  }
+
+  .week-day {
+    scroll-snap-align: start;
   }
 
   .board-column {

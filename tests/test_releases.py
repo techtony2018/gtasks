@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.20")
+        self.assertEqual(__version__, "V0.0.21")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -64,6 +64,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.18",
                 "V0.0.19",
                 "V0.0.20",
+                "V0.0.21",
             ],
         )
 
@@ -198,6 +199,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("current verified avatar", release["summary"])
         self.assertIn("structured content", release["summary"])
         self.assertIn("Agents navigation label", release["summary"])
+
+    def test_v0_0_21_records_weekly_due_date_view(self) -> None:
+        release = RELEASES[20]
+
+        self.assertEqual(release["version"], "V0.0.21")
+        self.assertIn("Monday-to-Sunday", release["summary"])
+        self.assertIn("canonical GBrain due date", release["summary"])
 
 
 if __name__ == "__main__":
