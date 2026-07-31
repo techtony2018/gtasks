@@ -22,14 +22,18 @@ class CalendarPreferencesTests(unittest.TestCase):
 
 class CalendarHelperContractTests(unittest.TestCase):
     def test_events_helper_receives_only_selected_identifiers(self) -> None:
-        helper = Path("/tmp/MissionControlCalendar")
+        helper = Path("/tmp/Mission Control Calendar.app/Contents/MacOS/MissionControlCalendar")
         reader = ICalendarReader(helper)
-        completed = type("Completed", (), {"returncode": 0, "stdout": '{"status":"authorized","events":[]}'})()
-        with patch.object(Path, "is_file", return_value=True), patch("gtasks.ical.subprocess.run", return_value=completed) as run:
+        completed = type("Completed", (), {"returncode": 0, "stdout": ""})()
+        def complete(command, **_kwargs):
+            Path(command[-1]).write_text('{"status":"authorized","events":[]}')
+            return completed
+        with patch.object(Path, "is_file", return_value=True), patch("gtasks.ical.subprocess.run", side_effect=complete) as run:
             reader.read(__import__("datetime").date(2026, 7, 30), __import__("datetime").date(2026, 8, 1), calendar_ids=("home",))
         command = run.call_args.args[0]
-        self.assertEqual(command[:2], [str(helper), "events"])
-        self.assertEqual(json.loads(command[-1]), ["home"])
+        self.assertEqual(command[:4], ["/usr/bin/open", "-W", str(helper.parents[2]), "--args"])
+        self.assertEqual(command[4], "events")
+        self.assertEqual(json.loads(command[7]), ["home"])
 
     def test_helper_source_has_no_eventkit_write_symbols(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "gtasks/mission_control_calendar_helper.swift").read_text()
@@ -37,4 +41,3 @@ class CalendarHelperContractTests(unittest.TestCase):
         self.assertNotIn("saveEvent", source)
         self.assertNotIn("removeEvent", source)
         self.assertNotIn("EKEvent(", source)
-

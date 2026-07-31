@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -83,21 +84,32 @@ class ICalendarReader:
             raise ICalendarError(
                 "Mission Control Calendar helper is not installed. Calendar events remain unavailable."
             )
-        command = [str(self.helper), action]
+        bundle = self.helper.parents[2]
+        if bundle.suffix != ".app":
+            raise ICalendarError("Mission Control Calendar helper is not a branded app bundle.")
+        command_args = [action]
         if action == "events":
             if start is None or end is None:
                 raise ValueError("Calendar event reads require a date range.")
-            command.extend([start.isoformat(), end.isoformat(), json.dumps(calendar_ids)])
+            command_args.extend([start.isoformat(), end.isoformat(), json.dumps(calendar_ids)])
         try:
+            with tempfile.NamedTemporaryFile(prefix="mission-control-calendar-", delete=False) as output:
+                output_path = Path(output.name)
+            output_path.chmod(0o600)
+            command = ["/usr/bin/open", "-W", str(bundle), "--args", *command_args, "--output", str(output_path)]
             result = subprocess.run(
                 command, capture_output=True, text=True, timeout=35, check=False
             )
+            text = output_path.read_text(encoding="utf-8")
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ICalendarError("Mission Control Calendar helper is unavailable.") from exc
+        finally:
+            if "output_path" in locals():
+                output_path.unlink(missing_ok=True)
         if result.returncode != 0:
             raise ICalendarError("Mission Control Calendar helper is unavailable.")
         try:
-            value = json.loads(result.stdout)
+            value = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ICalendarError("Mission Control Calendar helper returned an invalid response.") from exc
         if not isinstance(value, dict):

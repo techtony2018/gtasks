@@ -9,6 +9,10 @@ guard arguments.count >= 2 else { exit(2) }
 
 let action = arguments[1]
 let store = EKEventStore()
+let outputIndex = arguments.firstIndex(of: "--output")
+let outputPath = outputIndex.flatMap { index in
+    index + 1 < arguments.count ? arguments[index + 1] : nil
+}
 
 func statusName() -> String {
     let access = EKEventStore.authorizationStatus(for: .event)
@@ -25,7 +29,11 @@ func statusName() -> String {
 func printJSON(_ value: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: value),
           let text = String(data: data, encoding: .utf8) else { exit(3) }
-    print(text)
+    if let outputPath {
+        try? text.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    } else {
+        print(text)
+    }
 }
 
 func requestFullAccess() {

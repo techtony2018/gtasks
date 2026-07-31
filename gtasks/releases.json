@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.49",
+  "current_version": "V0.0.50",
   "releases": [
     {
       "version": "V0.0.1",
@@ -294,6 +294,12 @@
       "date": "2026-07-31",
       "title": "Protect lifecycle changes and calendar privacy",
       "summary": "Tasks now fail safely when lifecycle membership needs repair, navigation controls are easier to use, Inbox selections open details, and Calendar uses a read-only selected-calendar connection."
+    },
+    {
+      "version": "V0.0.50",
+      "date": "2026-07-31",
+      "title": "Use Mission Control Calendar access",
+      "summary": "Calendar access now launches a branded Mission Control helper before Apple Full Access permission, then lets you choose read-only calendars."
     }
   ]
 }
