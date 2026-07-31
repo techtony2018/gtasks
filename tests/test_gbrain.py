@@ -1819,6 +1819,40 @@ class AgentReadTests(unittest.TestCase):
 
 
 class ProposalReadTests(unittest.TestCase):
+    def test_excludes_decided_legacy_proposals_from_active_review(self) -> None:
+        slug = "proposals/tammy-decided-legacy"
+        page = {
+            "slug": slug,
+            "type": "task_proposal",
+            "title": "Historical Tammy proposal",
+            "compiled_truth": "# Historical Tammy proposal",
+            "frontmatter": {
+                "status": "approved",
+                "recipient": "agent",
+                "proposing_agent": "agents/tammy",
+                "rationale": "Historical compatibility record.",
+                "proposed_next_step": "Use the linked canonical task.",
+                "due_day": "2026-07-31",
+                "submitted_at": "2026-07-30T14:00:00-07:00",
+                "updated_at": "2026-07-30T15:00:00-07:00",
+            },
+        }
+        edges = [
+            {"from_slug": slug, "to_slug": PROPOSALS_ROOT, "link_type": "member_of"},
+            {"from_slug": slug, "to_slug": "agents/tammy", "link_type": "proposed_by"},
+        ]
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[edges[0]]],
+                "get_page": [page],
+                "get_links": [edges],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_proposals()
+
+        self.assertEqual(result.proposals, ())
+
     def test_reads_only_typed_proposals_and_keeps_malformed_items_visible(self) -> None:
         slug = "proposals/toddy-wellbeing-check-in"
         page = {

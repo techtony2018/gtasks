@@ -517,7 +517,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.32")
+        self.assertEqual(payload["version"], "V0.0.33")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -525,11 +525,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.32")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.32")
+        self.assertEqual(payload["current_version"], "V0.0.33")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.33")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.33",
                 "V0.0.32",
                 "V0.0.31",
                 "V0.0.30",

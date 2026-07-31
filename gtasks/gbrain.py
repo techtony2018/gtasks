@@ -1463,7 +1463,12 @@ class GBrainAdapter:
             list(proposal_slugs),
         ):
             if proposal is not None:
-                proposals.append(proposal)
+                # Historical task_proposal pages are read-only compatibility
+                # records. Only still-pending legacy records belong in the
+                # active Proposed Tasks review surface; approved/rejected
+                # pages must not masquerade as the agent's current task.
+                if proposal.status in {"proposed", "review"}:
+                    proposals.append(proposal)
             if issue is not None:
                 issues.append(issue)
         try:
