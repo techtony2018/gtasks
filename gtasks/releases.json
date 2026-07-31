@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.43",
+  "current_version": "V0.0.44",
   "releases": [
     {
       "version": "V0.0.1",
@@ -258,6 +258,12 @@
       "date": "2026-07-31",
       "title": "Contained mobile navigation",
       "summary": "Keeps Mission Control navigation and horizontal content inside the mobile viewport while preserving their own scroll controls."
+    },
+    {
+      "version": "V0.0.44",
+      "date": "2026-07-31",
+      "title": "Stable desktop detail layout",
+      "summary": "Prevents a closed detail pane from expanding the desktop canvas, keeping compact content and local scroll areas contained."
     }
   ]
 }

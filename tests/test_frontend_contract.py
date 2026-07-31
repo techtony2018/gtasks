@@ -21,6 +21,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("position: sticky", breakpoint)
         self.assertNotIn("position: fixed", breakpoint)
         self.assertIn("overscroll-behavior-inline: contain", stylesheet)
+        self.assertIn('.detail-panel[aria-hidden="true"]', stylesheet)
+        self.assertIn("contain: paint", stylesheet)
         mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
         self.assertIn(".week-view { min-width: 0; max-width: 100%; overflow-x: hidden; }", mobile)
         self.assertIn(".week-grid", mobile)

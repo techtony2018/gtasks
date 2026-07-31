@@ -1057,6 +1057,10 @@ kbd {
 }
 
 .detail-panel[aria-hidden="true"] {
+  width: 0;
+  min-width: 0;
+  border-left: 0;
+  contain: paint;
   visibility: hidden;
 }
 
