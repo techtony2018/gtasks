@@ -1415,7 +1415,7 @@ function renderAgentWorkView() {
     const card = node("article", "agent-profile-card");
     const heading = node("div", "agent-profile-heading");
     heading.append(
-      agentOwnerBadge({
+      ownerBadge({
         name: agent.name,
         avatar: agent.avatar,
       }),
@@ -2319,7 +2319,7 @@ function proposalCard(proposal) {
   const card = node("article", "proposal-card");
   const header = node("div", "proposal-card-header");
   header.append(
-    agentOwnerBadge({
+    ownerBadge({
       name: agent?.name || proposal.proposing_agent,
       avatar: agent?.avatar || { kind: "initials", value: "A" },
     }),

@@ -247,6 +247,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("owner.avatar", javascript)
         self.assertNotIn("showAgentTasks", javascript[javascript.index("body: JSON.stringify") : javascript.index("document.querySelectorAll")])
 
+    def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        agent_work = javascript[
+            javascript.index("function renderAgentWorkView")
+            : javascript.index("function goalCard")
+        ]
+        proposal_card = javascript[
+            javascript.index("function proposalCard")
+            : javascript.index("function renderProposedWork")
+        ]
+
+        self.assertIn("ownerBadge({", agent_work)
+        self.assertIn("ownerBadge({", proposal_card)
+        self.assertNotIn("agentOwnerBadge", javascript)
+
     def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(
         self,
     ) -> None:

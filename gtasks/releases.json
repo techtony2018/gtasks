@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.18",
+  "current_version": "V0.0.19",
   "releases": [
     {
       "version": "V0.0.1",
@@ -108,6 +108,12 @@
       "date": "2026-07-30",
       "title": "Tony avatar on Board",
       "summary": "Board cards for Tony’s personal tasks now display Tony’s canonical GBrain profile avatar, with a safe initials fallback if the profile image is unavailable."
+    },
+    {
+      "version": "V0.0.19",
+      "date": "2026-07-30",
+      "title": "Reliable Agent Work rendering",
+      "summary": "Fixed Agent Work and Proposed Tasks to use the shared owner/avatar renderer, preventing a JavaScript exception that left the previous view visible after navigation; added regression coverage for both agent surfaces."
     }
   ]
 }
