@@ -17,6 +17,15 @@ python3 -m gtasks.server
 
 Open [http://127.0.0.1:4179](http://127.0.0.1:4179).
 
+## Visual identity
+
+Mission Control uses a distinct North Star and Big Dipper mark within the
+Memory Stargraph visual family. The interface follows the same deep-space HUD
+language with compact panels, cyan instrumentation, high-contrast text, and a
+dark-only canvas. Production assets live in `static/assets`; editable logo,
+favicon, artwork sources, guidance, and review previews live in
+`design/mission-control-brand`.
+
 ## Versioning and releases
 
 GTasks starts at `V0.0.1`. The canonical current version and complete

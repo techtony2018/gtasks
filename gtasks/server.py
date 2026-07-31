@@ -1955,6 +1955,7 @@ def _handler_class(
                 "/favicon.ico": "favicon.ico",
                 "/assets/mission-control-command-mark.svg": "assets/mission-control-command-mark.svg",
                 "/assets/apple-touch-icon-180.png": "assets/apple-touch-icon-180.png",
+                "/assets/mission-control-word-art.png": "assets/mission-control-word-art.png",
             }.get(path)
             if relative is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})

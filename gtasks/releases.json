@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.50",
+  "current_version": "V0.0.51",
   "releases": [
     {
       "version": "V0.0.1",
@@ -300,6 +300,12 @@
       "date": "2026-07-31",
       "title": "Use Mission Control Calendar access",
       "summary": "Calendar access now launches a branded Mission Control helper before Apple Full Access permission, then lets you choose read-only calendars."
+    },
+    {
+      "version": "V0.0.51",
+      "date": "2026-07-31",
+      "title": "North Star dark command center",
+      "summary": "Mission Control now uses its distinct North Star and Big Dipper logo, matching favicon, English celestial word artwork, and a compact Memory Stargraph-family dark HUD across desktop and mobile."
     }
   ]
 }

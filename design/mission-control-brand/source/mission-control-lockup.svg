@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="326" height="64" viewBox="0 0 326 64" role="img" aria-labelledby="title desc">
+  <title id="title">Mission Control</title>
+  <desc id="desc">Centered dimensional Big Dipper and correctly positioned North Star with the Mission Control name.</desc>
+  <defs>
+    <radialGradient id="space" cx="60%" cy="32%" r="74%"><stop stop-color="#0B1C36"/><stop offset=".58" stop-color="#020816"/><stop offset="1" stop-color="#01040D"/></radialGradient>
+    <radialGradient id="orb" cx="34%" cy="28%" r="70%"><stop offset="0" stop-color="#E8F3FF"/><stop offset=".28" stop-color="#B8D5E8"/><stop offset=".66" stop-color="#4F83A8"/><stop offset="1" stop-color="#1C3E63"/></radialGradient>
+    <radialGradient id="polar-aura"><stop stop-color="#FFFFFF" stop-opacity=".9"/><stop offset=".26" stop-color="#67E8F9" stop-opacity=".45"/><stop offset="1" stop-color="#38BDF8" stop-opacity="0"/></radialGradient>
+    <filter id="orb-glow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation=".65" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="polar-glow" x="-160%" y="-160%" width="420%" height="420%"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g>
+    <path d="M14 3h36l11 11v36L50 61H14L3 50V14Z" fill="url(#space)" stroke="#38BDF8" stroke-width="1.45"/>
+    <path d="M11 22v-9h9M44 52h8v-8" fill="none" stroke="#22D3EE" stroke-width="1" stroke-linecap="round" opacity=".72"/>
+    <g transform="matrix(.8 -.4 .4 .8 -11.6 24.8)">
+    <path d="M10 31 16 28 22 29 28 32 38 33 36 37 27 39 28 32" fill="none" stroke="#2F6F91" stroke-opacity=".2" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M10 31 16 28 22 29 28 32 38 33 36 37 27 39 28 32" fill="none" stroke="#87AFC7" stroke-opacity=".52" stroke-width=".65" stroke-linecap="round" stroke-linejoin="round"/>
+    <g filter="url(#orb-glow)" stroke="#B8D5E8" stroke-width=".4" opacity=".72">
+      <circle cx="10" cy="31" r="1.125" fill="url(#orb)"/><circle cx="16" cy="28" r="1.275" fill="url(#orb)"/><circle cx="22" cy="29" r="1.175" fill="url(#orb)"/><circle cx="28" cy="32" r="1.4" fill="url(#orb)"/><circle cx="27" cy="39" r="1.225" fill="url(#orb)"/><circle cx="36" cy="37" r="1.35" fill="url(#orb)"/><circle cx="38" cy="33" r="1.5" fill="url(#orb)"/>
+    </g>
+    </g>
+    <g filter="url(#polar-glow)" transform="translate(-16 3)">
+      <circle cx="48" cy="13" r="10.5" fill="url(#polar-aura)" opacity=".58"/>
+      <path d="M48 5 50.1 11.2 56.5 13 50.1 14.8 48 21.5 45.9 14.8 39.5 13 45.9 11.2Z" fill="#FFFFFF" stroke="#67E8F9" stroke-width=".75" stroke-linejoin="round"/>
+      <g stroke="#FFFFFF" stroke-linecap="round"><path d="M48 7.2V10M48 16v2.8M42.2 13H45M51 13h2.8" stroke-width="1.15"/><path d="m43.9 8.9 2 2m4.2 4.2 2 2m0-8.2-2 2m-4.2 4.2-2 2" stroke-width=".75" opacity=".88"/></g>
+      <circle cx="48" cy="13" r="2.15" fill="#FFFFFF" stroke="#BFF8FF" stroke-width=".75"/><circle cx="48" cy="13" r=".85" fill="#38BDF8" stroke="none"/>
+    </g>
+    <path d="M48 2.5v21M37.5 13h21" transform="translate(-16 3)" stroke="#67E8F9" stroke-width=".55" stroke-opacity=".46"/>
+  </g>
+  <text x="82" y="34" fill="#EEF4FF" font-family="Rajdhani, Inter, SF Pro Text, Segoe UI, sans-serif" font-size="25" font-weight="700" letter-spacing="1.1">MISSION CONTROL</text>
+  <text x="83" y="51" fill="#97A6CE" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" letter-spacing="1.4">PERSONAL COMMAND CENTER</text>
+</svg>
