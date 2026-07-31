@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.51",
+  "current_version": "V0.0.52",
   "releases": [
     {
       "version": "V0.0.1",
@@ -306,6 +306,12 @@
       "date": "2026-07-31",
       "title": "North Star dark command center",
       "summary": "Mission Control now uses its distinct North Star and Big Dipper logo, matching favicon, English celestial word artwork, and a compact Memory Stargraph-family dark HUD across desktop and mobile."
+    },
+    {
+      "version": "V0.0.52",
+      "date": "2026-07-31",
+      "title": "Reliable agent work on Board",
+      "summary": "Board now preserves the Show agent tasks preference and reliably loads eligible agent work whenever you return or refresh."
     }
   ]
 }

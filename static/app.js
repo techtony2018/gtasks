@@ -93,7 +93,7 @@ const state = {
   agentWorkLoaded: false,
   agentWorkLoading: false,
   agentWorkError: "",
-  showAgentTasks: false,
+  showAgentTasks: readAgentTasksPreference(),
   proposals: [],
   proposalIssues: [],
   proposalsLoading: true,
@@ -103,6 +103,34 @@ const state = {
   profileAgentSlug: null,
   avatarPreviewUrl: null,
 };
+
+const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
+
+function readAgentTasksPreference() {
+  try {
+    return window.localStorage.getItem(AGENT_TASKS_PREFERENCE_KEY) === "true";
+  } catch (_) {
+    return false;
+  }
+}
+
+function setAgentTasksVisible(visible) {
+  state.showAgentTasks = Boolean(visible);
+  elements.showAgentTasks.checked = state.showAgentTasks;
+  try {
+    window.localStorage.setItem(
+      AGENT_TASKS_PREFERENCE_KEY,
+      String(state.showAgentTasks),
+    );
+  } catch (_) {
+    // A view preference is optional; unavailable browser storage must not
+    // affect GBrain reads or board rendering for this page session.
+  }
+  if (state.showAgentTasks && !state.agentWorkLoaded) {
+    void loadAgentWork();
+  }
+  render();
+}
 
 const viewMeta = {
   inbox: {
@@ -3184,6 +3212,10 @@ function render() {
     "is-hidden",
     state.activeView !== "board",
   );
+  // The filter is a persisted, client-only preference. Rendering can happen
+  // during navigation and while agent work is loading, so keep the control in
+  // lockstep with state rather than relying on the previous DOM value.
+  elements.showAgentTasks.checked = state.showAgentTasks;
   if (state.loading) return;
   if (!state.snapshot) return;
 
@@ -3712,8 +3744,11 @@ function setView(view) {
   if (!viewMeta[view]) return;
   state.activeView = view;
   render();
-  if (view === "agent-work" && !state.agentWorkLoaded) {
-    loadAgentWork();
+  if (
+    (view === "agent-work" || (view === "board" && state.showAgentTasks)) &&
+    !state.agentWorkLoaded
+  ) {
+    void loadAgentWork();
   }
 }
 
@@ -4108,8 +4143,7 @@ async function submitTaskEditor(event) {
         loadAgentWork(),
         ...(state.taskEditorMode === "edit" ? [loadTasks()] : []),
       ]);
-      state.showAgentTasks = true;
-      elements.showAgentTasks.checked = true;
+      setAgentTasksVisible(true);
       state.activeView = "board";
       render();
       selectTask(savedTask.slug);
@@ -4201,11 +4235,7 @@ elements.refreshButton.addEventListener("click", () => {
   loadProposals();
 });
 elements.showAgentTasks.addEventListener("change", () => {
-  state.showAgentTasks = elements.showAgentTasks.checked;
-  render();
-  if (state.showAgentTasks && !state.agentWorkLoaded) {
-    loadAgentWork();
-  }
+  setAgentTasksVisible(elements.showAgentTasks.checked);
 });
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);

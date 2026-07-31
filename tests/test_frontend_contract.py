@@ -258,7 +258,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('data-view="agent-work"', html)
         self.assertIn('id="show-agent-tasks"', html)
         self.assertIn("Show agent tasks", html)
-        self.assertIn("showAgentTasks: false", javascript)
+        self.assertIn("showAgentTasks: readAgentTasksPreference()", javascript)
+        self.assertIn('AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks"', javascript)
+        self.assertIn("function setAgentTasksVisible(visible)", javascript)
+        self.assertIn("window.localStorage.setItem", javascript)
         self.assertIn('fetch("/api/agents"', javascript)
         self.assertIn('fetch("/api/agent-work"', javascript)
         self.assertIn("function agentBoardCard", javascript)
@@ -268,6 +271,22 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("owner.name", javascript)
         self.assertIn("owner.avatar", javascript)
         self.assertNotIn("showAgentTasks", javascript[javascript.index("body: JSON.stringify") : javascript.index("document.querySelectorAll")])
+
+    def test_board_agent_filter_restores_and_loads_on_board_navigation(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        render = javascript[javascript.index("function render()") : javascript.index("function setConnection")]
+        set_view = javascript[javascript.index("function setView(view)") : javascript.index("function setConnection")]
+        listener = javascript[
+            javascript.index("elements.showAgentTasks.addEventListener")
+            : javascript.index("elements.detailClose.addEventListener")
+        ]
+
+        self.assertIn("elements.showAgentTasks.checked = state.showAgentTasks", render)
+        self.assertIn('view === "board" && state.showAgentTasks', set_view)
+        self.assertIn("void loadAgentWork();", set_view)
+        self.assertIn("setAgentTasksVisible(elements.showAgentTasks.checked)", listener)
+        self.assertIn('task.status !== "proposed"', javascript)
 
     def test_agent_surfaces_use_the_shared_owner_badge_renderer(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -468,6 +487,20 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("max-width: 100%", mobile)
         self.assertIn(".app-shell {", css)
         self.assertIn("overflow-x: clip", css)
+
+    def test_mission_control_uses_the_dark_stargraph_family_brand(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('<meta name="color-scheme" content="dark">', html)
+        self.assertIn('<meta name="theme-color" content="#020816">', html)
+        self.assertIn('/assets/mission-control-command-mark.svg', html)
+        self.assertIn('/assets/mission-control-word-art.png', html)
+        self.assertIn('class="mission-word-art"', html)
+        self.assertIn('--canvas: #020816', css)
+        self.assertIn('/* Memory Stargraph family dark theme. */', css)
+        self.assertIn('grid-template-columns: 92px minmax(520px, 1fr) 0', css)
 
     def test_navigation_has_no_counts_and_pages_show_in_context_counts(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
