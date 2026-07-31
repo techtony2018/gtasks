@@ -510,6 +510,28 @@ class ServerHarness:
 
 
 class HealthApiTests(unittest.TestCase):
+    def test_static_mission_control_identity_assets_are_allowlisted(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        for path, content_type in (
+            ("/favicon.svg", "image/svg+xml"),
+            ("/favicon.ico", "image/x-icon"),
+            ("/assets/mission-control-command-mark.svg", "image/svg+xml"),
+            ("/assets/apple-touch-icon-180.png", "image/png"),
+        ):
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", harness.server.server_address[1], timeout=3
+            )
+            connection.request("GET", path)
+            response = connection.getresponse()
+            body = response.read()
+            self.assertEqual(response.status, 200, path)
+            self.assertTrue(body, path)
+            self.assertTrue(
+                response.getheader("Content-Type").startswith(content_type), path
+            )
+            connection.close()
+
     def test_health_declares_gbrain_as_canonical_store_and_due_default(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
 
@@ -530,7 +552,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.46")
+        self.assertEqual(payload["version"], "V0.0.47")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -538,11 +560,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.46")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.46")
+        self.assertEqual(payload["current_version"], "V0.0.47")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.47")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.47",
                 "V0.0.46",
                 "V0.0.45",
                 "V0.0.44",

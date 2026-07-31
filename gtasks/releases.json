@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.46",
+  "current_version": "V0.0.47",
   "releases": [
     {
       "version": "V0.0.1",
@@ -276,6 +276,12 @@
       "date": "2026-07-31",
       "title": "Focused navigation and Mission Control identity",
       "summary": "Moves task and ticket counts into their page headings, keeps the navigation rail category-focused, and adds the distinct Mission Control mark and browser icons."
+    },
+    {
+      "version": "V0.0.47",
+      "date": "2026-07-31",
+      "title": "Verified Mission Control identity",
+      "summary": "Serves the distinct Mission Control command mark and browser icons reliably while keeping the rejected central illustration out of the product."
     }
   ]
 }

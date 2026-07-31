@@ -1867,6 +1867,10 @@ def _handler_class(
                 "/index.html": "index.html",
                 "/styles.css": "styles.css",
                 "/app.js": "app.js",
+                "/favicon.svg": "favicon.svg",
+                "/favicon.ico": "favicon.ico",
+                "/assets/mission-control-command-mark.svg": "assets/mission-control-command-mark.svg",
+                "/assets/apple-touch-icon-180.png": "assets/apple-touch-icon-180.png",
             }.get(path)
             if relative is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
@@ -1882,7 +1886,13 @@ def _handler_class(
                 return
             content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+            if content_type.startswith("text/") or content_type in {
+                "application/javascript",
+                "application/json",
+                "image/svg+xml",
+            }:
+                content_type = f"{content_type}; charset=utf-8"
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-cache")
             self._security_headers()
