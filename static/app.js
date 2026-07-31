@@ -1278,33 +1278,37 @@ function renderWeekView() {
 }
 
 function calendarEventsFilter() {
-  const label = node("label", "calendar-events-filter");
+  const wrapper = node("div", "calendar-events-filter");
+  const checkboxLabel = node("label", "calendar-events-toggle");
   const input = node("input");
   input.type = "checkbox";
   input.checked = state.showIcalEvents;
   input.addEventListener("change", () => {
     state.showIcalEvents = input.checked;
+    if (input.checked) state.icalRange = "";
     render();
   });
-  label.append(input, node("span", "", "Show iCal Events"));
+  checkboxLabel.append(input, node("span", "", "Show iCal Events"));
+  wrapper.append(checkboxLabel);
   const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Choose calendars to show events") : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
-  label.append(node("small", "calendar-events-status", calendarStatus));
-  if (state.icalStatus === "not_determined") {
-    const connect = node("button", "secondary-button", "Connect Calendar");
+  wrapper.append(node("small", "calendar-events-status", calendarStatus));
+  if (state.icalStatus !== "authorized") {
+    const connect = node("button", "secondary-button", state.icalStatus === "not_determined" ? "Connect Calendar" : "Reauthorize Calendar");
     connect.type = "button";
     connect.addEventListener("click", openCalendarAccessDialog);
-    label.append(connect);
-  } else if (state.icalStatus === "authorized") {
+    wrapper.append(connect);
+  } else {
     const manage = node("button", "secondary-button", "Manage calendars");
     manage.type = "button";
     manage.addEventListener("click", openCalendarPicker);
-    label.append(manage);
+    wrapper.append(manage);
   }
-  return label;
+  return wrapper;
 }
 
 function openCalendarAccessDialog() {
   elements.calendarAccessError.classList.add("is-hidden");
+  elements.calendarAccessRequest.textContent = state.icalStatus === "not_determined" ? "Continue to Apple permission" : "Retry Calendar access";
   elements.calendarAccessDialog.showModal();
   window.setTimeout(() => elements.calendarAccessRequest.focus(), 0);
 }
@@ -1358,7 +1362,11 @@ async function ensureIcalEvents(start, end) {
     state.icalStatus = payload.status || "unavailable";
     state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
     state.selectedCalendarIds = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : state.selectedCalendarIds;
-  } catch (_) { state.icalStatus = "unavailable"; state.icalEvents = []; }
+  } catch (_) {
+    state.icalRange = range;
+    state.icalStatus = "unavailable";
+    state.icalEvents = [];
+  }
   finally { state.icalLoading = false; render(); }
 }
 
@@ -3035,7 +3043,7 @@ function proposalCard(proposal) {
     edit.addEventListener("click", (event) => { event.stopPropagation(); selectTask(proposal.slug); openEditTask(); });
     const approve = actionIcon("✓", `Approve ${proposal.title}`, { primary: true });
     approve.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "approve"); });
-    const reject = node("button", "danger-button", "Reject"); reject.type = "button";
+    const reject = actionIcon("❌", `Reject ${proposal.title}`, { className: "proposal-reject-button" });
     reject.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "reject"); });
     actions.append(edit, approve, reject); card.append(actions);
   }
@@ -4360,6 +4368,7 @@ elements.calendarAccessRequest.addEventListener("click", async () => {
     if (!response.ok) throw new Error(payload.error || "Calendar permission could not be requested.");
     state.icalStatus = payload.status || "unavailable";
     if (state.icalStatus !== "authorized") throw new Error("Calendar access was not granted. You can manage this in macOS Privacy & Security settings and try again.");
+    state.icalRange = "";
     elements.calendarAccessDialog.close();
     await openCalendarPicker();
     render();

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.58",
+  "current_version": "V0.0.59",
   "releases": [
     {
       "version": "V0.0.1",
@@ -348,6 +348,12 @@
       "date": "2026-07-31",
       "title": "Usable mobile task details",
       "summary": "Opening a task on a phone now presents its details in an immediate focused sheet, including agent work and its Markdown notes."
+    },
+    {
+      "version": "V0.0.59",
+      "date": "2026-07-31",
+      "title": "Navigation and Calendar recovery",
+      "summary": "Enlarges the Mission Control rail controls, moves the linked release version beside the celestial word artwork, replaces Inbox Reject text with an accessible red icon, and makes failed or disconnected local Calendar overlays recoverable without a retry loop."
     }
   ]
 }

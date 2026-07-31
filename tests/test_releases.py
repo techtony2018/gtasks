@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.58")
+        self.assertEqual(__version__, "V0.0.59")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -102,6 +102,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.56",
                 "V0.0.57",
                 "V0.0.58",
+                "V0.0.59",
             ],
         )
 

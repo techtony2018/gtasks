@@ -153,6 +153,32 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('event.key === "Escape"', javascript)
         self.assertIn("release-history", javascript)
 
+    def test_sidebar_icons_match_primary_control_size_and_version_moves_to_artwork(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        sidebar = html[html.index('<aside class="sidebar"') : html.index("</aside>")]
+        art_footer = html[html.index('<div class="mission-art-footer"') : html.index("</main>")]
+        self.assertNotIn("Read-only", sidebar)
+        self.assertNotIn('id="sidebar-version"', sidebar)
+        self.assertIn('id="sidebar-version"', art_footer)
+        self.assertIn('href="https://github.com/techtony2018/gtasks"', art_footer)
+        self.assertLess(art_footer.index("mission-word-art"), art_footer.index("sidebar-version"))
+        self.assertIn(".nav-icon,\n.rail-icon {\n  width: 44px;", css)
+        self.assertIn("font-size: 28px", css)
+
+    def test_inbox_reject_action_is_a_red_accessible_icon(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        proposal_card = javascript[
+            javascript.index("function proposalCard") : javascript.index("function renderProposedWork")
+        ]
+
+        self.assertIn('actionIcon("❌", `Reject ${proposal.title}`', proposal_card)
+        self.assertIn('className: "proposal-reject-button"', proposal_card)
+        self.assertNotIn('node("button", "danger-button", "Reject")', proposal_card)
+        self.assertIn(".proposal-reject-button", css)
+
     def test_logs_are_adjacent_read_only_filtered_and_accessible(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -393,6 +419,22 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("icalEventsForDay", javascript)
         self.assertIn("Full Access to Calendar", html)
 
+    def test_calendar_failure_stops_retry_loop_and_always_offers_reauthorization(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        calendar_filter = javascript[
+            javascript.index("function calendarEventsFilter") : javascript.index("function openCalendarAccessDialog")
+        ]
+        event_loader = javascript[
+            javascript.index("async function ensureIcalEvents") : javascript.index("function icalEventsForDay")
+        ]
+
+        self.assertIn('const wrapper = node("div", "calendar-events-filter")', calendar_filter)
+        self.assertIn('const checkboxLabel = node("label", "calendar-events-toggle")', calendar_filter)
+        self.assertIn('state.icalStatus !== "authorized"', calendar_filter)
+        self.assertIn('"Reauthorize Calendar"', calendar_filter)
+        self.assertIn("state.icalRange = range", event_loader)
+        self.assertLess(event_loader.index("state.icalRange = range"), event_loader.index('state.icalStatus = "unavailable"'))
+
     def test_inbox_task_rows_and_proposals_open_read_only_details_without_edit(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         task_row = javascript[javascript.index("function taskRow") : javascript.index("function section")]
@@ -413,7 +455,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Proposed Tasks", javascript)
         self.assertIn("All Agents", javascript)
         self.assertIn('actionIcon("✓", `Approve ${proposal.title}`, { primary: true })', javascript)
-        self.assertIn('node("button", "danger-button", "Reject")', javascript)
+        self.assertIn('actionIcon("❌", `Reject ${proposal.title}`', javascript)
         self.assertIn('fetch("/api/proposals"', javascript)
         self.assertIn('id="proposal-review-dialog"', html)
         self.assertIn('id="proposal-decision-dialog"', html)

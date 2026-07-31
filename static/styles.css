@@ -1422,6 +1422,8 @@ kbd {
 }
 
 .calendar-events-filter input { accent-color: var(--accent); }
+.calendar-events-toggle { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+.calendar-events-toggle input { width: 18px; height: 18px; }
 .calendar-events-status { color: var(--faint); font-size: 9px; }
 .ical-event { margin: 5px 0 0; padding: 4px 5px; border-left: 3px solid #5a7fb8; border-radius: 4px; background: #e9f0fb; color: #294c7e; font-size: 9px; line-height: 1.3; overflow-wrap: anywhere; }
 .calendar-picker-list { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; }
@@ -3669,10 +3671,39 @@ a:focus-visible {
 
 .mission-word-art {
   width: min(260px, 36vw);
-  margin: auto auto 0;
+  margin: 0;
   padding-top: 24px;
   aspect-ratio: 760 / 253;
   flex: 0 0 auto;
+}
+
+.mission-art-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 12px;
+  margin: auto auto 0;
+}
+
+.mission-version-link {
+  min-width: 44px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 2px;
+  color: var(--accent);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.045em;
+  text-decoration: none;
+}
+
+.mission-version-link:hover,
+.mission-version-link:focus-visible {
+  color: #a5f3fc;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .mission-word-art img {
@@ -4035,7 +4066,12 @@ a {
 
 .nav-icon,
 .rail-icon {
+  width: 44px;
+  height: 44px;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
 }
 
 .sidebar {
@@ -4052,10 +4088,13 @@ a {
 }
 
 .create-task-button {
-  min-height: 32px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   margin: 17px 0 12px;
   border-radius: 5px;
-  font-size: 10px;
+  font-size: 28px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -4065,7 +4104,7 @@ a {
 }
 
 .nav-item {
-  min-height: 34px;
+  min-height: 44px;
   padding: 0 9px;
   border-radius: 3px;
   clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
@@ -4092,11 +4131,26 @@ a {
 }
 
 .about-button {
-  min-height: 29px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
   margin-top: 3px;
   border-radius: 3px;
   font-size: 9.5px;
   letter-spacing: 0.025em;
+}
+
+.proposal-reject-button {
+  border-color: rgba(255, 80, 104, 0.66);
+  color: #ff526b;
+  background: rgba(255, 80, 104, 0.09);
+}
+
+.proposal-reject-button:hover,
+.proposal-reject-button:focus-visible {
+  border-color: #ff526b;
+  color: #ffd8de;
+  background: rgba(255, 80, 104, 0.2);
 }
 
 .main-content {
@@ -4432,6 +4486,10 @@ button:active {
     width: min(185px, 50vw);
     padding-top: 18px;
   }
+
+  .mission-art-footer { gap: 8px; }
+
+  .mission-version-link { min-height: 44px; }
 
   .topbar {
     align-items: stretch;

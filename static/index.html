@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.55-theme">
-    <script src="/app.js?v=0.0.55" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.59-theme">
+    <script src="/app.js?v=0.0.59" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -69,11 +69,9 @@
         </button>
         <button class="about-button has-tooltip" id="logs-button" type="button" aria-label="Logs" data-tooltip="Logs">
           <span class="rail-icon" aria-hidden="true">≡</span><span class="rail-label">Logs</span>
-          <strong>Read-only</strong>
         </button>
         <button class="about-button has-tooltip" id="about-button" type="button" aria-label="About" data-tooltip="About">
           <span class="rail-icon" aria-hidden="true">i</span><span class="rail-label">About</span>
-          <strong id="sidebar-version">Loading…</strong>
         </button>
       </aside>
 
@@ -118,16 +116,27 @@
             <span></span>
           </div>
         </div>
-        <figure class="mission-word-art" aria-label="Mission Control celestial artwork">
-          <img
-            src="/assets/mission-control-word-art.png"
-            alt="Mission Control word artwork with a North Star between the words and a faint Big Dipper behind them"
-            width="2172"
-            height="724"
-            loading="eager"
-            decoding="async"
-          >
-        </figure>
+        <div class="mission-art-footer">
+          <figure class="mission-word-art" aria-label="Mission Control celestial artwork">
+            <img
+              src="/assets/mission-control-word-art.png"
+              alt="Mission Control word artwork with a North Star between the words and a faint Big Dipper behind them"
+              width="2172"
+              height="724"
+              loading="eager"
+              decoding="async"
+            >
+          </figure>
+          <a
+            class="mission-version-link has-tooltip"
+            id="sidebar-version"
+            href="https://github.com/techtony2018/gtasks"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open Mission Control source repository"
+            data-tooltip="Open Mission Control on GitHub"
+          >Loading…</a>
+        </div>
       </main>
 
       <aside class="detail-panel" id="detail-panel" aria-label="Task details" aria-hidden="true">
@@ -615,6 +624,7 @@
         </div>
         <p>Apple requires <strong>Full Access to Calendar</strong> before an app can read local events. Mission Control will only read events from calendars you choose. It never creates, changes, or deletes calendar events.</p>
         <p>Calendar events stay outside GBrain and cannot be used as Mission Control tasks.</p>
+        <p>If access was previously denied or revoked, <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars">open macOS Calendar privacy settings</a>, enable Mission Control, then retry here.</p>
         <p class="form-error is-hidden" id="calendar-access-error" role="alert"></p>
         <div class="dialog-footer"><button class="secondary-button" id="calendar-access-cancel" type="button">Cancel</button><button class="submit-button" id="calendar-access-request" type="button">Continue to Apple permission</button></div>
       </div>
