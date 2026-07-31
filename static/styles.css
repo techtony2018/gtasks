@@ -270,13 +270,13 @@ kbd {
 
 .main-content {
   min-width: 0;
-  padding: 42px clamp(30px, 5vw, 72px) 64px;
+  padding: 38px clamp(22px, 2.5vw, 40px) 64px;
   background: var(--panel);
 }
 
 .topbar {
-  max-width: 940px;
-  margin: 0 auto 34px;
+  max-width: none;
+  margin: 0 0 28px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -359,9 +359,9 @@ kbd {
 .view-surface,
 .notice,
 .board-status-alert {
-  max-width: 940px;
-  margin-left: auto;
-  margin-right: auto;
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .notice {
@@ -1245,19 +1245,21 @@ kbd {
 
 .week-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(170px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
   align-items: start;
-  overflow-x: auto;
+  overflow-x: visible;
   padding-bottom: 10px;
 }
 
 .week-day {
+  min-width: 0;
   min-height: 220px;
   padding: 11px;
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--surface-muted);
+  container-type: inline-size;
 }
 
 .week-day.is-today {
@@ -1296,17 +1298,85 @@ kbd {
 
 .week-task-list .task-row {
   min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  padding: 0;
 }
 
 .week-task-list .task-row-open {
-  grid-template-columns: 1fr;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  gap: 4px;
+  padding: 4px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.week-task-list .task-title-wrap,
+.week-task-list .task-title,
+.month-task {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Week cards deliberately use the compact Month typography. This keeps every
+   title inside its day when the right-side detail panel narrows the workspace. */
+.week-task-list .task-title-wrap {
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 4px;
+  max-width: 100%;
+}
+
+.week-task-list .task-title {
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.week-task-list .task-project {
+  max-width: 100%;
+  margin-top: 3px;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.week-task-list .task-state-dot { width: 7px; height: 7px; margin-top: 3px; }
+
+@container (max-width: 105px) {
+  .week-day { padding: 6px; }
+  .week-day-heading { gap: 3px; padding-bottom: 6px; }
+  .week-task-list .task-row-open { padding: 3px; }
+  .week-task-list .task-title { font-size: 9px; line-height: 1.3; }
 }
 
 .week-task-list .task-next,
 .week-task-list .task-end {
   display: none;
 }
+
+.month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; overflow-x: visible; }
+.month-day { min-height: 110px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); display: grid; align-content: start; gap: 5px; }
+.month-day.is-outside-month { opacity: .5; }
+.month-task { border: 0; border-radius: 5px; padding: 4px; background: #e6efe8; color: var(--ink); text-align: left; font-size: 10px; overflow: hidden; text-overflow: clip; }
+
+.coordinator-summary { margin: 0 0 18px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-muted); }
+.coordinator-summary h2 { margin: 0 0 5px; font-size: 16px; }
+.coordinator-summary > p { margin: 0; color: var(--muted); font-size: 12px; }
+.coordinator-agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+.coordinator-agent-card { padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.coordinator-agent-card .owner-badge { margin-bottom: 7px; }
+.coordinator-agent-card p, .coordinator-agent-card small { display: block; margin: 0; font-size: 11px; color: var(--muted); }
+.coordinator-agent-card small { margin-top: 5px; }
+.coordinator-notice { margin-top: 12px !important; }
 
 .board-column {
   min-height: 330px;
@@ -1758,6 +1828,28 @@ kbd {
   justify-content: space-between;
   gap: 10px;
 }
+
+.agent-card-profile-button {
+  margin-left: auto;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.agent-card-profile-button:hover,
+.agent-card-profile-button:focus-visible { border-color: var(--accent); color: var(--accent-dark); outline: none; }
+
+.agent-work-summary { display: grid; gap: 4px; margin-top: 12px; padding: 10px; border-left: 3px solid var(--line-strong); background: var(--surface-muted); }
+.agent-work-summary h3 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.agent-work-summary strong { font-size: 13px; }
+.agent-work-summary span { color: var(--muted); font-size: 11px; line-height: 1.45; }
 
 .agent-work-count,
 .agent-profile-card > p {
@@ -2294,6 +2386,32 @@ kbd {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.65;
+}
+
+.proposal-decision-field {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+}
+
+.proposal-decision-field label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.proposal-decision-field textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 86px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: white;
+  font: inherit;
+  resize: vertical;
 }
 
 .goal-detail-actions {
@@ -2849,6 +2967,8 @@ kbd {
     padding: 28px 18px 48px;
   }
 
+  .coordinator-agent-grid { grid-template-columns: 1fr; }
+
   .topbar {
     align-items: flex-start;
   }
@@ -2955,6 +3075,7 @@ kbd {
   .week-day {
     scroll-snap-align: start;
   }
+  .month-grid { grid-template-columns: repeat(7, minmax(95px, 1fr)); overflow-x: auto; }
 
   .board-column {
     min-height: 300px;
@@ -3048,6 +3169,8 @@ kbd {
   border-radius: 16px;
   background: var(--surface);
 }
+
+.proposal-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(62, 113, 76, .16); }
 
 .proposal-recipient,
 .proposal-status {

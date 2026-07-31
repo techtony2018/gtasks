@@ -33,7 +33,7 @@
             <span class="nav-count" data-count="today">0</span>
           </button>
           <button class="nav-item" data-view="week" type="button">
-            <span>Week</span>
+            <span>Calendar</span>
             <span class="nav-count" data-count="week">0</span>
           </button>
           <button class="nav-item" data-view="board" type="button">
@@ -129,6 +129,8 @@
             <span class="detail-status" id="task-detail-status"></span>
             <button class="secondary-button" id="task-edit-button" type="button">Edit</button>
             <button class="secondary-button" id="task-duplicate-button" type="button">Duplicate</button>
+            <button class="submit-button is-hidden" id="task-approve-button" type="button">Approve</button>
+            <button class="danger-button is-hidden" id="task-reject-button" type="button">Reject</button>
             <button class="icon-button" id="detail-close" type="button" aria-label="Close task details">×</button>
           </div>
           <div class="task-owner is-hidden" id="task-owner">
@@ -140,6 +142,7 @@
           </div>
           <h2 id="detail-title"></h2>
           <p class="detail-copy" id="detail-copy"></p>
+          <p class="proposal-detail-meta is-hidden" id="proposal-detail-meta"></p>
           <section class="task-progress-detail is-hidden" id="task-progress-detail" aria-labelledby="task-progress-label">
             <div>
               <strong id="task-progress-label"></strong>
@@ -351,6 +354,7 @@
         <div class="dialog-footer">
           <p id="task-editor-safety">Mission Control reports success only after exact GBrain readback.</p>
           <button class="submit-button" id="task-editor-submit" type="submit">Create Task</button>
+          <button class="submit-button is-hidden" id="task-editor-save-approve" type="button">Save and Approve</button>
         </div>
       </form>
     </dialog>
@@ -403,8 +407,8 @@
       <form method="dialog" class="quick-add-form" id="new-project-form">
         <div class="dialog-heading">
           <div>
-            <p>New durable project</p>
-            <h2>Create a project</h2>
+            <p id="new-project-mode">New durable project</p>
+            <h2 id="new-project-heading">Create Project</h2>
           </div>
           <button class="icon-button" id="new-project-close" type="button" aria-label="Close New Project">×</button>
         </div>
@@ -418,6 +422,9 @@
           placeholder="e.g. Prepare for OpenAI interviews"
           required
         >
+        <label for="new-project-goals">Goals this project supports (optional)</label>
+        <select id="new-project-goals" multiple size="5" aria-describedby="new-project-goals-help"></select>
+        <p id="new-project-goals-help">Select one or more canonical Goals. These create typed supports_goal links and do not change task project assignments.</p>
         <p>
           Creation writes a real <code>type: project</code> node to Tony’s
           Projects and verifies the page plus typed <code>member_of</code>
@@ -563,8 +570,10 @@
           <button class="icon-button" id="proposal-decision-close" type="button" aria-label="Close proposal decision">×</button>
         </div>
         <p id="proposal-decision-copy"></p>
-        <label for="proposal-decision-note">Decision note <span>optional</span></label>
-        <textarea id="proposal-decision-note" rows="3" maxlength="1000"></textarea>
+        <div class="proposal-decision-field">
+          <label for="proposal-decision-note">Decision note <span>optional</span></label>
+          <textarea id="proposal-decision-note" rows="3" maxlength="1000"></textarea>
+        </div>
         <p class="form-error is-hidden" id="proposal-decision-error" role="alert"></p>
         <div class="dialog-footer">
           <button class="secondary-button" id="proposal-decision-cancel" type="button">Cancel</button>

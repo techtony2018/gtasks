@@ -22,10 +22,12 @@ from gtasks.domain import (
 from gtasks.gbrain import (
     GBrainAdapter,
     GBrainCommandError,
+    GBrainProtocolError,
     GoalLinkReceipt,
     NextActionMutationReceipt,
     PartialMutationError,
     SubprocessCommandRunner,
+    _render_preserved_page,
 )
 
 
@@ -48,6 +50,36 @@ def stored_page(task) -> dict:
             "links": [{"to": ACTIVE_ROOT, "type": "member_of"}],
         },
     }
+
+
+class EntityTypePreservationTests(unittest.TestCase):
+    def test_generic_preserved_update_refuses_task_to_concept_downgrade(self) -> None:
+        task = new_inbox_task(
+            "Keep canonical task type",
+            datetime(2026, 7, 31, tzinfo=timezone.utc),
+            "type01",
+        )
+        page = stored_page(task)
+        changed = deepcopy(page["frontmatter"])
+        changed["type"] = "concept"
+
+        with self.assertRaisesRegex(
+            GBrainProtocolError,
+            "refusing to change canonical page type",
+        ):
+            _render_preserved_page(page, changed)
+
+    def test_generic_preserved_update_serializes_the_read_task_type(self) -> None:
+        task = new_inbox_task(
+            "Preserve canonical task type",
+            datetime(2026, 7, 31, tzinfo=timezone.utc),
+            "type02",
+        )
+        page = stored_page(task)
+
+        content = _render_preserved_page(page, page["frontmatter"])
+
+        self.assertIn('"type": "task"', content)
 
 
 def stored_goal(slug: str, title: str) -> dict:
@@ -1611,6 +1643,46 @@ class GoalLinkMutationTests(unittest.TestCase):
 
 
 class AgentReadTests(unittest.TestCase):
+    def test_fails_closed_and_reports_non_task_proposed_agent_work(self) -> None:
+        agent_pages = [
+            {
+                "slug": f"agents/{name}",
+                "type": "agent",
+                "title": f"Agent {name.title()}",
+                "compiled_truth": "",
+                "frontmatter": {},
+            }
+            for name in ("toddy", "timmy", "tammy")
+        ]
+        malformed = {
+            "slug": "collections/toddys-tasks/malformed-proposal",
+            "type": "concept",
+            "title": "Malformed proposed work",
+            "frontmatter": {"status": "proposed"},
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [*agent_pages, malformed],
+                "get_links": [[], [], [], []],
+                "get_backlinks": [
+                    [{
+                        "from_slug": malformed["slug"],
+                        "to_slug": "collections/toddys-tasks",
+                        "link_type": "member_of",
+                    }],
+                    [],
+                    [],
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_agent_work()
+
+        self.assertEqual(result.tasks, ())
+        self.assertEqual(result.issues[0].slug, malformed["slug"])
+        self.assertIn("proposed agent task must have canonical type task", result.issues[0].message)
+        self.assertIn("not shown on Board", result.issues[0].impact)
+
     def test_reads_profiles_and_typed_agent_work_without_title_guessing(self) -> None:
         now = datetime(2026, 7, 30, 9, 0, tzinfo=timezone.utc)
         task = new_task(

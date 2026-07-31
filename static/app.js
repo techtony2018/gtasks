@@ -1,12 +1,55 @@
 const AUTO_REFRESH_MINUTES = 30;
 const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000;
 
+function renderSafeMarkdown(container, value) {
+  const source = typeof value === "string" ? value : "";
+  container.replaceChildren();
+  const lines = source.split(/\r?\n/);
+  const appendInline = (target, text) => {
+    const pattern = /\[([^\]]{1,240})\]\(([^)\s]+)\)/g;
+    let cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+      target.append(document.createTextNode(text.slice(cursor, match.index)));
+      const url = match[2];
+      if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/|\/media\/)/.test(url)) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.textContent = match[1];
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        target.append(link);
+      } else target.append(document.createTextNode(match[0]));
+      cursor = match.index + match[0].length;
+    }
+    target.append(document.createTextNode(text.slice(cursor)));
+  };
+  let paragraph = [];
+  const flush = () => {
+    if (!paragraph.length) return;
+    const p = document.createElement("p");
+    appendInline(p, paragraph.join("\n"));
+    container.append(p);
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (!line.trim()) { flush(); continue; }
+    if (/^#{1,3}\s+/.test(line)) {
+      flush(); const h = document.createElement("strong"); appendInline(h, line.replace(/^#{1,3}\s+/, "")); container.append(h); continue;
+    }
+    paragraph.push(line);
+  }
+  flush();
+  if (!container.childNodes.length) container.textContent = "No additional detail yet.";
+}
+
 const state = {
   snapshot: null,
   activeView: "today",
   selectedSlug: null,
   selectedKind: null,
   weekStart: null,
+  calendarMode: "week",
+  calendarMonth: null,
   boardMove: null,
   loading: true,
   releases: null,
@@ -25,6 +68,7 @@ const state = {
   projectWarningStateError: "",
   projectsLoading: true,
   projectsError: "",
+  projectEditorSlug: null,
   goalAction: null,
   goalEditorSlug: null,
   pendingWarning: null,
@@ -58,7 +102,7 @@ const viewMeta = {
     title: "Today’s Action List",
   },
   week: {
-    title: "Week",
+    title: "Calendar",
   },
   board: {
     title: "Board",
@@ -134,6 +178,7 @@ const elements = {
   taskMetricPreview: document.querySelector("#task-metric-preview"),
   taskEditorError: document.querySelector("#task-editor-error"),
   taskEditorSubmit: document.querySelector("#task-editor-submit"),
+  taskEditorSaveApprove: document.querySelector("#task-editor-save-approve"),
   taskEditorSafety: document.querySelector("#task-editor-safety"),
   agentProfileDialog: document.querySelector("#agent-profile-dialog"),
   agentProfileHeading: document.querySelector("#agent-profile-heading"),
@@ -179,6 +224,8 @@ const elements = {
   detailClose: document.querySelector("#detail-close"),
   taskDetailStatus: document.querySelector("#task-detail-status"),
   taskEditButton: document.querySelector("#task-edit-button"),
+  taskApproveButton: document.querySelector("#task-approve-button"),
+  taskRejectButton: document.querySelector("#task-reject-button"),
   taskDuplicateButton: document.querySelector("#task-duplicate-button"),
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
@@ -191,6 +238,7 @@ const elements = {
   taskProgressBinding: document.querySelector("#task-progress-binding"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
+  proposalDetailMeta: document.querySelector("#proposal-detail-meta"),
   detailPriority: document.querySelector("#detail-priority"),
   detailDue: document.querySelector("#detail-due"),
   detailGbrainLink: document.querySelector("#detail-gbrain-link"),
@@ -239,6 +287,9 @@ const elements = {
   newProjectDialog: document.querySelector("#new-project-dialog"),
   newProjectForm: document.querySelector("#new-project-form"),
   newProjectTitle: document.querySelector("#new-project-title"),
+  newProjectMode: document.querySelector("#new-project-mode"),
+  newProjectHeading: document.querySelector("#new-project-heading"),
+  newProjectGoals: document.querySelector("#new-project-goals"),
   newProjectSubmit: document.querySelector("#new-project-submit"),
   newProjectClose: document.querySelector("#new-project-close"),
   newProjectError: document.querySelector("#new-project-error"),
@@ -1013,6 +1064,14 @@ function renderWeekView() {
   const endDay = parseDay(shiftWeek(start, 1));
   const wrapper = node("section", "week-view");
   const controls = node("div", "week-controls");
+  const weekMode = node("button", "secondary-button", "Week");
+  weekMode.type = "button";
+  weekMode.disabled = state.calendarMode === "week";
+  weekMode.addEventListener("click", () => { state.calendarMode = "week"; render(); });
+  const monthMode = node("button", "secondary-button", "Month");
+  monthMode.type = "button";
+  monthMode.disabled = state.calendarMode === "month";
+  monthMode.addEventListener("click", () => { state.calendarMode = "month"; render(); });
   const previous = node("button", "secondary-button", "Previous week");
   previous.type = "button";
   previous.addEventListener("click", () => {
@@ -1034,6 +1093,8 @@ function renderWeekView() {
   });
   controls.append(
     node("p", "week-range", `${formatDay(isoDay(startDay), "long")} – ${formatDay(isoDay(new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() - 1)), "long")}`),
+    weekMode,
+    monthMode,
     previous,
     current,
     next,
@@ -1068,6 +1129,38 @@ function renderWeekView() {
   wrapper.append(grid);
   return wrapper;
 }
+
+function renderMonthCalendar() {
+  const anchor = state.calendarMonth ? parseDay(state.calendarMonth) : parseDay(state.snapshot.as_of);
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const first = new Date(monthStart);
+  first.setDate(first.getDate() - ((first.getDay() + 6) % 7));
+  const wrapper = node("section", "week-view");
+  const controls = node("div", "week-controls");
+  const week = node("button", "secondary-button", "Week"); week.type = "button"; week.addEventListener("click", () => { state.calendarMode = "week"; render(); });
+  const month = node("button", "secondary-button", "Month"); month.type = "button"; month.disabled = true;
+  const previous = node("button", "secondary-button", "Previous month"); previous.type = "button"; previous.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)); render(); });
+  const current = node("button", "secondary-button", "This month"); current.type = "button"; current.disabled = monthStart.getFullYear() === parseDay(state.snapshot.as_of).getFullYear() && monthStart.getMonth() === parseDay(state.snapshot.as_of).getMonth(); current.addEventListener("click", () => { state.calendarMonth = null; render(); });
+  const next = node("button", "secondary-button", "Next month"); next.type = "button"; next.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)); render(); });
+  controls.append(node("p", "week-range", new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(monthStart)), week, month, previous, current, next);
+  wrapper.append(controls);
+  const grid = node("div", "month-grid");
+  for (let index = 0; index < 42; index += 1) {
+    const day = new Date(first); day.setDate(day.getDate() + index);
+    const key = isoDay(day);
+    const cell = node("section", "month-day");
+    cell.classList.toggle("is-outside-month", day.getMonth() !== monthStart.getMonth());
+    cell.append(node("span", "", String(day.getDate())));
+    state.snapshot.tasks.filter((task) => task.due_day === key && !["completed", "cancelled"].includes(task.status)).forEach((task) => {
+      const taskButton = node("button", "month-task", task.title || task.summary);
+      taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
+    });
+    grid.append(cell);
+  }
+  wrapper.append(grid); return wrapper;
+}
+
+function renderCalendarView() { return state.calendarMode === "month" ? renderMonthCalendar() : renderWeekView(); }
 
 const boardColumns = [
   {
@@ -1328,7 +1421,7 @@ function renderBoard() {
       taskUiStatus(task) === definition.status);
     const agentTasks = state.showAgentTasks
       ? state.agentTasks.filter(
-        (task) => taskUiStatus(task) === definition.status,
+        (task) => task.status !== "proposed" && taskUiStatus(task) === definition.status,
       )
       : [];
     const column = node("section", "board-column");
@@ -1649,6 +1742,7 @@ function renderAgentWorkView() {
     ),
   );
   wrapper.append(intro);
+  wrapper.append(renderCoordinatorSummary());
   if (!state.agents.length) {
     wrapper.append(
       node(
@@ -1662,6 +1756,11 @@ function renderAgentWorkView() {
   const grid = node("div", "agent-profile-grid");
   state.agents.forEach((agent) => {
     const card = node("article", "agent-profile-card");
+    const profile = node("button", "agent-card-profile-button", "⋯");
+    profile.type = "button";
+    profile.setAttribute("aria-label", `Open ${agent.name} profile`);
+    profile.title = `Open ${agent.name} profile`;
+    profile.addEventListener("click", () => openAgentProfile(agent));
     const heading = node("div", "agent-profile-heading");
     heading.append(
       ownerBadge({
@@ -1673,6 +1772,7 @@ function renderAgentWorkView() {
         "agent-work-count",
         `${state.agentTasks.filter((task) => task.owner.slug === agent.slug).length} work items`,
       ),
+      profile,
     );
     const goals = agent.default_goal_slugs
       .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug))
@@ -1686,9 +1786,14 @@ function renderAgentWorkView() {
       item.append(button);
       goalList.append(item);
     });
-    const profile = node("button", "secondary-button", "Open Agent Profile");
-    profile.type = "button";
-    profile.addEventListener("click", () => openAgentProfile(agent));
+    const work = state.agentTasks.filter((task) => task.owner?.slug === agent.slug && task.status !== "proposed");
+    const working = work.filter((task) => task.status === "active");
+    const blocked = work.filter((task) => ["blocked", "waiting"].includes(task.status));
+    const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
+    const workSummary = node("div", "agent-work-summary");
+    workSummary.append(node("h3", "", "Current work"));
+    workSummary.append(node("strong", "", work.length ? `${working.length} working · ${blocked.length} blocked` : "No authorized work yet"));
+    workSummary.append(node("span", "", latest ? `Next: ${latest.next_action || "No next step set"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or next step recorded."));
     card.append(
       heading,
       node(
@@ -1699,7 +1804,7 @@ function renderAgentWorkView() {
           : "No default goals linked",
       ),
       goalList,
-      profile,
+      workSummary,
     );
     if (agent.chat_url) {
       const chat = node("a", "secondary-button", "Open Codex chat");
@@ -1712,6 +1817,36 @@ function renderAgentWorkView() {
   });
   wrapper.append(grid);
   return wrapper;
+}
+
+function renderCoordinatorSummary() {
+  const section = node("section", "coordinator-summary");
+  section.setAttribute("aria-labelledby", "coordinator-summary-title");
+  section.append(
+    node("h2", "", "Coordinator"),
+    node("p", "", "Read-only triage across the three canonical agent work roots. The Coordinator does not execute, approve, edit, reassign, or claim work; shared GBrain state and evidence remain the only coordination channel."),
+  );
+  const list = node("div", "coordinator-agent-grid");
+  state.agents.forEach((agent) => {
+    const work = state.agentTasks.filter((task) => task.owner?.slug === agent.slug);
+    const counts = {
+      active: work.filter((task) => task.status === "active").length,
+      proposed: work.filter((task) => task.status === "proposed").length,
+      blocked: work.filter((task) => ["blocked", "waiting"].includes(task.status)).length,
+      completed: work.filter((task) => task.status === "completed").length,
+    };
+    const card = node("article", "coordinator-agent-card");
+    card.append(ownerBadge({ name: agent.name, avatar: agent.avatar }));
+    card.append(node("p", "", `${counts.active} active · ${counts.proposed} waiting for Tony · ${counts.blocked} blocked · ${counts.completed} completed`));
+    const latest = work.filter((task) => task.status === "completed").sort((a,b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
+    card.append(node("small", "", latest ? `Recent verified completion: ${latest.title || latest.summary}` : "No verified completion yet."));
+    list.append(card);
+  });
+  section.append(list);
+  const blockers = state.agentTasks.filter((task) => ["blocked", "waiting", "proposed"].includes(task.status));
+  const issueCount = state.agentIssues.length;
+  section.append(node("p", "coordinator-notice", blockers.length || issueCount ? `${blockers.length} material blocker or waiting-for-Tony item${blockers.length === 1 ? "" : "s"}; ${issueCount} malformed or missing-state issue${issueCount === 1 ? "" : "s"}. Details stay in Inbox Needs Attention.` : "No material blockers, waiting-for-Tony items, or malformed agent-work issues."));
+  return section;
 }
 
 function goalCard(goal) {
@@ -1833,6 +1968,14 @@ function renderProjectsView() {
       ),
       node("code", "", project.slug),
     );
+    const goalNames = (project.supporting_goal_slugs || [])
+      .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug)?.title)
+      .filter(Boolean);
+    card.append(node("p", "", goalNames.length ? `Supports: ${goalNames.join(", ")}` : "No supporting goals selected."));
+    const edit = node("button", "secondary-button", "Edit");
+    edit.type = "button";
+    edit.addEventListener("click", () => openEditProject(project));
+    card.append(edit);
     grid.append(card);
   });
   fragment.append(grid);
@@ -1935,7 +2078,35 @@ async function loadProjects() {
 }
 
 function openNewProject() {
+  state.projectEditorSlug = null;
   elements.newProjectForm.reset();
+  populateProjectGoalChoices();
+  elements.newProjectError.classList.add("is-hidden");
+  elements.newProjectMode.textContent = "New durable project";
+  elements.newProjectHeading.textContent = "Create a Project";
+  elements.newProjectSubmit.textContent = "Create project";
+  elements.newProjectDialog.showModal();
+  window.setTimeout(() => elements.newProjectTitle.focus(), 0);
+}
+
+function populateProjectGoalChoices(selected = []) {
+  const chosen = new Set(selected);
+  elements.newProjectGoals.replaceChildren();
+  (state.snapshot?.goals || []).forEach((goal) => {
+    const option = node("option", "", goal.title);
+    option.value = goal.slug;
+    option.selected = chosen.has(goal.slug);
+    elements.newProjectGoals.append(option);
+  });
+}
+
+function openEditProject(project) {
+  state.projectEditorSlug = project.slug;
+  elements.newProjectTitle.value = project.title;
+  populateProjectGoalChoices(project.supporting_goal_slugs || []);
+  elements.newProjectMode.textContent = "Existing durable project";
+  elements.newProjectHeading.textContent = "Edit";
+  elements.newProjectSubmit.textContent = "Save changes";
   elements.newProjectError.classList.add("is-hidden");
   elements.newProjectDialog.showModal();
   window.setTimeout(() => elements.newProjectTitle.focus(), 0);
@@ -1945,15 +2116,16 @@ async function submitNewProject(event) {
   event.preventDefault();
   elements.newProjectError.classList.add("is-hidden");
   elements.newProjectSubmit.disabled = true;
-  elements.newProjectSubmit.textContent = "Creating in GBrain…";
+  const editing = Boolean(state.projectEditorSlug);
+  elements.newProjectSubmit.textContent = editing ? "Saving in GBrain…" : "Creating in GBrain…";
   try {
-    const response = await fetch("/api/projects", {
-      method: "POST",
+    const response = await fetch(editing ? `/api/projects/${encodeURIComponent(state.projectEditorSlug)}` : "/api/projects", {
+      method: editing ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ title: elements.newProjectTitle.value }),
+      body: JSON.stringify({ title: elements.newProjectTitle.value, supporting_goal_slugs: [...elements.newProjectGoals.selectedOptions].map((option) => option.value) }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -1973,7 +2145,7 @@ async function submitNewProject(event) {
     }
     elements.newProjectDialog.close();
     state.activeView = "projects";
-    showToast("Project created, linked, and verified in GBrain.");
+    showToast(editing ? "Project changes verified in GBrain." : "Project created, linked, and verified in GBrain.");
     render();
   } catch (error) {
     elements.newProjectError.textContent =
@@ -1983,7 +2155,7 @@ async function submitNewProject(event) {
     elements.newProjectError.classList.remove("is-hidden");
   } finally {
     elements.newProjectSubmit.disabled = false;
-    elements.newProjectSubmit.textContent = "Create project";
+    elements.newProjectSubmit.textContent = editing ? "Save changes" : "Create project";
   }
 }
 
@@ -2566,10 +2738,7 @@ function openProposalReview(proposal) {
 
 function openProposalDecision(proposal, action) {
   const agent = proposalAgent(proposal);
-  const recipient =
-    proposal.recipient === "tony"
-      ? "a canonical Tony task"
-      : `canonical assigned work for ${agent?.name || "the proposing agent"}`;
+  const recipient = `this exact canonical ${proposal.recipient === "tony" ? "Tony" : "agent-owned"} task`;
   state.proposalAction = { proposal, action };
   elements.proposalDecisionTitle.textContent =
     action === "approve"
@@ -2577,12 +2746,12 @@ function openProposalDecision(proposal, action) {
       : `Reject “${proposal.title}”?`;
   elements.proposalDecisionCopy.textContent =
     action === "approve"
-      ? `Approval creates ${recipient} only after exact GBrain page and relationship readback. It does not authorize unrelated external side effects.`
+      ? `Approval changes ${recipient} in place to planned only after exact GBrain page and relationship readback. It does not authorize unrelated external side effects.`
       : "Rejection records a durable decision and retains this canonical proposal, its links, and its audit history. It does not delete task, goal, or agent data.";
   elements.proposalDecisionNote.value = "";
   elements.proposalDecisionError.classList.add("is-hidden");
   elements.proposalDecisionSubmit.textContent =
-    action === "approve" ? "Approve and create task" : "Reject proposal";
+    action === "approve" ? "Approve this task" : "Reject proposal";
   elements.proposalDecisionSubmit.classList.toggle(
     "is-destructive",
     action === "reject",
@@ -2594,60 +2763,27 @@ function openProposalDecision(proposal, action) {
 function proposalCard(proposal) {
   const agent = proposalAgent(proposal);
   const card = node("article", "proposal-card");
-  const header = node("div", "proposal-card-header");
-  header.append(
-    ownerBadge({
-      name: agent?.name || proposal.proposing_agent,
-      avatar: agent?.avatar || { kind: "initials", value: "A" },
-    }),
-    node(
-      "span",
-      `proposal-recipient ${proposal.recipient}`,
-      proposal.recipient === "tony"
-        ? "Proposed for Tony"
-        : "Proposed agent work",
-    ),
-    node("span", `proposal-status ${proposal.status}`, proposal.status),
-  );
+  card.classList.toggle("is-selected", state.selectedSlug === proposal.slug);
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.setAttribute("aria-label", `Open proposed task ${proposal.title}`);
+  const open = () => selectTask(proposal.slug);
+  card.addEventListener("click", open);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+  });
   card.append(
-    header,
     node("h4", "", proposal.title),
-    node("p", "proposal-link", proposalRelationLabel(proposal)),
-    node("p", "proposal-rationale", proposal.rationale),
-    node(
-      "p",
-      "proposal-next-step",
-      `Next step · ${proposal.proposed_next_step}`,
-    ),
-    node(
-      "p",
-      "proposal-time",
-      `Submitted ${new Date(proposal.submitted_at).toLocaleString()} · updated ${new Date(proposal.updated_at).toLocaleString()}`,
-    ),
   );
-  if (["proposed", "review"].includes(proposal.status)) {
+  if (proposal.source_kind === "task" && proposal.status === "proposed") {
     const actions = node("div", "proposal-actions");
-    const edit = node("button", "secondary-button", "Review / edit");
-    edit.type = "button";
-    edit.addEventListener("click", () => openProposalReview(proposal));
-    const approve = node("button", "submit-button", "Approve");
-    approve.type = "button";
-    approve.addEventListener(
-      "click",
-      () => openProposalDecision(proposal, "approve"),
-    );
-    const reject = node("button", "danger-button", "Reject");
-    reject.type = "button";
-    reject.addEventListener(
-      "click",
-      () => openProposalDecision(proposal, "reject"),
-    );
-    actions.append(edit, approve, reject);
-    card.append(actions);
-  } else if (proposal.decision_note) {
-    card.append(
-      node("p", "proposal-decision-note", proposal.decision_note),
-    );
+    const edit = node("button", "secondary-button", "Edit"); edit.type = "button";
+    edit.addEventListener("click", (event) => { event.stopPropagation(); selectTask(proposal.slug); openEditTask(); });
+    const approve = node("button", "submit-button", "Approve"); approve.type = "button";
+    approve.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "approve"); });
+    const reject = node("button", "danger-button", "Reject"); reject.type = "button";
+    reject.addEventListener("click", (event) => { event.stopPropagation(); openProposalDecision(proposal, "reject"); });
+    actions.append(edit, approve, reject); card.append(actions);
   }
   return card;
 }
@@ -2830,7 +2966,7 @@ async function submitProposalDecision() {
     }
     showToast(
       pending.action === "approve"
-        ? "Proposal approved; canonical task creation and readback verified."
+        ? "Proposal approved in place; canonical task readback verified."
         : "Proposal rejection recorded; canonical data retained.",
     );
   } catch (error) {
@@ -2861,7 +2997,7 @@ function render() {
     view === "today"
       ? renderToday()
       : view === "week"
-        ? renderWeekView()
+        ? renderCalendarView()
       : view === "board"
         ? renderBoard()
       : view === "agent-work"
@@ -2899,8 +3035,19 @@ function selectTask(slug) {
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.taskDetailStatus.textContent = taskUiStatus(task) === "active" ? "In Progress" : taskUiStatus(task);
+  const isProposed = task.status === "proposed";
+  elements.taskApproveButton.classList.toggle("is-hidden", !isProposed);
+  elements.taskRejectButton.classList.toggle("is-hidden", !isProposed);
+  elements.taskDuplicateButton.classList.toggle("is-hidden", isProposed);
   elements.detailTitle.textContent = task.title || task.summary;
-  elements.detailCopy.textContent = task.detail || "No additional detail yet.";
+  renderSafeMarkdown(elements.detailCopy, task.detail || "");
+  elements.proposalDetailMeta.classList.toggle("is-hidden", task.status !== "proposed");
+  if (task.status === "proposed") {
+    const ownerName = task.owner?.name || state.agents.find((agent) => agent.slug === task.owner_agent)?.name || task.owner_agent || "Unknown agent";
+    const target = state.snapshot.goals.find((goal) => goal.slug === task.goal)?.title || task.goal || "No linked primary goal";
+    const submitted = task.proposal_submitted_at || task.created_at;
+    elements.proposalDetailMeta.textContent = `Proposed by ${ownerName} · Goal: ${target}${submitted ? ` · Submitted ${new Date(submitted).toLocaleString()}` : ""}${task.updated_at ? ` · Updated ${new Date(task.updated_at).toLocaleString()}` : ""}`;
+  } else elements.proposalDetailMeta.textContent = "";
   const owner = task.owner || (
     task.owner_agent
       ? {
@@ -3061,7 +3208,7 @@ function selectGoal(slug) {
   elements.goalEditButton.disabled = false;
   elements.goalActionError.classList.add("is-hidden");
   elements.goalDetailTitle.textContent = goal.title;
-  elements.goalDetailOutcome.textContent = goal.outcome;
+  renderSafeMarkdown(elements.goalDetailOutcome, goal.outcome || "");
   const defaultAgent = state.agents.find((agent) =>
     agent.default_goal_slugs.includes(goal.slug));
   elements.goalDefaultAgent.classList.toggle("is-hidden", !defaultAgent);
@@ -3572,18 +3719,20 @@ function openEditTask() {
   elements.taskEditorMode.textContent = "Review and save one canonical change";
   elements.taskEditorHeading.textContent = "Edit Task";
   elements.taskEditorSubmit.textContent = "Save changes";
+  elements.taskEditorSaveApprove.classList.toggle("is-hidden", task.status !== "proposed");
   elements.taskEditorSafety.textContent = "Every saved field and typed relationship is read back from GBrain before Mission Control reports success.";
   elements.taskEditorTitle.value = task.title || task.summary;
   elements.taskEditorDetail.value = task.detail || "";
   elements.taskEditorPriority.value = task.priority;
-  elements.taskEditorStatus.value = taskUiStatus(task);
-  elements.taskEditorStatusField.classList.remove("is-hidden");
+  const isProposed = task.status === "proposed";
+  elements.taskEditorStatus.value = isProposed ? "planned" : taskUiStatus(task);
+  elements.taskEditorStatusField.classList.toggle("is-hidden", isProposed);
   elements.taskEditorDue.value = task.due_day || "";
   elements.taskEditorNextAction.value = task.next_action || "";
-  elements.taskEditorAssigneeField.classList.remove("is-hidden");
+  elements.taskEditorAssigneeField.classList.toggle("is-hidden", isProposed);
   populateTaskEditorAssignees(task.owner_agent || "tony");
-  elements.taskEditorHandoffField.classList.remove("is-hidden");
-  elements.taskEditorHandoffReason.classList.remove("is-hidden");
+  elements.taskEditorHandoffField.classList.toggle("is-hidden", isProposed);
+  elements.taskEditorHandoffReason.classList.toggle("is-hidden", isProposed);
   elements.taskEditorHandoffReason.value = "";
   populateTaskEditorRelationships(task);
   resetTaskEditorMetric(task.progress_metric);
@@ -3641,7 +3790,7 @@ async function submitTaskEditor(event) {
         ? { assignee_slug: elements.taskEditorAssignee.value }
         : {}),
       ...(state.taskEditorMode === "edit" ? {
-        status: elements.taskEditorStatus.value,
+        status: findTaskBySlug(state.taskEditorSourceSlug)?.status === "proposed" ? "proposed" : elements.taskEditorStatus.value,
         assignee_slug: elements.taskEditorAssignee.value,
         handoff_reason: elements.taskEditorHandoffReason.value,
       } : {}),
@@ -3724,6 +3873,20 @@ async function submitTaskEditor(event) {
   }
 }
 
+async function saveAndApproveProposedTask() {
+  const task = findTaskBySlug(state.taskEditorSourceSlug);
+  if (!task || task.status !== "proposed") return;
+  if (!window.confirm("Save these edits and approve this same proposed task as planned work?")) return;
+  // Save first with status proposed.  A failed approval is visible and leaves
+  // the exact same task safely proposed rather than claiming authorization.
+  await submitTaskEditor({ preventDefault() {} });
+  if (elements.taskEditorDialog.open) return;
+  openProposalDecision({
+    slug: task.slug, title: elements.taskEditorTitle.value || task.title,
+    proposing_agent: task.owner_agent, recipient: task.proposal_recipient || "agent",
+  }, "approve");
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
@@ -3732,6 +3895,7 @@ elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
 elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.taskEditorSaveApprove.addEventListener("click", saveAndApproveProposedTask);
 elements.agentProfileClose.addEventListener("click", () => {
   elements.agentProfileDialog.close();
 });
@@ -3773,6 +3937,14 @@ elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.taskEditButton.addEventListener("click", openEditTask);
 elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);
+elements.taskApproveButton.addEventListener("click", () => {
+  const task = findTaskBySlug(state.selectedSlug);
+  if (task?.status === "proposed") openProposalDecision({ slug: task.slug, title: task.title, proposing_agent: task.owner_agent, recipient: task.proposal_recipient || "agent" }, "approve");
+});
+elements.taskRejectButton.addEventListener("click", () => {
+  const task = findTaskBySlug(state.selectedSlug);
+  if (task?.status === "proposed") openProposalDecision({ slug: task.slug, title: task.title, proposing_agent: task.owner_agent, recipient: task.proposal_recipient || "agent" }, "reject");
+});
 elements.newProjectClose.addEventListener("click", () => {
   elements.newProjectDialog.close();
 });

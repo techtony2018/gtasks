@@ -261,7 +261,9 @@ class FrontendContractTests(unittest.TestCase):
         ]
 
         self.assertIn("ownerBadge({", agent_work)
-        self.assertIn("ownerBadge({", proposal_card)
+        self.assertNotIn("ownerBadge({", proposal_card)
+        self.assertIn('node("h4", "", proposal.title)', proposal_card)
+        self.assertIn('node("button", "secondary-button", "Edit")', proposal_card)
         self.assertNotIn("agentOwnerBadge", javascript)
 
     def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(
@@ -272,17 +274,55 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn("Proposed Tasks", javascript)
         self.assertIn("All Agents", javascript)
-        self.assertIn("Proposed for Tony", javascript)
-        self.assertIn("Proposed agent work", javascript)
+        self.assertIn('node("button", "submit-button", "Approve")', javascript)
+        self.assertIn('node("button", "danger-button", "Reject")', javascript)
         self.assertIn('fetch("/api/proposals"', javascript)
         self.assertIn('id="proposal-review-dialog"', html)
         self.assertIn('id="proposal-decision-dialog"', html)
-        self.assertIn("It does not create a task", html)
+        self.assertIn("same proposed task", javascript)
         self.assertIn("Rejection records a durable decision", javascript)
         self.assertIn(
             'view === "inbox" ? renderProposedWork() : null',
             javascript,
         )
+
+    def test_calendar_and_project_edit_layout_contracts(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('id="new-project-heading"', html)
+        self.assertIn('elements.newProjectHeading.textContent = "Edit"', javascript)
+        self.assertIn('"Create a Project"', javascript)
+        self.assertIn("grid-template-columns: repeat(7, minmax(0, 1fr))", css)
+        self.assertIn("overflow-wrap: anywhere", css)
+        self.assertIn(".proposal-decision-field", css)
+        self.assertIn("container-type: inline-size", css)
+        self.assertIn("@container (max-width: 105px)", css)
+        self.assertIn(".week-task-list .task-title {", css)
+        self.assertIn(".week-task-list .task-project {", css)
+        self.assertIn("font-size: 10px", css)
+
+    def test_agent_cards_have_one_direct_profile_control_and_structured_current_work(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        agent_work = javascript[
+            javascript.index("function renderAgentWorkView") : javascript.index("function renderCoordinatorSummary")
+        ]
+
+        self.assertIn('node("button", "agent-card-profile-button", "⋯")', agent_work)
+        self.assertIn("openAgentProfile(agent)", agent_work)
+        self.assertNotIn("node(\"details\"", agent_work)
+        self.assertNotIn("Open Agent Profile", agent_work)
+        self.assertIn('node("h3", "", "Current work")', agent_work)
+        self.assertIn("No authorized work yet", agent_work)
+        self.assertIn("No current task or next step recorded.", agent_work)
+
+    def test_task_write_paths_use_fail_closed_type_preservation(self) -> None:
+        adapter = (PROJECT_ROOT / "gtasks" / "gbrain.py").read_text(encoding="utf-8")
+
+        self.assertIn("def _render_preserved_task_page", adapter)
+        self.assertIn("refusing to change canonical page type", adapter)
+        self.assertIn("_render_preserved_task_page(raw_page, changed)", adapter)
+        self.assertGreaterEqual(adapter.count("_render_preserved_task_page(raw_page"), 8)
 
     def test_goal_detail_has_default_agent_profile_link(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -292,7 +332,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="goal-default-agent-name"', html)
         self.assertIn('id="goal-default-agent-link"', html)
         self.assertIn("default_goal_slugs", javascript)
-        self.assertIn("Open Agent Profile", javascript)
+        self.assertIn("openAgentProfile(agent)", javascript)
 
     def test_sidebar_is_text_first_and_does_not_offer_upcoming(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

@@ -26,7 +26,7 @@ AGENT_BY_WORK_ROOT = {
 }
 
 TASK_STATUSES = frozenset(
-    {"planned", "active", "waiting", "blocked", "completed", "cancelled"}
+    {"proposed", "planned", "active", "waiting", "blocked", "completed", "cancelled"}
 )
 EDITABLE_TASK_STATUSES = frozenset(
     {"planned", "active", "blocked", "completed", "cancelled"}
@@ -163,6 +163,7 @@ class TaskProposal:
     approved_task: str | None = None
     reviewed_at: datetime | None = None
     decision_note: str = ""
+    source_kind: str = "legacy"
 
     @classmethod
     def from_page(
@@ -312,6 +313,7 @@ class TaskProposal:
             "approved_task": self.approved_task,
             "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "decision_note": self.decision_note,
+            "source_kind": self.source_kind,
         }
 
 
@@ -552,6 +554,9 @@ class Task:
     completed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    proposal_recipient: str | None = None
+    proposal_submitted_at: datetime | None = None
+    proposal_decision_note: str = ""
 
     @classmethod
     def from_page(
@@ -611,6 +616,8 @@ class Task:
             and lifecycle_root != ACTIVE_ROOT
         ):
             raise DomainValidationError("unfinished task must belong to the active lifecycle root")
+        if status == "proposed" and lifecycle_root not in AGENT_WORK_ROOTS:
+            raise DomainValidationError("proposed tasks must remain in an agent work collection")
 
         project_links = [
             link["to"]
@@ -752,6 +759,19 @@ class Task:
             ),
             created_at=_optional_datetime(frontmatter.get("created_at"), "created_at"),
             updated_at=_optional_datetime(frontmatter.get("updated_at"), "updated_at"),
+            proposal_recipient=(
+                frontmatter.get("proposal_recipient")
+                if frontmatter.get("proposal_recipient") in {"tony", "agent"}
+                else None
+            ),
+            proposal_submitted_at=_optional_datetime(
+                frontmatter.get("proposal_submitted_at"), "proposal_submitted_at"
+            ),
+            proposal_decision_note=(
+                frontmatter.get("proposal_decision_note", "").strip()
+                if isinstance(frontmatter.get("proposal_decision_note", ""), str)
+                else ""
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -785,6 +805,9 @@ class Task:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "proposal_recipient": self.proposal_recipient,
+            "proposal_submitted_at": self.proposal_submitted_at.isoformat() if self.proposal_submitted_at else None,
+            "proposal_decision_note": self.proposal_decision_note,
         }
 
 
@@ -1057,6 +1080,7 @@ class Project:
     title: str
     status: str
     summary: str
+    supporting_goal_slugs: tuple[str, ...] = ()
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1100,11 +1124,23 @@ class Project:
         summary = frontmatter.get("summary", title)
         if not isinstance(summary, str):
             raise DomainValidationError("project summary must be text")
+        supporting_goals = tuple(
+            dict.fromkeys(
+                str(edge["to_slug"])
+                for edge in edges
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == slug
+                and edge.get("link_type") == "supports_goal"
+                and isinstance(edge.get("to_slug"), str)
+                and str(edge["to_slug"]).startswith("goals/")
+            )
+        )
         return cls(
             slug=slug,
             title=title.strip(),
             status=status,
             summary=summary.strip() or title.strip(),
+            supporting_goal_slugs=supporting_goals,
             created_at=_optional_datetime(frontmatter.get("created_at"), "created_at"),
             updated_at=_optional_datetime(frontmatter.get("updated_at"), "updated_at"),
         )
@@ -1115,6 +1151,7 @@ class Project:
             "title": self.title,
             "status": self.status,
             "summary": self.summary,
+            "supporting_goal_slugs": list(self.supporting_goal_slugs),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -1167,7 +1204,12 @@ def new_inbox_task(
     )
 
 
-def new_project(title: str, now: datetime, identity: str) -> Project:
+def new_project(
+    title: str,
+    now: datetime,
+    identity: str,
+    supporting_goal_slugs: tuple[str, ...] = (),
+) -> Project:
     clean_title = title.strip()
     if not clean_title:
         raise DomainValidationError("project title is required")
@@ -1181,6 +1223,7 @@ def new_project(title: str, now: datetime, identity: str) -> Project:
         title=clean_title,
         status="active",
         summary=clean_title,
+        supporting_goal_slugs=tuple(dict.fromkeys(supporting_goal_slugs)),
         created_at=now,
         updated_at=now,
     )

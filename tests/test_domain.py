@@ -177,13 +177,31 @@ class TaskParsingTests(unittest.TestCase):
                 },
             ],
         )
-
         self.assertEqual(proposal.recipient, "tony")
         self.assertEqual(proposal.proposing_agent, "agents/toddy")
-        self.assertEqual(
-            proposal.linked_goal,
-            "goals/happier-and-healthier",
+        self.assertEqual(proposal.linked_goal, "goals/happier-and-healthier")
+
+    def test_agent_owned_proposed_task_is_a_normal_task(self) -> None:
+        page = task_page(
+            "collections/timmys-tasks/proposed-checklist",
+            status="proposed",
+            links=[{"to": "collections/timmys-tasks", "type": "member_of"}],
         )
+        page["frontmatter"].update({
+            "proposal_recipient": "agent",
+            "proposal_submitted_at": "2026-07-31T10:00:00-07:00",
+        })
+        task = Task.from_page(page, edges=[
+            {"from_slug": page["slug"], "to_slug": "collections/timmys-tasks", "link_type": "member_of"},
+            {"from_slug": page["slug"], "to_slug": "agents/timmy", "link_type": "assigned_to"},
+        ])
+        self.assertEqual(task.status, "proposed")
+        self.assertEqual(task.owner_agent, "agents/timmy")
+
+    def test_personal_proposed_task_is_rejected(self) -> None:
+        with self.assertRaisesRegex(DomainValidationError, "agent work collection"):
+            Task.from_page(task_page("tasks/not-an-agent-proposal", status="proposed"))
+
 
     def test_agent_task_requires_matching_scope_and_assigned_to_relation(
         self,

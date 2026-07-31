@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.22")
+        self.assertEqual(__version__, "V0.0.31")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -66,6 +66,15 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.20",
                 "V0.0.21",
                 "V0.0.22",
+                "V0.0.23",
+                "V0.0.24",
+                "V0.0.25",
+                "V0.0.26",
+                "V0.0.27",
+                "V0.0.28",
+                "V0.0.29",
+                "V0.0.30",
+                "V0.0.31",
             ],
         )
 
@@ -212,6 +221,31 @@ class ReleaseCatalogTests(unittest.TestCase):
         release = RELEASES[21]
         self.assertEqual(release["version"], "V0.0.22")
         self.assertIn("Goal details now include Edit", release["summary"])
+
+    def test_v0_0_23_records_calendar_and_project_goal_links(self) -> None:
+        release = RELEASES[22]
+        self.assertEqual(release["version"], "V0.0.23")
+        self.assertIn("Week and Month", release["summary"])
+
+    def test_v0_0_24_records_same_task_agent_proposals(self) -> None:
+        release = RELEASES[23]
+        self.assertEqual(release["version"], "V0.0.24")
+        self.assertIn("exact same task", release["summary"])
+
+    def test_v0_0_25_records_read_only_coordination(self) -> None:
+        release = RELEASES[24]
+        self.assertEqual(release["version"], "V0.0.25")
+        self.assertIn("read-only Coordinator", release["summary"])
+
+    def test_v0_0_26_records_focused_proposal_review(self) -> None:
+        release = RELEASES[25]
+        self.assertEqual(release["version"], "V0.0.26")
+        self.assertIn("title-only rows", release["summary"])
+
+    def test_v0_0_27_records_wider_workspace(self) -> None:
+        release = RELEASES[26]
+        self.assertEqual(release["version"], "V0.0.27")
+        self.assertIn("seven equal desktop day columns", release["summary"])
 
 
 if __name__ == "__main__":

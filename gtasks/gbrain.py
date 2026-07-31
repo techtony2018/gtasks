@@ -483,6 +483,12 @@ def render_task_page(task: Task) -> str:
         ),
         f"created_at: {_yaml_scalar(task.created_at.isoformat() if task.created_at else None)}",
         f"updated_at: {_yaml_scalar(task.updated_at.isoformat() if task.updated_at else None)}",
+        f"proposal_recipient: {_yaml_scalar(task.proposal_recipient)}",
+        (
+            "proposal_submitted_at: "
+            + _yaml_scalar(task.proposal_submitted_at.isoformat() if task.proposal_submitted_at else None)
+        ),
+        f"proposal_decision_note: {_yaml_scalar(task.proposal_decision_note)}",
         (
             "progress_metric: "
             + json.dumps(
@@ -677,7 +683,18 @@ def _render_preserved_page(
     body = page.get("compiled_truth")
     if not isinstance(body, str):
         raise GBrainProtocolError("page has no preserved body content")
+    # Preserve the exact canonical type that was read. A generic update must
+    # never infer a fallback type or act as an implicit entity-type migration.
+    entity_type = page.get("type")
+    if not isinstance(entity_type, str) or not entity_type.strip():
+        raise GBrainProtocolError("page has no canonical entity type to preserve")
     preserved = dict(frontmatter)
+    requested_type = preserved.get("type")
+    if requested_type not in (None, entity_type):
+        raise GBrainProtocolError(
+            "refusing to change canonical page type through a preserved update"
+        )
+    preserved["type"] = entity_type
     title = page.get("title")
     if "title" not in preserved and isinstance(title, str) and title.strip():
         preserved["title"] = title.strip()
@@ -689,6 +706,19 @@ def _render_preserved_page(
         )
     lines.extend(["---", "", body.rstrip(), ""])
     return "\n".join(lines)
+
+
+def _render_preserved_task_page(
+    page: Mapping[str, Any],
+    frontmatter: Mapping[str, Any],
+) -> str:
+    """Serialize an existing task only after fail-closed type validation."""
+    if page.get("type") != "task":
+        raise ValueError(
+            "task has unexpected page type "
+            f"{page.get('type') or 'missing'}; repair the task type before writing"
+        )
+    return _render_preserved_page(page, frontmatter)
 
 
 def _lifecycle_edges(
@@ -1328,6 +1358,16 @@ class GBrainAdapter:
                         raise GBrainProtocolError(
                             "agent task readback was not structured"
                         )
+                    frontmatter = page.get("frontmatter")
+                    if (
+                        isinstance(frontmatter, Mapping)
+                        and frontmatter.get("status") == "proposed"
+                        and page.get("type") != "task"
+                    ):
+                        raise DomainValidationError(
+                            "proposed agent task must have canonical type task; "
+                            f"found {page.get('type') or 'missing'}"
+                        )
                     task = Task.from_page(page, edges=edges)
                     if (
                         task.lifecycle_root != root_slug
@@ -1372,6 +1412,11 @@ class GBrainAdapter:
         )
 
     def list_proposals(self) -> ProposalRead:
+        # The current contract is an ordinary, agent-owned task with status
+        # proposed.  Keep legacy task_proposal pages readable during rollout,
+        # but do not create or approve through that old, duplicating path.
+        proposals: list[TaskProposal] = []
+        issues: list[CollectionIssue] = []
         raw_backlinks = self.runner.run(
             "get_backlinks",
             {"slug": PROPOSALS_ROOT},
@@ -1413,8 +1458,6 @@ class GBrainAdapter:
                     ),
                 )
 
-        proposals: list[TaskProposal] = []
-        issues: list[CollectionIssue] = []
         for proposal, issue in self._bounded_map(
             read_proposal,
             list(proposal_slugs),
@@ -1423,6 +1466,29 @@ class GBrainAdapter:
                 proposals.append(proposal)
             if issue is not None:
                 issues.append(issue)
+        try:
+            agent_work = self.list_agent_work()
+        except (GBrainError, IndexError):
+            agent_work = AgentWorkRead(tasks=(), issues=(), roots=())
+        issues.extend(agent_work.issues)
+        for item in agent_work.tasks:
+            if item.get("status") != "proposed":
+                continue
+            submitted = item.get("proposal_submitted_at") or item.get("created_at") or item.get("updated_at")
+            updated = item.get("updated_at") or submitted
+            try:
+                proposals.append(TaskProposal(
+                    slug=str(item["slug"]), title=str(item["title"]), status="proposed",
+                    recipient=str(item.get("proposal_recipient") or "agent"), proposing_agent=str(item.get("owner_agent") or ""),
+                    rationale=str(item.get("detail") or ""), proposed_next_step=str(item.get("next_action") or ""),
+                    due_day=date.fromisoformat(str(item["due_day"])[:10]),
+                    submitted_at=datetime.fromisoformat(str(submitted).replace("Z", "+00:00")),
+                    updated_at=datetime.fromisoformat(str(updated).replace("Z", "+00:00")),
+                    linked_goal=item.get("goal") if isinstance(item.get("goal"), str) else None,
+                    decision_note=str(item.get("proposal_decision_note") or ""), source_kind="task",
+                ))
+            except (KeyError, TypeError, ValueError):
+                issues.append(CollectionIssue(slug=str(item.get("slug", "agent task")), message="proposed agent task is missing required task timing data", impact="This proposed task remains in GBrain but cannot be reviewed until its core task fields are repaired."))
         proposals.sort(key=lambda proposal: proposal.updated_at, reverse=True)
         return ProposalRead(
             proposals=tuple(proposals),
@@ -1888,6 +1954,17 @@ class GBrainAdapter:
                     "link_source": "gtasks",
                 },
             )
+            for goal_slug in project.supporting_goal_slugs:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": project.slug,
+                        "to": goal_slug,
+                        "link_type": "supports_goal",
+                        "context": "This project supports the canonical goal.",
+                        "link_source": "gtasks",
+                    },
+                )
             links = self.runner.run("get_links", {"slug": project.slug})
             if not isinstance(links, list) or not any(
                 isinstance(link, Mapping)
@@ -1899,6 +1976,9 @@ class GBrainAdapter:
                 raise GBrainProtocolError(
                     "project collection relationship readback was not verified"
                 )
+            stored_project = Project.from_page(page, edges=links)
+            if stored_project.supporting_goal_slugs != project.supporting_goal_slugs:
+                raise GBrainProtocolError("project goal relationships were not verified")
         except (DomainValidationError, GBrainError) as exc:
             raise PartialMutationError(
                 project.slug,
@@ -1908,6 +1988,39 @@ class GBrainAdapter:
                     f"{exc}"
                 ),
             ) from exc
+        return ProjectMutationReceipt(project_slug=project.slug, verified=True)
+
+    def update_project(self, project: Project) -> ProjectMutationReceipt:
+        page = self.runner.run("get_page", {"slug": project.slug})
+        links = self.runner.run("get_links", {"slug": project.slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("project edit snapshot was not structured")
+        existing = Project.from_page(page, edges=links)
+        raw_frontmatter = page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("project page has no frontmatter")
+        frontmatter = deepcopy(dict(raw_frontmatter))
+        # Preserve any user-authored fields/body rather than replacing the page
+        # just to update the project properties managed by Mission Control.
+        frontmatter.update({
+            "type": "project", "title": project.title, "summary": project.summary,
+            "status": project.status,
+            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+        })
+        self.runner.run("put_page", {"slug": project.slug, "content": _render_preserved_page(page, frontmatter)})
+        existing_goals = set(existing.supporting_goal_slugs)
+        requested_goals = set(project.supporting_goal_slugs)
+        for goal_slug in existing_goals - requested_goals:
+            self.runner.run("remove_link", {"from": project.slug, "to": goal_slug, "link_type": "supports_goal"})
+        for goal_slug in requested_goals - existing_goals:
+            self.runner.run("add_link", {"from": project.slug, "to": goal_slug, "link_type": "supports_goal", "context": "This project supports the canonical goal.", "link_source": "gtasks"})
+        read_page = self.runner.run("get_page", {"slug": project.slug})
+        read_links = self.runner.run("get_links", {"slug": project.slug})
+        if not isinstance(read_page, Mapping) or not isinstance(read_links, list):
+            raise GBrainProtocolError("project edit readback was not structured")
+        stored = Project.from_page(read_page, edges=read_links)
+        if stored.to_dict() != project.to_dict():
+            raise GBrainProtocolError("project edit readback did not match the write")
         return ProjectMutationReceipt(project_slug=project.slug, verified=True)
 
     def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
@@ -2309,6 +2422,41 @@ class GBrainAdapter:
         )
         if proposal is None:
             raise ValueError("proposal is not in the canonical review scope")
+        if proposal.source_kind == "task":
+            task = self.get_task(proposal_slug)
+            if task.status != "proposed":
+                raise ValueError("only proposed work may be edited")
+            receipt = self.edit_task(
+                proposal_slug,
+                title=title,
+                detail=rationale,
+                priority=task.priority,
+                due_day=due_day,
+                next_action=proposed_next_step,
+                project_slug=task.project,
+                goal_slug=task.goal,
+                status="proposed",
+                assignee_slug=task.owner_agent or "tony",
+                progress_metric=task.progress_metric,
+                event_progress=task.event_progress,
+                handoff_reason="",
+                now=now,
+            )
+            stored = receipt.task
+            return ProposalMutationReceipt(
+                proposal_slug=proposal_slug,
+                status="proposed",
+                proposal=replace(
+                    proposal, title=stored.title, rationale=stored.detail,
+                    proposed_next_step=stored.next_action, due_day=stored.due_day,
+                    updated_at=stored.updated_at or now,
+                ),
+                created_task=None, verified=True,
+            )
+        raise ValueError(
+            "legacy task_proposal pages are read-only compatibility records; "
+            "new proposals are canonical agent tasks with status proposed"
+        )
         if proposal.status not in {"proposed", "review"}:
             raise ValueError("only proposed or in-review work may be edited")
         updated = replace(
@@ -2373,6 +2521,47 @@ class GBrainAdapter:
             raise ValueError("proposal is not in the canonical review scope")
         if action not in {"approve", "reject"}:
             raise ValueError("proposal decision must be approve or reject")
+        if proposal.source_kind == "task":
+            task = self.get_task(proposal_slug)
+            if task.status != "proposed":
+                raise ValueError("proposal already has a final decision")
+            raw_page = self.runner.run("get_page", {"slug": proposal_slug})
+            if not isinstance(raw_page, Mapping):
+                raise GBrainProtocolError("proposed task page readback was not structured")
+            frontmatter = raw_page.get("frontmatter")
+            if not isinstance(frontmatter, Mapping):
+                raise GBrainProtocolError("proposed task page has no frontmatter")
+            changed = deepcopy(dict(frontmatter))
+            changed["proposal_decision_note"] = decision_note.strip()
+            changed["proposal_decided_at"] = now.isoformat()
+            changed["proposal_decision"] = action
+            changed["updated_at"] = now.isoformat()
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": proposal_slug,
+                    "content": _render_preserved_task_page(raw_page, changed),
+                },
+            )
+            target_status = "planned" if action == "approve" else "cancelled"
+            try:
+                status_receipt = self.set_task_status(proposal_slug, target_status, now)
+                stored = status_receipt.task
+            except (DomainValidationError, GBrainError) as exc:
+                raise PartialMutationError(
+                    proposal_slug,
+                    "Proposal decision was not fully verified; inspect this same task before retrying. " + str(exc),
+                ) from exc
+            return ProposalMutationReceipt(
+                proposal_slug=proposal_slug, status=stored.status,
+                proposal=replace(proposal, status=stored.status, updated_at=stored.updated_at or now,
+                                 reviewed_at=now, decision_note=decision_note.strip()),
+                created_task=stored, verified=True,
+            )
+        raise ValueError(
+            "legacy task_proposal pages are read-only compatibility records; "
+            "new proposals are canonical agent tasks with status proposed"
+        )
         if proposal.status in {"approved", "rejected"}:
             if (
                 proposal.status == "approved"
@@ -2567,8 +2756,8 @@ class GBrainAdapter:
 
         original_frontmatter = deepcopy(dict(raw_frontmatter))
         original_frontmatter["type"] = "task"
-        original_content = _render_preserved_page(raw_page, original_frontmatter)
-        repaired_content = _render_preserved_page(raw_page, repaired_frontmatter)
+        original_content = _render_preserved_task_page(raw_page, original_frontmatter)
+        repaired_content = _render_preserved_task_page(raw_page, repaired_frontmatter)
         typed_descriptor = {
             "from": task_slug,
             "to": ACTIVE_ROOT,
@@ -2728,8 +2917,10 @@ class GBrainAdapter:
                 f"task has unexpected page type {raw_page.get('type') or 'missing'}; repair the task type before editing"
             )
         task = Task.from_page(raw_page, edges=raw_links)
-        if status not in EDITABLE_TASK_STATUSES:
+        if status not in EDITABLE_TASK_STATUSES | {"proposed"}:
             raise ValueError("task status is not supported")
+        if task.status == "proposed" and status == "proposed" and assignee_slug != (task.owner_agent or "tony"):
+            raise ValueError("the owner of proposed work is immutable until it is approved")
         if assignee_slug != "tony" and assignee_slug not in {
             agent.slug for agent in self.list_agent_profiles().agents
         }:
@@ -2773,8 +2964,8 @@ class GBrainAdapter:
                 "updated_at": now.isoformat(),
             }
         )
-        original_content = _render_preserved_page(raw_page, dict(raw_frontmatter))
-        desired_content = _render_preserved_page(raw_page, frontmatter)
+        original_content = _render_preserved_task_page(raw_page, dict(raw_frontmatter))
+        desired_content = _render_preserved_task_page(raw_page, frontmatter)
         try:
             self.runner.run("put_page", {"slug": task_slug, "content": desired_content})
             if project_slug != task.project:
@@ -2846,7 +3037,7 @@ class GBrainAdapter:
         frontmatter["links"] = retained
         frontmatter["assignment_history"] = history[-100:]
         frontmatter["updated_at"] = now.isoformat()
-        self.runner.run("put_page", {"slug": task_slug, "content": _render_preserved_page(page, frontmatter)})
+        self.runner.run("put_page", {"slug": task_slug, "content": _render_preserved_task_page(page, frontmatter)})
         if target_root != old_root:
             self.runner.run("add_link", {"from": task_slug, "to": target_root, "link_type": "member_of", "context": "GTasks current work scope.", "link_source": "gtasks"})
         if assignee_slug != "tony":
@@ -2959,7 +3150,7 @@ class GBrainAdapter:
                     "task frontmatter lifecycle link could not be updated safely"
                 )
 
-        content = _render_preserved_page(raw_page, frontmatter)
+        content = _render_preserved_task_page(raw_page, frontmatter)
         self.runner.run("put_page", {"slug": task_slug, "content": content})
         try:
             if target_root != task.lifecycle_root:
@@ -3104,8 +3295,8 @@ class GBrainAdapter:
         desired_frontmatter = deepcopy(original_frontmatter)
         desired_frontmatter["next_action"] = normalized_action
         desired_frontmatter["updated_at"] = now.isoformat()
-        original_content = _render_preserved_page(raw_page, original_frontmatter)
-        desired_content = _render_preserved_page(raw_page, desired_frontmatter)
+        original_content = _render_preserved_task_page(raw_page, original_frontmatter)
+        desired_content = _render_preserved_task_page(raw_page, desired_frontmatter)
 
         write_succeeded = False
         try:
@@ -3279,11 +3470,11 @@ class GBrainAdapter:
             event_progress.to_dict() if event_progress else None
         )
         desired_frontmatter["updated_at"] = now.isoformat()
-        original_content = _render_preserved_page(
+        original_content = _render_preserved_task_page(
             raw_page,
             original_frontmatter,
         )
-        desired_content = _render_preserved_page(
+        desired_content = _render_preserved_task_page(
             raw_page,
             desired_frontmatter,
         )
@@ -3569,8 +3760,8 @@ class GBrainAdapter:
             desired_links.append({"to": project_slug, "type": "member_of"})
         desired_frontmatter["links"] = desired_links
         desired_frontmatter["project"] = project_slug
-        original_content = _render_preserved_page(raw_page, original_frontmatter)
-        desired_content = _render_preserved_page(raw_page, desired_frontmatter)
+        original_content = _render_preserved_task_page(raw_page, original_frontmatter)
+        desired_content = _render_preserved_task_page(raw_page, desired_frontmatter)
         journal: list[str] = []
         try:
             self.runner.run(

@@ -877,17 +877,25 @@ def _handler_class(
                 if payload is None:
                     return
                 raw_title = payload.get("title", "")
+                raw_goals = payload.get("supporting_goal_slugs", [])
                 if not isinstance(raw_title, str):
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {"error": "project title must be text."},
                     )
                     return
+                if raw_goals is not None and (not isinstance(raw_goals, list) or not all(isinstance(item, str) and item.startswith("goals/") for item in raw_goals)):
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "supporting_goal_slugs must be a list of canonical goal slugs."})
+                    return
                 try:
+                    valid_goals = {goal.slug for goal in adapter.list_goals().goals}
+                    if not set(raw_goals).issubset(valid_goals):
+                        raise DomainValidationError("Each supporting goal must be a current canonical goal.")
                     project = new_project(
                         raw_title,
                         now=clock(),
                         identity=identity_factory(),
+                        supporting_goal_slugs=tuple(dict.fromkeys(raw_goals)),
                     )
                     receipt = adapter.create_project(project)
                 except DomainValidationError as exc:
@@ -1187,6 +1195,50 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            project_prefix = "/api/projects/"
+            if path.startswith(project_prefix) and "/" not in path[len(project_prefix) :]:
+                project_slug = unquote(path[len(project_prefix) :])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) - {"title", "summary", "status", "supporting_goal_slugs"}:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "project edit contains unsupported fields.", "code": "invalid_project"})
+                    return
+                raw_goals = payload.get("supporting_goal_slugs", [])
+                if not isinstance(raw_goals, list) or not all(isinstance(item, str) and item.startswith("goals/") for item in raw_goals):
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "supporting_goal_slugs must be a list of canonical goal slugs.", "code": "invalid_project"})
+                    return
+                try:
+                    existing = next(project for project in adapter.list_projects().projects if project.slug == project_slug)
+                    raw_goals = existing.supporting_goal_slugs if raw_goals is None else raw_goals
+                    valid_goals = {goal.slug for goal in adapter.list_goals().goals}
+                    if not set(raw_goals).issubset(valid_goals):
+                        raise DomainValidationError("Each supporting goal must be a current canonical goal.")
+                    title = payload.get("title", existing.title)
+                    summary = payload.get("summary", existing.summary)
+                    status = payload.get("status", existing.status)
+                    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+                        raise DomainValidationError("project title must be 1 to 160 characters")
+                    if not isinstance(summary, str) or len(summary.strip()) > 500:
+                        raise DomainValidationError("project summary must be 500 characters or fewer")
+                    if status not in {"planned", "active", "paused", "completed", "cancelled"}:
+                        raise DomainValidationError("project status is invalid")
+                    project = replace(existing, title=title.strip(), summary=summary.strip() or title.strip(), status=status, supporting_goal_slugs=tuple(dict.fromkeys(raw_goals)), updated_at=clock())
+                    receipt = adapter.update_project(project)
+                except StopIteration:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "Project was not found."})
+                    return
+                except DomainValidationError as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_project"})
+                    return
+                except PartialMutationError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
+                    return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
+                    return
+                self._json(HTTPStatus.OK, {"project": project.to_dict(), "receipt": receipt.to_dict()})
+                return
             proposal_prefix = "/api/proposals/"
             proposal_review_suffix = "/review"
             if (
@@ -1358,8 +1410,13 @@ def _handler_class(
                     else:
                         progress_metric, event_progress = _progress_metric_from_request(raw_metric, due_day=due_day)
                     requested_status = payload.get("status")
-                    if requested_status not in EDITABLE_TASK_STATUSES:
+                    if requested_status not in EDITABLE_TASK_STATUSES | {"proposed"}:
                         raise DomainValidationError("status must be a supported task status")
+                    if current.status == "proposed":
+                        if requested_status != "proposed":
+                            raise DomainValidationError("Approve or reject proposed work through the explicit review action.")
+                        if payload.get("assignee_slug", current.owner_agent) != current.owner_agent:
+                            raise DomainValidationError("Proposed work keeps its assigned agent until approved.")
                     if progress_metric and progress_metric.current >= progress_metric.target and requested_status not in {"completed", "cancelled"}:
                         if payload.get("complete_when_target_reached") is not True:
                             raise DomainValidationError("Metric target is reached. Confirm completion or choose a completed status explicitly.")

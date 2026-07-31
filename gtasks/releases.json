@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.22",
+  "current_version": "V0.0.31",
   "releases": [
     {
       "version": "V0.0.1",
@@ -132,6 +132,60 @@
       "date": "2026-07-31",
       "title": "Editable goals and simpler duplication",
       "summary": "Goal details now include Edit for verified canonical updates to goal fields while preserving relationships and lifecycle state. Task details now label the copy action simply Duplicate."
+    },
+    {
+      "version": "V0.0.23",
+      "date": "2026-07-31",
+      "title": "Calendar, project goals, and agent summaries",
+      "summary": "Calendar now offers Week and Month due-date views. Projects can select multiple canonical Goals through verified supports_goal links, and Agent cards show owned goals and authorized-work summaries with profile actions in an accessible menu."
+    },
+    {
+      "version": "V0.0.24",
+      "date": "2026-07-31",
+      "title": "Same-task agent proposals",
+      "summary": "Agent proposals are now normal agent-owned tasks with status proposed. Inbox keeps them separate from executable work, shows concise safe Markdown details, and approval changes the exact same task to planned after canonical readback; legacy proposal pages remain read-only compatibility records."
+    },
+    {
+      "version": "V0.0.25",
+      "date": "2026-07-31",
+      "title": "Read-only agent coordination",
+      "summary": "Agents now includes a read-only Coordinator summary of canonical agent work: active, proposed, blocked, completed, recent verified completions, and malformed-state triage. It never executes, approves, edits, reassigns, or claims work."
+    },
+    {
+      "version": "V0.0.26",
+      "date": "2026-07-31",
+      "title": "Focused proposal review",
+      "summary": "Proposed Tasks now uses title-only rows with compact Edit, Approve, and Reject actions. The selected task’s full safe Markdown, agent and Goal context, timestamps, and matching review actions stay in More details; decision notes use a clear full-width field on desktop and mobile."
+    },
+    {
+      "version": "V0.0.27",
+      "date": "2026-07-31",
+      "title": "Wider responsive workspace",
+      "summary": "Mission Control now uses the available desktop workspace between its sidebar and detail panel. Calendar gives seven equal desktop day columns, task titles wrap safely inside their day cells, and Project copy clearly distinguishes Create a Project from Edit."
+    },
+    {
+      "version": "V0.0.28",
+      "date": "2026-07-31",
+      "title": "Clearer Agent Work cards",
+      "summary": "Every Agent card now uses one compact, accessible three-dot control to open its profile directly. Current work uses a consistent structured summary, including a single calm empty state instead of duplicate system messages."
+    },
+    {
+      "version": "V0.0.29",
+      "date": "2026-07-31",
+      "title": "Fail-closed proposed work validation",
+      "summary": "Mission Control now keeps any proposed agent record with a non-task type out of review and executable surfaces, and reports the exact canonical type problem in Inbox Needs Attention without changing the record."
+    },
+    {
+      "version": "V0.0.30",
+      "date": "2026-07-31",
+      "title": "Canonical entity type preservation",
+      "summary": "Every preserved Mission Control update now writes back the entity type it first read from GBrain. Task updates fail closed if that type is not task, preventing accidental task-to-concept downgrades."
+    },
+    {
+      "version": "V0.0.31",
+      "date": "2026-07-31",
+      "title": "Compact Calendar Week cards",
+      "summary": "Calendar Week cards now use compact, readable task typography that wraps safely inside each day at narrow desktop widths and on mobile, without changing Month view."
     }
   ]
 }
