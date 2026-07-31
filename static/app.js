@@ -149,6 +149,7 @@ const elements = {
   appShell: document.querySelector(".app-shell"),
   viewSurface: document.querySelector("#view-surface"),
   viewTitle: document.querySelector("#view-title"),
+  viewCount: document.querySelector("#view-count"),
   dateLabel: document.querySelector("#date-label"),
   syncLabel: document.querySelector("#sync-label"),
   autoRefreshLabel: document.querySelector("#auto-refresh-label"),
@@ -162,7 +163,6 @@ const elements = {
   storeLabel: document.querySelector("#store-label"),
   createTaskButton: document.querySelector("#create-task-button"),
   systemTicketsButton: document.querySelector("#system-tickets-button"),
-  systemTicketsCount: document.querySelector("#system-tickets-count"),
   systemTicketDialog: document.querySelector("#system-ticket-dialog"),
   systemTicketForm: document.querySelector("#system-ticket-form"),
   systemTicketClose: document.querySelector("#system-ticket-close"),
@@ -852,16 +852,28 @@ function currentWeekTasks() {
 }
 
 function renderNavigation() {
-  const counts = navCounts();
   document.querySelectorAll(".nav-item").forEach((button) => {
     const view = button.dataset.view;
     button.classList.toggle("is-active", view === state.activeView);
     button.setAttribute("aria-current", view === state.activeView ? "page" : "false");
   });
-  Object.entries(counts).forEach(([view, count]) => {
-    const target = document.querySelector(`[data-count="${view}"]`);
-    if (target) target.textContent = String(count);
-  });
+}
+
+function inContextCountLabel(view) {
+  const count = navCounts()[view] || 0;
+  const noun = {
+    inbox: "in Inbox",
+    today: "tasks today",
+    week: "tasks this week",
+    board: "tasks on Board",
+    "agent-work": "agent work items",
+    blocked: "blocked tasks",
+    projects: "projects",
+    goals: "goals",
+    completed: "completed tasks",
+    "system-tickets": "System Tickets",
+  }[view] || "items";
+  return `${count} ${noun}`;
 }
 
 function actionIcon(symbol, label, { primary = false, className = "" } = {}) {
@@ -3098,6 +3110,7 @@ function render() {
   renderNavigation();
   updateBoardStatus();
   elements.viewTitle.textContent = viewMeta[state.activeView].title;
+  elements.viewCount.textContent = inContextCountLabel(state.activeView);
   elements.boardAgentFilter.classList.toggle(
     "is-hidden",
     state.activeView !== "board",
@@ -3201,7 +3214,7 @@ async function performSystemTicketLoad() {
   state.systemTicketsLoading = true;
   try { const response = await fetch("/api/system-tickets", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : []; state.systemTicketsError = ""; }
   catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
-  finally { state.systemTicketsLoading = false; elements.systemTicketsCount.textContent = String(state.systemTickets.length); if (state.activeView === "system-tickets") render(); }
+  finally { state.systemTicketsLoading = false; if (state.activeView === "system-tickets") render(); }
 }
 
 async function submitSystemTicket(event) {

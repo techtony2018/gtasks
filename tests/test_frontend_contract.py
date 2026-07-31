@@ -32,7 +32,6 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('data-view="board"', html)
-        self.assertIn('data-count="board"', html)
         self.assertIn('id="task-edit-button"', html)
         self.assertIn('id="task-editor-status"', html)
         for status in (
@@ -453,6 +452,17 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".app-shell {", css)
         self.assertIn("overflow-x: clip", css)
 
+    def test_navigation_has_no_counts_and_pages_show_in_context_counts(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("nav-count", html)
+        self.assertNotIn("data-count=", html)
+        self.assertNotIn("system-tickets-count", html)
+        self.assertIn('id="view-count"', html)
+        self.assertIn("function inContextCountLabel", javascript)
+        self.assertIn("elements.viewCount.textContent", javascript)
+
     def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
@@ -492,7 +502,6 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('data-view="week"', html)
-        self.assertIn('data-count="week"', html)
         self.assertIn("function renderWeekView()", javascript)
         self.assertIn("function weekStartFor(value)", javascript)
         self.assertIn("function currentWeekTasks()", javascript)

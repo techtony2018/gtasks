@@ -7,6 +7,8 @@
     <meta name="theme-color" content="#f4f5f0">
     <title>Mission Control</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="alternate icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" defer></script>
   </head>
@@ -14,7 +16,7 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="Mission Control navigation">
         <a class="brand" href="/" aria-label="Mission Control Today">
-          <span class="mc-mark" aria-hidden="true">MC</span>
+          <img class="mc-mark" src="/assets/mission-control-command-mark.svg" alt="" aria-hidden="true">
           <span>
             <strong>Mission Control</strong>
             <small>GBrain-backed tasks</small>
@@ -28,39 +30,30 @@
         <nav class="nav-list" aria-label="Task views">
           <button class="nav-item has-tooltip" data-view="inbox" type="button" aria-label="Inbox" data-tooltip="Inbox">
             <span class="nav-icon" aria-hidden="true">↓</span><span class="nav-label">Inbox</span>
-            <span class="nav-count" data-count="inbox">0</span>
           </button>
           <button class="nav-item is-active has-tooltip" data-view="today" type="button" aria-label="Today" data-tooltip="Today">
             <span class="nav-icon" aria-hidden="true">●</span><span class="nav-label">Today</span>
-            <span class="nav-count" data-count="today">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="week" type="button" aria-label="Calendar" data-tooltip="Calendar">
             <span class="nav-icon" aria-hidden="true">□</span><span class="nav-label">Calendar</span>
-            <span class="nav-count" data-count="week">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="board" type="button" aria-label="Board" data-tooltip="Board">
             <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Board</span>
-            <span class="nav-count" data-count="board">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="agent-work" type="button" aria-label="Agents" data-tooltip="Agents">
             <span class="nav-icon" aria-hidden="true">◌</span><span class="nav-label">Agents</span>
-            <span class="nav-count" data-count="agent-work">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="blocked" type="button" aria-label="Blocked" data-tooltip="Blocked">
             <span class="nav-icon" aria-hidden="true">!</span><span class="nav-label">Blocked</span>
-            <span class="nav-count" data-count="blocked">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="projects" type="button" aria-label="Projects" data-tooltip="Projects">
             <span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Projects</span>
-            <span class="nav-count" data-count="projects">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="goals" type="button" aria-label="Goals" data-tooltip="Goals">
             <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Goals</span>
-            <span class="nav-count" data-count="goals">0</span>
           </button>
           <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
             <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
-            <span class="nav-count" data-count="completed">0</span>
           </button>
         </nav>
 
@@ -73,7 +66,6 @@
         </div>
         <button class="about-button has-tooltip" id="system-tickets-button" type="button" aria-label="Mission Control System Tickets" data-tooltip="Mission Control System Tickets">
           <span class="rail-icon" aria-hidden="true">▤</span><span class="rail-label">Mission Control System Tickets</span>
-          <strong id="system-tickets-count">0</strong>
         </button>
         <button class="about-button has-tooltip" id="logs-button" type="button" aria-label="Logs" data-tooltip="Logs">
           <span class="rail-icon" aria-hidden="true">≡</span><span class="rail-label">Logs</span>
@@ -89,7 +81,10 @@
         <header class="topbar">
           <div>
             <p class="date-label" id="date-label">Today</p>
-            <h1 id="view-title">Today’s Action List</h1>
+            <div class="view-heading-row">
+              <h1 id="view-title">Today’s Action List</h1>
+              <span class="view-count" id="view-count" aria-live="polite"></span>
+            </div>
           </div>
           <div class="topbar-actions">
             <label class="board-agent-filter is-hidden" id="board-agent-filter">

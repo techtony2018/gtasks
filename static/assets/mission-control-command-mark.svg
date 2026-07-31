@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Mission Control command-course mark</title>
+  <desc id="desc">A chamfered command frame crossed by one rising course line and a central diamond lock point.</desc>
+  <path d="M14 3h36l11 11v36L50 61H14L3 50V14Z" fill="#020816" stroke="#38BDF8" stroke-width="1.5"/>
+  <path d="M12 23V13h10M42 51h10V41" fill="none" stroke="#22D3EE" stroke-width="1.15" stroke-linecap="round"/>
+  <path d="M11 47C19 43 25 38 32 32S45 21 53 13" fill="none" stroke="#EEF4FF" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M49 12.2 54.4 11 53.2 16.4" fill="none" stroke="#EEF4FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="27.7" y="27.7" width="8.6" height="8.6" rx="1" fill="#38BDF8" stroke="#EEF4FF" stroke-width="1.6" transform="rotate(45 32 32)"/>
+  <rect x="8.6" y="44.6" width="4.8" height="4.8" rx=".8" fill="#38BDF8" stroke="#EEF4FF" stroke-width="1.1"/>
+  <path d="M44 47h4v-4" fill="none" stroke="#A855F7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

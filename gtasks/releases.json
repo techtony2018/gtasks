@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.45",
+  "current_version": "V0.0.46",
   "releases": [
     {
       "version": "V0.0.1",
@@ -270,6 +270,12 @@
       "date": "2026-07-31",
       "title": "Contained Mission Control canvas",
       "summary": "Keeps offscreen card rails from widening the Mission Control desktop canvas while preserving local scrolling."
+    },
+    {
+      "version": "V0.0.46",
+      "date": "2026-07-31",
+      "title": "Focused navigation and Mission Control identity",
+      "summary": "Moves task and ticket counts into their page headings, keeps the navigation rail category-focused, and adds the distinct Mission Control mark and browser icons."
     }
   ]
 }

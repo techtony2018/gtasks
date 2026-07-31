@@ -102,15 +102,8 @@ a:focus-visible {
 .mc-mark {
   width: 27px;
   height: 27px;
-  display: grid;
-  place-items: center;
+  display: block;
   flex: 0 0 auto;
-  border-radius: 8px;
-  color: #f4f5f0;
-  background: var(--accent);
-  font-size: 9px;
-  font-weight: 820;
-  letter-spacing: .04em;
 }
 
 .brand strong,
@@ -286,14 +279,17 @@ kbd {
   font-weight: 650;
 }
 
-.nav-count {
-  position: absolute;
-  top: 3px;
-  right: 7px;
-  min-width: 13px;
-  color: var(--faint);
-  font-size: 11px;
-  text-align: right;
+.view-heading-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.view-count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
 }
 
 .nav-icon,
@@ -3148,10 +3144,6 @@ kbd {
 
   .nav-label,
   .rail-label { display: inline; }
-
-  .nav-count {
-    display: none;
-  }
 
   .store-card {
     width: auto;
