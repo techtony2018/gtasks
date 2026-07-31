@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.42",
+  "current_version": "V0.0.43",
   "releases": [
     {
       "version": "V0.0.1",
@@ -252,6 +252,12 @@
       "date": "2026-07-31",
       "title": "Compact Mission Control actions",
       "summary": "Mission Control now uses accessible icon controls with clear hover and keyboard labels for standard actions, a narrower navigation rail, and more compact first-view ticket cards while keeping full details available on demand."
+    },
+    {
+      "version": "V0.0.43",
+      "date": "2026-07-31",
+      "title": "Contained mobile navigation",
+      "summary": "Keeps Mission Control navigation and horizontal content inside the mobile viewport while preserving their own scroll controls."
     }
   ]
 }

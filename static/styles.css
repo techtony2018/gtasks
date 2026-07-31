@@ -3074,6 +3074,11 @@ kbd {
   .app-shell,
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     display: block;
+    /* Navigation rails and horizontal content each own their scrolling.
+       Never let their intrinsic width turn the entire mobile document into a
+       side-scrolling canvas. */
+    max-width: 100%;
+    overflow-x: clip;
   }
 
   .sidebar {
@@ -3083,6 +3088,7 @@ kbd {
     padding: 14px 16px 10px;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+    overflow-x: hidden;
   }
 
   .brand {
@@ -3110,10 +3116,19 @@ kbd {
 
   .nav-list {
     display: flex;
+    min-width: 0;
+    max-width: 100%;
     margin-top: 14px;
     padding-bottom: 2px;
     gap: 4px;
     overflow-x: auto;
+  }
+
+  .goals-rail,
+  .week-view,
+  .month-view {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .nav-item {

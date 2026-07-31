@@ -445,6 +445,9 @@ class FrontendContractTests(unittest.TestCase):
         mobile = css[css.index("@media (max-width: 760px)") :]
         self.assertIn(".nav-label,", mobile)
         self.assertIn(".rail-label { display: inline; }", mobile)
+        self.assertIn("overflow-x: clip", mobile)
+        self.assertIn(".nav-list {", mobile)
+        self.assertIn("max-width: 100%", mobile)
 
     def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
