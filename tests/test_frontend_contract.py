@@ -21,6 +21,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("position: sticky", breakpoint)
         self.assertNotIn("position: fixed", breakpoint)
         self.assertIn("overscroll-behavior-inline: contain", stylesheet)
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        self.assertIn(".week-view { min-width: 0; max-width: 100%; overflow-x: hidden; }", mobile)
+        self.assertIn(".week-grid", mobile)
+        self.assertIn("overflow-x: auto", mobile)
     def test_board_and_status_editor_are_first_class_navigation(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

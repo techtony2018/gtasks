@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.36",
+  "current_version": "V0.0.37",
   "releases": [
     {
       "version": "V0.0.1",
@@ -216,6 +216,12 @@
       "date": "2026-07-31",
       "title": "Mobile proposal details",
       "summary": "Selecting a Proposed Task on a phone now brings its populated read-only detail panel into view and moves focus to its title, while preserving compact Inbox review actions."
+    },
+    {
+      "version": "V0.0.37",
+      "date": "2026-07-31",
+      "title": "Contained mobile Calendar scrolling",
+      "summary": "Calendar Week now keeps its horizontal day strip inside the mobile Calendar area, so reaching later days never slides the Mission Control page or navigation sideways."
     }
   ]
 }

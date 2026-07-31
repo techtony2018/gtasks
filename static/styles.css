@@ -3125,7 +3125,13 @@ kbd {
     grid-auto-columns: minmax(230px, 78vw);
     grid-auto-flow: column;
     scroll-snap-type: x proximity;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
   }
+
+  .week-view { min-width: 0; max-width: 100%; overflow-x: hidden; }
 
   .app-shell:has(.detail-panel[aria-hidden="false"]) .week-grid {
     grid-template-columns: none;
