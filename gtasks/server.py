@@ -297,7 +297,7 @@ def _handler_class(
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; style-src 'self'; "
-                "img-src 'self' data: http://127.0.0.1:8788; connect-src 'self'; frame-ancestors 'none'",
+                "img-src 'self' data: blob: http://127.0.0.1:8788; connect-src 'self'; frame-ancestors 'none'",
             )
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
@@ -597,12 +597,49 @@ def _handler_class(
             path = urlsplit(self.path).path
             avatar_prefix = "/api/agents/"
             avatar_suffix = "/avatar"
+            default_goals_suffix = "/default-goals"
+            if path.startswith(avatar_prefix) and path.endswith(default_goals_suffix):
+                agent_slug = unquote(path[len(avatar_prefix) : -len(default_goals_suffix)])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                goal_slug = payload.get("goal_slug")
+                action = payload.get("action")
+                if not isinstance(goal_slug, str) or action not in {"assign", "remove"}:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Choose a goal and an assignment action.", "code": "invalid_goal_assignment"})
+                    return
+                try:
+                    agent = adapter.set_agent_default_goal(
+                        agent_slug,
+                        goal_slug,
+                        assigned=action == "assign",
+                    )
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_goal_assignment"})
+                    return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "goal_assignment_readback_failed"})
+                    return
+                self._json(HTTPStatus.OK, {"agent": agent.to_dict(), "verified": True})
+                return
             if path.startswith(avatar_prefix) and path.endswith(avatar_suffix):
                 agent_slug = unquote(path[len(avatar_prefix) : -len(avatar_suffix)])
-                if agent_slug not in {
-                    agent.slug for agent in adapter.list_agent_profiles().agents
-                }:
-                    self._json(HTTPStatus.NOT_FOUND, {"error": "Active GTasks agent was not found."})
+                try:
+                    # Validate the exact roster slug and typed agent page before
+                    # sending any bytes to Memory Stargraph. This deliberately
+                    # never derives a slug from the display name.
+                    adapter.get_agent_profile(agent_slug)
+                except (DomainValidationError, ValueError, GBrainError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "This Agent Directory profile cannot accept an avatar yet. "
+                                + str(exc)
+                            ),
+                            "code": "invalid_agent_profile",
+                        },
+                    )
                     return
                 upload = self._read_avatar_upload()
                 if upload is None:

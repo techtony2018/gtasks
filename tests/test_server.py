@@ -81,6 +81,7 @@ class FakeAdapter:
         self.collection_reads: list[str] = []
         self.proposal_reviews: list[tuple[str, str]] = []
         self.proposal_decisions: list[tuple[str, str, str]] = []
+        self.default_goal_updates: list[tuple[str, str, bool]] = []
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         self.collection_reads.append(root_slug)
@@ -146,6 +147,28 @@ class FakeAdapter:
 
     def list_agent_work(self) -> AgentWorkRead:
         return AgentWorkRead(tasks=self.agent_work)
+
+    def get_agent_profile(self, agent_slug: str) -> AgentProfile:
+        return next(agent for agent in self.agents if agent.slug == agent_slug)
+
+    def set_agent_default_goal(
+        self, agent_slug: str, goal_slug: str, *, assigned: bool
+    ) -> AgentProfile:
+        agent = self.get_agent_profile(agent_slug)
+        goals = tuple(
+            goal
+            for goal in agent.default_goal_slugs
+            if goal != goal_slug
+        )
+        if assigned:
+            goals = (*goals, goal_slug)
+        updated = replace(agent, default_goal_slugs=goals)
+        self.agents = tuple(
+            updated if item.slug == agent_slug else item
+            for item in self.agents
+        )
+        self.default_goal_updates.append((agent_slug, goal_slug, assigned))
+        return updated
 
     def list_proposals(self) -> ProposalRead:
         return ProposalRead(proposals=self.proposals)
@@ -478,7 +501,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.15")
+        self.assertEqual(payload["version"], "V0.0.16")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -486,11 +509,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.15")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.15")
+        self.assertEqual(payload["current_version"], "V0.0.16")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.16")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.16",
                 "V0.0.15",
                 "V0.0.14",
                 "V0.0.13",
@@ -506,6 +530,42 @@ class HealthApiTests(unittest.TestCase):
                 "V0.0.3",
                 "V0.0.2",
                 "V0.0.1",
+            ],
+        )
+
+
+class AgentGoalAssignmentApiTests(unittest.TestCase):
+    def test_assign_and_remove_use_one_verified_canonical_agent_goal_path(self) -> None:
+        agent = sample_agent()
+        adapter = FakeAdapter(
+            agents=(agent,),
+            goals=(sample_goal(),),
+        )
+        harness = ServerHarness(self, adapter)
+        path = "/api/agents/agents%2Ftoddy/default-goals"
+
+        assigned_status, assigned, _ = harness.request(
+            "POST",
+            path,
+            {"goal_slug": "goals/ship-product", "action": "assign"},
+        )
+        self.assertEqual(assigned_status, 200)
+        self.assertTrue(assigned["verified"])
+        self.assertIn("goals/ship-product", assigned["agent"]["default_goal_slugs"])
+
+        removed_status, removed, _ = harness.request(
+            "POST",
+            path,
+            {"goal_slug": "goals/ship-product", "action": "remove"},
+        )
+        self.assertEqual(removed_status, 200)
+        self.assertTrue(removed["verified"])
+        self.assertNotIn("goals/ship-product", removed["agent"]["default_goal_slugs"])
+        self.assertEqual(
+            adapter.default_goal_updates,
+            [
+                ("agents/toddy", "goals/ship-product", True),
+                ("agents/toddy", "goals/ship-product", False),
             ],
         )
 

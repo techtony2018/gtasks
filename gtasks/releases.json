@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.15",
+  "current_version": "V0.0.16",
   "releases": [
     {
       "version": "V0.0.1",
@@ -90,6 +90,12 @@
       "date": "2026-07-30",
       "title": "Mission Control, avatars, and simpler navigation",
       "summary": "GTasks is now visibly Mission Control while preserving its local service and GBrain identity. Agent profiles can safely upload a verified avatar through local Memory Stargraph storage, while cards retain accessible text names and initials fallback. The sidebar is now text-first and Upcoming has been removed as a redundant top-level view; future tasks remain canonical and available through their details, projects, and goals."
+    },
+    {
+      "version": "V0.0.16",
+      "date": "2026-07-30",
+      "title": "Safer agents and goal ownership",
+      "summary": "Avatar upload now validates the exact selected Agent Directory slug and typed agent page before sending any image to Memory Stargraph. Validated local previews render immediately with an accessible file name and clear safely after cancellation, failure, or verified upload. Agent Profiles can assign or unassign default goals through the same verified GBrain relationship shown in Goal details."
     }
   ]
 }

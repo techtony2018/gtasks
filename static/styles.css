@@ -1472,6 +1472,35 @@ kbd {
   border-radius: 10px;
 }
 
+.agent-avatar-filename {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-goal-editor {
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.agent-goal-editor h3,
+.agent-goal-editor p { margin: 0; }
+
+.agent-profile-goal-list { display: grid; gap: 6px; }
+
+.agent-profile-goal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.agent-goal-empty { color: var(--muted); }
+
 .agent-read-only {
   color: var(--faint);
   font-size: 8.5px;

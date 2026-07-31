@@ -354,10 +354,22 @@
       <form method="dialog" class="task-editor-form" id="agent-avatar-form">
         <div class="dialog-heading"><div><p>Canonical GBrain agent profile</p><h2 id="agent-profile-heading">Agent profile</h2></div><button class="icon-button" id="agent-profile-close" type="button" aria-label="Close agent profile">×</button></div>
         <p id="agent-profile-summary"></p>
+        <section class="agent-goal-editor" aria-labelledby="agent-goal-editor-heading">
+          <h3 id="agent-goal-editor-heading">Default goals</h3>
+          <p>These assignments use the same canonical GBrain relationship shown in Goal details.</p>
+          <div id="agent-profile-goals"></div>
+          <label for="agent-goal-select">Add a goal</label>
+          <div class="inline-actions">
+            <select id="agent-goal-select"></select>
+            <button class="secondary-button" id="agent-goal-add" type="button">Assign goal</button>
+          </div>
+          <p class="form-error is-hidden" id="agent-goal-error" role="alert"></p>
+        </section>
         <label for="agent-avatar-file">Avatar image</label>
         <input id="agent-avatar-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
         <p>PNG, JPEG, GIF, or WebP up to 5 MB. The image is uploaded only through local Memory Stargraph storage and replaces this avatar only after its durable reference and GBrain node read back.</p>
         <img class="agent-avatar-preview is-hidden" id="agent-avatar-preview" alt="Selected avatar preview">
+        <output class="agent-avatar-filename is-hidden" id="agent-avatar-filename" aria-live="polite"></output>
         <p class="form-error is-hidden" id="agent-avatar-error" role="alert"></p>
         <div class="dialog-footer"><p id="agent-avatar-state">Initials remain in use until a verified replacement succeeds.</p><button class="submit-button" id="agent-avatar-submit" type="submit">Upload avatar</button></div>
       </form>

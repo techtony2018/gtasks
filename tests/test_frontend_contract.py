@@ -291,9 +291,17 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn('id="agent-profile-dialog"', html)
         self.assertIn('id="agent-avatar-file"', html)
+        self.assertIn('id="agent-avatar-filename"', html)
         self.assertIn("PNG, JPEG, GIF, or WebP", html)
         self.assertIn("/api/agents/${encodeURIComponent(agent.slug)}/avatar", javascript)
         self.assertIn("Memory Stargraph", javascript)
+        self.assertIn("URL.createObjectURL", javascript)
+        self.assertIn("clearAgentAvatarPreview", javascript)
+        self.assertIn('id="agent-profile-goals"', html)
+        self.assertIn('id="agent-goal-select"', html)
+        self.assertIn('id="agent-goal-add"', html)
+        self.assertIn("/default-goals", javascript)
+        self.assertIn("saveAgentGoalAssignment", javascript)
 
     def test_full_task_creation_is_the_only_visible_creation_flow(
         self,

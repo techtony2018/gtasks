@@ -1076,6 +1076,15 @@ class GBrainAdapter:
                 work_root = legacy.get(slug)
             if isinstance(work_root, str) and work_root.startswith("collections/"):
                 scopes.append((slug, work_root))
+        # The original three GTasks agents predate the typed directory field.
+        # Keep reading those exact canonical slugs during migration so a damaged
+        # profile is reported rather than silently disappearing from controls.
+        known = {slug for slug, _root in scopes}
+        scopes.extend(
+            (slug, root)
+            for slug, root in AGENT_SCOPES
+            if slug not in known
+        )
         return tuple(dict.fromkeys(scopes))
 
     def list_agent_profiles(self) -> AgentRead:
@@ -1121,13 +1130,8 @@ class GBrainAdapter:
         """Store only Stargraph's verified attachment reference on an agent page."""
         if not served_url.startswith("/media/"):
             raise ValueError("avatar attachment must be a local Stargraph media reference")
-        scope_by_agent = {
-            agent.slug: agent.work_root
-            for agent in self.list_agent_profiles().agents
-        }
-        work_root = scope_by_agent.get(agent_slug)
-        if work_root is None:
-            raise ValueError("agent is not in the active GTasks Agent Directory")
+        profile = self.get_agent_profile(agent_slug)
+        work_root = profile.work_root
         page = self.runner.run("get_page", {"slug": agent_slug})
         links = self.runner.run("get_links", {"slug": agent_slug})
         if not isinstance(page, Mapping) or not isinstance(links, list):
@@ -1144,6 +1148,81 @@ class GBrainAdapter:
         stored = AgentProfile.from_page(stored_page, work_root=work_root, edges=stored_links)
         if stored.avatar_kind != "attachment" or stored.avatar_value != served_url:
             raise GBrainProtocolError("agent avatar reference did not read back from GBrain")
+        return stored
+
+    def get_agent_profile(self, agent_slug: str) -> AgentProfile:
+        """Read one exact canonical agent slug; never derive it from a name."""
+        scope_by_agent = dict(self._agent_scopes())
+        work_root = scope_by_agent.get(agent_slug)
+        if work_root is None:
+            raise ValueError(
+                "Agent profile is not available in the active directory. Refresh and select the listed agent."
+            )
+        page = self.runner.run("get_page", {"slug": agent_slug})
+        links = self.runner.run("get_links", {"slug": agent_slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("agent profile readback was not structured")
+        return AgentProfile.from_page(page, work_root=work_root, edges=links)
+
+    def set_agent_default_goal(
+        self,
+        agent_slug: str,
+        goal_slug: str,
+        *,
+        assigned: bool,
+    ) -> AgentProfile:
+        """Change one canonical default_agent_for edge and verify both views."""
+        profile = self.get_agent_profile(agent_slug)
+        goals = {goal.slug for goal in self.list_goals().goals}
+        if goal_slug not in goals:
+            raise ValueError("goal is not a member of Tony's Goals")
+        if assigned:
+            # A goal has at most one default agent. Replace the one typed edge,
+            # rather than storing a mirrored assignment list anywhere.
+            for candidate in self.list_agent_profiles().agents:
+                if candidate.slug != agent_slug and goal_slug in candidate.default_goal_slugs:
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": candidate.slug,
+                            "to": goal_slug,
+                            "link_type": "default_agent_for",
+                        },
+                    )
+            if goal_slug not in profile.default_goal_slugs:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": agent_slug,
+                        "to": goal_slug,
+                        "link_type": "default_agent_for",
+                        "context": "Mission Control default goal ownership.",
+                        "link_source": "gtasks",
+                    },
+                )
+        elif goal_slug in profile.default_goal_slugs:
+            self.runner.run(
+                "remove_link",
+                {
+                    "from": agent_slug,
+                    "to": goal_slug,
+                    "link_type": "default_agent_for",
+                },
+            )
+
+        stored = self.get_agent_profile(agent_slug)
+        backlinks = self.runner.run("get_backlinks", {"slug": goal_slug})
+        reciprocal = isinstance(backlinks, list) and any(
+            isinstance(edge, Mapping)
+            and edge.get("from_slug") == agent_slug
+            and edge.get("to_slug") == goal_slug
+            and edge.get("link_type") == "default_agent_for"
+            for edge in backlinks
+        )
+        if (goal_slug in stored.default_goal_slugs) != assigned or reciprocal != assigned:
+            raise GBrainProtocolError(
+                "default agent relationship did not read back from both views"
+            )
         return stored
 
     def list_agent_work(self) -> AgentWorkRead:

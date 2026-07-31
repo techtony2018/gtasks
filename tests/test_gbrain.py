@@ -190,6 +190,30 @@ class CollectionReadTests(unittest.TestCase):
         )
 
 
+class AgentProfileReadTests(unittest.TestCase):
+    def test_timmy_uses_the_exact_lowercase_slug_and_rejects_a_non_agent_page(self) -> None:
+        timmy_page = {
+            "slug": "agents/timmy",
+            "type": "concept",
+            "title": "Agent Timmy",
+            "compiled_truth": "# Agent Timmy",
+            "frontmatter": {},
+        }
+        runner = FakeRunner(
+            {
+                "list_pages": [[]],
+                "get_page": [timmy_page],
+                "get_links": [[]],
+            }
+        )
+
+        with self.assertRaisesRegex(Exception, "agents/timmy is not an agent page"):
+            GBrainAdapter(runner).get_agent_profile("agents/timmy")
+
+        self.assertIn(("get_page", {"slug": "agents/timmy"}), runner.calls)
+        self.assertNotIn(("get_page", {"slug": "agents/Timmy"}), runner.calls)
+
+
 class ProjectPersistenceTests(unittest.TestCase):
     def test_lists_only_typed_g_tasks_scope_members_without_tasks(self) -> None:
         project = new_project(

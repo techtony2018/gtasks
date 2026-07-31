@@ -43,6 +43,7 @@ const state = {
   proposalAgentFilter: "all",
   proposalAction: null,
   profileAgentSlug: null,
+  avatarPreviewUrl: null,
 };
 
 const viewMeta = {
@@ -133,9 +134,14 @@ const elements = {
   agentProfileHeading: document.querySelector("#agent-profile-heading"),
   agentProfileSummary: document.querySelector("#agent-profile-summary"),
   agentProfileClose: document.querySelector("#agent-profile-close"),
+  agentProfileGoals: document.querySelector("#agent-profile-goals"),
+  agentGoalSelect: document.querySelector("#agent-goal-select"),
+  agentGoalAdd: document.querySelector("#agent-goal-add"),
+  agentGoalError: document.querySelector("#agent-goal-error"),
   agentAvatarForm: document.querySelector("#agent-avatar-form"),
   agentAvatarFile: document.querySelector("#agent-avatar-file"),
   agentAvatarPreview: document.querySelector("#agent-avatar-preview"),
+  agentAvatarFilename: document.querySelector("#agent-avatar-filename"),
   agentAvatarError: document.querySelector("#agent-avatar-error"),
   agentAvatarSubmit: document.querySelector("#agent-avatar-submit"),
   agentAvatarState: document.querySelector("#agent-avatar-state"),
@@ -1248,8 +1254,10 @@ function openAgentProfile(agent) {
   elements.agentProfileHeading.textContent = agent.name;
   elements.agentProfileSummary.textContent = agent.summary || "No profile summary is available.";
   elements.agentAvatarForm.reset();
-  elements.agentAvatarPreview.classList.add("is-hidden");
+  clearAgentAvatarPreview();
   elements.agentAvatarError.classList.add("is-hidden");
+  elements.agentGoalError.classList.add("is-hidden");
+  renderAgentProfileGoals(agent);
   elements.agentAvatarState.textContent = agent.avatar?.kind === "attachment"
     ? "A verified avatar is currently attached. Uploading a different image requires confirmation."
     : "Initials remain in use until a verified replacement succeeds.";
@@ -1257,21 +1265,98 @@ function openAgentProfile(agent) {
   window.setTimeout(() => elements.agentAvatarFile.focus(), 0);
 }
 
+function renderAgentProfileGoals(agent) {
+  const assigned = new Set(agent.default_goal_slugs);
+  const goals = state.snapshot?.goals || [];
+  const list = node("div", "agent-profile-goal-list");
+  const current = goals.filter((goal) => assigned.has(goal.slug));
+  if (!current.length) {
+    list.append(node("p", "agent-goal-empty", "No default goals assigned."));
+  }
+  current.forEach((goal) => {
+    const row = node("div", "agent-profile-goal-row");
+    row.append(node("span", "", goal.title));
+    const remove = node("button", "row-action-button", "Unassign");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      if (window.confirm(`Remove ${agent.name} as the default agent for “${goal.title}”? The goal and its tasks will not change.`)) {
+        saveAgentGoalAssignment(goal.slug, "remove");
+      }
+    });
+    row.append(remove);
+    list.append(row);
+  });
+  elements.agentProfileGoals.replaceChildren(list);
+  elements.agentGoalSelect.replaceChildren();
+  const placeholder = node("option", "", "Choose an eligible goal");
+  placeholder.value = "";
+  elements.agentGoalSelect.append(placeholder);
+  goals
+    .filter((goal) => ["planned", "active"].includes(goal.status) && !assigned.has(goal.slug))
+    .forEach((goal) => {
+      const option = node("option", "", goal.title);
+      option.value = goal.slug;
+      elements.agentGoalSelect.append(option);
+    });
+  elements.agentGoalAdd.disabled = elements.agentGoalSelect.options.length === 1;
+}
+
+async function saveAgentGoalAssignment(goalSlug, action) {
+  const agent = state.agents.find((item) => item.slug === state.profileAgentSlug);
+  if (!agent || !goalSlug) return;
+  elements.agentGoalError.classList.add("is-hidden");
+  elements.agentGoalAdd.disabled = true;
+  try {
+    const response = await fetch(`/api/agents/${encodeURIComponent(agent.slug)}/default-goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ goal_slug: goalSlug, action }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.verified || !result.agent) throw new Error(result.error || "Goal assignment did not receive canonical readback.");
+    await loadAgents();
+    const refreshed = state.agents.find((item) => item.slug === agent.slug);
+    if (!refreshed) throw new Error("The updated agent profile could not be read back.");
+    renderAgentProfileGoals(refreshed);
+    render();
+    showToast(action === "assign" ? "Default goal assignment verified in GBrain." : "Default goal assignment cleared in GBrain.");
+  } catch (error) {
+    elements.agentGoalError.textContent = error.message || "Goal assignment could not be saved.";
+    elements.agentGoalError.classList.remove("is-hidden");
+  } finally {
+    elements.agentGoalAdd.disabled = false;
+  }
+}
+
+function clearAgentAvatarPreview() {
+  if (state.avatarPreviewUrl) URL.revokeObjectURL(state.avatarPreviewUrl);
+  state.avatarPreviewUrl = null;
+  elements.agentAvatarPreview.removeAttribute("src");
+  elements.agentAvatarPreview.classList.add("is-hidden");
+  elements.agentAvatarFilename.textContent = "";
+  elements.agentAvatarFilename.classList.add("is-hidden");
+}
+
 function previewAgentAvatar() {
   const file = elements.agentAvatarFile.files?.[0];
   elements.agentAvatarError.classList.add("is-hidden");
   if (!file) {
-    elements.agentAvatarPreview.classList.add("is-hidden");
+    clearAgentAvatarPreview();
     return;
   }
   if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024) {
     elements.agentAvatarError.textContent = "Choose a PNG, JPEG, GIF, or WebP image no larger than 5 MB.";
     elements.agentAvatarError.classList.remove("is-hidden");
-    elements.agentAvatarPreview.classList.add("is-hidden");
+    clearAgentAvatarPreview();
     return;
   }
-  elements.agentAvatarPreview.src = URL.createObjectURL(file);
+  clearAgentAvatarPreview();
+  state.avatarPreviewUrl = URL.createObjectURL(file);
+  elements.agentAvatarPreview.src = state.avatarPreviewUrl;
+  elements.agentAvatarPreview.alt = `Preview of selected avatar: ${file.name}`;
   elements.agentAvatarPreview.classList.remove("is-hidden");
+  elements.agentAvatarFilename.textContent = `Selected image: ${file.name}`;
+  elements.agentAvatarFilename.classList.remove("is-hidden");
 }
 
 async function submitAgentAvatar(event) {
@@ -1289,6 +1374,7 @@ async function submitAgentAvatar(event) {
     if (!response.ok || !result.verified || !result.agent) throw new Error(result.error || "Avatar upload did not receive verified readback.");
     state.agents = state.agents.map((item) => item.slug === agent.slug ? result.agent : item);
     await loadAgentWork();
+    clearAgentAvatarPreview();
     elements.agentProfileDialog.close();
     render();
     showToast(`Avatar for ${agent.name} was stored and verified through Memory Stargraph.`);
@@ -3365,8 +3451,12 @@ elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
 elements.agentProfileClose.addEventListener("click", () => {
   elements.agentProfileDialog.close();
 });
+elements.agentProfileDialog.addEventListener("close", clearAgentAvatarPreview);
 elements.agentAvatarFile.addEventListener("change", previewAgentAvatar);
 elements.agentAvatarForm.addEventListener("submit", submitAgentAvatar);
+elements.agentGoalAdd.addEventListener("click", () => {
+  saveAgentGoalAssignment(elements.agentGoalSelect.value, "assign");
+});
 elements.taskTrackMetric.addEventListener("change", updateTaskMetricPreview);
 [
   elements.taskMetricLabel,

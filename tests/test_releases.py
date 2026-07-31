@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.15")
+        self.assertEqual(__version__, "V0.0.16")
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -59,6 +59,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.13",
                 "V0.0.14",
                 "V0.0.15",
+                "V0.0.16",
             ],
         )
 
@@ -156,6 +157,14 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("avatar", release["summary"].lower())
         self.assertIn("Upcoming", release["summary"])
         self.assertIn("text-first", release["summary"])
+
+    def test_v0_0_16_records_safe_avatar_slug_validation_and_preview(self) -> None:
+        release = RELEASES[15]
+
+        self.assertEqual(release["version"], "V0.0.16")
+        self.assertIn("exact selected Agent Directory slug", release["summary"])
+        self.assertIn("local previews", release["summary"])
+        self.assertIn("assign or unassign default goals", release["summary"])
 
 
 if __name__ == "__main__":
