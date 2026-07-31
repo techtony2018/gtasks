@@ -589,11 +589,38 @@
           <textarea id="proposal-decision-note" rows="3" maxlength="1000"></textarea>
         </div>
         <p class="form-error is-hidden" id="proposal-decision-error" role="alert"></p>
+        <a class="detail-link is-hidden" id="proposal-decision-repair" target="_blank" rel="noreferrer">Inspect lifecycle membership in Memory Stargraph</a>
         <div class="dialog-footer">
           <button class="secondary-button" id="proposal-decision-cancel" type="button">Cancel</button>
           <button class="danger-button" id="proposal-decision-submit" type="button"></button>
         </div>
       </div>
+    </dialog>
+
+    <dialog class="task-editor-dialog" id="calendar-access-dialog" aria-labelledby="calendar-access-title">
+      <div class="task-editor-form">
+        <div class="dialog-heading">
+          <div><p>Read-only local Calendar overlay</p><h2 id="calendar-access-title">Connect Calendar</h2></div>
+          <button class="icon-button" id="calendar-access-close" type="button" aria-label="Close Calendar connection">×</button>
+        </div>
+        <p>Apple requires <strong>Full Access to Calendar</strong> before an app can read local events. Mission Control will only read events from calendars you choose. It never creates, changes, or deletes calendar events.</p>
+        <p>Calendar events stay outside GBrain and cannot be used as Mission Control tasks.</p>
+        <p class="form-error is-hidden" id="calendar-access-error" role="alert"></p>
+        <div class="dialog-footer"><button class="secondary-button" id="calendar-access-cancel" type="button">Cancel</button><button class="submit-button" id="calendar-access-request" type="button">Continue to Apple permission</button></div>
+      </div>
+    </dialog>
+
+    <dialog class="task-editor-dialog" id="calendar-picker-dialog" aria-labelledby="calendar-picker-title">
+      <form class="task-editor-form" id="calendar-picker-form">
+        <div class="dialog-heading">
+          <div><p>Read-only local Calendar overlay</p><h2 id="calendar-picker-title">Choose calendars</h2></div>
+          <button class="icon-button" id="calendar-picker-close" type="button" aria-label="Close calendar picker">×</button>
+        </div>
+        <p>Only selected calendar identifiers are saved locally. Event details are read only for this Calendar overlay and are never copied to GBrain.</p>
+        <fieldset class="calendar-picker-list" id="calendar-picker-list"><legend>Available calendars</legend></fieldset>
+        <p class="form-error is-hidden" id="calendar-picker-error" role="alert"></p>
+        <div class="dialog-footer"><button class="secondary-button" id="calendar-picker-cancel" type="button">Cancel</button><button class="submit-button" type="submit">Save selected calendars</button></div>
+      </form>
     </dialog>
 
     <dialog

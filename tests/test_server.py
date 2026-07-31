@@ -44,8 +44,10 @@ from gtasks.gbrain import (
     ProposalRead,
     ProposalMutationReceipt,
     SystemTicketRead,
+    LifecycleIntegrityError,
 )
 from gtasks.server import build_server
+from gtasks.ical import CalendarPreferences
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
 from gtasks.warnings import WarningDismissalStore
 
@@ -437,6 +439,7 @@ class ServerHarness:
         adapter: FakeAdapter,
         warning_store: WarningDismissalStore | None = None,
         log_reader: OperationalLogReader | None = None,
+        ical_reader=None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -470,6 +473,10 @@ class ServerHarness:
             identity_factory=lambda: "a1b2c3",
             warning_store=warning_store,
             log_reader=log_reader,
+            ical_reader=ical_reader,
+            calendar_preferences=CalendarPreferences(
+                runtime_path / "calendar-preferences.json"
+            ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -507,6 +514,47 @@ class ServerHarness:
         response_headers = {key: value for key, value in response.getheaders()}
         connection.close()
         return response.status, parsed, response_headers
+
+
+class CalendarApiTests(unittest.TestCase):
+    def test_calendar_selection_is_local_and_events_receive_only_selected_ids(self) -> None:
+        class Reader:
+            def __init__(self) -> None:
+                self.requests = 0
+                self.read_ids = None
+            def status(self): return {"status": "authorized"}
+            def request_full_access(self): self.requests += 1; return {"status": "authorized"}
+            def calendars(self): return {"status": "authorized", "calendars": [{"id": "work", "title": "Work"}, {"id": "home", "title": "Home"}]}
+            def read(self, start, end, *, calendar_ids=()): self.read_ids = calendar_ids; return {"status": "authorized", "events": []}
+
+        reader = Reader()
+        harness = ServerHarness(self, FakeAdapter(), ical_reader=reader)
+        status, payload, _ = harness.request("GET", "/api/ical-calendars")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["selected_calendar_ids"], [])
+        status, payload, _ = harness.request("POST", "/api/ical-preferences", {"selected_calendar_ids": ["work"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["verified"])
+        status, payload, _ = harness.request("GET", "/api/ical-events?start=2026-07-30&end=2026-08-01")
+        self.assertEqual(status, 200)
+        self.assertEqual(reader.read_ids, ("work",))
+        self.assertEqual(payload["selected_calendar_ids"], ["work"])
+
+    def test_calendar_access_is_an_explicit_post_not_a_read_query_side_effect(self) -> None:
+        class Reader:
+            def __init__(self) -> None: self.requests = 0
+            def read(self, start, end, *, calendar_ids=()): return {"status": "not_determined", "events": []}
+            def calendars(self): return {"status": "not_determined", "calendars": []}
+            def request_full_access(self): self.requests += 1; return {"status": "not_determined"}
+
+        reader = Reader()
+        harness = ServerHarness(self, FakeAdapter(), ical_reader=reader)
+        status, _, _ = harness.request("GET", "/api/ical-events?start=2026-07-30&end=2026-08-01")
+        self.assertEqual(status, 200)
+        self.assertEqual(reader.requests, 0)
+        status, _, _ = harness.request("POST", "/api/ical-access")
+        self.assertEqual(status, 200)
+        self.assertEqual(reader.requests, 1)
 
 
 class HealthApiTests(unittest.TestCase):
@@ -552,7 +600,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.48")
+        self.assertEqual(payload["version"], "V0.0.49")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -560,11 +608,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.48")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.48")
+        self.assertEqual(payload["current_version"], "V0.0.49")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.49")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.49",
                 "V0.0.48",
                 "V0.0.47",
                 "V0.0.46",
@@ -1909,6 +1958,32 @@ class ProposalApiTests(unittest.TestCase):
 
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "invalid_proposal_decision")
+
+    def test_lifecycle_duplicate_returns_safe_repair_route_without_decision(self) -> None:
+        class DuplicateLifecycleAdapter(FakeAdapter):
+            def decide_proposal(self, *args, **kwargs):
+                raise LifecycleIntegrityError(
+                    "collections/toddys-tasks/example",
+                    [
+                        {"to_slug": "collections/toddys-tasks"},
+                        {"to_slug": "collections/toddys-tasks"},
+                    ],
+                )
+
+        adapter = DuplicateLifecycleAdapter(proposals=(sample_proposal(),))
+        harness = ServerHarness(self, adapter)
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/proposals/proposals%2Ftoddy-wellbeing-check-in/decision",
+            {"action": "approve", "decision_note": ""},
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "lifecycle_membership_needs_attention")
+        self.assertEqual(payload["lifecycle_edge_count"], 2)
+        self.assertEqual(payload["slug"], "collections/toddys-tasks/example")
+        self.assertIn("127.0.0.1:8788/?slug=collections%2Ftoddys-tasks%2Fexample", payload["repair_url"])
+        self.assertEqual(adapter.proposal_decisions, [])
 
 
 if __name__ == "__main__":

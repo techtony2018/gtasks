@@ -55,6 +55,8 @@ const state = {
   icalStatus: "not_determined",
   icalRange: "",
   icalLoading: false,
+  selectedCalendarIds: [],
+  availableCalendars: [],
   systemTickets: [],
   systemTicketIssues: [],
   systemTicketsLoading: false,
@@ -236,9 +238,21 @@ const elements = {
   proposalDecisionCopy: document.querySelector("#proposal-decision-copy"),
   proposalDecisionNote: document.querySelector("#proposal-decision-note"),
   proposalDecisionError: document.querySelector("#proposal-decision-error"),
+  proposalDecisionRepair: document.querySelector("#proposal-decision-repair"),
   proposalDecisionClose: document.querySelector("#proposal-decision-close"),
   proposalDecisionCancel: document.querySelector("#proposal-decision-cancel"),
   proposalDecisionSubmit: document.querySelector("#proposal-decision-submit"),
+  calendarAccessDialog: document.querySelector("#calendar-access-dialog"),
+  calendarAccessClose: document.querySelector("#calendar-access-close"),
+  calendarAccessCancel: document.querySelector("#calendar-access-cancel"),
+  calendarAccessRequest: document.querySelector("#calendar-access-request"),
+  calendarAccessError: document.querySelector("#calendar-access-error"),
+  calendarPickerDialog: document.querySelector("#calendar-picker-dialog"),
+  calendarPickerForm: document.querySelector("#calendar-picker-form"),
+  calendarPickerClose: document.querySelector("#calendar-picker-close"),
+  calendarPickerCancel: document.querySelector("#calendar-picker-cancel"),
+  calendarPickerList: document.querySelector("#calendar-picker-list"),
+  calendarPickerError: document.querySelector("#calendar-picker-error"),
   detailPanel: document.querySelector("#detail-panel"),
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
@@ -931,6 +945,15 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   button.append(titleWrap, nextAction, end);
   button.addEventListener("click", () => selectTask(task.slug));
   row.append(button);
+  // Inbox rows have intentional whitespace around their compact metadata. A
+  // click anywhere except an explicit row action is still a detail-selection
+  // action, so ordinary and proposed Inbox work do not require Edit to reveal
+  // their read-only context.
+  row.addEventListener("click", (event) => {
+    if (event.target.closest(".task-row-actions")) return;
+    if (event.target !== row) return;
+    selectTask(task.slug);
+  });
   if (todayActions) {
     const actions = node("div", "task-row-actions");
     const edit = actionIcon("✎", `Edit ${task.title || task.summary}`, { className: "row-action-button" });
@@ -1218,25 +1241,62 @@ function calendarEventsFilter() {
     render();
   });
   label.append(input, node("span", "", "Show iCal Events"));
-  const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? "Read-only local Calendar" : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
+  const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Choose calendars to show events") : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
   label.append(node("small", "calendar-events-status", calendarStatus));
   if (state.icalStatus === "not_determined") {
     const connect = node("button", "secondary-button", "Connect Calendar");
     connect.type = "button";
-    connect.addEventListener("click", async () => {
-      state.icalRange = "";
-      const start = state.calendarMode === "week" ? currentWeekStart() : isoDay(new Date(parseDay(state.calendarMonth || state.snapshot.as_of).getFullYear(), parseDay(state.calendarMonth || state.snapshot.as_of).getMonth(), 1));
-      const end = state.calendarMode === "week" ? shiftWeek(start, 1) : isoDay(new Date(parseDay(start).getFullYear(), parseDay(start).getMonth() + 1, 1));
-      state.icalLoading = true; render();
-      try {
-        const response = await fetch(`/api/ical-events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&request_access=1`, { headers: { Accept: "application/json" } });
-        const payload = await response.json(); state.icalStatus = payload.status || "unavailable"; state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
-      } catch (_) { state.icalStatus = "unavailable"; }
-      finally { state.icalLoading = false; render(); }
-    });
+    connect.addEventListener("click", openCalendarAccessDialog);
     label.append(connect);
+  } else if (state.icalStatus === "authorized") {
+    const manage = node("button", "secondary-button", "Manage calendars");
+    manage.type = "button";
+    manage.addEventListener("click", openCalendarPicker);
+    label.append(manage);
   }
   return label;
+}
+
+function openCalendarAccessDialog() {
+  elements.calendarAccessError.classList.add("is-hidden");
+  elements.calendarAccessDialog.showModal();
+  window.setTimeout(() => elements.calendarAccessRequest.focus(), 0);
+}
+
+async function loadCalendarPicker() {
+  const response = await fetch("/api/ical-calendars", { headers: { Accept: "application/json" }, cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Calendars could not be read.");
+  state.icalStatus = payload.status || "unavailable";
+  state.availableCalendars = Array.isArray(payload.calendars) ? payload.calendars : [];
+  state.selectedCalendarIds = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : [];
+}
+
+function renderCalendarPicker() {
+  elements.calendarPickerList.replaceChildren();
+  if (!state.availableCalendars.length) {
+    elements.calendarPickerList.append(node("p", "", "No readable calendars are available."));
+    return;
+  }
+  state.availableCalendars.forEach((calendar) => {
+    const label = node("label", "calendar-picker-option");
+    const input = node("input"); input.type = "checkbox"; input.value = calendar.id; input.checked = state.selectedCalendarIds.includes(calendar.id);
+    label.append(input, node("span", "", calendar.title || "Untitled calendar"));
+    elements.calendarPickerList.append(label);
+  });
+}
+
+async function openCalendarPicker() {
+  elements.calendarPickerError.classList.add("is-hidden");
+  try {
+    await loadCalendarPicker();
+    renderCalendarPicker();
+    elements.calendarPickerDialog.showModal();
+    window.setTimeout(() => elements.calendarPickerList.querySelector("input")?.focus(), 0);
+  } catch (error) {
+    state.icalStatus = "unavailable";
+    render();
+  }
 }
 
 async function ensureIcalEvents(start, end) {
@@ -1251,6 +1311,7 @@ async function ensureIcalEvents(start, end) {
     state.icalRange = range;
     state.icalStatus = payload.status || "unavailable";
     state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
+    state.selectedCalendarIds = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : state.selectedCalendarIds;
   } catch (_) { state.icalStatus = "unavailable"; state.icalEvents = []; }
   finally { state.icalLoading = false; render(); }
 }
@@ -2876,6 +2937,8 @@ function openProposalDecision(proposal, action) {
       : "Rejection records a durable decision and retains this canonical proposal, its links, and its audit history. It does not delete task, goal, or agent data.";
   elements.proposalDecisionNote.value = "";
   elements.proposalDecisionError.classList.add("is-hidden");
+  elements.proposalDecisionRepair.classList.add("is-hidden");
+  elements.proposalDecisionRepair.removeAttribute("href");
   elements.proposalDecisionSubmit.textContent =
     action === "approve" ? "Approve this task" : "Reject proposal";
   elements.proposalDecisionSubmit.classList.toggle(
@@ -3077,6 +3140,7 @@ async function submitProposalDecision() {
       const error = new Error(result.error || "Proposal decision was not verified.");
       error.code = result.code;
       error.slug = result.slug;
+      error.repairUrl = result.repair_url;
       throw error;
     }
     state.proposals = state.proposals.map((proposal) =>
@@ -3100,6 +3164,10 @@ async function submitProposalDecision() {
       error.code === "partial_write" && error.slug
         ? `${error.message} Inspect ${error.slug}; do not retry yet.`
         : error.message;
+    if (error.code === "lifecycle_membership_needs_attention" && error.repairUrl) {
+      elements.proposalDecisionRepair.href = error.repairUrl;
+      elements.proposalDecisionRepair.classList.remove("is-hidden");
+    }
     elements.proposalDecisionError.classList.remove("is-hidden");
   } finally {
     elements.proposalDecisionSubmit.disabled = false;
@@ -4209,6 +4277,50 @@ elements.proposalDecisionSubmit.addEventListener(
 elements.proposalDecisionDialog.addEventListener("close", () => {
   state.proposalAction = null;
   elements.proposalDecisionError.classList.add("is-hidden");
+  elements.proposalDecisionRepair.classList.add("is-hidden");
+  elements.proposalDecisionRepair.removeAttribute("href");
+});
+[
+  elements.calendarAccessClose,
+  elements.calendarAccessCancel,
+].forEach((button) => button.addEventListener("click", () => elements.calendarAccessDialog.close()));
+elements.calendarAccessRequest.addEventListener("click", async () => {
+  elements.calendarAccessError.classList.add("is-hidden");
+  elements.calendarAccessRequest.disabled = true;
+  try {
+    const response = await fetch("/api/ical-access", { method: "POST", headers: { Accept: "application/json" } });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Calendar permission could not be requested.");
+    state.icalStatus = payload.status || "unavailable";
+    if (state.icalStatus !== "authorized") throw new Error("Calendar access was not granted. You can manage this in macOS Privacy & Security settings and try again.");
+    elements.calendarAccessDialog.close();
+    await openCalendarPicker();
+    render();
+  } catch (error) {
+    elements.calendarAccessError.textContent = error.message || "Calendar permission could not be requested.";
+    elements.calendarAccessError.classList.remove("is-hidden");
+  } finally { elements.calendarAccessRequest.disabled = false; }
+});
+[
+  elements.calendarPickerClose,
+  elements.calendarPickerCancel,
+].forEach((button) => button.addEventListener("click", () => elements.calendarPickerDialog.close()));
+elements.calendarPickerForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const selected = Array.from(elements.calendarPickerList.querySelectorAll("input:checked"), (input) => input.value);
+  elements.calendarPickerError.classList.add("is-hidden");
+  try {
+    const response = await fetch("/api/ical-preferences", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ selected_calendar_ids: selected }) });
+    const payload = await response.json();
+    if (!response.ok || !payload.verified) throw new Error(payload.error || "Calendar selections could not be saved.");
+    state.selectedCalendarIds = payload.selected_calendar_ids || [];
+    state.icalRange = "";
+    elements.calendarPickerDialog.close();
+    render();
+  } catch (error) {
+    elements.calendarPickerError.textContent = error.message || "Calendar selections could not be saved.";
+    elements.calendarPickerError.classList.remove("is-hidden");
+  }
 });
 elements.boardStatusRetry.addEventListener("click", () => {
   const move = state.boardMove;

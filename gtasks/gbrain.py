@@ -55,6 +55,29 @@ class GBrainProtocolError(GBrainError):
     pass
 
 
+class LifecycleIntegrityError(ValueError):
+    """A task has no single canonical lifecycle membership to mutate safely."""
+
+    def __init__(self, task_slug: str, edges: list[Mapping[str, Any]]) -> None:
+        self.task_slug = task_slug
+        self.edge_count = len(edges)
+        self.roots = tuple(
+            sorted(
+                {
+                    str(edge.get("to_slug"))
+                    for edge in edges
+                    if isinstance(edge.get("to_slug"), str)
+                }
+            )
+        )
+        root_copy = ", ".join(self.roots) if self.roots else "none"
+        super().__init__(
+            f"Task {task_slug} has {self.edge_count} verified lifecycle memberships "
+            f"({root_copy}). No change was made. Inspect and repair its lifecycle "
+            "membership before retrying."
+        )
+
+
 class PartialMutationError(GBrainError):
     """A page may exist in GBrain, but the complete mutation was not verified."""
 
@@ -765,6 +788,16 @@ def _lifecycle_edges(
     ]
 
 
+def _require_single_lifecycle_edge(
+    task_slug: str,
+    links: list[object],
+) -> Mapping[str, Any]:
+    edges = _lifecycle_edges(task_slug, links)
+    if len(edges) != 1:
+        raise LifecycleIntegrityError(task_slug, edges)
+    return edges[0]
+
+
 def _visible_warning(
     slug: str,
     message: str,
@@ -1399,6 +1432,19 @@ class GBrainAdapter:
                             f"found {page.get('type') or 'missing'}"
                         )
                     task = Task.from_page(page, edges=edges)
+                    lifecycle_edges = _lifecycle_edges(task.slug, edges)
+                    if len(lifecycle_edges) != 1:
+                        issues.append(
+                            _visible_warning(
+                                task.slug,
+                                "Task does not have one verified lifecycle membership.",
+                                category="lifecycle_membership",
+                                impact=(
+                                    "It is shown from its core fields, but changes are "
+                                    "disabled until its lifecycle membership is repaired."
+                                ),
+                            )
+                        )
                     if (
                         task.lifecycle_root != root_slug
                         or task.owner_agent != agent.slug
@@ -2161,30 +2207,33 @@ class GBrainAdapter:
                 f"Task page was written but page readback failed: {exc}",
             ) from exc
 
-        self.runner.run(
-            "add_link",
-            {
-                "from": task.slug,
-                "to": ACTIVE_ROOT,
-                "link_type": "member_of",
-                "context": "GTasks active task membership.",
-                "link_source": "gtasks",
-            },
-        )
         try:
             raw_links = self.runner.run("get_links", {"slug": task.slug})
             if not isinstance(raw_links, list):
                 raise GBrainProtocolError("get_links did not return a list")
-            verified = any(
-                isinstance(link, Mapping)
-                and link.get("from_slug") == task.slug
-                and link.get("to_slug") == ACTIVE_ROOT
-                and link.get("link_type") == "member_of"
-                for link in raw_links
-            )
-            if not verified:
-                raise GBrainProtocolError("active membership edge was not found")
-        except GBrainError as exc:
+            existing = _lifecycle_edges(task.slug, raw_links)
+            if len(existing) > 1 or (
+                existing and existing[0].get("to_slug") != ACTIVE_ROOT
+            ):
+                raise LifecycleIntegrityError(task.slug, existing)
+            if not existing:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.slug,
+                        "to": ACTIVE_ROOT,
+                        "link_type": "member_of",
+                        "context": "GTasks active task membership.",
+                        "link_source": "gtasks",
+                    },
+                )
+            final_links = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(final_links, list):
+                raise GBrainProtocolError("get_links did not return a list")
+            lifecycle = _require_single_lifecycle_edge(task.slug, final_links)
+            if lifecycle.get("to_slug") != ACTIVE_ROOT:
+                raise LifecycleIntegrityError(task.slug, [lifecycle])
+        except (GBrainError, LifecycleIntegrityError) as exc:
             raise PartialMutationError(
                 task.slug,
                 f"Task page exists but membership readback failed: {exc}",
@@ -2388,14 +2437,16 @@ class GBrainAdapter:
             "put_page",
             {"slug": task.slug, "content": render_task_page(task)},
         )
+        preexisting_links = self.runner.run("get_links", {"slug": task.slug})
+        if not isinstance(preexisting_links, list):
+            raise GBrainProtocolError("agent task lifecycle readback was not structured")
+        preexisting_lifecycle = _lifecycle_edges(task.slug, preexisting_links)
+        if len(preexisting_lifecycle) > 1 or (
+            preexisting_lifecycle
+            and preexisting_lifecycle[0].get("to_slug") != work_root
+        ):
+            raise LifecycleIntegrityError(task.slug, preexisting_lifecycle)
         descriptors = [
-            {
-                "from": task.slug,
-                "to": work_root,
-                "link_type": "member_of",
-                "context": "Canonical agent work collection membership.",
-                "link_source": "gtasks",
-            },
             {
                 "from": task.slug,
                 "to": agent_slug,
@@ -2404,6 +2455,17 @@ class GBrainAdapter:
                 "link_source": "gtasks",
             },
         ]
+        if not preexisting_lifecycle:
+            descriptors.insert(
+                0,
+                {
+                    "from": task.slug,
+                    "to": work_root,
+                    "link_type": "member_of",
+                    "context": "Canonical agent work collection membership.",
+                    "link_source": "gtasks",
+                },
+            )
         if task.project:
             descriptors.append(
                 {
@@ -2466,6 +2528,9 @@ class GBrainAdapter:
                 raise GBrainProtocolError(
                     "agent assignment relationships were not verified"
                 )
+            verified_lifecycle = _require_single_lifecycle_edge(task.slug, links)
+            if verified_lifecycle.get("to_slug") != work_root:
+                raise LifecycleIntegrityError(task.slug, [verified_lifecycle])
             if any(
                 edge[0] == task.slug
                 and edge[2] == "member_of"
@@ -2610,8 +2675,15 @@ class GBrainAdapter:
             if task.status != "proposed":
                 raise ValueError("proposal already has a final decision")
             raw_page = self.runner.run("get_page", {"slug": proposal_slug})
-            if not isinstance(raw_page, Mapping):
+            raw_links = self.runner.run("get_links", {"slug": proposal_slug})
+            if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
                 raise GBrainProtocolError("proposed task page readback was not structured")
+            # Do this before writing decision metadata. A malformed lifecycle
+            # must never leave a proposal looking approved when its same-task
+            # authorization transition could not safely occur.
+            lifecycle_edge = _require_single_lifecycle_edge(proposal_slug, raw_links)
+            if lifecycle_edge.get("to_slug") != task.lifecycle_root:
+                raise LifecycleIntegrityError(proposal_slug, [lifecycle_edge])
             frontmatter = raw_page.get("frontmatter")
             if not isinstance(frontmatter, Mapping):
                 raise GBrainProtocolError("proposed task page has no frontmatter")
@@ -3162,12 +3234,9 @@ class GBrainAdapter:
         raw_links = self.runner.run("get_links", {"slug": task_slug})
         if not isinstance(raw_links, list):
             raise GBrainProtocolError("get_links did not return a list")
-        initial_lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
-        if len(initial_lifecycle_edges) != 1:
-            raise ValueError(
-                "task does not have exactly one verified approved lifecycle edge"
-            )
-        initial_root = str(initial_lifecycle_edges[0]["to_slug"])
+        initial_lifecycle_edge = _require_single_lifecycle_edge(task_slug, raw_links)
+        initial_lifecycle_edges = [initial_lifecycle_edge]
+        initial_root = str(initial_lifecycle_edge["to_slug"])
         normalized_page, normalized_links, _warnings = _normalize_collection_task(
             raw_page,
             raw_links,
@@ -3179,13 +3248,11 @@ class GBrainAdapter:
         except DomainValidationError as exc:
             raise ValueError(str(exc)) from exc
         existing_lifecycle_edges = initial_lifecycle_edges
-        if (
-            len(existing_lifecycle_edges) != 1
-            or existing_lifecycle_edges[0].get("to_slug") != task.lifecycle_root
-        ):
-            raise ValueError(
-                "task does not have exactly one verified approved lifecycle edge"
-            )
+        existing_lifecycle_edge = _require_single_lifecycle_edge(
+            task_slug, raw_links
+        )
+        if existing_lifecycle_edge.get("to_slug") != task.lifecycle_root:
+            raise LifecycleIntegrityError(task_slug, existing_lifecycle_edges)
 
         if task.status == status:
             return StatusMutationReceipt(

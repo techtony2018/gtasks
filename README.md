@@ -62,6 +62,26 @@ The server binds to `127.0.0.1` by default. To choose another local port:
 python3 -m gtasks.server --port 4180
 ```
 
+## Calendar overlay privacy
+
+Calendar events are a separate, read-only local overlay in Mission Control's
+Calendar view. They are never copied to GBrain and cannot be treated as tasks.
+Apple EventKit requires **Full Access to Calendar** for an app to read events;
+Mission Control explains this before it asks macOS, then lets Tony choose which
+calendar identifiers are included. It never calls an EventKit write or delete
+API. The selection is stored only in
+`~/Library/Application Support/Mission Control/calendar-preferences.json`.
+
+The dashboard service invokes the branded `Mission Control Calendar.app`
+helper. Build or refresh that local helper after source deployment:
+
+```bash
+./scripts/build-mission-control-calendar-helper.sh
+```
+
+If the helper is absent or Calendar permission is unavailable, task views and
+GBrain remain fully usable and the overlay reports an honest unavailable state.
+
 ## All Things Codex Dashboard
 
 GTasks is registered with All Things Codex Dashboard at
@@ -248,7 +268,13 @@ The server invokes documented GBrain tools through argument arrays, never throug
 3. `add_link` for active `member_of`
 4. `get_links` readback
 
-A creation is reported as successful only when the task page and membership edge both read back. If the page exists but relationship verification fails, the API returns a `partial_write` result with the exact slug and does not delete, retry, or conceal the partial state.
+A creation is reported as successful only when the task page and exactly one
+typed lifecycle membership edge both read back. If the page exists but
+relationship verification fails, the API returns a `partial_write` result with
+the exact slug and does not delete, retry, or conceal the partial state. A
+proposal with a missing or duplicate lifecycle edge is fail-closed before any
+approval metadata or status is written, with a safe Memory Stargraph inspection
+link rather than an opaque internal error.
 
 Changing a task's goal is also explicit and verified. GTasks proves both nodes
 are under the approved roots, writes the task-to-goal `advances_goal` edge and

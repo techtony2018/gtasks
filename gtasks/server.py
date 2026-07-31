@@ -40,8 +40,13 @@ from .domain import (
     new_task,
     new_system_ticket,
 )
-from .gbrain import GBrainAdapter, GBrainError, PartialMutationError
-from .ical import ICalendarError, ICalendarReader
+from .gbrain import (
+    GBrainAdapter,
+    GBrainError,
+    LifecycleIntegrityError,
+    PartialMutationError,
+)
+from .ical import CalendarPreferences, ICalendarError, ICalendarReader
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -59,6 +64,19 @@ MAX_AVATAR_BYTES = 5 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
+
+
+def _lifecycle_attention_payload(exc: LifecycleIntegrityError) -> dict[str, object]:
+    """Return a safe, actionable error without exposing graph internals."""
+    return {
+        "error": str(exc),
+        "code": "lifecycle_membership_needs_attention",
+        "slug": exc.task_slug,
+        "lifecycle_edge_count": exc.edge_count,
+        "repair_url": (
+            "http://127.0.0.1:8788/?slug=" + quote(exc.task_slug, safe="")
+        ),
+    }
 
 
 def _manual_metric_unit(label: str) -> str:
@@ -242,12 +260,14 @@ def _handler_class(
     log_reader: OperationalLogReader,
     stargraph_url: str,
     ical_reader: ICalendarReader | None = None,
+    calendar_preferences: CalendarPreferences | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     snapshot_condition = Condition()
     snapshot_payload: dict[str, Any] | None = None
     snapshot_created_at = 0.0
     snapshot_loading = False
     active_ical_reader = ical_reader or ICalendarReader()
+    active_calendar_preferences = calendar_preferences or CalendarPreferences()
 
     def decorate_issues(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -598,7 +618,25 @@ def _handler_class(
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "Calendar range must be a valid local range of up to 45 days.", "code": "invalid_calendar_range"})
                     return
                 try:
-                    self._json(HTTPStatus.OK, active_ical_reader.read(start, end, request_access=query.get("request_access") == ["1"]))
+                    payload = active_ical_reader.read(
+                        start,
+                        end,
+                        calendar_ids=active_calendar_preferences.selected_calendar_ids(),
+                    )
+                    payload["selected_calendar_ids"] = list(
+                        active_calendar_preferences.selected_calendar_ids()
+                    )
+                    self._json(HTTPStatus.OK, payload)
+                except ICalendarError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "calendar_unavailable"})
+                return
+            if path == "/api/ical-calendars":
+                try:
+                    payload = active_ical_reader.calendars()
+                    payload["selected_calendar_ids"] = list(
+                        active_calendar_preferences.selected_calendar_ids()
+                    )
+                    self._json(HTTPStatus.OK, payload)
                 except ICalendarError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "calendar_unavailable"})
                 return
@@ -614,6 +652,9 @@ def _handler_class(
                 goal_slug = unquote(path[len(goal_prefix) : -len(goal_suffix)])
                 try:
                     relationship_read = adapter.read_goal_relationships(goal_slug)
+                except LifecycleIntegrityError as exc:
+                    self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
+                    return
                 except (DomainValidationError, ValueError) as exc:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -632,6 +673,31 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/ical-access":
+                try:
+                    self._json(HTTPStatus.OK, active_ical_reader.request_full_access())
+                except ICalendarError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "calendar_unavailable"})
+                return
+            if path == "/api/ical-preferences":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                selected = payload.get("selected_calendar_ids")
+                if (
+                    set(payload) != {"selected_calendar_ids"}
+                    or not isinstance(selected, list)
+                    or not all(isinstance(item, str) and item for item in selected)
+                ):
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "selected_calendar_ids must be a list of calendar identifiers.", "code": "invalid_calendar_preferences"})
+                    return
+                try:
+                    saved = active_calendar_preferences.save_selected_calendar_ids(selected)
+                except (OSError, ValueError) as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Calendar selections could not be saved locally.", "code": "calendar_preferences_unavailable"})
+                    return
+                self._json(HTTPStatus.OK, {"selected_calendar_ids": list(saved), "verified": True})
+                return
             avatar_prefix = "/api/agents/"
             avatar_suffix = "/avatar"
             default_goals_suffix = "/default-goals"
@@ -737,6 +803,12 @@ def _handler_class(
                         decision_note=decision_note,
                         now=clock(),
                     )
+                except LifecycleIntegrityError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        _lifecycle_attention_payload(exc),
+                    )
+                    return
                 except (DomainValidationError, ValueError) as exc:
                     self._json(
                         HTTPStatus.CONFLICT,
@@ -1059,6 +1131,9 @@ def _handler_class(
                         receipt = adapter.create_agent_task(task, assignee_slug)
                     else:
                         receipt = adapter.duplicate_task(source_slug, task)
+                except LifecycleIntegrityError as exc:
+                    self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
+                    return
                 except (DomainValidationError, ValueError) as exc:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -1202,6 +1277,9 @@ def _handler_class(
                         due_day=due_day,
                     )
                     receipt = adapter.create_inbox(task)
+            except LifecycleIntegrityError as exc:
+                self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
+                return
             except (DomainValidationError, ValueError) as exc:
                 self._json(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -1535,6 +1613,9 @@ def _handler_class(
                     return
                 try:
                     receipt = adapter.repair_active_membership(task_slug)
+                except LifecycleIntegrityError as exc:
+                    self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
+                    return
                 except ValueError as exc:
                     self._json(
                         HTTPStatus.CONFLICT,
@@ -1759,6 +1840,9 @@ def _handler_class(
                         requested_status,
                         clock(),
                     )
+                except LifecycleIntegrityError as exc:
+                    self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
+                    return
                 except ValueError as exc:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -1915,6 +1999,8 @@ def build_server(
     warning_store: WarningDismissalStore | None = None,
     log_reader: OperationalLogReader | None = None,
     stargraph_url: str = "http://127.0.0.1:8788",
+    ical_reader: ICalendarReader | None = None,
+    calendar_preferences: CalendarPreferences | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -1932,6 +2018,8 @@ def build_server(
         warning_store or WarningDismissalStore(),
         active_log_reader,
         stargraph_url.rstrip("/"),
+        ical_reader,
+        calendar_preferences,
     )
     return ThreadingHTTPServer((host, port), handler)
 

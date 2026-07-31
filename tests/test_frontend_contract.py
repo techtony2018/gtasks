@@ -321,15 +321,32 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".month-task.is-overdue-task", css)
 
     def test_calendar_has_default_on_ical_events_filter(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("showIcalEvents: true", javascript)
         self.assertIn("function calendarEventsFilter", javascript)
         self.assertIn('"Show iCal Events"', javascript)
         self.assertIn("input.checked = state.showIcalEvents", javascript)
         self.assertIn("Connect Calendar", javascript)
+        self.assertIn("Manage calendars", javascript)
+        self.assertIn('fetch("/api/ical-access", { method: "POST"', javascript)
+        self.assertIn('fetch("/api/ical-calendars"', javascript)
+        self.assertIn('fetch("/api/ical-preferences"', javascript)
         self.assertIn("Calendar permission was not granted", javascript)
         self.assertIn("Local Calendar is unavailable", javascript)
         self.assertIn("icalEventsForDay", javascript)
+        self.assertIn("Full Access to Calendar", html)
+
+    def test_inbox_task_rows_and_proposals_open_read_only_details_without_edit(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        task_row = javascript[javascript.index("function taskRow") : javascript.index("function section")]
+        proposal_card = javascript[javascript.index("function proposalCard") : javascript.index("function renderProposedWork")]
+
+        self.assertIn('button.addEventListener("click", () => selectTask(task.slug))', task_row)
+        self.assertIn('row.addEventListener("click", (event) =>', task_row)
+        self.assertIn('if (event.target.closest(".task-row-actions")) return;', task_row)
+        self.assertIn('const open = () => selectTask(proposal.slug);', proposal_card)
+        self.assertIn('card.addEventListener("click", open);', proposal_card)
 
     def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(
         self,

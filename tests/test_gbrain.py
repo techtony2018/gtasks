@@ -28,6 +28,7 @@ from gtasks.gbrain import (
     GoalLinkReceipt,
     NextActionMutationReceipt,
     PartialMutationError,
+    LifecycleIntegrityError,
     SubprocessCommandRunner,
     _render_preserved_page,
 )
@@ -873,7 +874,7 @@ class GoalMutationTests(unittest.TestCase):
         runner = FakeRunner(
             {
                 "get_page": [page, paused_page],
-                "get_links": [[edge], [edge]],
+                "get_links": [[], [edge], [edge]],
                 "put_page": [{"slug": page["slug"]}],
             }
         )
@@ -1076,7 +1077,7 @@ class InboxMutationTests(unittest.TestCase):
                 "put_page": [{"slug": task.slug}],
                 "get_page": [page, page],
                 "add_link": [edge],
-                "get_links": [[edge], [edge]],
+                "get_links": [[], [edge], [edge]],
             }
         )
 
@@ -1263,7 +1264,7 @@ class InboxMutationTests(unittest.TestCase):
                 "put_page": [{"slug": task.slug}],
                 "get_page": [stored_page(task)],
                 "add_link": [edge],
-                "get_links": [[edge]],
+                "get_links": [[], [edge]],
             }
         )
 
@@ -1272,12 +1273,15 @@ class InboxMutationTests(unittest.TestCase):
         self.assertEqual(result.slug, task.slug)
         self.assertTrue(result.verified)
         tools = [tool for tool, _ in runner.calls]
-        self.assertEqual(tools, ["put_page", "get_page", "add_link", "get_links"])
+        self.assertEqual(
+            tools,
+            ["put_page", "get_page", "get_links", "add_link", "get_links"],
+        )
         content = runner.calls[0][1]["content"]
         self.assertIn('due_day: "2026-07-30"', content)
         self.assertNotIn("due_day: none", content)
         self.assertEqual(
-            runner.calls[2],
+            runner.calls[3],
             (
                 "add_link",
                 {
@@ -1301,7 +1305,7 @@ class InboxMutationTests(unittest.TestCase):
                 "put_page": [{"slug": task.slug}],
                 "get_page": [stored_page(task)],
                 "add_link": [{}],
-                "get_links": [[]],
+                "get_links": [[], []],
             }
         )
 
@@ -1310,6 +1314,30 @@ class InboxMutationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.slug, task.slug)
         self.assertIn("membership", str(raised.exception))
+
+    def test_refuses_duplicate_lifecycle_membership_without_adding_another_edge(self) -> None:
+        task = new_inbox_task(
+            "Keep one lifecycle edge",
+            datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
+            "oneedge",
+        )
+        duplicate_edges = [
+            {"from_slug": task.slug, "to_slug": ACTIVE_ROOT, "link_type": "member_of"},
+            {"from_slug": task.slug, "to_slug": ACTIVE_ROOT, "link_type": "member_of"},
+        ]
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": task.slug}],
+                "get_page": [stored_page(task)],
+                "get_links": [duplicate_edges],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).create_inbox(task)
+
+        self.assertIn("2 verified lifecycle memberships", str(raised.exception))
+        self.assertNotIn("add_link", [tool for tool, _ in runner.calls])
 
 
 class GoalLinkMutationTests(unittest.TestCase):
