@@ -462,6 +462,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="view-count"', html)
         self.assertIn("function inContextCountLabel", javascript)
         self.assertIn("elements.viewCount.textContent", javascript)
+        self.assertIn('"system-tickets": state.systemTickets.length', javascript)
 
     def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

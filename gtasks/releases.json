@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.47",
+  "current_version": "V0.0.48",
   "releases": [
     {
       "version": "V0.0.1",
@@ -282,6 +282,12 @@
       "date": "2026-07-31",
       "title": "Verified Mission Control identity",
       "summary": "Serves the distinct Mission Control command mark and browser icons reliably while keeping the rejected central illustration out of the product."
+    },
+    {
+      "version": "V0.0.48",
+      "date": "2026-07-31",
+      "title": "Accurate System Ticket count",
+      "summary": "Shows the current System Ticket count in its page heading so it matches the canonical ticket list."
     }
   ]
 }

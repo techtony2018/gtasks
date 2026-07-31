@@ -832,6 +832,7 @@ function navCounts() {
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
     completed: state.snapshot.views.completed.length,
+    "system-tickets": state.systemTickets.length,
   };
 }
 
