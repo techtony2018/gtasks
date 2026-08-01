@@ -402,6 +402,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".task-row.is-overdue-task", css)
         self.assertIn(".month-task.is-overdue-task", css)
 
+    def test_calendar_selection_marks_the_same_task_in_week_and_month(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('row.classList.toggle("is-selected", state.selectedSlug === task.slug)', javascript)
+        self.assertIn('taskButton.classList.toggle("is-selected", state.selectedSlug === task.slug)', javascript)
+        self.assertIn('taskButton.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false")', javascript)
+        self.assertIn(".month-task.is-selected", css)
+        self.assertIn(".week-task-list .task-row.is-selected", css)
+
     def test_calendar_has_default_on_ical_events_filter(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -623,7 +633,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="system-ticket-priority"', html)
         self.assertIn("function renderSystemTicketsView()", javascript)
         self.assertIn('fetch("/api/system-tickets"', javascript)
-        self.assertIn("Nightly work selects only Planned tickets", javascript)
+        self.assertIn("Nightly work processes every Planned ticket", javascript)
         self.assertIn("state.systemTicketIssues", javascript)
         self.assertIn("state.systemTicketsLoadPromise", javascript)
         self.assertIn("loadSystemTickets({ force: true })", javascript)

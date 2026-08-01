@@ -1400,6 +1400,8 @@ function renderMonthCalendar() {
     state.snapshot.tasks.filter((task) => task.due_day === key && !["completed", "cancelled"].includes(task.status)).forEach((task) => {
       const taskButton = node("button", "month-task", task.title || task.summary);
       taskButton.classList.toggle("is-overdue-task", isOverdueExecutable(task));
+      taskButton.classList.toggle("is-selected", state.selectedSlug === task.slug);
+      taskButton.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false");
       taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
     });
     icalEventsForDay(key).forEach((event) => cell.append(node("p", "ical-event", event.title || "Calendar event")));
@@ -3302,7 +3304,7 @@ function renderSystemTicketsView() {
   const section = node("section", "projects-view");
   const heading = node("div", "projects-view-heading");
   const copy = node("div");
-  copy.append(node("h2", "", "Mission Control System Tickets"), node("p", "", "Separate canonical change requests. Nightly work selects only Planned tickets; implementation and independent QA receipts remain with the ticket."));
+  copy.append(node("h2", "", "Mission Control System Tickets"), node("p", "", "Separate canonical change requests. Nightly work processes every Planned ticket; safe batching can sequence overlaps, and each ticket receives an execution or blocking outcome. Implementation and independent QA receipts remain with the ticket."));
   const create = actionIcon("+", "New Ticket", { primary: true }); create.addEventListener("click", openSystemTicketDialog);
   heading.append(copy, create); section.append(heading);
   if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }

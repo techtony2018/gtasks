@@ -273,7 +273,7 @@
         <label for="system-ticket-target">Target subsystem/project</label><select id="system-ticket-target"><option value="mission_control">Mission Control</option><option value="memory_stargraph">Memory Stargraph</option><option value="career_path">Career Path</option><option value="unknown">Unknown — nightly builder will block with a question</option></select>
         <label for="system-ticket-priority">Priority</label><select id="system-ticket-priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option></select>
         <label for="system-ticket-criteria">Acceptance criteria</label><textarea id="system-ticket-criteria" rows="3"></textarea>
-        <p>New tickets are normal canonical tasks in Mission Control System Tickets with status Planned. Nightly work selects only planned System Tickets.</p><p class="form-error is-hidden" id="system-ticket-error" role="alert"></p>
+        <p>New tickets are normal canonical tasks in Mission Control System Tickets with status Planned. Nightly work processes every planned System Ticket and records an execution or blocking outcome for each.</p><p class="form-error is-hidden" id="system-ticket-error" role="alert"></p>
         <div class="dialog-footer"><p>Success is shown only after canonical page and typed membership readback.</p><button class="submit-button" type="submit">Create Ticket</button></div>
       </form>
     </dialog>

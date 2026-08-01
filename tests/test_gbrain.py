@@ -2459,7 +2459,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "member_of",
         )
 
-    def test_nightly_selector_returns_only_the_oldest_planned_ticket(self) -> None:
+    def test_nightly_selector_returns_all_planned_tickets_in_stable_order(self) -> None:
         first = SystemTicket("tasks/system-tickets/first-aaaaaa", "First", "planned", "A request", "mission_control", "normal", created_at=datetime(2026, 7, 30, tzinfo=timezone.utc))
         active = SystemTicket("tasks/system-tickets/active-bbbbbb", "Active", "active", "Another request", "mission_control", "normal", created_at=datetime(2026, 7, 29, tzinfo=timezone.utc))
         second = SystemTicket("tasks/system-tickets/second-cccccc", "Second", "planned", "Later request", "career_path", "normal", created_at=datetime(2026, 7, 31, tzinfo=timezone.utc))
@@ -2472,9 +2472,9 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "get_links": [edges(first), edges(active), edges(second)],
         })
 
-        selected = GBrainAdapter(runner).next_planned_system_ticket()
+        selected = GBrainAdapter(runner).planned_system_tickets()
 
-        self.assertEqual(selected.slug, first.slug)
+        self.assertEqual([ticket.slug for ticket in selected], [first.slug, second.slug])
 
 
 class TaskProgressMetricMutationTests(unittest.TestCase):

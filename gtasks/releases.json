@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.59",
+  "current_version": "V0.0.60",
   "releases": [
     {
       "version": "V0.0.1",
@@ -354,6 +354,12 @@
       "date": "2026-07-31",
       "title": "Navigation and Calendar recovery",
       "summary": "Enlarges the Mission Control rail controls, moves the linked release version beside the celestial word artwork, replaces Inbox Reject text with an accessible red icon, and makes failed or disconnected local Calendar overlays recoverable without a retry loop."
+    },
+    {
+      "version": "V0.0.60",
+      "date": "2026-07-31",
+      "title": "System Ticket processing and Calendar selection",
+      "summary": "Clarifies that nightly work considers every planned System Ticket, records an execution or blocking outcome for each, and visibly marks the selected Calendar task in Week and Month views."
     }
   ]
 }

@@ -1584,6 +1584,11 @@ kbd {
 .month-day { min-height: 110px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); display: grid; align-content: start; gap: 5px; }
 .month-day.is-outside-month { opacity: .5; }
 .month-task { border: 0; border-radius: 5px; padding: 4px; background: #e6efe8; color: var(--ink); text-align: left; font-size: 10px; overflow: hidden; text-overflow: clip; }
+.month-task.is-selected,
+.week-task-list .task-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 26%, var(--surface-muted));
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
 
 .coordinator-summary { margin: 0 0 18px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-muted); }
 .coordinator-summary h2 { margin: 0 0 5px; font-size: 16px; }
