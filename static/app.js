@@ -313,6 +313,7 @@ const elements = {
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
   taskNextActionValue: document.querySelector("#task-next-action-value"),
+  taskNextActionTimeline: document.querySelector("#task-next-action-timeline"),
   taskProgressDetail: document.querySelector("#task-progress-detail"),
   taskProgressLabel: document.querySelector("#task-progress-label"),
   taskProgressValue: document.querySelector("#task-progress-value"),
@@ -960,6 +961,7 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   button.type = "button";
   button.dataset.slug = task.slug;
   button.setAttribute("aria-label", `Open ${task.title || task.summary}`);
+  button.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false");
 
   const titleWrap = node("span", "task-title-wrap");
   const dot = node("span", `task-state-dot ${taskUiStatus(task)}`);
@@ -1351,6 +1353,7 @@ async function openCalendarPicker() {
 
 async function ensureIcalEvents(start, end) {
   if (!state.showIcalEvents) return;
+  if (state.icalStatus !== "authorized") return;
   const range = `${start}/${end}`;
   if (state.icalRange === range || state.icalLoading) return;
   state.icalLoading = true;
@@ -3371,6 +3374,60 @@ async function submitSystemTicket(event) {
   catch(error){ elements.systemTicketError.textContent=error.message; elements.systemTicketError.classList.remove("is-hidden"); }
 }
 
+function renderNextActionTimeline(task) {
+  elements.taskNextActionTimeline.replaceChildren();
+  if (task.next_action) {
+    const current = node("li", "is-current");
+    current.append(
+      node("span", "next-action-state", "Current"),
+      node("strong", "", task.next_action),
+    );
+    elements.taskNextActionTimeline.append(current);
+  }
+  const history = Array.isArray(task.next_action_history)
+    ? [...task.next_action_history].reverse()
+    : [];
+  history.forEach((entry) => {
+    const item = node("li", "is-completed");
+    item.append(
+      node("span", "next-action-state", "Completed"),
+      node("strong", "", entry.action),
+      node(
+        "time",
+        "",
+        entry.completed_at
+          ? new Date(entry.completed_at).toLocaleString()
+          : "Completion time unavailable",
+      ),
+    );
+    elements.taskNextActionTimeline.append(item);
+  });
+  if (!task.next_action && !history.length) {
+    elements.taskNextActionTimeline.append(
+      node("li", "is-empty", "No Next Action history recorded yet."),
+    );
+  }
+}
+
+function keepSelectedCalendarTaskVisible(taskSlug) {
+  if (state.activeView !== "week" || state.calendarMode !== "week") return;
+  window.requestAnimationFrame(() => {
+    const selected = Array.from(
+      document.querySelectorAll(".week-grid .task-row-open"),
+    ).find((button) => button.dataset.slug === taskSlug);
+    if (selected && window.matchMedia("(max-width: 760px)").matches) {
+      const day = selected.closest(".week-day");
+      const grid = day?.closest(".week-grid");
+      if (day && grid) {
+        const maxScroll = Math.max(0, grid.scrollWidth - grid.clientWidth);
+        grid.scrollLeft = Math.min(day.offsetLeft, maxScroll);
+        return;
+      }
+    }
+    selected?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+}
+
 function selectTask(slug, taskFallback = null) {
   const task = findTaskBySlug(slug) || taskFallback;
   if (!task) return;
@@ -3413,6 +3470,7 @@ function selectTask(slug, taskFallback = null) {
     elements.taskOwnerName.textContent = owner.name;
   }
   elements.taskNextActionValue.textContent = task.next_action || "No next action set.";
+  renderNextActionTimeline(task);
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -3446,6 +3504,7 @@ function selectTask(slug, taskFallback = null) {
     elements.taskGoalValue.textContent = task.goal ? task.goal : "No associated goal";
   }
   render();
+  keepSelectedCalendarTaskVisible(task.slug);
   if (window.matchMedia("(max-width: 760px)").matches) {
     window.requestAnimationFrame(() => {
       elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });

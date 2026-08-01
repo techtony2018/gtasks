@@ -3773,12 +3773,48 @@ a:focus-visible {
 .agent-goal-editor,
 .agent-read-only,
 .next-action-detail,
+.next-action-timeline li,
 .task-progress-detail,
 .goal-relationship-notice {
   border-color: var(--line);
   color: var(--ink);
   background: rgba(11, 23, 42, 0.78);
   box-shadow: inset 0 1px rgba(238, 244, 255, 0.02);
+}
+
+.next-action-timeline {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.next-action-timeline li {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.next-action-timeline li.is-current {
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(56, 189, 248, 0.075);
+}
+
+.next-action-timeline li.is-completed strong {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.next-action-timeline time,
+.next-action-state {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .task-row,

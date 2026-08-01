@@ -407,10 +407,32 @@ class FrontendContractTests(unittest.TestCase):
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('row.classList.toggle("is-selected", state.selectedSlug === task.slug)', javascript)
+        self.assertIn('button.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false")', javascript)
         self.assertIn('taskButton.classList.toggle("is-selected", state.selectedSlug === task.slug)', javascript)
         self.assertIn('taskButton.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false")', javascript)
         self.assertIn(".month-task.is-selected", css)
         self.assertIn(".week-task-list .task-row.is-selected", css)
+
+    def test_week_selection_scrolls_into_view_after_detail_panel_opens(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function keepSelectedCalendarTaskVisible(taskSlug)", javascript)
+        self.assertIn('document.querySelectorAll(".week-grid .task-row-open")', javascript)
+        self.assertIn('scrollIntoView({ block: "nearest", inline: "nearest" })', javascript)
+        self.assertIn('window.matchMedia("(max-width: 760px)").matches', javascript)
+        self.assertIn('selected.closest(".week-day")', javascript)
+        self.assertIn("grid.scrollLeft = Math.min(day.offsetLeft, maxScroll)", javascript)
+        self.assertIn("keepSelectedCalendarTaskVisible(task.slug)", javascript)
+
+    def test_task_detail_renders_current_and_historical_next_actions(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-next-action-timeline"', html)
+        self.assertIn("function renderNextActionTimeline(task)", javascript)
+        self.assertIn("task.next_action_history", javascript)
+        self.assertIn(".next-action-timeline", css)
 
     def test_calendar_has_default_on_ical_events_filter(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -443,6 +465,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('state.icalStatus !== "authorized"', calendar_filter)
         self.assertIn('"Reauthorize Calendar"', calendar_filter)
         self.assertIn("state.icalRange = range", event_loader)
+        self.assertIn('if (state.icalStatus !== "authorized") return', event_loader)
         self.assertLess(event_loader.index("state.icalRange = range"), event_loader.index('state.icalStatus = "unavailable"'))
 
     def test_inbox_task_rows_and_proposals_open_read_only_details_without_edit(self) -> None:

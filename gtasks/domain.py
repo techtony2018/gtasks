@@ -53,6 +53,43 @@ class DomainValidationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class NextActionHistoryEntry:
+    action: str
+    completed_at: datetime
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any]) -> "NextActionHistoryEntry":
+        if not isinstance(value, Mapping):
+            raise DomainValidationError("next_action_history entries must be objects")
+        action = value.get("action")
+        if (
+            not isinstance(action, str)
+            or not action.strip()
+            or len(action.strip()) > 240
+            or "\n" in action
+            or "\r" in action
+        ):
+            raise DomainValidationError(
+                "next_action_history action must be one concise line of 240 characters or fewer"
+            )
+        completed_at = _optional_datetime(
+            value.get("completed_at"),
+            "next_action_history completed_at",
+        )
+        if completed_at is None or completed_at.tzinfo is None:
+            raise DomainValidationError(
+                "next_action_history completed_at must include a timezone"
+            )
+        return cls(action=action.strip(), completed_at=completed_at)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "action": self.action,
+            "completed_at": self.completed_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SystemTicket:
     """A normal canonical task scoped only to Mission Control System Tickets."""
 
@@ -650,6 +687,7 @@ class Task:
     scheduled_day: date | None
     inbox: bool
     lifecycle_root: str
+    next_action_history: tuple[NextActionHistoryEntry, ...] = ()
     owner_agent: str | None = None
     project: str | None = None
     parent: str | None = None
@@ -804,6 +842,15 @@ class Task:
         next_action = frontmatter.get("next_action", "")
         if not isinstance(next_action, str):
             raise DomainValidationError("next_action must be text")
+        raw_next_action_history = frontmatter.get("next_action_history", [])
+        if raw_next_action_history is None:
+            raw_next_action_history = []
+        if not isinstance(raw_next_action_history, list):
+            raise DomainValidationError("next_action_history must be a list")
+        next_action_history = tuple(
+            NextActionHistoryEntry.from_value(entry)
+            for entry in raw_next_action_history
+        )
 
         title = frontmatter.get("title") or page.get("title")
         if not isinstance(title, str) or not title.strip():
@@ -857,6 +904,7 @@ class Task:
             ),
             inbox=inbox,
             lifecycle_root=lifecycle_root,
+            next_action_history=next_action_history,
             owner_agent=owner_agent,
             project=project,
             parent=parents[0] if parents else None,
@@ -894,6 +942,9 @@ class Task:
             "status": self.status,
             "priority": self.priority,
             "next_action": self.next_action,
+            "next_action_history": [
+                entry.to_dict() for entry in self.next_action_history
+            ],
             "due_day": self.due_day.isoformat() if self.due_day else None,
             "due_at": self.due_at.isoformat() if self.due_at else None,
             "scheduled_day": (

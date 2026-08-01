@@ -62,6 +62,38 @@ class TaskParsingTests(unittest.TestCase):
         self.assertIn("progress_metric", task.to_dict())
         self.assertIsNone(task.to_dict()["progress_metric"])
 
+    def test_existing_task_without_next_action_history_remains_readable(self) -> None:
+        task = Task.from_page(task_page("tasks/legacy-next-action"))
+
+        self.assertEqual(task.next_action_history, ())
+        self.assertEqual(task.to_dict()["next_action_history"], [])
+
+    def test_parses_completed_next_action_history(self) -> None:
+        page = task_page("tasks/next-action-history")
+        page["frontmatter"]["next_action_history"] = [
+            {
+                "action": "Collect the source material",
+                "completed_at": "2026-07-30T14:15:00-07:00",
+            }
+        ]
+
+        task = Task.from_page(page)
+
+        self.assertEqual(len(task.next_action_history), 1)
+        self.assertEqual(
+            task.next_action_history[0].action,
+            "Collect the source material",
+        )
+        self.assertEqual(
+            task.to_dict()["next_action_history"],
+            [
+                {
+                    "action": "Collect the source material",
+                    "completed_at": "2026-07-30T14:15:00-07:00",
+                }
+            ],
+        )
+
     def test_parses_an_opt_in_count_progress_metric(self) -> None:
         page = task_page("tasks/job-quota")
         page["frontmatter"]["progress_metric"] = {

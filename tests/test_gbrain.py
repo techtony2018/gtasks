@@ -2274,6 +2274,73 @@ class TaskStatusMutationTests(unittest.TestCase):
 
 
 class TaskNextActionMutationTests(unittest.TestCase):
+    def test_full_task_edit_uses_same_history_preserving_write(self) -> None:
+        now = datetime(2026, 7, 30, 15, tzinfo=timezone.utc)
+        task = replace(
+            new_inbox_task("Prepare interview", now, "a1b2c3"),
+            next_action="Collect examples",
+        )
+        initial_page = stored_page(task)
+        final_page = deepcopy(initial_page)
+        final_page["frontmatter"].update(
+            {
+                "type": "task",
+                "title": task.title,
+                "summary": task.title,
+                "detail": task.detail,
+                "priority": task.priority,
+                "due_day": task.due_day.isoformat(),
+                "next_action": "Draft three STAR examples",
+                "next_action_history": [
+                    {
+                        "action": "Collect examples",
+                        "completed_at": now.isoformat(),
+                    }
+                ],
+                "progress_metric": None,
+                "event_progress": None,
+                "updated_at": now.isoformat(),
+            }
+        )
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).edit_task(
+            task.slug,
+            title=task.title,
+            detail=task.detail,
+            priority=task.priority,
+            due_day=task.due_day,
+            next_action="Draft three STAR examples",
+            project_slug=None,
+            goal_slug=None,
+            status=task.status,
+            assignee_slug="tony",
+            progress_metric=None,
+            event_progress=None,
+            handoff_reason="",
+            now=now,
+        )
+
+        self.assertTrue(receipt.verified)
+        written = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"action": "Collect examples"', written)
+        self.assertIn(f'"completed_at": "{now.isoformat()}"', written)
+
     def test_sets_next_action_and_preserves_task_identity_and_relationships(self) -> None:
         now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone(timedelta(hours=-7)))
         task = new_inbox_task("Prepare interview", now, "a1b2c3")
@@ -2291,6 +2358,7 @@ class TaskNextActionMutationTests(unittest.TestCase):
         }
         final_page = deepcopy(initial_page)
         final_page["frontmatter"]["next_action"] = "Draft three STAR examples"
+        final_page["frontmatter"]["next_action_history"] = []
         final_page["frontmatter"]["updated_at"] = now.isoformat()
         runner = FakeRunner(
             {
@@ -2320,6 +2388,7 @@ class TaskNextActionMutationTests(unittest.TestCase):
         self.assertIn('"type": "task"', written)
         self.assertIn('"type": "member_of"', written)
         self.assertIn('"captured_via": "capture-cli"', written)
+        self.assertIn('"next_action_history": []', written)
         self.assertIn("# Prepare interview", written)
         self.assertNotIn("add_link", [tool for tool, _params in runner.calls])
         self.assertNotIn("remove_link", [tool for tool, _params in runner.calls])
@@ -2333,6 +2402,12 @@ class TaskNextActionMutationTests(unittest.TestCase):
         initial_page = stored_page(task)
         final_page = deepcopy(initial_page)
         final_page["frontmatter"]["next_action"] = ""
+        final_page["frontmatter"]["next_action_history"] = [
+            {
+                "action": "Draft three STAR examples",
+                "completed_at": now.isoformat(),
+            }
+        ]
         final_page["frontmatter"]["updated_at"] = now.isoformat()
         active_edge = {
             "from_slug": task.slug,
@@ -2351,6 +2426,13 @@ class TaskNextActionMutationTests(unittest.TestCase):
 
         self.assertEqual(receipt.next_action, "")
         self.assertTrue(receipt.verified)
+        written = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn('"action": "Draft three STAR examples"', written)
+        self.assertIn(f'"completed_at": "{now.isoformat()}"', written)
 
     def test_rolls_back_when_next_action_readback_does_not_match(self) -> None:
         now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone.utc)

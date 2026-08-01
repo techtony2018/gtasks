@@ -25,6 +25,7 @@ from .domain import (
     GOALS_ROOT,
     Goal,
     LIFECYCLE_ROOTS,
+    NextActionHistoryEntry,
     PROJECTS_ROOT,
     ProgressMetric,
     Project,
@@ -504,6 +505,13 @@ def render_task_page(task: Task) -> str:
         f"detail: {_yaml_scalar(task.detail)}",
         f"priority: {_yaml_scalar(task.priority)}",
         f"next_action: {_yaml_scalar(task.next_action)}",
+        (
+            "next_action_history: "
+            + json.dumps(
+                [entry.to_dict() for entry in task.next_action_history],
+                ensure_ascii=False,
+            )
+        ),
         f"due_day: {_yaml_scalar(task.due_day.isoformat() if task.due_day else None)}",
         f"due_at: {_yaml_scalar(task.due_at.isoformat() if task.due_at else None)}",
         (
@@ -551,6 +559,22 @@ def render_task_page(task: Task) -> str:
     if task.detail:
         lines.extend([task.detail, ""])
     return "\n".join(lines)
+
+
+def _history_after_next_action_change(
+    task: Task,
+    next_action: str,
+    now: datetime,
+) -> tuple[NextActionHistoryEntry, ...]:
+    history = list(task.next_action_history)
+    if task.next_action and task.next_action != next_action:
+        history.append(
+            NextActionHistoryEntry(
+                action=task.next_action,
+                completed_at=now,
+            )
+        )
+    return tuple(history[-100:])
 
 
 def render_proposal_page(proposal: TaskProposal) -> str:
@@ -3106,6 +3130,12 @@ class GBrainAdapter:
         if not isinstance(raw_frontmatter, Mapping):
             raise GBrainProtocolError("task page has no frontmatter")
         frontmatter = deepcopy(dict(raw_frontmatter))
+        normalized_next_action = next_action.strip()
+        desired_next_action_history = _history_after_next_action_change(
+            task,
+            normalized_next_action,
+            now,
+        )
         frontmatter.update(
             {
                 "type": "task",
@@ -3114,7 +3144,10 @@ class GBrainAdapter:
                 "detail": detail.strip(),
                 "priority": priority,
                 "due_day": due_day.isoformat(),
-                "next_action": next_action.strip(),
+                "next_action": normalized_next_action,
+                "next_action_history": [
+                    entry.to_dict() for entry in desired_next_action_history
+                ],
                 "progress_metric": progress_metric.to_dict() if progress_metric else None,
                 "event_progress": event_progress.to_dict() if event_progress else None,
                 "updated_at": now.isoformat(),
@@ -3140,7 +3173,9 @@ class GBrainAdapter:
             if (
                 stored.title != title.strip() or stored.detail != detail.strip()
                 or stored.priority != priority or stored.due_day != due_day
-                or stored.next_action != next_action.strip() or stored.project != project_slug
+                or stored.next_action != normalized_next_action
+                or stored.next_action_history != desired_next_action_history
+                or stored.project != project_slug
                 or stored.goal != goal_slug or stored.status != status
                 or stored.owner_agent != (None if assignee_slug == "tony" else assignee_slug)
                 or stored.progress_metric != progress_metric or stored.event_progress != event_progress
@@ -3445,6 +3480,14 @@ class GBrainAdapter:
         original_frontmatter["type"] = "task"
         desired_frontmatter = deepcopy(original_frontmatter)
         desired_frontmatter["next_action"] = normalized_action
+        desired_next_action_history = _history_after_next_action_change(
+            task,
+            normalized_action,
+            now,
+        )
+        desired_frontmatter["next_action_history"] = [
+            entry.to_dict() for entry in desired_next_action_history
+        ]
         desired_frontmatter["updated_at"] = now.isoformat()
         original_content = _render_preserved_task_page(raw_page, original_frontmatter)
         desired_content = _render_preserved_task_page(raw_page, desired_frontmatter)
@@ -3472,6 +3515,7 @@ class GBrainAdapter:
             verified_lifecycle_edges = _lifecycle_edges(task_slug, stored_links)
             if (
                 stored_task.next_action != normalized_action
+                or stored_task.next_action_history != desired_next_action_history
                 or stored_task.lifecycle_root != lifecycle_root
                 or len(verified_lifecycle_edges) != 1
                 or verified_lifecycle_edges[0].get("to_slug") != lifecycle_root
@@ -3520,6 +3564,8 @@ class GBrainAdapter:
                     rollback_verified = (
                         rollback_page.get("type") == "task"
                         and rollback_task.next_action == task.next_action
+                        and rollback_task.next_action_history
+                        == task.next_action_history
                         and rollback_task.lifecycle_root == lifecycle_root
                         and len(rollback_lifecycle) == 1
                         and rollback_lifecycle[0].get("to_slug") == lifecycle_root

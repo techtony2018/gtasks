@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.60",
+  "current_version": "V0.0.61",
   "releases": [
     {
       "version": "V0.0.1",
@@ -360,6 +360,12 @@
       "date": "2026-07-31",
       "title": "System Ticket processing and Calendar selection",
       "summary": "Clarifies that nightly work considers every planned System Ticket, records an execution or blocking outcome for each, and visibly marks the selected Calendar task in Week and Month views."
+    },
+    {
+      "version": "V0.0.61",
+      "date": "2026-08-01",
+      "title": "Durable Next Action timeline",
+      "summary": "Preserves each replaced or cleared Next Action as a completed history entry, shows the current and completed timeline in task details, and keeps the selected Calendar card visible when the detail panel opens."
     }
   ]
 }
