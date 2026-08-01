@@ -48,6 +48,17 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
+### Independent UI/UX release gate
+
+For every UI-affecting Mission Control change, independent UI/UX QA is a
+required pre-commit gate. Developers deploy the **uncommitted** candidate to
+the dashboard-managed service, then QA verifies the affected desktop flow and
+a real 390px-wide mobile flow. Only a documented QA **PASS** authorizes the
+commit. A QA **FAIL** or **INCONCLUSIVE** result requires repair and another
+independent retest before any commit; developer self-checks are not a
+substitute. The resulting commit must reference the corresponding QA evidence.
+This rule also applies to System Ticket nightly-automation UI work.
+
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
 Refresh, and a hidden tab defers work until it becomes visible again.
