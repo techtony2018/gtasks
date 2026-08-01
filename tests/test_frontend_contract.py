@@ -574,13 +574,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('aria-label="Duplicate task"', html)
         self.assertIn('aria-label="Approve task"', html)
         self.assertIn("function actionIcon", javascript)
-        self.assertIn("button.dataset.tooltip = label", javascript)
+        self.assertIn("setHudTooltip(button, label)", javascript)
         self.assertIn("actionIcon(\"✎\"", javascript)
         self.assertIn("actionIcon(\"⧉\"", javascript)
         self.assertIn("actionIcon(\"✓\"", javascript)
-        self.assertIn(".has-tooltip::after", css)
-        self.assertIn(".has-tooltip:focus-visible::after", css)
-        self.assertIn(".icon-button[aria-label]:focus-visible::after", css)
+        self.assertIn(".hud-tooltip", css)
+        self.assertNotIn(".has-tooltip::after", css)
 
     def test_navigation_uses_a_narrow_accessible_rail_and_expands_labels_on_mobile(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -631,15 +630,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("elements.viewCount.textContent", javascript)
         self.assertIn('"system-tickets": state.systemTickets.length', javascript)
 
-    def test_first_view_cards_keep_long_detail_in_explicit_expansion(self) -> None:
+    def test_first_view_cards_keep_long_detail_in_the_detail_panel(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
         tickets = javascript[javascript.index("function renderSystemTicketsView") : javascript.index("function openSystemTicketDialog")]
-        self.assertIn('node("details", "system-ticket-detail")', tickets)
-        self.assertIn("Acceptance criteria:", tickets)
+        self.assertIn('node("button", "system-ticket-card")', tickets)
+        self.assertIn("selectSystemTicket(ticket.slug)", tickets)
+        self.assertNotIn("ticket.verbatim_request", tickets)
         self.assertIn(".system-ticket-card", css)
-        self.assertIn(".system-ticket-detail", css)
+        self.assertIn(".system-ticket-detail-content", css)
 
     def test_system_tickets_have_a_separate_planned_task_surface_above_logs(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -664,6 +664,72 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Inspect in Memory Stargraph", javascript)
         self.assertIn("No valid System Tickets are ready to display", javascript)
         self.assertNotIn('value="proposed"', html[html.index('id="system-ticket-dialog"'):html.index('id="task-editor-dialog"')])
+
+    def test_system_ticket_selection_uses_detail_panel_and_ticket_safe_editor(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="system-ticket-detail-content"', html)
+        self.assertIn('id="system-ticket-edit-button"', html)
+        self.assertIn('id="system-ticket-editor-status"', html)
+        self.assertIn("function selectSystemTicket(ticketSlug)", javascript)
+        self.assertIn('state.selectedKind = "system-ticket"', javascript)
+        self.assertIn('card.setAttribute("aria-current", state.selectedSlug === ticket.slug ? "true" : "false")', javascript)
+        self.assertIn("function openEditSystemTicket()", javascript)
+        self.assertIn('method: state.systemTicketEditorSlug ? "PATCH" : "POST"', javascript)
+        self.assertIn("implementation_receipts", javascript)
+        self.assertIn("qa_receipts", javascript)
+
+    def test_tooltips_use_one_fixed_hud_without_native_title_sources(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertNotIn(" title=", html)
+        self.assertNotIn('setAttribute("title"', javascript)
+        self.assertIn("function setHudTooltip(element, text)", javascript)
+        self.assertIn("function bindHudTooltipEvents()", javascript)
+        self.assertIn('element.removeAttribute("title")', javascript)
+        self.assertIn('className = "hud-tooltip"', javascript)
+        render_function = javascript[javascript.index("function render()") : javascript.index("function renderSystemTicketsView()")]
+        self.assertIn('document.activeElement?.closest?.(".has-tooltip")', render_function)
+        self.assertIn("focusedTooltipTarget?.isConnected", render_function)
+        self.assertIn("showHudTooltip(focusedTooltipTarget)", render_function)
+        self.assertIn("hideHudTooltip();", render_function)
+        self.assertIn(".hud-tooltip", css)
+        self.assertIn("position: fixed", css[css.index(".hud-tooltip"):css.index(".hud-tooltip[hidden]")])
+        self.assertNotIn(".has-tooltip::after", css)
+
+    def test_footer_controls_group_around_centered_word_art_without_duplicates(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        footer = html[html.index('<div class="mission-art-footer">'):html.index('</main>')]
+
+        self.assertIn('class="footer-controls footer-controls-left"', footer)
+        self.assertIn('class="mission-art-center"', footer)
+        self.assertIn('class="footer-controls footer-controls-right"', footer)
+        self.assertLess(footer.index('id="store-label"'), footer.index('id="system-tickets-button"'))
+        self.assertLess(footer.index('id="system-tickets-button"'), footer.index('class="mission-word-art"'))
+        self.assertLess(footer.index('id="sidebar-version"'), footer.index('id="logs-button"'))
+        self.assertLess(footer.index('id="logs-button"'), footer.index('id="about-button"'))
+        for identifier in ("store-label", "system-tickets-button", "logs-button", "about-button"):
+            self.assertEqual(html.count(f'id="{identifier}"'), 1)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr)", css)
+        mobile_footer = css[css.rindex("@media (max-width: 760px)") :]
+        self.assertIn("padding-bottom: 28px", mobile_footer)
+        self.assertIn("top: 100%", mobile_footer)
+        self.assertIn("bottom: auto", mobile_footer)
+
+    def test_inbox_uses_one_source_controlled_envelope_check_svg(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        asset = PROJECT_ROOT / "static" / "assets" / "inbox-check.svg"
+
+        self.assertTrue(asset.exists())
+        self.assertEqual(html.count('src="/assets/inbox-check.svg"'), 1)
+        self.assertIn('aria-label="Inbox"', html)
+        self.assertIn(".inbox-nav-icon", css)
+        self.assertIn(".nav-item.is-active .inbox-nav-icon", css)
 
     def test_week_view_groups_canonical_due_dates_without_a_write_path(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

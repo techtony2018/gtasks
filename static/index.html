@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.59-theme">
-    <script src="/app.js?v=0.0.59" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.62">
+    <script src="/app.js?v=0.0.62" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -29,7 +29,7 @@
 
         <nav class="nav-list" aria-label="Task views">
           <button class="nav-item has-tooltip" data-view="inbox" type="button" aria-label="Inbox" data-tooltip="Inbox">
-            <span class="nav-icon" aria-hidden="true">↓</span><span class="nav-label">Inbox</span>
+            <span class="nav-icon inbox-nav-icon" aria-hidden="true"><img src="/assets/inbox-check.svg" alt=""></span><span class="nav-label">Inbox</span>
           </button>
           <button class="nav-item is-active has-tooltip" data-view="today" type="button" aria-label="Today" data-tooltip="Today">
             <span class="nav-icon" aria-hidden="true">●</span><span class="nav-label">Today</span>
@@ -57,22 +57,6 @@
           </button>
         </nav>
 
-        <div class="store-card has-tooltip" data-tooltip="GBrain connection status">
-          <div class="store-status">
-            <span class="status-dot" id="store-dot" aria-hidden="true"></span>
-            <strong id="store-label">Connecting</strong>
-          </div>
-          <p>Every task stays in GBrain. Mission Control keeps no separate task database.</p>
-        </div>
-        <button class="about-button has-tooltip" id="system-tickets-button" type="button" aria-label="Mission Control System Tickets" data-tooltip="Mission Control System Tickets">
-          <span class="rail-icon" aria-hidden="true">▤</span><span class="rail-label">Mission Control System Tickets</span>
-        </button>
-        <button class="about-button has-tooltip" id="logs-button" type="button" aria-label="Logs" data-tooltip="Logs">
-          <span class="rail-icon" aria-hidden="true">≡</span><span class="rail-label">Logs</span>
-        </button>
-        <button class="about-button has-tooltip" id="about-button" type="button" aria-label="About" data-tooltip="About">
-          <span class="rail-icon" aria-hidden="true">i</span><span class="rail-label">About</span>
-        </button>
       </aside>
 
       <main class="main-content">
@@ -117,25 +101,47 @@
           </div>
         </div>
         <div class="mission-art-footer">
-          <figure class="mission-word-art" aria-label="Mission Control celestial artwork">
-            <img
-              src="/assets/mission-control-word-art.png"
-              alt="Mission Control word artwork with a North Star between the words and a faint Big Dipper behind them"
-              width="2172"
-              height="724"
-              loading="eager"
-              decoding="async"
-            >
-          </figure>
-          <a
-            class="mission-version-link has-tooltip"
-            id="sidebar-version"
-            href="https://github.com/techtony2018/gtasks"
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Open Mission Control source repository"
-            data-tooltip="Open Mission Control on GitHub"
-          >Loading…</a>
+          <div class="footer-controls footer-controls-left">
+            <div class="store-card has-tooltip" data-tooltip="GBrain connection status">
+              <div class="store-status">
+                <span class="status-dot" id="store-dot" aria-hidden="true"></span>
+                <strong id="store-label">Connecting</strong>
+              </div>
+              <p>Every task stays in GBrain. Mission Control keeps no separate task database.</p>
+            </div>
+            <button class="about-button has-tooltip" id="system-tickets-button" type="button" aria-label="Mission Control System Tickets" data-tooltip="Mission Control System Tickets">
+              <span class="rail-icon" aria-hidden="true">▤</span><span class="rail-label">Mission Control System Tickets</span>
+            </button>
+          </div>
+          <div class="mission-art-center">
+            <figure class="mission-word-art" aria-label="Mission Control celestial artwork">
+              <img
+                src="/assets/mission-control-word-art.png"
+                alt="Mission Control word artwork with a North Star between the words and a faint Big Dipper behind them"
+                width="2172"
+                height="724"
+                loading="eager"
+                decoding="async"
+              >
+            </figure>
+            <a
+              class="mission-version-link has-tooltip"
+              id="sidebar-version"
+              href="https://github.com/techtony2018/gtasks"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open Mission Control source repository"
+              data-tooltip="Open Mission Control on GitHub"
+            >Loading…</a>
+          </div>
+          <div class="footer-controls footer-controls-right">
+            <button class="about-button has-tooltip" id="logs-button" type="button" aria-label="Logs" data-tooltip="Logs">
+              <span class="rail-icon" aria-hidden="true">≡</span><span class="rail-label">Logs</span>
+            </button>
+            <button class="about-button has-tooltip" id="about-button" type="button" aria-label="About" data-tooltip="About">
+              <span class="rail-icon" aria-hidden="true">i</span><span class="rail-label">About</span>
+            </button>
+          </div>
         </div>
       </main>
 
@@ -263,19 +269,43 @@
           </a>
           <code class="slug-label" id="goal-detail-slug"></code>
         </div>
+        <div class="system-ticket-detail-content is-hidden" id="system-ticket-detail-content">
+          <div class="detail-toolbar">
+            <span class="detail-status" id="system-ticket-detail-status"></span>
+            <button class="action-icon-button has-tooltip" id="system-ticket-edit-button" type="button" aria-label="Edit System Ticket" data-tooltip="Edit System Ticket"><span aria-hidden="true">✎</span></button>
+            <button class="icon-button" id="system-ticket-detail-close" type="button" aria-label="Close System Ticket details">×</button>
+          </div>
+          <h2 id="system-ticket-detail-title" tabindex="-1"></h2>
+          <dl class="detail-list system-ticket-detail-list">
+            <div><dt>Priority</dt><dd id="system-ticket-detail-priority"></dd></div>
+            <div><dt>Target subsystem</dt><dd id="system-ticket-detail-target"></dd></div>
+            <div><dt>Created</dt><dd id="system-ticket-detail-created"></dd></div>
+            <div><dt>Updated</dt><dd id="system-ticket-detail-updated"></dd></div>
+          </dl>
+          <section class="ticket-copy-section"><h3>Verbatim request</h3><p id="system-ticket-detail-request"></p></section>
+          <section class="ticket-copy-section"><h3>Acceptance criteria</h3><p id="system-ticket-detail-criteria"></p></section>
+          <section class="ticket-receipt-section"><h3>Linked evidence</h3><ul id="system-ticket-detail-evidence"></ul></section>
+          <section class="ticket-receipt-section"><h3>Implementation receipts</h3><ul id="system-ticket-detail-implementation"></ul></section>
+          <section class="ticket-receipt-section"><h3>Independent QA receipts</h3><ul id="system-ticket-detail-qa"></ul></section>
+          <p class="form-error is-hidden" id="system-ticket-detail-error" role="alert"></p>
+          <a class="gbrain-link" id="system-ticket-detail-gbrain-link" target="_blank" rel="noreferrer">Open in Memory Stargraph</a>
+          <code class="slug-label" id="system-ticket-detail-slug"></code>
+        </div>
       </aside>
     </div>
 
     <dialog class="task-editor-dialog" id="system-ticket-dialog" aria-labelledby="system-ticket-heading">
       <form method="dialog" class="task-editor-form" id="system-ticket-form">
-        <div class="dialog-heading"><div><p>Read-only GBrain-backed change request</p><h2 id="system-ticket-heading">New Mission Control System Ticket</h2></div><button class="icon-button" id="system-ticket-close" type="button" aria-label="Close System Ticket editor">×</button></div>
+        <div class="dialog-heading"><div><p id="system-ticket-editor-mode">Canonical GBrain-backed change request</p><h2 id="system-ticket-heading">New Mission Control System Ticket</h2></div><button class="icon-button" id="system-ticket-close" type="button" aria-label="Close System Ticket editor">×</button></div>
         <label for="system-ticket-title">Title</label><input id="system-ticket-title" maxlength="160" required>
+        <label class="is-hidden" id="system-ticket-editor-status-field" for="system-ticket-editor-status">Status</label>
+        <select class="is-hidden" id="system-ticket-editor-status"><option value="planned">Planned</option><option value="active">Active</option><option value="blocked">Blocked</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select>
         <label for="system-ticket-request">Tony’s verbatim request</label><textarea id="system-ticket-request" rows="5" required></textarea>
         <label for="system-ticket-target">Target subsystem/project</label><select id="system-ticket-target"><option value="mission_control">Mission Control</option><option value="memory_stargraph">Memory Stargraph</option><option value="career_path">Career Path</option><option value="unknown">Unknown — nightly builder will block with a question</option></select>
         <label for="system-ticket-priority">Priority</label><select id="system-ticket-priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option></select>
         <label for="system-ticket-criteria">Acceptance criteria</label><textarea id="system-ticket-criteria" rows="3"></textarea>
         <p>New tickets are normal canonical tasks in Mission Control System Tickets with status Planned. Nightly work processes every planned System Ticket and records an execution or blocking outcome for each.</p><p class="form-error is-hidden" id="system-ticket-error" role="alert"></p>
-        <div class="dialog-footer"><p>Success is shown only after canonical page and typed membership readback.</p><button class="submit-button" type="submit">Create Ticket</button></div>
+        <div class="dialog-footer"><p>Success is shown only after canonical page and typed membership readback.</p><button class="submit-button" id="system-ticket-submit" type="submit">Create Ticket</button></div>
       </form>
     </dialog>
 

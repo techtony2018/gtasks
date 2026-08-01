@@ -30,6 +30,9 @@ from .domain import (
     GOALS_ROOT,
     PROJECTS_ROOT,
     SYSTEM_TICKET_TARGETS,
+    SYSTEM_TICKET_STATUSES,
+    TASK_PRIORITIES,
+    SystemTicket,
     PROPOSALS_ROOT,
     ProgressMetric,
     Task,
@@ -1315,6 +1318,60 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            system_ticket_prefix = "/api/system-tickets/"
+            if path.startswith(system_ticket_prefix) and "/" not in path[len(system_ticket_prefix) :]:
+                ticket_slug = unquote(path[len(system_ticket_prefix) :])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "title", "status", "priority", "target_subsystem",
+                    "verbatim_request", "acceptance_criteria",
+                }
+                if set(payload) != required:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "System Ticket edit requires exactly the editable ticket fields.", "code": "invalid_system_ticket"})
+                    return
+                try:
+                    existing = next(ticket for ticket in adapter.list_system_tickets().tickets if ticket.slug == ticket_slug)
+                    title = payload["title"]
+                    request = payload["verbatim_request"]
+                    criteria = payload["acceptance_criteria"]
+                    status = payload["status"]
+                    priority = payload["priority"]
+                    target = payload["target_subsystem"]
+                    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 160:
+                        raise DomainValidationError("system ticket title must be 1 to 160 characters")
+                    if not isinstance(request, str) or not request.strip():
+                        raise DomainValidationError("system ticket verbatim_request is required")
+                    if not isinstance(criteria, str):
+                        raise DomainValidationError("system ticket acceptance_criteria must be text")
+                    if status not in SYSTEM_TICKET_STATUSES:
+                        raise DomainValidationError("system ticket status is invalid")
+                    if priority not in TASK_PRIORITIES:
+                        raise DomainValidationError("system ticket priority is invalid")
+                    if target not in SYSTEM_TICKET_TARGETS:
+                        raise DomainValidationError("system ticket target_subsystem is invalid")
+                    ticket = replace(
+                        existing,
+                        title=title.strip(), status=status, priority=priority,
+                        target_subsystem=target, verbatim_request=request.strip(),
+                        acceptance_criteria=criteria.strip(), updated_at=clock(),
+                    )
+                    receipt = adapter.update_system_ticket(ticket)
+                except StopIteration:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "System Ticket was not found."})
+                    return
+                except DomainValidationError as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_system_ticket"})
+                    return
+                except PartialMutationError as exc:
+                    self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
+                    return
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
+                    return
+                self._json(HTTPStatus.OK, {"ticket": ticket.to_dict(), "receipt": receipt.to_dict()})
+                return
             project_prefix = "/api/projects/"
             if path.startswith(project_prefix) and "/" not in path[len(project_prefix) :]:
                 project_slug = unquote(path[len(project_prefix) :])
@@ -1954,6 +2011,7 @@ def _handler_class(
                 "/favicon.svg": "favicon.svg",
                 "/favicon.ico": "favicon.ico",
                 "/assets/mission-control-command-mark.svg": "assets/mission-control-command-mark.svg",
+                "/assets/inbox-check.svg": "assets/inbox-check.svg",
                 "/assets/apple-touch-icon-180.png": "assets/apple-touch-icon-180.png",
                 "/assets/mission-control-word-art.png": "assets/mission-control-word-art.png",
             }.get(path)

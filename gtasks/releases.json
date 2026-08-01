@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.61",
+  "current_version": "V0.0.62",
   "releases": [
     {
       "version": "V0.0.1",
@@ -366,6 +366,12 @@
       "date": "2026-08-01",
       "title": "Durable Next Action timeline",
       "summary": "Preserves each replaced or cleared Next Action as a completed history entry, shows the current and completed timeline in task details, and keeps the selected Calendar card visible when the detail panel opens."
+    },
+    {
+      "version": "V0.0.62",
+      "date": "2026-08-01",
+      "title": "Editable System Tickets and HUD controls",
+      "summary": "Adds verified same-ticket editing in the right detail panel, replaces native/pseudo tooltips with one Memory Stargraph-style HUD overlay, moves service and utility controls around the centered word art, and introduces an original envelope-check Inbox icon."
     }
   ]
 }

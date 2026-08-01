@@ -2558,6 +2558,56 @@ class SystemTicketAdapterTests(unittest.TestCase):
 
         self.assertEqual([ticket.slug for ticket in selected], [first.slug, second.slug])
 
+    def test_update_ticket_preserves_unknown_fields_receipts_and_typed_membership(self) -> None:
+        now = datetime(2026, 8, 1, 16, 0, tzinfo=timezone.utc)
+        original = SystemTicket(
+            "tasks/system-tickets/edit-me-a1b2c3", "Original", "planned",
+            "Original request", "mission_control", "normal", "Original criteria",
+            ("evidence",), ("implementation",), ("qa",), now, now,
+        )
+        updated = replace(
+            original,
+            title="Edited",
+            status="active",
+            priority="high",
+            verbatim_request="Edited request",
+            acceptance_criteria="Edited criteria",
+            updated_at=datetime(2026, 8, 1, 17, 0, tzinfo=timezone.utc),
+        )
+        edge = {"from_slug": original.slug, "to_slug": SYSTEM_TICKETS_ROOT, "link_type": "member_of"}
+        def page(ticket: SystemTicket) -> dict:
+            return {
+                "slug": ticket.slug, "type": "task", "title": ticket.title,
+                "compiled_truth": "# User-authored body\n\nKeep this text.",
+                "frontmatter": {
+                    "type": "task", "title": ticket.title, "status": ticket.status,
+                    "priority": ticket.priority, "verbatim_request": ticket.verbatim_request,
+                    "target_subsystem": ticket.target_subsystem,
+                    "acceptance_criteria": ticket.acceptance_criteria,
+                    "linked_evidence": list(ticket.linked_evidence),
+                    "implementation_receipts": list(ticket.implementation_receipts),
+                    "qa_receipts": list(ticket.qa_receipts),
+                    "created_at": ticket.created_at.isoformat(),
+                    "updated_at": ticket.updated_at.isoformat(),
+                    "custom_user_field": "preserve me",
+                    "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+                },
+            }
+        runner = FakeRunner({
+            "get_page": [page(original), page(updated)],
+            "get_links": [[edge], [edge]],
+            "put_page": [{"slug": original.slug}],
+        })
+
+        receipt = GBrainAdapter(runner).update_system_ticket(updated)
+
+        self.assertTrue(receipt.verified)
+        content = next(params["content"] for tool, params in runner.calls if tool == "put_page")
+        self.assertIn("custom_user_field", content)
+        self.assertIn("Keep this text.", content)
+        self.assertIn("implementation", content)
+        self.assertIn(SYSTEM_TICKETS_ROOT, content)
+
 
 class TaskProgressMetricMutationTests(unittest.TestCase):
     def test_verified_metric_mutation_path_is_available(self) -> None:

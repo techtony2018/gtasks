@@ -65,6 +65,9 @@ const state = {
   systemTicketsLoading: false,
   systemTicketsError: "",
   systemTicketsLoadPromise: null,
+  systemTicketEditorSlug: null,
+  hudTooltip: null,
+  hudTooltipTarget: null,
   boardMove: null,
   loading: true,
   releases: null,
@@ -106,6 +109,106 @@ const state = {
   profileAgentSlug: null,
   avatarPreviewUrl: null,
 };
+
+function setHudTooltip(element, text) {
+  if (!element) return;
+  const value = String(text || "").trim();
+  element.removeAttribute("title");
+  if (!value) {
+    element.classList.remove("has-tooltip");
+    delete element.dataset.tooltip;
+    return;
+  }
+  element.dataset.tooltip = value;
+  element.classList.add("has-tooltip");
+}
+
+function ensureHudTooltipElement() {
+  if (state.hudTooltip || !document.body) return state.hudTooltip;
+  document.documentElement.classList.add("js-hud-tooltips");
+  state.hudTooltip = document.createElement("div");
+  state.hudTooltip.className = "hud-tooltip";
+  state.hudTooltip.setAttribute("role", "tooltip");
+  state.hudTooltip.hidden = true;
+  document.body.append(state.hudTooltip);
+  return state.hudTooltip;
+}
+
+function tooltipTargetFromEvent(event) {
+  if (!event.target?.closest) return null;
+  const target = event.target.closest(
+    ".has-tooltip, button[aria-label], a[aria-label]",
+  );
+  if (!target) return null;
+  setHudTooltip(target, target.dataset.tooltip || target.getAttribute("aria-label"));
+  return target;
+}
+
+function positionHudTooltip(target) {
+  const tooltip = ensureHudTooltipElement();
+  if (!tooltip || !target?.isConnected) return;
+  const rect = target.getBoundingClientRect();
+  const width = tooltip.offsetWidth || 220;
+  const height = tooltip.offsetHeight || 36;
+  const margin = 10;
+  let left = rect.left + rect.width / 2 - width / 2;
+  let top = rect.bottom + 8;
+  if (top + height + margin > window.innerHeight) top = rect.top - height - 8;
+  left = Math.min(window.innerWidth - width - margin, Math.max(margin, left));
+  top = Math.min(window.innerHeight - height - margin, Math.max(margin, top));
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+}
+
+function hideHudTooltip(target = null) {
+  if (target && state.hudTooltipTarget && target !== state.hudTooltipTarget) return;
+  if (state.hudTooltip) {
+    state.hudTooltip.hidden = true;
+    state.hudTooltip.textContent = "";
+  }
+  state.hudTooltipTarget = null;
+}
+
+function showHudTooltip(target) {
+  const tooltip = ensureHudTooltipElement();
+  const tooltipText = String(target?.dataset?.tooltip || "").trim();
+  if (!tooltip || !target?.isConnected || !tooltipText) {
+    hideHudTooltip();
+    return;
+  }
+  state.hudTooltipTarget = target;
+  target.removeAttribute("title");
+  tooltip.textContent = tooltipText;
+  tooltip.hidden = false;
+  positionHudTooltip(target);
+}
+
+function bindHudTooltipEvents() {
+  ensureHudTooltipElement();
+  document.querySelectorAll("[data-tooltip], button[aria-label], a[aria-label]").forEach(
+    (element) => setHudTooltip(element, element.dataset.tooltip || element.getAttribute("aria-label")),
+  );
+  document.addEventListener("pointerover", (event) => {
+    const target = tooltipTargetFromEvent(event);
+    if (!target || target.contains(event.relatedTarget)) return;
+    showHudTooltip(target);
+  });
+  document.addEventListener("pointerout", (event) => {
+    const target = tooltipTargetFromEvent(event);
+    if (!target || target.contains(event.relatedTarget)) return;
+    hideHudTooltip(target);
+  });
+  document.addEventListener("focusin", (event) => {
+    const target = tooltipTargetFromEvent(event);
+    if (target) showHudTooltip(target);
+  });
+  document.addEventListener("focusout", (event) => {
+    const target = tooltipTargetFromEvent(event);
+    if (target) hideHudTooltip(target);
+  });
+  window.addEventListener("scroll", () => hideHudTooltip(), true);
+  window.addEventListener("resize", () => hideHudTooltip());
+}
 
 function agentTasksPreferenceCookie() {
   const prefix = `${AGENT_TASKS_PREFERENCE_COOKIE}=`;
@@ -214,12 +317,17 @@ const elements = {
   systemTicketDialog: document.querySelector("#system-ticket-dialog"),
   systemTicketForm: document.querySelector("#system-ticket-form"),
   systemTicketClose: document.querySelector("#system-ticket-close"),
+  systemTicketHeading: document.querySelector("#system-ticket-heading"),
   systemTicketTitle: document.querySelector("#system-ticket-title"),
   systemTicketRequest: document.querySelector("#system-ticket-request"),
   systemTicketTarget: document.querySelector("#system-ticket-target"),
   systemTicketPriority: document.querySelector("#system-ticket-priority"),
   systemTicketCriteria: document.querySelector("#system-ticket-criteria"),
   systemTicketError: document.querySelector("#system-ticket-error"),
+  systemTicketEditorMode: document.querySelector("#system-ticket-editor-mode"),
+  systemTicketEditorStatusField: document.querySelector("#system-ticket-editor-status-field"),
+  systemTicketEditorStatus: document.querySelector("#system-ticket-editor-status"),
+  systemTicketSubmit: document.querySelector("#system-ticket-submit"),
   taskEditorDialog: document.querySelector("#task-editor-dialog"),
   taskEditorForm: document.querySelector("#task-editor-form"),
   taskEditorMode: document.querySelector("#task-editor-mode"),
@@ -303,6 +411,23 @@ const elements = {
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
   goalDetailContent: document.querySelector("#goal-detail-content"),
+  systemTicketDetailContent: document.querySelector("#system-ticket-detail-content"),
+  systemTicketDetailStatus: document.querySelector("#system-ticket-detail-status"),
+  systemTicketEditButton: document.querySelector("#system-ticket-edit-button"),
+  systemTicketDetailClose: document.querySelector("#system-ticket-detail-close"),
+  systemTicketDetailTitle: document.querySelector("#system-ticket-detail-title"),
+  systemTicketDetailPriority: document.querySelector("#system-ticket-detail-priority"),
+  systemTicketDetailTarget: document.querySelector("#system-ticket-detail-target"),
+  systemTicketDetailCreated: document.querySelector("#system-ticket-detail-created"),
+  systemTicketDetailUpdated: document.querySelector("#system-ticket-detail-updated"),
+  systemTicketDetailRequest: document.querySelector("#system-ticket-detail-request"),
+  systemTicketDetailCriteria: document.querySelector("#system-ticket-detail-criteria"),
+  systemTicketDetailEvidence: document.querySelector("#system-ticket-detail-evidence"),
+  systemTicketDetailImplementation: document.querySelector("#system-ticket-detail-implementation"),
+  systemTicketDetailQa: document.querySelector("#system-ticket-detail-qa"),
+  systemTicketDetailError: document.querySelector("#system-ticket-detail-error"),
+  systemTicketDetailGbrainLink: document.querySelector("#system-ticket-detail-gbrain-link"),
+  systemTicketDetailSlug: document.querySelector("#system-ticket-detail-slug"),
   detailClose: document.querySelector("#detail-close"),
   taskDetailStatus: document.querySelector("#task-detail-status"),
   taskEditButton: document.querySelector("#task-edit-button"),
@@ -945,7 +1070,7 @@ function actionIcon(symbol, label, { primary = false, className = "" } = {}) {
   );
   button.type = "button";
   button.setAttribute("aria-label", label);
-  button.dataset.tooltip = label;
+  setHudTooltip(button, label);
   const glyph = node("span", "action-icon-glyph", symbol);
   glyph.setAttribute("aria-hidden", "true");
   button.append(glyph);
@@ -3254,6 +3379,16 @@ async function submitProposalDecision() {
 }
 
 function render() {
+  const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
+  hideHudTooltip();
+  window.requestAnimationFrame(() => {
+    if (
+      focusedTooltipTarget?.isConnected &&
+      document.activeElement === focusedTooltipTarget
+    ) {
+      showHudTooltip(focusedTooltipTarget);
+    }
+  });
   renderNavigation();
   updateBoardStatus();
   elements.viewTitle.textContent = viewMeta[state.activeView].title;
@@ -3333,22 +3468,93 @@ function renderSystemTicketsView() {
   if (!state.systemTickets.length) { section.append(node("div", "section-empty", state.systemTicketIssues.length ? "No valid System Tickets are ready to display until the ticket data above is repaired." : "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
   const list = node("div", "task-list");
   state.systemTickets.forEach((ticket) => {
-    const card = node("article", "system-ticket-card");
+    const card = node("button", "system-ticket-card");
+    card.type = "button";
+    card.setAttribute("aria-label", `Open System Ticket ${ticket.title}`);
+    card.setAttribute("aria-current", state.selectedSlug === ticket.slug ? "true" : "false");
+    card.classList.toggle("is-selected", state.selectedSlug === ticket.slug);
     const header = node("div", "system-ticket-card-header");
     header.append(node("strong", "", ticket.title), node("span", `priority-badge ${ticket.priority}`, ticket.status));
     const meta = node("p", "system-ticket-card-meta", `${ticket.target_subsystem.replace(/_/g, " ")} · ${ticket.priority} priority · ${ticket.implementation_receipts.length} implementation / ${ticket.qa_receipts.length} QA receipts`);
     card.append(header, meta);
-    const detail = node("details", "system-ticket-detail");
-    detail.append(node("summary", "", "Details"), node("p", "", `Acceptance criteria: ${ticket.acceptance_criteria || "None recorded."}`), node("p", "", ticket.verbatim_request), node("p", "", `Evidence: ${ticket.linked_evidence.length ? ticket.linked_evidence.join(", ") : "None recorded."}`), node("p", "", `Implementation: ${ticket.implementation_receipts.length ? ticket.implementation_receipts.join(", ") : "No receipt yet."}`), node("p", "", `Independent UX QA: ${ticket.qa_receipts.length ? ticket.qa_receipts.join(", ") : "No receipt yet."}`));
-    card.append(detail);
+    card.addEventListener("click", () => selectSystemTicket(ticket.slug));
     list.append(card);
   });
   section.append(list); return section;
 }
 
 function openSystemTicketDialog() {
+  state.systemTicketEditorSlug = null;
   elements.systemTicketError.classList.add("is-hidden");
   elements.systemTicketForm.reset();
+  elements.systemTicketEditorMode.textContent = "New canonical System Ticket";
+  elements.systemTicketHeading.textContent = "New Mission Control System Ticket";
+  elements.systemTicketEditorStatusField.classList.add("is-hidden");
+  elements.systemTicketEditorStatus.classList.add("is-hidden");
+  elements.systemTicketSubmit.textContent = "Create Ticket";
+  elements.systemTicketDialog.showModal();
+  window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
+}
+
+function renderSystemTicketList(container, entries, emptyCopy) {
+  container.replaceChildren();
+  if (!Array.isArray(entries) || !entries.length) {
+    container.append(node("li", "is-empty", emptyCopy));
+    return;
+  }
+  entries.forEach((entry) => container.append(node("li", "", entry)));
+}
+
+function selectSystemTicket(ticketSlug) {
+  const ticket = state.systemTickets.find((item) => item.slug === ticketSlug);
+  if (!ticket) return;
+  state.selectedSlug = ticket.slug;
+  state.selectedKind = "system-ticket";
+  elements.detailPanel.setAttribute("aria-hidden", "false");
+  elements.detailPanel.setAttribute("aria-label", "System Ticket details");
+  elements.detailEmpty.classList.add("is-hidden");
+  elements.detailContent.classList.add("is-hidden");
+  elements.goalDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.remove("is-hidden");
+  elements.systemTicketDetailStatus.textContent = ticket.status;
+  elements.systemTicketDetailTitle.textContent = ticket.title;
+  elements.systemTicketDetailPriority.textContent = ticket.priority;
+  elements.systemTicketDetailTarget.textContent = ticket.target_subsystem.replace(/_/g, " ");
+  elements.systemTicketDetailCreated.textContent = ticket.created_at ? new Date(ticket.created_at).toLocaleString() : "Not recorded";
+  elements.systemTicketDetailUpdated.textContent = ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : "Not recorded";
+  elements.systemTicketDetailRequest.textContent = ticket.verbatim_request || "No verbatim request recorded.";
+  elements.systemTicketDetailCriteria.textContent = ticket.acceptance_criteria || "No acceptance criteria recorded.";
+  renderSystemTicketList(elements.systemTicketDetailEvidence, ticket.linked_evidence, "No linked evidence recorded.");
+  renderSystemTicketList(elements.systemTicketDetailImplementation, ticket.implementation_receipts, "No implementation receipt recorded.");
+  renderSystemTicketList(elements.systemTicketDetailQa, ticket.qa_receipts, "No independent QA receipt recorded.");
+  elements.systemTicketDetailError.classList.add("is-hidden");
+  elements.systemTicketDetailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(ticket.slug)}`;
+  elements.systemTicketDetailSlug.textContent = ticket.slug;
+  render();
+  if (window.matchMedia("(max-width: 760px)").matches) {
+    window.requestAnimationFrame(() => {
+      elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+      elements.systemTicketDetailTitle.focus({ preventScroll: true });
+    });
+  }
+}
+
+function openEditSystemTicket() {
+  const ticket = state.systemTickets.find((item) => item.slug === state.selectedSlug);
+  if (state.selectedKind !== "system-ticket" || !ticket) return;
+  state.systemTicketEditorSlug = ticket.slug;
+  elements.systemTicketError.classList.add("is-hidden");
+  elements.systemTicketEditorMode.textContent = "Editing canonical System Ticket";
+  elements.systemTicketHeading.textContent = "Edit Mission Control System Ticket";
+  elements.systemTicketTitle.value = ticket.title;
+  elements.systemTicketRequest.value = ticket.verbatim_request;
+  elements.systemTicketTarget.value = ticket.target_subsystem;
+  elements.systemTicketPriority.value = ticket.priority;
+  elements.systemTicketCriteria.value = ticket.acceptance_criteria;
+  elements.systemTicketEditorStatus.value = ticket.status;
+  elements.systemTicketEditorStatusField.classList.remove("is-hidden");
+  elements.systemTicketEditorStatus.classList.remove("is-hidden");
+  elements.systemTicketSubmit.textContent = "Save Ticket";
   elements.systemTicketDialog.showModal();
   window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
 }
@@ -3370,8 +3576,29 @@ async function performSystemTicketLoad() {
 
 async function submitSystemTicket(event) {
   event.preventDefault(); elements.systemTicketError.classList.add("is-hidden");
-  try { const response = await fetch("/api/system-tickets", { method:"POST", headers:{"Content-Type":"application/json",Accept:"application/json"}, body:JSON.stringify({title:elements.systemTicketTitle.value,verbatim_request:elements.systemTicketRequest.value,target_subsystem:elements.systemTicketTarget.value,priority:elements.systemTicketPriority.value,acceptance_criteria:elements.systemTicketCriteria.value})}); const payload=await response.json(); if(!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Ticket creation was not verified."); elements.systemTicketDialog.close(); await loadSystemTickets(); state.activeView="system-tickets"; render(); showToast("System Ticket created and verified in GBrain."); }
+  elements.systemTicketSubmit.disabled = true;
+  const editing = Boolean(state.systemTicketEditorSlug);
+  try {
+    const ticketPayload = {title:elements.systemTicketTitle.value,verbatim_request:elements.systemTicketRequest.value,target_subsystem:elements.systemTicketTarget.value,priority:elements.systemTicketPriority.value,acceptance_criteria:elements.systemTicketCriteria.value};
+    if (editing) ticketPayload.status = elements.systemTicketEditorStatus.value;
+    const endpoint = editing ? `/api/system-tickets/${encodeURIComponent(state.systemTicketEditorSlug)}` : "/api/system-tickets";
+    const response = await fetch(endpoint, {
+      method: state.systemTicketEditorSlug ? "PATCH" : "POST",
+      headers:{"Content-Type":"application/json",Accept:"application/json"},
+      body:JSON.stringify(ticketPayload),
+    });
+    const payload=await response.json();
+    if(!response.ok || !payload.receipt?.verified || !payload.ticket) throw new Error(payload.error || "Ticket save was not verified.");
+    const savedSlug = payload.ticket.slug;
+    elements.systemTicketDialog.close();
+    state.systemTicketEditorSlug = null;
+    await loadSystemTickets({ force: true });
+    state.activeView="system-tickets";
+    selectSystemTicket(savedSlug);
+    showToast(editing ? "System Ticket updated and verified in GBrain." : "System Ticket created and verified in GBrain.");
+  }
   catch(error){ elements.systemTicketError.textContent=error.message; elements.systemTicketError.classList.remove("is-hidden"); }
+  finally { elements.systemTicketSubmit.disabled = false; }
 }
 
 function renderNextActionTimeline(task) {
@@ -3438,6 +3665,7 @@ function selectTask(slug, taskFallback = null) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.taskDetailStatus.textContent = taskUiStatus(task) === "active" ? "In Progress" : taskUiStatus(task);
   const isProposed = task.status === "proposed";
   elements.taskApproveButton.classList.toggle("is-hidden", !isProposed);
@@ -3613,6 +3841,7 @@ function selectGoal(slug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.remove("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.goalDetailStatus.textContent = goal.status;
   elements.goalPauseButton.disabled = goal.status === "paused";
   elements.goalPauseButton.textContent =
@@ -3660,6 +3889,7 @@ function closeDetails() {
   elements.detailPanel.setAttribute("aria-hidden", "true");
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.detailEmpty.classList.remove("is-hidden");
   render();
 }
@@ -4345,6 +4575,8 @@ elements.showAgentTasks.addEventListener("change", () => {
 });
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
+elements.systemTicketDetailClose.addEventListener("click", closeDetails);
+elements.systemTicketEditButton.addEventListener("click", openEditSystemTicket);
 elements.taskEditButton.addEventListener("click", openEditTask);
 elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);
 elements.taskApproveButton.addEventListener("click", () => {
@@ -4473,7 +4705,10 @@ elements.aboutDialog.addEventListener("close", () => {
 });
 elements.logsButton.addEventListener("click", openLogsDialog);
 elements.systemTicketsButton.addEventListener("click", () => { state.activeView = "system-tickets"; render(); loadSystemTickets(); });
-elements.systemTicketClose.addEventListener("click", () => elements.systemTicketDialog.close());
+elements.systemTicketClose.addEventListener("click", () => {
+  state.systemTicketEditorSlug = null;
+  elements.systemTicketDialog.close();
+});
 elements.systemTicketForm.addEventListener("submit", submitSystemTicket);
 elements.logsClose.addEventListener("click", closeLogsDialog);
 elements.logsRefresh.addEventListener("click", () => loadOperationalLogs());
@@ -4540,6 +4775,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+bindHudTooltipEvents();
 loadReleases();
 loadTasks({ reason: "initial" }).finally(() => loadSystemTickets({ force: true }));
 loadProjects();

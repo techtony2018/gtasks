@@ -73,6 +73,7 @@ class FakeAdapter:
         self.proposals = proposals
         self.system_tickets = system_tickets
         self.created_system_tickets: list[SystemTicket] = []
+        self.updated_system_tickets: list[SystemTicket] = []
         self.created: list[Task] = []
         self.created_agent_tasks: list[tuple[Task, str]] = []
         self.duplicated_from: list[str] = []
@@ -202,6 +203,14 @@ class FakeAdapter:
     def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
         self.created_system_tickets.append(ticket)
         self.system_tickets = (*self.system_tickets, ticket)
+        return MutationReceipt(slug=ticket.slug, verified=True)
+
+    def update_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
+        self.updated_system_tickets.append(ticket)
+        self.system_tickets = tuple(
+            ticket if item.slug == ticket.slug else item
+            for item in self.system_tickets
+        )
         return MutationReceipt(slug=ticket.slug, verified=True)
 
     def review_proposal(
@@ -565,6 +574,7 @@ class HealthApiTests(unittest.TestCase):
             ("/favicon.svg", "image/svg+xml"),
             ("/favicon.ico", "image/x-icon"),
             ("/assets/mission-control-command-mark.svg", "image/svg+xml"),
+            ("/assets/inbox-check.svg", "image/svg+xml"),
             ("/assets/apple-touch-icon-180.png", "image/png"),
             ("/assets/mission-control-word-art.png", "image/png"),
         ):
@@ -601,7 +611,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.61")
+        self.assertEqual(payload["version"], "V0.0.62")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -609,11 +619,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.61")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.61")
+        self.assertEqual(payload["current_version"], "V0.0.62")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.62")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.62",
                 "V0.0.61",
                 "V0.0.60",
                 "V0.0.59",
@@ -1909,6 +1920,61 @@ class SystemTicketApiTests(unittest.TestCase):
                 "verbatim_request": "System Tickets use standard statuses.",
                 "status": "proposed",
             },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_system_ticket")
+
+    def test_edits_same_system_ticket_without_touching_receipts_or_membership(self) -> None:
+        ticket = SystemTicket(
+            slug="tasks/system-tickets/edit-me-a1b2c3",
+            title="Original title",
+            status="planned",
+            verbatim_request="Original exact request.",
+            target_subsystem="mission_control",
+            priority="normal",
+            acceptance_criteria="Original criteria.",
+            linked_evidence=("evidence",),
+            implementation_receipts=("implementation",),
+            qa_receipts=("qa",),
+        )
+        adapter = FakeAdapter(system_tickets=(ticket,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/system-tickets/tasks%2Fsystem-tickets%2Fedit-me-a1b2c3",
+            {
+                "title": "Edited title",
+                "status": "active",
+                "priority": "high",
+                "target_subsystem": "mission_control",
+                "verbatim_request": "Edited exact request.",
+                "acceptance_criteria": "Edited criteria.",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(payload["ticket"]["slug"], ticket.slug)
+        self.assertEqual(payload["ticket"]["linked_evidence"], ["evidence"])
+        self.assertEqual(payload["ticket"]["implementation_receipts"], ["implementation"])
+        self.assertEqual(payload["ticket"]["qa_receipts"], ["qa"])
+        self.assertEqual(len(adapter.updated_system_tickets), 1)
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.created_agent_tasks, [])
+
+    def test_system_ticket_edit_rejects_receipt_mutation(self) -> None:
+        ticket = SystemTicket(
+            "tasks/system-tickets/edit-me-a1b2c3", "Original", "planned",
+            "Request", "mission_control", "normal",
+        )
+        harness = ServerHarness(self, FakeAdapter(system_tickets=(ticket,)))
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/system-tickets/tasks%2Fsystem-tickets%2Fedit-me-a1b2c3",
+            {"qa_receipts": ["invented"]},
         )
 
         self.assertEqual(status, 422)

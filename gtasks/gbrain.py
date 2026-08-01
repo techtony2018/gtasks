@@ -1979,6 +1979,51 @@ class GBrainAdapter:
             raise PartialMutationError(ticket.slug, "System Ticket creation was not verified.")
         return MutationReceipt(ticket.slug, True)
 
+    def update_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
+        page = self.runner.run("get_page", {"slug": ticket.slug})
+        links = self.runner.run("get_links", {"slug": ticket.slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("system ticket edit snapshot was not structured")
+        existing = SystemTicket.from_page(page, links)
+        if existing.slug != ticket.slug:
+            raise GBrainProtocolError("system ticket edit slug did not match snapshot")
+        raw_frontmatter = page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("system ticket page has no frontmatter")
+        frontmatter = deepcopy(dict(raw_frontmatter))
+        frontmatter.update({
+            "type": "task",
+            "title": ticket.title,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "verbatim_request": ticket.verbatim_request,
+            "target_subsystem": ticket.target_subsystem,
+            "acceptance_criteria": ticket.acceptance_criteria,
+            "linked_evidence": list(ticket.linked_evidence),
+            "implementation_receipts": list(ticket.implementation_receipts),
+            "qa_receipts": list(ticket.qa_receipts),
+            "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+            "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+        })
+        self.runner.run("put_page", {
+            "slug": ticket.slug,
+            "content": _render_preserved_page(page, frontmatter),
+        })
+        try:
+            read_page = self.runner.run("get_page", {"slug": ticket.slug})
+            read_links = self.runner.run("get_links", {"slug": ticket.slug})
+            if not isinstance(read_page, Mapping) or not isinstance(read_links, list):
+                raise GBrainProtocolError("system ticket edit readback was not structured")
+            stored = SystemTicket.from_page(read_page, read_links)
+            if stored.to_dict() != ticket.to_dict():
+                raise GBrainProtocolError("system ticket edit readback did not match the write")
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                ticket.slug,
+                f"System Ticket edit was not verified. Inspect this slug before retrying: {exc}",
+            ) from exc
+        return MutationReceipt(ticket.slug, True)
+
     def planned_system_tickets(self) -> tuple[SystemTicket, ...]:
         """Return every planned nightly-build candidate without changing it.
 
