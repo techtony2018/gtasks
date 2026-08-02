@@ -4,6 +4,7 @@ import json
 import subprocess
 import hashlib
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -251,6 +252,22 @@ class GoalRead:
             "root_slug": GOALS_ROOT,
             "goals": [goal.to_dict() for goal in self.goals],
             "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityMigrationReceipt:
+    mapping: Mapping[str, str]
+    migrated: tuple[str, ...]
+    excluded: tuple[str, ...]
+    verified: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mapping": dict(self.mapping),
+            "migrated": list(self.migrated),
+            "excluded": list(self.excluded),
+            "verified": self.verified,
         }
 
 
@@ -760,12 +777,19 @@ def _render_preserved_page(
     body = page.get("compiled_truth")
     if not isinstance(body, str):
         raise GBrainProtocolError("page has no preserved body content")
-    # Preserve the exact canonical type that was read. A generic update must
-    # never infer a fallback type or act as an implicit entity-type migration.
-    entity_type = page.get("type")
-    if not isinstance(entity_type, str) or not entity_type.strip():
+    # Preserve the exact canonical type that was read. GBrain intentionally
+    # normalizes Markdown-backed Goals to raw `concept` rows, so their verified
+    # compiled/frontmatter `type: goal` is canonical for this one storage
+    # shape. Other entity types remain strict raw-type invariants.
+    raw_type = page.get("type")
+    if not isinstance(raw_type, str) or not raw_type.strip():
         raise GBrainProtocolError("page has no canonical entity type to preserve")
     preserved = dict(frontmatter)
+    entity_type = (
+        "goal"
+        if raw_type == "concept" and preserved.get("type") == "goal"
+        else raw_type
+    )
     requested_type = preserved.get("type")
     if requested_type not in (None, entity_type):
         raise GBrainProtocolError(
@@ -1064,6 +1088,551 @@ def _normalize_collection_task(
 class GBrainAdapter:
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self.runner = runner or SubprocessCommandRunner()
+
+    @staticmethod
+    def _identity_namespace(slug: str) -> str:
+        if not isinstance(slug, str) or "/" not in slug:
+            raise ValueError("canonical identity slug must include a namespace")
+        return slug.split("/", 1)[0]
+
+    @staticmethod
+    def _identity_entity_kind(slug: str) -> str:
+        if slug.startswith("goals/"):
+            return "goals"
+        if slug.startswith("projects/"):
+            return "projects"
+        if slug.startswith("tasks/") or any(
+            slug.startswith(f"{root}/") for root in AGENT_WORK_ROOTS
+        ):
+            return "tasks"
+        raise ValueError("identity migration supports goals, projects, and canonical tasks only")
+
+    @classmethod
+    def _validate_identity_mapping(cls, mapping: Mapping[str, str]) -> dict[str, str]:
+        if not mapping:
+            raise ValueError("identity migration mapping is required")
+        normalized: dict[str, str] = {}
+        for old_slug, new_slug in mapping.items():
+            old_namespace = cls._identity_entity_kind(old_slug)
+            new_namespace = cls._identity_entity_kind(new_slug)
+            if new_namespace != old_namespace:
+                raise ValueError("identity migration must preserve the same namespace kind")
+            if not new_slug.startswith(f"{new_namespace}/"):
+                raise ValueError("new canonical identity must use its entity namespace")
+            suffix = new_slug.split("/", 1)[1]
+            try:
+                parsed = uuid.UUID(suffix)
+            except (ValueError, AttributeError) as exc:
+                raise ValueError("new canonical identity must use an opaque UUID slug") from exc
+            if str(parsed) != suffix.lower():
+                raise ValueError("new canonical identity must use an opaque UUID slug")
+            if old_slug == new_slug:
+                raise ValueError("identity migration source and destination must differ")
+            if new_slug in normalized.values():
+                raise ValueError("identity migration destinations must be unique")
+            normalized[old_slug] = new_slug
+        return normalized
+
+    @staticmethod
+    def _migration_page_content(
+        page: Mapping[str, Any],
+        mapping: Mapping[str, str],
+    ) -> str:
+        compiled = page.get("compiled_truth")
+        if not isinstance(compiled, str):
+            raise GBrainProtocolError("migration source page has no compiled content")
+        if compiled.startswith("---\n"):
+            end = compiled.find("\n---", 4)
+            if end < 0:
+                raise GBrainProtocolError("migration source has malformed compiled frontmatter")
+            header = compiled[:end]
+            for old_slug in sorted(mapping, key=len, reverse=True):
+                header = header.replace(old_slug, mapping[old_slug])
+            # Keep the body byte-for-byte. Historical prose and attachment URLs
+            # remain valid through the durable old -> new alias rather than
+            # being rewritten into paths whose stored bytes may not exist.
+            return header + compiled[end:]
+
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise GBrainProtocolError("migration source page has no canonical frontmatter")
+
+        def rewrite_reference(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {key: rewrite_reference(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [rewrite_reference(item) for item in value]
+            if isinstance(value, tuple):
+                return [rewrite_reference(item) for item in value]
+            if isinstance(value, str) and value in mapping:
+                return mapping[value]
+            return value
+
+        return _render_preserved_page(page, rewrite_reference(frontmatter))
+
+    @staticmethod
+    def _migration_edge_key(edge: Mapping[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(edge.get("from_slug", "")),
+            str(edge.get("to_slug", "")),
+            str(edge.get("link_type") or ""),
+        )
+
+    @staticmethod
+    def _migration_link_descriptor(edge: Mapping[str, Any]) -> dict[str, Any]:
+        descriptor: dict[str, Any] = {
+            "from": str(edge.get("from_slug", "")),
+            "to": str(edge.get("to_slug", "")),
+            "link_type": str(edge.get("link_type") or ""),
+        }
+        context = edge.get("context")
+        source = edge.get("link_source")
+        if isinstance(context, str) and context:
+            descriptor["context"] = context
+        if isinstance(source, str) and source:
+            descriptor["link_source"] = source
+        return descriptor
+
+    def resolve_canonical_slug(self, slug: str) -> str:
+        """Follow one durable legacy alias while failing closed on ambiguity."""
+        current = slug
+        visited: set[str] = set()
+        for _ in range(8):
+            if current in visited:
+                raise GBrainProtocolError(f"canonical alias cycle detected for {slug}")
+            visited.add(current)
+            links = self.runner.run("get_links", {"slug": current})
+            if not isinstance(links, list):
+                raise GBrainProtocolError("canonical alias readback was not a list")
+            targets = {
+                str(edge.get("to_slug"))
+                for edge in links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == current
+                and edge.get("link_type") == "canonical_alias_of"
+                and isinstance(edge.get("to_slug"), str)
+            }
+            if not targets:
+                return current
+            if len(targets) != 1:
+                raise GBrainProtocolError(f"canonical alias is ambiguous for {current}")
+            target = next(iter(targets))
+            if self._identity_entity_kind(target) != self._identity_entity_kind(current):
+                raise GBrainProtocolError(f"canonical alias changes namespace for {current}")
+            current = target
+        raise GBrainProtocolError(f"canonical alias chain is too deep for {slug}")
+
+    def audit_canonical_identity_migration(
+        self,
+        mapping: Mapping[str, str],
+        *,
+        excluded: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Build a mutation-free source/destination and relationship audit."""
+        normalized = self._validate_identity_mapping(mapping)
+        if set(excluded) & set(normalized):
+            raise ValueError("excluded identities must not appear in the migration mapping")
+        entities: list[dict[str, Any]] = []
+        goal_repairs: list[str] = []
+        for old_slug, new_slug in normalized.items():
+            try:
+                existing = self.runner.run(
+                    "get_page", {"slug": new_slug, "include_deleted": True}
+                )
+            except GBrainCommandError as exc:
+                if "page_not_found" not in str(exc):
+                    raise
+            else:
+                if isinstance(existing, Mapping):
+                    raise ValueError(f"migration destination already exists: {new_slug}")
+                raise GBrainProtocolError("migration destination readback was not structured")
+            page = self.runner.run(
+                "get_page", {"slug": old_slug, "include_deleted": True}
+            )
+            outgoing = self.runner.run("get_links", {"slug": old_slug})
+            incoming = self.runner.run("get_backlinks", {"slug": old_slug})
+            if not isinstance(page, Mapping) or not isinstance(outgoing, list) or not isinstance(incoming, list):
+                raise GBrainProtocolError("identity migration audit was not structured")
+            if page.get("deleted_at"):
+                raise ValueError(f"migration source is soft-deleted: {old_slug}")
+            kind = self._identity_entity_kind(old_slug)
+            canonical_roots_by_kind = {
+                "goals": {GOALS_ROOT},
+                "projects": {PROJECTS_ROOT},
+                "tasks": {*TASK_SCOPE_ROOTS, SYSTEM_TICKETS_ROOT},
+            }
+            scope_roots = {
+                str(edge.get("to_slug"))
+                for edge in outgoing
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == old_slug
+                and edge.get("to_slug") in canonical_roots_by_kind[kind]
+                and edge.get("link_type") in {"member_of", "", None}
+            }
+            if len(scope_roots) != 1:
+                raise ValueError(
+                    f"migration source does not have exactly one canonical scope root: {old_slug}"
+                )
+            if kind == "goals":
+                Goal.from_page(page, edges=outgoing)
+                if any(
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == old_slug
+                    and edge.get("to_slug") == GOALS_ROOT
+                    and not edge.get("link_type")
+                    for edge in outgoing
+                ):
+                    goal_repairs.append(old_slug)
+            elif kind == "projects" and page.get("type") != "project":
+                raise ValueError(f"project has unexpected page type: {old_slug}")
+            elif kind == "tasks" and page.get("type") != "task":
+                raise ValueError(f"task has unexpected page type: {old_slug}")
+            content = self._migration_page_content(page, normalized)
+            entities.append(
+                {
+                    "old_slug": old_slug,
+                    "new_slug": new_slug,
+                    "kind": kind[:-1],
+                    "raw_type": page.get("type"),
+                    "scope_root": next(iter(scope_roots)),
+                    "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "outgoing_edges": len([edge for edge in outgoing if isinstance(edge, Mapping)]),
+                    "incoming_edges": len([edge for edge in incoming if isinstance(edge, Mapping)]),
+                }
+            )
+        for slug in excluded:
+            page = self.runner.run("get_page", {"slug": slug, "include_deleted": True})
+            if not isinstance(page, Mapping) or not page.get("deleted_at"):
+                raise ValueError(f"excluded identity is not verified soft-deleted: {slug}")
+        return {
+            "entity_count": len(entities),
+            "entities": entities,
+            "goal_membership_repairs": goal_repairs,
+            "excluded": list(excluded),
+            "verified": True,
+        }
+
+    def migrate_canonical_identities(
+        self,
+        mapping: Mapping[str, str],
+        *,
+        excluded: tuple[str, ...] = (),
+    ) -> IdentityMigrationReceipt:
+        """Copy and relink canonical entities to opaque IDs without deleting history.
+
+        Old pages remain in place as immutable historical/legacy entry points and
+        receive one typed ``canonical_alias_of`` edge. Their active graph edges are
+        retired only after every copied page and remapped relationship reads back.
+        """
+        normalized = self._validate_identity_mapping(mapping)
+        excluded_set = set(excluded)
+        overlap = excluded_set & set(normalized)
+        if overlap:
+            raise ValueError("excluded identities must not appear in the migration mapping")
+
+        pages: dict[str, Mapping[str, Any]] = {}
+        source_edges: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        source_edge_keys_by_slug: dict[str, set[tuple[str, str, str]]] = {}
+        for old_slug, new_slug in normalized.items():
+            try:
+                existing = self.runner.run(
+                    "get_page", {"slug": new_slug, "include_deleted": True}
+                )
+            except GBrainCommandError as exc:
+                if "page_not_found" not in str(exc):
+                    raise
+            else:
+                if isinstance(existing, Mapping):
+                    raise ValueError(f"migration destination already exists: {new_slug}")
+                raise GBrainProtocolError("migration destination readback was not structured")
+
+            page = self.runner.run(
+                "get_page", {"slug": old_slug, "include_deleted": True}
+            )
+            outgoing = self.runner.run("get_links", {"slug": old_slug})
+            incoming = self.runner.run("get_backlinks", {"slug": old_slug})
+            if not isinstance(page, Mapping) or not isinstance(outgoing, list) or not isinstance(incoming, list):
+                raise GBrainProtocolError("identity migration snapshot was not structured")
+            if page.get("deleted_at"):
+                raise ValueError(f"migration source is soft-deleted: {old_slug}")
+            if self._identity_entity_kind(old_slug) == "goals":
+                Goal.from_page(page, edges=outgoing)
+            elif self._identity_entity_kind(old_slug) == "projects":
+                if page.get("type") != "project":
+                    raise ValueError(f"project has unexpected page type: {old_slug}")
+            elif page.get("type") != "task":
+                raise ValueError(f"task has unexpected page type: {old_slug}")
+            pages[old_slug] = page
+            source_edge_keys_by_slug[old_slug] = {
+                self._migration_edge_key(raw_edge)
+                for raw_edge in [*outgoing, *incoming]
+                if isinstance(raw_edge, Mapping)
+            }
+            for raw_edge in [*outgoing, *incoming]:
+                if not isinstance(raw_edge, Mapping):
+                    continue
+                key = self._migration_edge_key(raw_edge)
+                if not key[0] or not key[1]:
+                    continue
+                source_edges.setdefault(key, raw_edge)
+
+        for old_slug, page in pages.items():
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": normalized[old_slug],
+                    "content": self._migration_page_content(page, normalized),
+                    "source_kind": "gtasks-identity-migration",
+                    "source_uri": f"gbrain://{old_slug}",
+                    "ingested_via": "gtasks-identity-migration",
+                },
+            )
+
+        desired_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+        migrated_kinds = {
+            normalized[old]: self._identity_entity_kind(old)
+            for old in normalized
+        }
+        canonical_roots_by_kind = {
+            "goals": {GOALS_ROOT},
+            "projects": {PROJECTS_ROOT},
+            "tasks": {*TASK_SCOPE_ROOTS, SYSTEM_TICKETS_ROOT},
+        }
+        migrated_goal_slugs = {
+            normalized[old]
+            for old in normalized
+            if self._identity_entity_kind(old) == "goals"
+        }
+        for source_edge in source_edges.values():
+            from_slug = normalized.get(str(source_edge.get("from_slug")), str(source_edge.get("from_slug")))
+            to_slug = normalized.get(str(source_edge.get("to_slug")), str(source_edge.get("to_slug")))
+            link_type = str(source_edge.get("link_type") or "")
+            if (
+                from_slug in migrated_kinds
+                and to_slug in canonical_roots_by_kind[migrated_kinds[from_slug]]
+                and not link_type
+            ):
+                link_type = "member_of"
+            mapped_edge = {
+                **source_edge,
+                "from_slug": from_slug,
+                "to_slug": to_slug,
+                "link_type": link_type,
+            }
+            desired_edges.setdefault(self._migration_edge_key(mapped_edge), mapped_edge)
+
+        for edge in desired_edges.values():
+            self.runner.run("add_link", self._migration_link_descriptor(edge))
+
+        for new_slug, kind in migrated_kinds.items():
+            new_links = self.runner.run("get_links", {"slug": new_slug})
+            if not isinstance(new_links, list):
+                raise GBrainProtocolError("migrated scope links were not structured")
+            expected_roots = {
+                to_slug
+                for from_slug, to_slug, link_type in desired_edges
+                if from_slug == new_slug
+                and to_slug in canonical_roots_by_kind[kind]
+                and link_type == "member_of"
+            }
+            if len(expected_roots) != 1:
+                raise PartialMutationError(
+                    new_slug,
+                    "Migrated entity does not have exactly one canonical scope root.",
+                )
+            expected_root = next(iter(expected_roots))
+            for edge in new_links:
+                if (
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == new_slug
+                    and edge.get("to_slug") in canonical_roots_by_kind[kind]
+                    and not edge.get("link_type")
+                ):
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": new_slug,
+                            "to": str(edge.get("to_slug")),
+                            "link_type": "",
+                        },
+                    )
+            typed_scope_edges = [
+                edge
+                for edge in new_links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == new_slug
+                and edge.get("to_slug") == expected_root
+                and edge.get("link_type") == "member_of"
+            ]
+            if len(typed_scope_edges) != 1:
+                self.runner.run(
+                    "remove_link",
+                    {
+                        "from": new_slug,
+                        "to": expected_root,
+                        "link_type": "member_of",
+                    },
+                )
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": new_slug,
+                        "to": expected_root,
+                        "link_type": "member_of",
+                        "context": "Canonical Mission Control scope after immutable identity migration.",
+                        "link_source": "gtasks-identity-migration",
+                    },
+                )
+            verified_scope = self.runner.run("get_links", {"slug": new_slug})
+            if not isinstance(verified_scope, list):
+                raise GBrainProtocolError("migrated scope verification was not structured")
+            typed_verified = [
+                edge
+                for edge in verified_scope
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == new_slug
+                and edge.get("to_slug") == expected_root
+                and edge.get("link_type") == "member_of"
+            ]
+            untyped_verified = [
+                edge
+                for edge in verified_scope
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == new_slug
+                and edge.get("to_slug") == expected_root
+                and not edge.get("link_type")
+            ]
+            if len(typed_verified) != 1 or untyped_verified:
+                raise PartialMutationError(
+                    new_slug,
+                    "Canonical scope relationship did not read back exactly once.",
+                )
+
+        for old_slug, new_slug in normalized.items():
+            self.runner.run(
+                "add_link",
+                {
+                    "from": old_slug,
+                    "to": new_slug,
+                    "link_type": "canonical_alias_of",
+                    "context": "Legacy canonical identity retained for history and inbound compatibility.",
+                    "link_source": "gtasks-identity-migration",
+                },
+            )
+
+        for old_slug, new_slug in normalized.items():
+            page = self.runner.run("get_page", {"slug": new_slug})
+            links = self.runner.run("get_links", {"slug": new_slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise PartialMutationError(old_slug, "Migrated page readback was not structured.")
+            namespace = self._identity_entity_kind(new_slug)
+            try:
+                if namespace == "goals":
+                    Goal.from_page(page, edges=links)
+                elif namespace == "projects":
+                    if page.get("type") != "project":
+                        raise DomainValidationError("migrated project type was not preserved")
+                elif page.get("type") != "task":
+                    raise DomainValidationError("migrated task type was not preserved")
+            except DomainValidationError as exc:
+                raise PartialMutationError(old_slug, f"Migrated entity type was not verified: {exc}") from exc
+
+        for key in desired_edges:
+            from_slug, to_slug, link_type = key
+            links = self.runner.run("get_links", {"slug": from_slug})
+            if not isinstance(links, list) or not any(
+                isinstance(edge, Mapping)
+                and self._migration_edge_key(edge) == (from_slug, to_slug, link_type)
+                for edge in links
+            ):
+                raise PartialMutationError(
+                    from_slug,
+                    f"Migrated relationship was not verified: {link_type} -> {to_slug}.",
+                )
+
+        # Fail before retiring any legacy edge if another writer changed a
+        # source page or relationship set during the copy/readback window.
+        # Leaving verified copies + aliases is recoverable; deleting a newly
+        # added relationship would not be.
+        snapshot_fields = (
+            "type",
+            "title",
+            "compiled_truth",
+            "frontmatter",
+            "content_hash",
+            "updated_at",
+            "deleted_at",
+        )
+        for old_slug, snapshot_page in pages.items():
+            current_page = self.runner.run(
+                "get_page", {"slug": old_slug, "include_deleted": True}
+            )
+            current_links = self.runner.run("get_links", {"slug": old_slug})
+            current_backlinks = self.runner.run("get_backlinks", {"slug": old_slug})
+            if not isinstance(current_page, Mapping) or not isinstance(current_links, list) or not isinstance(current_backlinks, list):
+                raise PartialMutationError(old_slug, "Source concurrency readback was not structured.")
+            if any(
+                current_page.get(field) != snapshot_page.get(field)
+                for field in snapshot_fields
+            ):
+                raise PartialMutationError(
+                    old_slug,
+                    "Source page changed during migration; legacy edges were not retired.",
+                )
+            current_keys = {
+                self._migration_edge_key(edge)
+                for edge in [*current_links, *current_backlinks]
+                if isinstance(edge, Mapping)
+                and edge.get("link_type") != "canonical_alias_of"
+            }
+            if current_keys != source_edge_keys_by_slug[old_slug]:
+                raise PartialMutationError(
+                    old_slug,
+                    "Source relationships changed during migration; legacy edges were not retired.",
+                )
+
+        # Only after the complete replacement graph verifies do legacy edges
+        # retire. The pages themselves remain as durable history/redirects.
+        for source_edge in source_edges.values():
+            from_slug = str(source_edge.get("from_slug"))
+            to_slug = str(source_edge.get("to_slug"))
+            if from_slug not in normalized and to_slug not in normalized:
+                continue
+            descriptor = {
+                "from": from_slug,
+                "to": to_slug,
+                "link_type": str(source_edge.get("link_type") or ""),
+            }
+            self.runner.run("remove_link", descriptor)
+
+        for old_slug, new_slug in normalized.items():
+            old_links = self.runner.run("get_links", {"slug": old_slug})
+            old_backlinks = self.runner.run("get_backlinks", {"slug": old_slug})
+            if not isinstance(old_links, list) or not isinstance(old_backlinks, list):
+                raise PartialMutationError(old_slug, "Legacy alias readback was not structured.")
+            aliases = [
+                edge
+                for edge in old_links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == old_slug
+                and edge.get("to_slug") == new_slug
+                and edge.get("link_type") == "canonical_alias_of"
+            ]
+            residual = [
+                edge
+                for edge in [*old_links, *old_backlinks]
+                if isinstance(edge, Mapping)
+                and edge.get("link_type") != "canonical_alias_of"
+            ]
+            if len(aliases) != 1 or residual:
+                raise PartialMutationError(old_slug, "Legacy identity was not reduced to one verified alias.")
+
+        return IdentityMigrationReceipt(
+            mapping=dict(normalized),
+            migrated=tuple(normalized.values()),
+            excluded=tuple(excluded),
+            verified=True,
+        )
 
     def get_tony_profile(self) -> dict[str, Any]:
         """Read Tony's Board identity from the canonical GBrain person page."""
@@ -1719,7 +2288,10 @@ class GBrainAdapter:
             ):
                 raise GBrainProtocolError("goal pause readback was not structured")
             stored_goal = Goal.from_page(stored_page, edges=stored_links)
-            if stored_page.get("type") != "goal" or stored_goal.status != "paused":
+            # GBrain intentionally stores Markdown-backed Goals as raw
+            # `concept` rows. Goal.from_page validates the compiled/frontmatter
+            # contract, which is the only canonical type assertion here.
+            if stored_goal.status != "paused":
                 raise GBrainProtocolError("goal pause readback did not match")
             for expected in links:
                 if not isinstance(expected, Mapping):
@@ -1747,7 +2319,6 @@ class GBrainAdapter:
                 rollback_goal = Goal.from_page(rollback_page)
                 rollback_verified = (
                     isinstance(rollback_page, Mapping)
-                    and rollback_page.get("type") == "goal"
                     and rollback_goal.status == goal.status
                 )
             except (DomainValidationError, GBrainError):
@@ -1801,7 +2372,7 @@ class GBrainAdapter:
             if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
                 raise GBrainProtocolError("goal edit readback was not structured")
             stored_goal = Goal.from_page(stored_page, edges=stored_links)
-            if stored_page.get("type") != "goal" or stored_goal.to_dict() != desired.to_dict():
+            if stored_goal.to_dict() != desired.to_dict():
                 raise GBrainProtocolError("goal edit readback did not match the write")
             for expected in links:
                 if isinstance(expected, Mapping) and not any(
@@ -2223,6 +2794,7 @@ class GBrainAdapter:
         return ProjectMutationReceipt(project_slug=project.slug, verified=True)
 
     def read_goal_relationships(self, goal_slug: str) -> GoalRelationshipRead:
+        goal_slug = self.resolve_canonical_slug(goal_slug)
         page = self.runner.run("get_page", {"slug": goal_slug})
         if not isinstance(page, Mapping):
             raise GBrainProtocolError("goal get_page did not return an object")
@@ -3099,6 +3671,7 @@ class GBrainAdapter:
         raise ValueError("task is not a member of an approved GTasks root")
 
     def get_task(self, task_slug: str) -> Task:
+        task_slug = self.resolve_canonical_slug(task_slug)
         page = self.runner.run("get_page", {"slug": task_slug})
         links = self.runner.run("get_links", {"slug": task_slug})
         if not isinstance(page, Mapping) or not isinstance(links, list):

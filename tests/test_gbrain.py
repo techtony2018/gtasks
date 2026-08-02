@@ -182,6 +182,384 @@ class StatefulTaskRunner:
         raise AssertionError(f"unexpected tool: {tool}")
 
 
+class StatefulIdentityMigrationRunner:
+    """Small in-memory GBrain contract for copy/relink migration tests."""
+
+    def __init__(self, pages: dict[str, dict], links: list[dict]) -> None:
+        self.pages = deepcopy(pages)
+        self.links = deepcopy(links)
+        self.calls: list[tuple[str, dict]] = []
+
+    def run(self, tool: str, params: dict) -> object:
+        self.calls.append((tool, deepcopy(params)))
+        if tool == "get_page":
+            slug = params["slug"]
+            page = self.pages.get(slug)
+            if page is None or (page.get("deleted_at") and not params.get("include_deleted")):
+                raise GBrainCommandError("page_not_found")
+            return deepcopy(page)
+        if tool == "get_links":
+            return deepcopy(
+                [edge for edge in self.links if edge.get("from_slug") == params["slug"]]
+            )
+        if tool == "get_backlinks":
+            return deepcopy(
+                [edge for edge in self.links if edge.get("to_slug") == params["slug"]]
+            )
+        if tool == "put_page":
+            slug = params["slug"]
+            content = params["content"]
+            first = self.pages.get(slug, {})
+            lines = content.splitlines()
+            frontmatter: dict = {}
+            if lines and lines[0] == "---" and "---" in lines[1:]:
+                end = lines.index("---", 1)
+                index = 1
+                while index < end:
+                    line = lines[index]
+                    if not line or line.startswith((" ", "\t")) or ":" not in line:
+                        index += 1
+                        continue
+                    raw_key, raw_value = line.split(":", 1)
+                    key = raw_key.strip().strip('"')
+                    value = raw_value.strip()
+                    if key == "links" and not value:
+                        parsed_links: list[dict] = []
+                        index += 1
+                        while index < end and lines[index].startswith("  "):
+                            nested = lines[index].strip()
+                            if nested.startswith("- to:"):
+                                parsed_links.append(
+                                    {"to": nested.split(":", 1)[1].strip().strip("'\"")}
+                                )
+                            elif nested.startswith("type:") and parsed_links:
+                                parsed_links[-1]["type"] = nested.split(":", 1)[1].strip().strip("'\"")
+                            index += 1
+                        frontmatter[key] = parsed_links
+                        continue
+                    try:
+                        frontmatter[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        if value in {"none", "null", "~"}:
+                            frontmatter[key] = None
+                        elif value in {"true", "false"}:
+                            frontmatter[key] = value == "true"
+                        else:
+                            frontmatter[key] = value.strip("'\"")
+                    index += 1
+            raw_type = "concept" if content.startswith("---\ntype: goal\n") else None
+            if raw_type is None:
+                raw_type = frontmatter.get("type", first.get("type"))
+            title = frontmatter.get("title", first.get("title"))
+            self.pages[slug] = {
+                **first,
+                "slug": slug,
+                "type": raw_type,
+                "title": title,
+                "compiled_truth": content,
+                "frontmatter": frontmatter,
+                "deleted_at": None,
+            }
+            return {"slug": slug}
+        if tool == "add_link":
+            edge = {
+                "from_slug": params["from"],
+                "to_slug": params["to"],
+                "link_type": params.get("link_type", ""),
+                "context": params.get("context", ""),
+                "link_source": params.get("link_source", "manual"),
+            }
+            if not any(
+                existing.get("from_slug") == edge["from_slug"]
+                and existing.get("to_slug") == edge["to_slug"]
+                and existing.get("link_type") == edge["link_type"]
+                for existing in self.links
+            ):
+                self.links.append(edge)
+            return deepcopy(edge)
+        if tool == "remove_link":
+            self.links = [
+                edge
+                for edge in self.links
+                if not (
+                    edge.get("from_slug") == params["from"]
+                    and edge.get("to_slug") == params["to"]
+                    and (
+                        params.get("link_type") is None
+                        or edge.get("link_type") == params.get("link_type")
+                    )
+                    and (
+                        params.get("link_source") is None
+                        or edge.get("link_source") == params.get("link_source")
+                    )
+                )
+            ]
+            return {"removed": True}
+        raise AssertionError(f"unexpected tool: {tool}")
+
+
+class CanonicalIdentityMigrationTests(unittest.TestCase):
+    def _fixture(self) -> tuple[StatefulIdentityMigrationRunner, dict[str, str]]:
+        goal_slug = "goals/health-label"
+        project_slug = "projects/wellbeing-plan"
+        task_slug = "collections/toddys-tasks/weekly-walk"
+        excluded_slug = "tasks/deleted-erfa"
+        pages = {
+            goal_slug: {
+                "slug": goal_slug,
+                "type": "concept",
+                "title": "Health: Be healthier",
+                "compiled_truth": "\n".join(
+                    [
+                        "---",
+                        "type: goal",
+                        "title: 'Health: Be healthier'",
+                        "status: planned",
+                        "outcome: Be healthier.",
+                        "success_criteria: Walk weekly.",
+                        "target_day: '2026-09-30'",
+                        "strategy: Start small.",
+                        "review_cadence: weekly",
+                        "constraints: Preserve history.",
+                        f"collection: {GOALS_ROOT}",
+                        "---",
+                        "",
+                        "# Health: Be healthier",
+                        "",
+                        f"Legacy reference `{task_slug}` must remain resolvable.",
+                    ]
+                ),
+                "frontmatter": {"source_kind": "fixture"},
+                "deleted_at": None,
+            },
+            project_slug: {
+                "slug": project_slug,
+                "type": "project",
+                "title": "Wellbeing plan",
+                "compiled_truth": "\n".join(
+                    [
+                        "---",
+                        "type: project",
+                        "title: Wellbeing plan",
+                        "status: active",
+                        "summary: Preserve this project body.",
+                        "links:",
+                        f"  - to: {PROJECTS_ROOT}",
+                        "    type: member_of",
+                        "---",
+                        "",
+                        "# Wellbeing plan",
+                    ]
+                ),
+                "frontmatter": {"source_kind": "fixture"},
+                "deleted_at": None,
+            },
+            task_slug: {
+                "slug": task_slug,
+                "type": "task",
+                "title": "Weekly walk",
+                "compiled_truth": "\n".join(
+                    [
+                        "---",
+                        "type: task",
+                        "title: Weekly walk",
+                        "status: planned",
+                        "summary: Weekly walk",
+                        "detail: Keep original task detail.",
+                        "priority: normal",
+                        "next_action: Put shoes by the door",
+                        "due_day: '2026-08-02'",
+                        "scheduled_day: none",
+                        "inbox: false",
+                        "next_action_history: [{\"action\": \"Old step\", \"completed_at\": \"2026-08-01T08:00:00-07:00\"}]",
+                        "progress_metric: null",
+                        "event_progress: null",
+                        "links:",
+                        "  - to: collections/toddys-tasks",
+                        "    type: member_of",
+                        "  - to: agents/toddy",
+                        "    type: assigned_to",
+                        "---",
+                        "",
+                        "# Weekly walk",
+                        "",
+                        "Keep original task detail.",
+                    ]
+                ),
+                "frontmatter": {"source_kind": "fixture"},
+                "deleted_at": None,
+            },
+            excluded_slug: {
+                "slug": excluded_slug,
+                "type": "task",
+                "title": "Deleted ERFA",
+                "compiled_truth": "---\ntype: task\n---\n\n# Deleted ERFA",
+                "frontmatter": {"source_kind": "fixture"},
+                "deleted_at": "2026-07-30T12:00:00Z",
+            },
+        }
+        links = [
+            {"from_slug": goal_slug, "to_slug": GOALS_ROOT, "link_type": "", "context": "", "link_source": "manual"},
+            {"from_slug": project_slug, "to_slug": PROJECTS_ROOT, "link_type": "member_of", "context": "Scoped project", "link_source": "gtasks"},
+            {"from_slug": project_slug, "to_slug": PROJECTS_ROOT, "link_type": "", "context": "Legacy project scope", "link_source": "manual"},
+            {"from_slug": task_slug, "to_slug": "collections/toddys-tasks", "link_type": "member_of", "context": "Agent task", "link_source": "gtasks"},
+            {"from_slug": task_slug, "to_slug": "collections/toddys-tasks", "link_type": "", "context": "Legacy agent scope", "link_source": "manual"},
+            {"from_slug": task_slug, "to_slug": "agents/toddy", "link_type": "assigned_to", "context": "Agent owner", "link_source": "gtasks"},
+            {"from_slug": task_slug, "to_slug": goal_slug, "link_type": "advances_goal", "context": "Task goal", "link_source": "gtasks"},
+            {"from_slug": goal_slug, "to_slug": task_slug, "link_type": "advanced_by", "context": "Goal task", "link_source": "gtasks"},
+            {"from_slug": project_slug, "to_slug": goal_slug, "link_type": "supports_goal", "context": "Project goal", "link_source": "gtasks"},
+            {"from_slug": "agents/toddy", "to_slug": goal_slug, "link_type": "default_agent_for", "context": "Default owner", "link_source": "gtasks"},
+        ]
+        mapping = {
+            goal_slug: "goals/d175890b-6e89-5543-b587-b5df345c1c81",
+            project_slug: "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+            task_slug: "tasks/6a52932a-e645-5aaa-b14a-44fc83d9337c",
+        }
+        return StatefulIdentityMigrationRunner(pages, links), mapping
+
+    def test_audit_is_read_only_and_reports_goal_membership_repair(self) -> None:
+        runner, mapping = self._fixture()
+
+        audit = GBrainAdapter(runner).audit_canonical_identity_migration(
+            mapping,
+            excluded=("tasks/deleted-erfa",),
+        )
+
+        self.assertEqual(audit["entity_count"], 3)
+        self.assertEqual(audit["goal_membership_repairs"], ["goals/health-label"])
+        self.assertEqual(audit["excluded"], ["tasks/deleted-erfa"])
+        self.assertTrue(all(item["content_sha256"] for item in audit["entities"]))
+        self.assertFalse(
+            {"put_page", "add_link", "remove_link"}
+            & {tool for tool, _params in runner.calls}
+        )
+
+    def test_copies_relinks_aliases_and_repairs_goal_membership(self) -> None:
+        runner, mapping = self._fixture()
+
+        adapter = GBrainAdapter(runner)
+        receipt = adapter.migrate_canonical_identities(
+            mapping,
+            excluded=("tasks/deleted-erfa",),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(set(receipt.migrated), set(mapping.values()))
+        self.assertEqual(receipt.excluded, ("tasks/deleted-erfa",))
+        self.assertEqual(runner.pages["tasks/deleted-erfa"]["deleted_at"], "2026-07-30T12:00:00Z")
+        self.assertNotIn("tasks/deleted-erfa", mapping)
+        for old_slug, new_slug in mapping.items():
+            self.assertIn(new_slug, runner.pages)
+            self.assertIn((old_slug, new_slug, "canonical_alias_of"), {
+                (edge["from_slug"], edge["to_slug"], edge["link_type"])
+                for edge in runner.links
+            })
+        new_goal = mapping["goals/health-label"]
+        new_project = mapping["projects/wellbeing-plan"]
+        new_task = mapping["collections/toddys-tasks/weekly-walk"]
+        edge_keys = {
+            (edge["from_slug"], edge["to_slug"], edge["link_type"])
+            for edge in runner.links
+        }
+        self.assertIn((new_goal, GOALS_ROOT, "member_of"), edge_keys)
+        self.assertIn((new_task, new_goal, "advances_goal"), edge_keys)
+        self.assertIn((new_goal, new_task, "advanced_by"), edge_keys)
+        self.assertIn((new_project, new_goal, "supports_goal"), edge_keys)
+        self.assertIn(("agents/toddy", new_goal, "default_agent_for"), edge_keys)
+        self.assertNotIn(("goals/health-label", GOALS_ROOT, ""), edge_keys)
+        self.assertNotIn((new_project, PROJECTS_ROOT, ""), edge_keys)
+        self.assertNotIn((new_task, "collections/toddys-tasks", ""), edge_keys)
+        for slug, root in (
+            (new_goal, GOALS_ROOT),
+            (new_project, PROJECTS_ROOT),
+            (new_task, "collections/toddys-tasks"),
+        ):
+            self.assertEqual(
+                len(
+                    [
+                        edge
+                        for edge in runner.links
+                        if edge["from_slug"] == slug
+                        and edge["to_slug"] == root
+                        and edge["link_type"] == "member_of"
+                    ]
+                ),
+                1,
+            )
+        self.assertIn("Keep original task detail.", runner.pages[new_task]["compiled_truth"])
+        self.assertEqual(
+            runner.pages[new_task]["frontmatter"]["next_action_history"],
+            [
+                {
+                    "action": "Old step",
+                    "completed_at": "2026-08-01T08:00:00-07:00",
+                }
+            ],
+        )
+        self.assertIn(
+            "Legacy reference `collections/toddys-tasks/weekly-walk` must remain resolvable.",
+            runner.pages[new_goal]["compiled_truth"],
+        )
+        self.assertEqual([goal.slug for goal in adapter.list_goals().goals], [new_goal])
+        self.assertEqual(adapter.list_goals().issues, ())
+        self.assertEqual([project.slug for project in adapter.list_projects().projects], [new_project])
+        relationship = adapter.read_goal_relationships("goals/health-label")
+        self.assertEqual(relationship.goal_slug, new_goal)
+        self.assertEqual(relationship.task_slugs, (new_task,))
+
+    def test_legacy_task_slug_resolves_to_new_canonical_task(self) -> None:
+        runner, mapping = self._fixture()
+        adapter = GBrainAdapter(runner)
+        adapter.migrate_canonical_identities(mapping)
+
+        task = adapter.get_task("collections/toddys-tasks/weekly-walk")
+
+        self.assertEqual(task.slug, mapping["collections/toddys-tasks/weekly-walk"])
+
+    def test_rejects_namespace_changes_and_non_uuid_targets_before_writing(self) -> None:
+        runner, _mapping = self._fixture()
+
+        with self.assertRaisesRegex(ValueError, "same namespace"):
+            GBrainAdapter(runner).migrate_canonical_identities(
+                {"collections/toddys-tasks/weekly-walk": "projects/65c2f720-fb49-5403-9a9e-76228e285277"}
+            )
+        with self.assertRaisesRegex(ValueError, "opaque UUID"):
+            GBrainAdapter(runner).migrate_canonical_identities(
+                {"collections/toddys-tasks/weekly-walk": "tasks/still-title-derived"}
+            )
+        self.assertNotIn("put_page", [tool for tool, _ in runner.calls])
+
+    def test_stops_before_retiring_edges_when_a_source_changes_during_copy(self) -> None:
+        base, mapping = self._fixture()
+        source_slug = "goals/health-label"
+
+        class ConcurrentSourceRunner(StatefulIdentityMigrationRunner):
+            def __init__(self) -> None:
+                super().__init__(base.pages, base.links)
+                self.source_reads = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                result = super().run(tool, params)
+                if tool == "get_page" and params.get("slug") == source_slug:
+                    self.source_reads += 1
+                    if self.source_reads > 1:
+                        result["content_hash"] = "concurrent-change"
+                return result
+
+        runner = ConcurrentSourceRunner()
+
+        with self.assertRaisesRegex(PartialMutationError, "changed during migration"):
+            GBrainAdapter(runner).migrate_canonical_identities(mapping)
+
+        self.assertIn(
+            (source_slug, GOALS_ROOT, ""),
+            {
+                (edge["from_slug"], edge["to_slug"], edge["link_type"])
+                for edge in runner.links
+            },
+        )
+
+
 class CollectionReadTests(unittest.TestCase):
     def test_loads_only_direct_member_backlinks_from_the_approved_root(self) -> None:
         task = new_inbox_task(
@@ -864,6 +1242,10 @@ class GoalMutationTests(unittest.TestCase):
 
     def test_pause_preserves_goal_type_content_and_relationships(self) -> None:
         page = stored_goal("goals/pause-me", "Pause me")
+        # GBrain's raw storage type for Markdown-backed Goals is intentionally
+        # concept; the validated frontmatter contract remains type: goal.
+        page["type"] = "concept"
+        page["frontmatter"]["type"] = "goal"
         edge = {
             "from_slug": page["slug"],
             "to_slug": "tasks/linked",
@@ -888,6 +1270,30 @@ class GoalMutationTests(unittest.TestCase):
         )
         self.assertIn('"type": "goal"', written)
         self.assertIn('"status": "paused"', written)
+
+    def test_goal_update_accepts_gbrain_raw_concept_with_canonical_goal_frontmatter(self) -> None:
+        page = stored_goal("goals/compiled-goal", "Compiled goal")
+        page["type"] = "concept"
+        page["frontmatter"]["type"] = "goal"
+        updated = deepcopy(page)
+        updated["frontmatter"].update({
+            "title": "Renamed label", "outcome": "A revised outcome.",
+        })
+        runner = FakeRunner({
+            "get_page": [page, updated],
+            "get_links": [[], []],
+            "put_page": [{"slug": page["slug"]}],
+        })
+
+        receipt = GBrainAdapter(runner).update_goal(
+            page["slug"], title="Renamed label", outcome="A revised outcome.",
+            success_criteria="Define during weekly review.",
+            strategy="Define during weekly review.", review_cadence="weekly",
+            constraints="Define during weekly review.", target_day=date(2026, 9, 30),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.goal.title, "Renamed label")
 
     def test_delete_without_linked_tasks_is_verified_recoverable_soft_delete(self) -> None:
         page = stored_goal("goals/delete-me", "Delete me")
@@ -1011,6 +1417,7 @@ class GoalReadTests(unittest.TestCase):
             {
                 "get_page": [goal],
                 "get_links": [
+                    [],
                     [
                         {
                             "from_slug": goal["slug"],
@@ -1028,6 +1435,7 @@ class GoalReadTests(unittest.TestCase):
         self.assertEqual(
             runner.calls,
             [
+                ("get_links", {"slug": goal["slug"]}),
                 ("get_page", {"slug": goal["slug"]}),
                 ("get_links", {"slug": goal["slug"]}),
             ],

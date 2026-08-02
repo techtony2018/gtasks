@@ -56,6 +56,26 @@ def task_page(
 
 
 class TaskParsingTests(unittest.TestCase):
+    def test_compiled_markdown_does_not_override_structured_task_frontmatter(self) -> None:
+        page = task_page("tasks/compiled-task")
+        page["compiled_truth"] = "\n".join(
+            [
+                "---",
+                "type: task",
+                "title: Compiled task",
+                "links:",
+                f"  - to: {ACTIVE_ROOT}",
+                "    type: member_of",
+                "---",
+                "",
+                "# Compiled task",
+            ]
+        )
+
+        task = Task.from_page(page)
+
+        self.assertEqual(task.lifecycle_root, ACTIVE_ROOT)
+
     def test_unmetered_task_has_no_progress_metric(self) -> None:
         task = Task.from_page(task_page("tasks/unmetered"))
 
@@ -499,10 +519,8 @@ class NewInboxTaskTests(unittest.TestCase):
         self.assertTrue(task.inbox)
         self.assertEqual(task.due_day, date(2026, 7, 30))
         self.assertEqual(task.lifecycle_root, ACTIVE_ROOT)
-        self.assertEqual(
-            task.slug,
-            "tasks/2026/2026-07-30-book-dentist-appointment-a1b2c3",
-        )
+        self.assertRegex(task.slug, r"^tasks/[0-9a-f-]{36}$")
+        self.assertNotIn("dentist", task.slug)
 
     def test_quick_add_preserves_an_explicit_due_date(self) -> None:
         task = new_inbox_task(
@@ -562,6 +580,8 @@ class FullTaskCreationTests(unittest.TestCase):
         self.assertEqual(task.progress_metric.current, 5)
         self.assertEqual(task.project, "projects/job-search")
         self.assertEqual(task.goal, "goals/get-a-job")
+        self.assertRegex(task.slug, r"^tasks/[0-9a-f-]{36}$")
+        self.assertNotIn("companies", task.slug)
 
     def test_duplicate_task_factory_is_available(self) -> None:
         self.assertTrue(callable(getattr(domain, "duplicate_task", None)))
@@ -703,6 +723,33 @@ class GoalTests(unittest.TestCase):
     def test_default_goal_target_is_end_of_creation_quarter(self) -> None:
         self.assertEqual(default_goal_target_day(date(2026, 7, 30)), date(2026, 9, 30))
         self.assertEqual(default_goal_target_day(date(2026, 12, 1)), date(2026, 12, 31))
+
+    def test_new_goals_projects_and_system_tickets_use_opaque_identities(self) -> None:
+        now = datetime(2026, 8, 1, 9, tzinfo=timezone.utc)
+        goal = domain.new_goal(
+            title="Career: Mutable label",
+            outcome="Reach the outcome.",
+            success_criteria="Verify it.",
+            strategy="Work deliberately.",
+            review_cadence="weekly",
+            constraints="Preserve identity.",
+            now=now,
+            identity="opaque1",
+        )
+        project = domain.new_project("Mutable project label", now, "opaque2")
+        ticket = domain.new_system_ticket(
+            title="Mutable ticket label",
+            verbatim_request="Keep this exact request.",
+            target_subsystem="mission_control",
+            priority="normal",
+            now=now,
+            identity="opaque3",
+        )
+
+        self.assertRegex(goal.slug, r"^goals/[0-9a-f-]{36}$")
+        self.assertRegex(project.slug, r"^projects/[0-9a-f-]{36}$")
+        self.assertRegex(ticket.slug, r"^tasks/[0-9a-f-]{36}$")
+        self.assertNotIn("mutable", " ".join((goal.slug, project.slug, ticket.slug)))
 
 
 if __name__ == "__main__":

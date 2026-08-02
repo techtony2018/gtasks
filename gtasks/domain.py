@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import uuid
 from calendar import monthrange
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -490,11 +491,16 @@ def _links_from(frontmatter: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
 def _compiled_frontmatter(page: Mapping[str, Any]) -> Mapping[str, Any]:
     """Parse the small scalar Goal contract when GBrain returns raw Markdown."""
     supplied = page.get("frontmatter")
-    if isinstance(supplied, Mapping) and supplied:
-        return supplied
+    supplied_values = dict(supplied) if isinstance(supplied, Mapping) else {}
+    # Structured frontmatter is canonical for tasks, projects, agents, and
+    # ordinary goal rows. Only GBrain's documented raw concept + compiled Goal
+    # shape needs recovery from compiled Markdown. Parsing arbitrary task YAML
+    # here would turn nested links/metrics into strings and corrupt identity.
+    if page.get("type") != "concept":
+        return supplied_values
     body = page.get("compiled_truth")
     if not isinstance(body, str) or not body.startswith("---\n"):
-        return supplied if isinstance(supplied, Mapping) else {}
+        return supplied_values
     end = body.find("\n---", 4)
     if end < 0:
         return {}
@@ -504,10 +510,17 @@ def _compiled_frontmatter(page: Mapping[str, Any]) -> Mapping[str, Any]:
             continue
         key, value = line.split(":", 1)
         value = value.strip()
+        if not value:
+            continue
         if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
             value = value[1:-1]
         parsed[key.strip()] = value
-    return parsed
+    if parsed.get("type") != "goal":
+        return supplied_values
+    # Raw get_page.frontmatter may contain only ingestion provenance while the
+    # canonical Goal schema lives in compiled Markdown. Canonical compiled
+    # fields win; provenance-only raw fields are retained.
+    return {**supplied_values, **parsed}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1028,6 +1041,11 @@ def _slugify_title(title: str) -> str:
     return slug[:64].rstrip("-") or "task"
 
 
+def _opaque_slug(namespace: str) -> str:
+    """Return a permanent label-independent canonical identity."""
+    return f"{namespace}/{uuid.uuid4()}"
+
+
 def new_task(
     *,
     title: str,
@@ -1086,10 +1104,7 @@ def new_task(
 
     local_day = now.date()
     return Task(
-        slug=(
-            f"tasks/{local_day.year}/"
-            f"{local_day.isoformat()}-{_slugify_title(summary)}-{safe_identity}"
-        ),
+        slug=_opaque_slug("tasks"),
         title=summary,
         summary=summary,
         detail=detail.strip(),
@@ -1348,10 +1363,7 @@ def new_inbox_task(
         raise DomainValidationError("identity must contain at least 6 letters or numbers")
 
     local_day = now.date()
-    slug = (
-        f"tasks/{local_day.year}/"
-        f"{local_day.isoformat()}-{_slugify_title(summary)}-{safe_identity}"
-    )
+    slug = _opaque_slug("tasks")
     return Task(
         slug=slug,
         title=summary,
@@ -1385,7 +1397,7 @@ def new_project(
     if len(safe_identity) < 6:
         raise DomainValidationError("identity must contain at least 6 letters or numbers")
     return Project(
-        slug=f"projects/{_slugify_title(clean_title)}-{safe_identity}",
+        slug=_opaque_slug("projects"),
         title=clean_title,
         status="active",
         summary=clean_title,
@@ -1410,7 +1422,7 @@ def new_system_ticket(*, title: str, verbatim_request: str, target_subsystem: st
     safe_identity = re.sub(r"[^a-z0-9]", "", identity.lower())[:12]
     if len(safe_identity) < 6:
         raise DomainValidationError("identity must contain at least 6 letters or numbers")
-    return SystemTicket(f"tasks/system-tickets/{_slugify_title(clean_title)}-{safe_identity}", clean_title, "planned", request, target_subsystem, priority, acceptance_criteria.strip(), created_at=now, updated_at=now)
+    return SystemTicket(_opaque_slug("tasks"), clean_title, "planned", request, target_subsystem, priority, acceptance_criteria.strip(), created_at=now, updated_at=now)
 
 
 def new_goal(
@@ -1442,7 +1454,7 @@ def new_goal(
     if len(safe_identity) < 6:
         raise DomainValidationError("identity must contain at least 6 letters or numbers")
     return Goal(
-        slug=f"goals/{_slugify_title(values['title'])}-{safe_identity}",
+        slug=_opaque_slug("goals"),
         title=values["title"],
         status="planned",
         outcome=values["outcome"],

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.62",
+  "current_version": "V0.0.63",
   "releases": [
     {
       "version": "V0.0.1",
@@ -372,6 +372,12 @@
       "date": "2026-08-01",
       "title": "Editable System Tickets and HUD controls",
       "summary": "Adds verified same-ticket editing in the right detail panel, replaces native/pseudo tooltips with one Memory Stargraph-style HUD overlay, moves service and utility controls around the centered word art, and introduces an original envelope-check Inbox icon."
+    },
+    {
+      "version": "V0.0.63",
+      "date": "2026-08-01",
+      "title": "Stable canonical identities",
+      "summary": "New Goals, Projects, and Tasks now use title-independent opaque IDs. The verified migration preserves readable titles, content, typed relationships, and legacy links while repairing Tony’s Goals membership without reviving the soft-deleted ERFA task."
     }
   ]
 }
