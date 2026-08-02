@@ -59,6 +59,7 @@ def verify_scope(
     plan: Mapping[str, Any],
     *,
     migrated: bool,
+    allow_partial_migration: bool = False,
 ) -> dict[str, list[str]]:
     roots = [str(root) for root in plan["scope_roots"]]
     actual = scoped_members(adapter, roots)
@@ -67,8 +68,33 @@ def verify_scope(
     excluded = set(str(slug) for slug in plan["excluded"])
     expected = (destination if migrated else source) | excluded
     scoped = {slug for members in actual.values() for slug in members}
-    missing = sorted(expected - scoped)
-    unexpected = sorted(scoped - expected)
+    if migrated:
+        allowed = expected
+        required = expected
+    elif allow_partial_migration:
+        # An interrupted copy/relink run may have added some new typed root
+        # memberships before it stopped. Old members must still all be present
+        # until the final retirement pass; no unknown member or cross-root
+        # successor is acceptable.
+        allowed = source | destination | excluded
+        required = source | excluded
+        for old_slug, new_slug in plan["mapping"].items():
+            old_roots = {
+                root for root, members in actual.items() if old_slug in members
+            }
+            new_roots = {
+                root for root, members in actual.items() if new_slug in members
+            }
+            if new_roots and new_roots != old_roots:
+                raise ValueError(
+                    "partial migration successor has different canonical scope root; "
+                    f"source={old_slug}, destination={new_slug}"
+                )
+    else:
+        allowed = expected
+        required = expected
+    missing = sorted(required - scoped)
+    unexpected = sorted(scoped - allowed)
     if missing or unexpected:
         raise ValueError(
             "migration plan no longer matches canonical scope roots; "
@@ -120,7 +146,12 @@ def main() -> int:
 
     plan = load_plan(args.plan)
     adapter = GBrainAdapter()
-    before_scope = verify_scope(adapter, plan, migrated=False)
+    before_scope = verify_scope(
+        adapter,
+        plan,
+        migrated=False,
+        allow_partial_migration=args.mode == "execute",
+    )
     audit = adapter.audit_canonical_identity_migration(
         plan["mapping"],
         excluded=tuple(plan["excluded"]),
