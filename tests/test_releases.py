@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.67")
+        self.assertEqual(__version__, "V0.0.68")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -30,12 +30,20 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("identity-preserving Edit", release["summary"])
 
     def test_v0_0_67_records_verified_agent_answer_handoffs(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.67")
 
         self.assertEqual(release["version"], "V0.0.67")
         self.assertIn("canonical Blocked task", release["summary"])
         self.assertIn("Answer and Hand Back", release["summary"])
         self.assertIn("same task", release["summary"])
+
+    def test_v0_0_68_records_blocked_agent_work_visibility(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.68")
+        self.assertIn("Today and Blocked", release["summary"])
+        self.assertIn("blocked Agent tasks", release["summary"])
+        self.assertIn("deduplicated counts", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -135,6 +143,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.65",
                 "V0.0.66",
                 "V0.0.67",
+                "V0.0.68",
             ],
         )
 

@@ -2735,6 +2735,37 @@ kbd {
   white-space: pre-wrap;
 }
 
+.detail-copy > :first-child { margin-top: 0; }
+.detail-copy > :last-child { margin-bottom: 0; }
+
+.detail-copy h1,
+.detail-copy h2,
+.detail-copy h3 {
+  margin: 18px 0 7px;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.detail-copy h1 { font-size: 16px; }
+.detail-copy h2 { font-size: 14px; }
+.detail-copy h3 { font-size: 13px; }
+
+.detail-copy p,
+.detail-copy ul,
+.detail-copy ol { margin: 0 0 10px; }
+
+.detail-copy ul,
+.detail-copy ol { padding-left: 22px; }
+
+.detail-copy code {
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
+  white-space: normal;
+}
+
 .task-duplicate-button {
   margin: -14px 0 18px;
 }

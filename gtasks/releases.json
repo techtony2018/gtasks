@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.67",
+  "current_version": "V0.0.68",
   "releases": [
     {
       "version": "V0.0.1",
@@ -402,6 +402,12 @@
       "date": "2026-08-02",
       "title": "Verified Agent handoffs and Calendar selection",
       "summary": "Makes every Agent information request a canonical Blocked task with a precise question and resume action. Answer and Hand Back records Tony's answer, completes the question, returns the same task to its assigned Agent with exact readback, and supports acknowledgement plus bounded follow-up questions without creating a new task. Calendar selection is compact, reports verified save feedback, and correctly reads selected EventKit events through the branded read-only helper."
+    },
+    {
+      "version": "V0.0.68",
+      "date": "2026-08-02",
+      "title": "Show blocked Agent work",
+      "summary": "Today and Blocked now load and display canonical blocked Agent tasks alongside Tony tasks, with deduplicated counts and refresh behavior."
     }
   ]
 }

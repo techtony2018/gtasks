@@ -168,6 +168,9 @@ tasks** preference performs no GBrain mutation. When enabled, GTasks reads only
 typed `member_of` backlinks from the three approved agent collections and
 shows each valid work item in its canonical status lane with a visible agent
 name and avatar placeholder. It never imports those items into Tony's Tasks.
+Blocked Agent work is always visible in Today's Blocked section and the
+dedicated Blocked view, independent of the Board preference, so work awaiting
+an unblock cannot disappear from Tony's action surfaces.
 Agent status changes use the same write/readback rules as Tony tasks while
 preserving the agent collection and exact assignment. Malformed typed members
 become Inbox-only Needs Attention warnings and never hide Tony's tasks.

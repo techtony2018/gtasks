@@ -7,6 +7,53 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class FrontendContractTests(unittest.TestCase):
 
+    def test_task_detail_markdown_keeps_blocks_and_inline_formatting(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        renderer = javascript[
+            javascript.index("function renderSafeMarkdown")
+            : javascript.index("const AGENT_TASKS_PREFERENCE_KEY")
+        ]
+
+        self.assertIn('<div class="detail-copy" id="detail-copy"></div>', html)
+        self.assertIn('document.createElement(`h${heading[1].length}`)', renderer)
+        self.assertIn('document.createElement(listType)', renderer)
+        self.assertIn('document.createElement("strong")', renderer)
+        self.assertIn('document.createElement("code")', renderer)
+        self.assertIn('appendInline(item, listItem[3])', renderer)
+        self.assertNotIn('document.createElement("strong"); appendInline(h', renderer)
+
+    def test_agent_blocked_tasks_are_visible_in_today_and_blocked_views(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function visibleBlockedTasks()", javascript)
+        visible_blocked = javascript[
+            javascript.index("function visibleBlockedTasks()")
+            : javascript.index("function rebuildDerivedTaskViews()")
+        ]
+        render_today = javascript[
+            javascript.index("function renderToday()")
+            : javascript.index("function simpleEmpty")
+        ]
+        render_list = javascript[
+            javascript.index("function renderListView")
+            : javascript.index("function renderWeekView")
+        ]
+        set_view = javascript[
+            javascript.index("function setView(view)")
+            : javascript.index("function setConnection")
+        ]
+
+        self.assertIn('task.status === "blocked"', visible_blocked)
+        self.assertIn("state.snapshot.views.blocked", visible_blocked)
+        self.assertIn("state.agentTasks", visible_blocked)
+        self.assertIn("visibleBlockedTasks()", render_today)
+        self.assertIn('view === "blocked" ? visibleBlockedTasks()', render_list)
+        self.assertIn('view === "today" || view === "blocked"', set_view)
+        self.assertIn("loadAgentWork();\nloadTasks", javascript)
+        self.assertIn("blocked: visibleBlockedTasks().length", javascript)
+
     def test_slow_reads_keep_surfaces_independent_and_last_valid_content_visible(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         render_body = javascript[

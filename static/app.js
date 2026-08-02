@@ -6,39 +6,80 @@ function renderSafeMarkdown(container, value) {
   container.replaceChildren();
   const lines = source.split(/\r?\n/);
   const appendInline = (target, text) => {
-    const pattern = /\[([^\]]{1,240})\]\(([^)\s]+)\)/g;
+    const pattern = /\[([^\]]{1,240})\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|`([^`\n]+)`/g;
     let cursor = 0;
     for (const match of text.matchAll(pattern)) {
       target.append(document.createTextNode(text.slice(cursor, match.index)));
-      const url = match[2];
-      if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/|\/media\/)/.test(url)) {
-        const link = document.createElement("a");
-        link.href = url;
-        link.textContent = match[1];
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        target.append(link);
-      } else target.append(document.createTextNode(match[0]));
+      if (match[3] !== undefined) {
+        const strong = document.createElement("strong");
+        strong.textContent = match[3];
+        target.append(strong);
+      } else if (match[4] !== undefined) {
+        const code = document.createElement("code");
+        code.textContent = match[4];
+        target.append(code);
+      } else {
+        const url = match[2];
+        if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/|\/media\/)/.test(url)) {
+          const link = document.createElement("a");
+          link.href = url;
+          link.textContent = match[1];
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          target.append(link);
+        } else target.append(document.createTextNode(match[0]));
+      }
       cursor = match.index + match[0].length;
     }
     target.append(document.createTextNode(text.slice(cursor)));
   };
   let paragraph = [];
-  const flush = () => {
+  let list = null;
+  let listType = null;
+  const flushParagraph = () => {
     if (!paragraph.length) return;
     const p = document.createElement("p");
     appendInline(p, paragraph.join("\n"));
     container.append(p);
     paragraph = [];
   };
+  const flushList = () => {
+    if (list) container.append(list);
+    list = null;
+    listType = null;
+  };
+  const flushBlocks = () => {
+    flushParagraph();
+    flushList();
+  };
   for (const line of lines) {
-    if (!line.trim()) { flush(); continue; }
-    if (/^#{1,3}\s+/.test(line)) {
-      flush(); const h = document.createElement("strong"); appendInline(h, line.replace(/^#{1,3}\s+/, "")); container.append(h); continue;
+    if (!line.trim()) { flushBlocks(); continue; }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushBlocks();
+      const h = document.createElement(`h${heading[1].length}`);
+      appendInline(h, heading[2]);
+      container.append(h);
+      continue;
     }
+    const listItem = line.match(/^\s*(?:([-+*])|(\d+)[.)])\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      const nextListType = listItem[2] ? "ol" : "ul";
+      if (listType !== nextListType) {
+        flushList();
+        listType = nextListType;
+        list = document.createElement(listType);
+      }
+      const item = document.createElement("li");
+      appendInline(item, listItem[3]);
+      list.append(item);
+      continue;
+    }
+    flushList();
     paragraph.push(line);
   }
-  flush();
+  flushBlocks();
   if (!container.childNodes.length) container.textContent = "No additional detail yet.";
 }
 
@@ -916,9 +957,20 @@ function allTodayTasks() {
   return [
     ...groups.in_progress,
     ...groups.todays_actions,
-    ...groups.waiting_and_blocked,
+    ...visibleBlockedTasks(),
     ...groups.overdue,
   ];
+}
+
+function visibleBlockedTasks() {
+  if (!state.snapshot) return [];
+  const blocked = [
+    ...state.snapshot.views.blocked,
+    ...state.agentTasks.filter((task) => task.status === "blocked"),
+  ];
+  return Array.from(
+    new Map(blocked.map((task) => [task.slug, task])).values(),
+  );
 }
 
 function rebuildDerivedTaskViews() {
@@ -1068,7 +1120,7 @@ function navCounts() {
     week: currentWeekTasks().length,
     board: state.snapshot.tasks.length,
     "agent-work": state.agentTasks.length,
-    blocked: state.snapshot.views.blocked.length,
+    blocked: visibleBlockedTasks().length,
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
     completed: state.snapshot.views.completed.length,
@@ -1324,6 +1376,7 @@ function goalsHomeSection() {
 function renderToday() {
   const fragment = document.createDocumentFragment();
   const groups = state.snapshot.today;
+  const blocked = visibleBlockedTasks();
   fragment.append(creationEntry("today"));
   if (!allTodayTasks().length) fragment.append(emptyActionState());
   fragment.append(
@@ -1343,7 +1396,7 @@ function renderToday() {
     ),
     section(
       "Blocked",
-      groups.waiting_and_blocked,
+      blocked,
       "Nothing is blocked.",
       0,
       { todayActions: true },
@@ -1375,7 +1428,7 @@ function simpleEmpty(meta) {
 }
 
 function renderListView(view) {
-  const tasks = state.snapshot.views[view] || [];
+  const tasks = view === "blocked" ? visibleBlockedTasks() : state.snapshot.views[view] || [];
   if (!tasks.length) {
     const fragment = document.createDocumentFragment();
     if (view === "inbox") fragment.append(creationEntry("inbox"));
@@ -4837,7 +4890,11 @@ function setView(view) {
   state.activeView = view;
   render();
   if (
-    (view === "agent-work" || (view === "board" && state.showAgentTasks)) &&
+    (
+      view === "agent-work" ||
+      view === "today" || view === "blocked" ||
+      (view === "board" && state.showAgentTasks)
+    ) &&
     !state.agentWorkLoaded
   ) {
     void loadAgentWork();
@@ -5390,7 +5447,12 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
 });
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });
-  if (state.agentWorkLoaded || state.showAgentTasks) loadAgentWork();
+  if (
+    state.agentWorkLoaded ||
+    state.showAgentTasks ||
+    state.activeView === "today" ||
+    state.activeView === "blocked"
+  ) loadAgentWork();
   loadProposals({ refresh: true });
 });
 elements.showAgentTasks.addEventListener("change", () => {
@@ -5622,4 +5684,5 @@ document.addEventListener("keydown", (event) => {
 
 bindHudTooltipEvents();
 loadReleases();
+loadAgentWork();
 loadTasks({ reason: "initial" });
