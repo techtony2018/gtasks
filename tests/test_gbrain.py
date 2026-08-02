@@ -82,7 +82,7 @@ class EntityTypePreservationTests(unittest.TestCase):
 
         content = _render_preserved_page(page, page["frontmatter"])
 
-        self.assertIn('"type": "task"', content)
+        self.assertIn('type: "task"', content)
 
 
 def stored_goal(slug: str, title: str) -> dict:
@@ -170,7 +170,8 @@ class StatefulTaskRunner:
             frontmatter = {}
             for line in lines[1:end]:
                 key, raw = line.split(": ", 1)
-                frontmatter[json.loads(key)] = json.loads(raw)
+                parsed_key = json.loads(key) if key.startswith('"') else key.strip()
+                frontmatter[parsed_key] = json.loads(raw)
             self.page = {
                 **self.page,
                 "type": frontmatter.get("type"),
@@ -405,7 +406,7 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
             {"from_slug": task_slug, "to_slug": "collections/toddys-tasks", "link_type": "member_of", "context": "Agent task", "link_source": "gtasks"},
             {"from_slug": task_slug, "to_slug": "collections/toddys-tasks", "link_type": "", "context": "Legacy agent scope", "link_source": "manual"},
             {"from_slug": task_slug, "to_slug": "agents/toddy", "link_type": "assigned_to", "context": "Agent owner", "link_source": "gtasks"},
-            {"from_slug": task_slug, "to_slug": goal_slug, "link_type": "advances_goal", "context": "Task goal", "link_source": "gtasks"},
+            {"from_slug": task_slug, "to_slug": goal_slug, "link_type": "advances_goal", "context": "Task goal", "link_source": "markdown"},
             {"from_slug": goal_slug, "to_slug": task_slug, "link_type": "advanced_by", "context": "Goal task", "link_source": "gtasks"},
             {"from_slug": project_slug, "to_slug": goal_slug, "link_type": "supports_goal", "context": "Project goal", "link_source": "gtasks"},
             {"from_slug": "agents/toddy", "to_slug": goal_slug, "link_type": "default_agent_for", "context": "Default owner", "link_source": "gtasks"},
@@ -506,6 +507,14 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
         relationship = adapter.read_goal_relationships("goals/health-label")
         self.assertEqual(relationship.goal_slug, new_goal)
         self.assertEqual(relationship.task_slugs, (new_task,))
+        self.assertNotIn(
+            "markdown",
+            [
+                params.get("link_source")
+                for tool, params in runner.calls
+                if tool == "add_link"
+            ],
+        )
 
     def test_legacy_task_slug_resolves_to_new_canonical_task(self) -> None:
         runner, mapping = self._fixture()
@@ -557,6 +566,56 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
                 (edge["from_slug"], edge["to_slug"], edge["link_type"])
                 for edge in runner.links
             },
+        )
+
+    def test_resumes_only_when_partial_destination_content_matches_plan(self) -> None:
+        runner, mapping = self._fixture()
+        adapter = GBrainAdapter(runner)
+        for old_slug, new_slug in mapping.items():
+            runner.run(
+                "put_page",
+                {
+                    "slug": new_slug,
+                    "content": adapter._migration_page_content(runner.pages[old_slug], mapping),
+                },
+            )
+        runner.calls.clear()
+
+        receipt = adapter.migrate_canonical_identities(mapping)
+
+        self.assertTrue(receipt.verified)
+        self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
+
+    def test_repairs_only_recognized_body_only_partial_destination(self) -> None:
+        runner, mapping = self._fixture()
+        adapter = GBrainAdapter(runner)
+        old_slug = "projects/wellbeing-plan"
+        new_slug = mapping[old_slug]
+        runner.pages[new_slug] = {
+            "slug": new_slug,
+            "type": "concept",
+            "title": "Incomplete migration residue",
+            "compiled_truth": runner.pages[old_slug]["compiled_truth"].split(
+                "\n---\n", 1
+            )[1],
+            "frontmatter": {},
+            "deleted_at": None,
+        }
+
+        with self.assertRaisesRegex(PartialMutationError, "does not exactly match"):
+            adapter.migrate_canonical_identities(mapping)
+
+        runner.calls.clear()
+        receipt = adapter.migrate_canonical_identities(
+            mapping,
+            repairable_partial_destinations=True,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertIn("put_page", [tool for tool, _params in runner.calls])
+        self.assertEqual(
+            runner.pages[new_slug]["compiled_truth"],
+            adapter._migration_page_content(runner.pages[old_slug], mapping),
         )
 
 
@@ -684,7 +743,7 @@ class AgentProfileReadTests(unittest.TestCase):
             for tool, params in runner.calls
             if tool == "put_page"
         )
-        self.assertIn('"type": "agent"', content)
+        self.assertIn('type: "agent"', content)
 
 
 class ProjectPersistenceTests(unittest.TestCase):
@@ -1268,8 +1327,8 @@ class GoalMutationTests(unittest.TestCase):
         written = next(
             params["content"] for tool, params in runner.calls if tool == "put_page"
         )
-        self.assertIn('"type": "goal"', written)
-        self.assertIn('"status": "paused"', written)
+        self.assertIn('type: "goal"', written)
+        self.assertIn('status: "paused"', written)
 
     def test_goal_update_accepts_gbrain_raw_concept_with_canonical_goal_frontmatter(self) -> None:
         page = stored_goal("goals/compiled-goal", "Compiled goal")
@@ -2520,9 +2579,9 @@ class TaskStatusMutationTests(unittest.TestCase):
         self.assertEqual(receipt.completed_at, now)
         self.assertEqual(receipt.task.status, "completed")
         written = runner.calls[2][1]["content"]
-        self.assertIn('"type": "task"', written)
+        self.assertIn('type: "task"', written)
         self.assertIn('"type": "member_of"', written)
-        self.assertIn('"captured_via": "capture-cli"', written)
+        self.assertIn('captured_via: "capture-cli"', written)
         self.assertIn("# Finish GTasks", written)
         self.assertNotIn("add_link", [tool for tool, _ in runner.calls])
         self.assertNotIn("remove_link", [tool for tool, _ in runner.calls])
@@ -2596,7 +2655,7 @@ class TaskStatusMutationTests(unittest.TestCase):
             for tool, params in runner.calls
             if tool == "put_page"
         )
-        self.assertIn('"type": "task"', content)
+        self.assertIn('type: "task"', content)
         self.assertIn('"type": "member_of"', content)
 
     def test_reopening_an_archived_task_restores_active_membership(self) -> None:
@@ -2793,10 +2852,10 @@ class TaskNextActionMutationTests(unittest.TestCase):
             for tool, params in runner.calls
             if tool == "put_page"
         )
-        self.assertIn('"type": "task"', written)
+        self.assertIn('type: "task"', written)
         self.assertIn('"type": "member_of"', written)
-        self.assertIn('"captured_via": "capture-cli"', written)
-        self.assertIn('"next_action_history": []', written)
+        self.assertIn('captured_via: "capture-cli"', written)
+        self.assertIn('next_action_history: []', written)
         self.assertIn("# Prepare interview", written)
         self.assertNotIn("add_link", [tool for tool, _params in runner.calls])
         self.assertNotIn("remove_link", [tool for tool, _params in runner.calls])

@@ -801,10 +801,28 @@ def _render_preserved_page(
         preserved["title"] = title.strip()
     lines = ["---"]
     for key, value in preserved.items():
-        lines.append(
-            f"{json.dumps(str(key), ensure_ascii=False)}: "
-            f"{json.dumps(value, ensure_ascii=False)}"
-        )
+        key_text = str(key)
+        # GBrain's Markdown frontmatter compiler accepts YAML values (including
+        # JSON flow values) but requires ordinary bare field names. Quoted YAML
+        # keys are syntactically legal YAML yet are ignored by that compiler,
+        # which would silently strip task/project fields on a rewrite.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key_text):
+            raise GBrainProtocolError(
+                f"cannot safely preserve unsupported frontmatter key: {key_text}"
+            )
+        if value is None:
+            rendered = "null"
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            rendered = str(value)
+        elif isinstance(value, str):
+            rendered = json.dumps(value, ensure_ascii=False)
+        else:
+            # JSON flow collections are valid YAML and preserve nested links,
+            # metrics, receipts, and history without inventing a second parser.
+            rendered = json.dumps(value, ensure_ascii=False)
+        lines.append(f"{key_text}: {rendered}")
     lines.extend(["---", "", body.rstrip(), ""])
     return "\n".join(lines)
 
@@ -1189,8 +1207,13 @@ class GBrainAdapter:
         source = edge.get("link_source")
         if isinstance(context, str) and context:
             descriptor["context"] = context
-        if isinstance(source, str) and source:
+        # GBrain owns the `markdown` provenance during its own reconciliation
+        # pass and rejects callers trying to forge it. Retain relationship
+        # semantics/context but record migration as the explicit writer.
+        if isinstance(source, str) and source and source != "markdown":
             descriptor["link_source"] = source
+        elif source == "markdown":
+            descriptor["link_source"] = "gtasks-identity-migration"
         return descriptor
 
     def resolve_canonical_slug(self, slug: str) -> str:
@@ -1227,6 +1250,8 @@ class GBrainAdapter:
         mapping: Mapping[str, str],
         *,
         excluded: tuple[str, ...] = (),
+        allow_matching_destinations: bool = False,
+        allow_repairable_partial_destinations: bool = False,
     ) -> dict[str, Any]:
         """Build a mutation-free source/destination and relationship audit."""
         normalized = self._validate_identity_mapping(mapping)
@@ -1235,17 +1260,6 @@ class GBrainAdapter:
         entities: list[dict[str, Any]] = []
         goal_repairs: list[str] = []
         for old_slug, new_slug in normalized.items():
-            try:
-                existing = self.runner.run(
-                    "get_page", {"slug": new_slug, "include_deleted": True}
-                )
-            except GBrainCommandError as exc:
-                if "page_not_found" not in str(exc):
-                    raise
-            else:
-                if isinstance(existing, Mapping):
-                    raise ValueError(f"migration destination already exists: {new_slug}")
-                raise GBrainProtocolError("migration destination readback was not structured")
             page = self.runner.run(
                 "get_page", {"slug": old_slug, "include_deleted": True}
             )
@@ -1288,6 +1302,40 @@ class GBrainAdapter:
             elif kind == "tasks" and page.get("type") != "task":
                 raise ValueError(f"task has unexpected page type: {old_slug}")
             content = self._migration_page_content(page, normalized)
+            destination_state = "missing"
+            try:
+                existing = self.runner.run(
+                    "get_page", {"slug": new_slug, "include_deleted": True}
+                )
+            except GBrainCommandError as exc:
+                if "page_not_found" not in str(exc):
+                    raise
+            else:
+                if not isinstance(existing, Mapping):
+                    raise GBrainProtocolError("migration destination readback was not structured")
+                source_compiled = page.get("compiled_truth")
+                partial_body = (
+                    source_compiled.split("\n---\n", 1)[1]
+                    if isinstance(source_compiled, str)
+                    and source_compiled.startswith("---\n")
+                    and "\n---\n" in source_compiled
+                    else source_compiled
+                )
+                repairable_partial = (
+                    not existing.get("deleted_at")
+                    and existing.get("compiled_truth") == partial_body
+                )
+                if existing.get("deleted_at") or existing.get("compiled_truth") != content:
+                    if allow_repairable_partial_destinations and repairable_partial:
+                        destination_state = "repairable_partial_body_only"
+                    else:
+                        raise ValueError(
+                            f"migration destination does not match the approved plan: {new_slug}"
+                        )
+                elif not allow_matching_destinations:
+                    raise ValueError(f"migration destination already exists: {new_slug}")
+                elif destination_state == "missing":
+                    destination_state = "resumable_exact"
             entities.append(
                 {
                     "old_slug": old_slug,
@@ -1296,6 +1344,7 @@ class GBrainAdapter:
                     "raw_type": page.get("type"),
                     "scope_root": next(iter(scope_roots)),
                     "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "destination_state": destination_state,
                     "outgoing_edges": len([edge for edge in outgoing if isinstance(edge, Mapping)]),
                     "incoming_edges": len([edge for edge in incoming if isinstance(edge, Mapping)]),
                 }
@@ -1317,6 +1366,7 @@ class GBrainAdapter:
         mapping: Mapping[str, str],
         *,
         excluded: tuple[str, ...] = (),
+        repairable_partial_destinations: bool = False,
     ) -> IdentityMigrationReceipt:
         """Copy and relink canonical entities to opaque IDs without deleting history.
 
@@ -1331,21 +1381,11 @@ class GBrainAdapter:
             raise ValueError("excluded identities must not appear in the migration mapping")
 
         pages: dict[str, Mapping[str, Any]] = {}
+        destination_content: dict[str, str] = {}
+        destinations_to_write: set[str] = set()
         source_edges: dict[tuple[str, str, str], Mapping[str, Any]] = {}
         source_edge_keys_by_slug: dict[str, set[tuple[str, str, str]]] = {}
         for old_slug, new_slug in normalized.items():
-            try:
-                existing = self.runner.run(
-                    "get_page", {"slug": new_slug, "include_deleted": True}
-                )
-            except GBrainCommandError as exc:
-                if "page_not_found" not in str(exc):
-                    raise
-            else:
-                if isinstance(existing, Mapping):
-                    raise ValueError(f"migration destination already exists: {new_slug}")
-                raise GBrainProtocolError("migration destination readback was not structured")
-
             page = self.runner.run(
                 "get_page", {"slug": old_slug, "include_deleted": True}
             )
@@ -1363,6 +1403,38 @@ class GBrainAdapter:
             elif page.get("type") != "task":
                 raise ValueError(f"task has unexpected page type: {old_slug}")
             pages[old_slug] = page
+            content = self._migration_page_content(page, normalized)
+            destination_content[old_slug] = content
+            try:
+                existing = self.runner.run(
+                    "get_page", {"slug": new_slug, "include_deleted": True}
+                )
+            except GBrainCommandError as exc:
+                if "page_not_found" not in str(exc):
+                    raise
+                destinations_to_write.add(old_slug)
+            else:
+                if not isinstance(existing, Mapping):
+                    raise GBrainProtocolError("migration destination readback was not structured")
+                if existing.get("deleted_at") or existing.get("compiled_truth") != content:
+                    source_compiled = page.get("compiled_truth")
+                    partial_body = (
+                        source_compiled.split("\n---\n", 1)[1]
+                        if isinstance(source_compiled, str)
+                        and source_compiled.startswith("---\n")
+                        and "\n---\n" in source_compiled
+                        else source_compiled
+                    )
+                    repairable_partial = (
+                        not existing.get("deleted_at")
+                        and existing.get("compiled_truth") == partial_body
+                    )
+                    if not repairable_partial_destinations or not repairable_partial:
+                        raise PartialMutationError(
+                            old_slug,
+                            "Existing migration destination does not exactly match the approved plan.",
+                        )
+                    destinations_to_write.add(old_slug)
             source_edge_keys_by_slug[old_slug] = {
                 self._migration_edge_key(raw_edge)
                 for raw_edge in [*outgoing, *incoming]
@@ -1376,17 +1448,23 @@ class GBrainAdapter:
                     continue
                 source_edges.setdefault(key, raw_edge)
 
-        for old_slug, page in pages.items():
+        for old_slug in destinations_to_write:
             self.runner.run(
                 "put_page",
                 {
                     "slug": normalized[old_slug],
-                    "content": self._migration_page_content(page, normalized),
+                    "content": destination_content[old_slug],
                     "source_kind": "gtasks-identity-migration",
                     "source_uri": f"gbrain://{old_slug}",
                     "ingested_via": "gtasks-identity-migration",
                 },
             )
+            readback = self.runner.run("get_page", {"slug": normalized[old_slug]})
+            if not isinstance(readback, Mapping) or readback.get("compiled_truth") != destination_content[old_slug]:
+                raise PartialMutationError(
+                    old_slug,
+                    "Migrated page content did not read back exactly after write.",
+                )
 
         desired_edges: dict[tuple[str, str, str], dict[str, Any]] = {}
         migrated_kinds = {

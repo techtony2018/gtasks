@@ -106,13 +106,26 @@ def main() -> int:
         "--confirm",
         help="execute requires the exact migration_id as a deliberate live-data guard",
     )
+    parser.add_argument(
+        "--repair-partial-destinations",
+        action="store_true",
+        help=(
+            "repair only the recognized body-only residue from an interrupted "
+            "approved migration; requires execute and exact confirmation"
+        ),
+    )
     args = parser.parse_args()
+    if args.repair_partial_destinations and args.mode != "execute":
+        raise ValueError("--repair-partial-destinations is only valid with execute")
 
     plan = load_plan(args.plan)
     adapter = GBrainAdapter()
     before_scope = verify_scope(adapter, plan, migrated=False)
     audit = adapter.audit_canonical_identity_migration(
-        plan["mapping"], excluded=tuple(plan["excluded"])
+        plan["mapping"],
+        excluded=tuple(plan["excluded"]),
+        allow_matching_destinations=args.mode == "execute",
+        allow_repairable_partial_destinations=args.repair_partial_destinations,
     )
     result: dict[str, Any] = {
         "migration_id": plan["migration_id"],
@@ -129,7 +142,9 @@ def main() -> int:
                 "execute requires --confirm with the exact migration_id"
             )
         receipt = adapter.migrate_canonical_identities(
-            plan["mapping"], excluded=tuple(plan["excluded"])
+            plan["mapping"],
+            excluded=tuple(plan["excluded"]),
+            repairable_partial_destinations=args.repair_partial_destinations,
         )
         result["mutation"] = receipt.to_dict()
         result["after_scope"] = verify_scope(adapter, plan, migrated=True)
