@@ -1002,6 +1002,22 @@ kbd {
   font-size: 11px;
 }
 
+.task-surface-loading {
+  display: block;
+  padding: 18px 0;
+}
+
+.task-surface-loading h2,
+.task-surface-loading p {
+  margin: 0 0 8px;
+}
+
+.surface-read-state {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .simple-empty {
   min-height: 360px;
   display: grid;
@@ -1130,7 +1146,7 @@ kbd {
   margin: 10px 0 0;
 }
 
-.next-action-editor {
+.task-todos {
   margin: 22px 0 14px;
   padding: 15px;
   border: 1px solid var(--line);
@@ -1138,30 +1154,84 @@ kbd {
   background: var(--surface-muted);
 }
 
-.next-action-editor > label {
-  display: block;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 750;
+.task-todo-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.next-action-editor > p {
-  margin: 5px 0 11px;
+.task-todo-heading-row h3,
+.task-todo-card h4,
+.task-todo-card h5 {
+  margin: 0;
+}
+
+.task-todo-heading-row p {
+  margin: 4px 0 0;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
 }
 
-.next-action-controls {
+.task-todo-filter {
+  display: flex;
+  gap: 4px;
+}
+
+.task-todo-filter button {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.task-todo-filter button.is-active,
+.task-todo-filter button:focus-visible {
+  border-color: var(--accent);
+  color: var(--ink);
+  outline: none;
+}
+
+.task-todo-add-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.task-todo-add-form label {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.task-todo-add-form label span,
+.task-todo-provenance,
+.task-todo-detail-copy,
+.task-todo-comments small,
+.task-todo-history small {
+  color: var(--muted);
+}
+
+.task-todo-add-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 
-.next-action-controls input {
-  min-width: 0;
-  height: 38px;
-  padding: 0 11px;
+.task-todo-add-form input,
+.task-todo-add-form textarea,
+.task-todo-add-form select,
+.task-todo-edit-form input,
+.task-todo-edit-form textarea,
+.task-todo-comment-form textarea {
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--surface);
@@ -1170,16 +1240,139 @@ kbd {
   font-size: 12px;
 }
 
-.next-action-controls input:focus {
+.task-todo-add-form input,
+.task-todo-add-form select,
+.task-todo-edit-form input {
+  min-height: 38px;
+  padding: 0 11px;
+}
+
+.task-todo-add-form textarea,
+.task-todo-edit-form textarea,
+.task-todo-comment-form textarea {
+  min-height: 58px;
+  padding: 9px 11px;
+  resize: vertical;
+}
+
+.task-todo-add-form :focus,
+.task-todo-card :focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
   outline-offset: 1px;
 }
 
-.next-action-controls .secondary-button {
-  min-height: 38px;
+.task-todo-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
 }
 
-.next-action-editor .form-error {
+.task-todo-card {
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.task-todo-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-todo-card-heading > div {
+  min-width: 0;
+}
+
+.task-todo-card h4 {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-todo-status {
+  display: inline-flex;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent-dark);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.task-todo-status.done {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+}
+
+.task-todo-details {
+  margin-top: 9px;
+}
+
+.task-todo-details > summary {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  color: var(--accent-dark);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.task-todo-provenance,
+.task-todo-detail-copy {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.task-todo-edit-form,
+.task-todo-comment-form {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 13px;
+}
+
+.task-todo-edit-form .secondary-button,
+.task-todo-comment-form .secondary-button {
+  justify-self: start;
+}
+
+.task-todo-card h5 {
+  margin-top: 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.task-todo-comments,
+.task-todo-history {
+  display: grid;
+  gap: 6px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task-todo-comments li,
+.task-todo-history li {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.task-todo-comments p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-todos .form-error {
   margin: 9px 0 0;
 }
 
@@ -4781,6 +4974,44 @@ button:active {
   .task-row-actions {
     justify-self: end;
     gap: 3px;
+  }
+
+  .task-todos {
+    padding: 12px;
+  }
+
+  .task-todo-heading-row,
+  .task-todo-card-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .task-todo-filter {
+    width: 100%;
+  }
+
+  .task-todo-filter button,
+  .task-todo-card-heading > .secondary-button {
+    min-height: 44px;
+  }
+
+  .task-todo-filter button {
+    flex: 1;
+  }
+
+  .task-todo-add-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-todo-add-row .secondary-button,
+  .task-todo-edit-form .secondary-button,
+  .task-todo-comment-form .secondary-button {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .task-todo-details > summary {
+    min-height: 44px;
   }
 }
 

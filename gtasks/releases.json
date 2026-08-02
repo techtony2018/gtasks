@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.64",
+  "current_version": "V0.0.65",
   "releases": [
     {
       "version": "V0.0.1",
@@ -384,6 +384,12 @@
       "date": "2026-08-01",
       "title": "Proposal decision history",
       "summary": "Keeps approved and rejected proposals visible in Inbox with atomic canonical decision events, review-state labels, and a durable task-detail timeline."
+    },
+    {
+      "version": "V0.0.65",
+      "date": "2026-08-01",
+      "title": "Canonical To Dos and responsive reads",
+      "summary": "Replaces single Next Action editing with stable per-task To Do records, append-only comments, idempotent audit history, and verified item-level APIs. Task and proposal reads now coalesce in the background, retain clearly labelled last-verified data during slow GBrain refreshes, and define an explicit isolated QA-fixture scope so test work cannot become Tony work."
     }
   ]
 }

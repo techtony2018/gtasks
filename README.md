@@ -1,6 +1,6 @@
 # GTasks
 
-GTasks is a local task-oriented interface for Tony's GBrain. GBrain remains the canonical store: this repository contains application code, tests, and static assets, but no task database, task cache file, or duplicate task ledger.
+GTasks is a local task-oriented interface for Tony's GBrain. GBrain remains the canonical store: this repository contains application code, tests, and static assets, but no task database or duplicate task ledger. A private local last-valid read projection may cache already-verified API output solely to keep the interface usable during a slow GBrain refresh; it never accepts writes or becomes canonical state.
 
 ## Run
 
@@ -62,10 +62,20 @@ This rule also applies to System Ticket nightly-automation UI work.
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
 Refresh, and a hidden tab defers work until it becomes visible again.
-The server also coalesces duplicate initial snapshots for 30 seconds and caps
-aggregate GBrain command concurrency to prevent multi-tab request stampedes.
-Manual and automatic Refresh explicitly bypass that short cache, and every
-verified mutation invalidates it.
+The server also coalesces duplicate task and proposal reads, caps aggregate
+GBrain command concurrency to prevent multi-tab request stampedes, and stores
+the last verified projections in a private `0600` local file. Slow refreshes
+run in the background: each surface shows its own explicit refreshing, stale,
+or error state while independently available data remains usable. Manual and
+automatic Refresh explicitly invalidate the relevant projection; verified
+mutations invalidate task and proposal projections together.
+
+Independent UI QA fixtures must never be created in Tony's Tasks or an Agent
+work root. Their explicit contract is one typed `member_of` relationship to
+`collections/mission-control-qa-fixtures`, `qa_fixture: true`, a non-empty
+`qa_owner`, and an optional `qa_release`. Mission Control rejects QA metadata
+in any personal or Agent scope and rejects unmarked records in the QA scope;
+it never hides a personal task based on title or prose.
 
 Projects are scoped exclusively through the canonical
 `collections/tonys-projects` collection. A project appears in GTasks only when
@@ -197,8 +207,9 @@ due date:
 - If the user chooses a date, GTasks preserves it.
 - If the user leaves the date blank, GTasks uses the task creation day in the server's local timezone (Tony's local date).
 
-The full Create Task form adds detail, priority, Next Action, project, goal,
-and optional progress tracking. A count metric has a
+The full Create Task form adds detail, priority, an optional initial To Do,
+project, goal, and optional progress tracking. The To Do is created as its own
+canonical child record after the parent task is verified. A count metric has a
 user-facing label, positive target, and current value from zero through the
 target. Unmetered tasks are unchanged. A manual metric does not complete a task
 merely because its initial current value equals its target.
@@ -246,12 +257,17 @@ always equals both unique evidence and receipt counts. GTasks requires
 `job_applied` event completes the task, using the same verified canonical
 status mutation as the UI.
 
-Task detail is read-only by default. Select Edit to change title, status,
-priority, due date, next action, project, associated goal, optional metric, or
-assignee in one form. The detail surface retains navigation and its single Edit
-action, avoiding competing field-level saves. Duplicate is a reviewable action
-in the canonical task workflow. It copies task intent,
-priority, Next Action, project, goal, and metric configuration, while resetting
+Task detail exposes a per-task To Do list with All, Not Done, and Done filters.
+Each item can be opened for its detail, append-only comments, and audit history;
+text/detail edits and status changes use the item's last-read timestamp to
+reject lost updates. Marking an item Done never completes its parent task.
+
+Select Edit to change the parent task's title, status, priority, due date,
+project, associated goal, optional metric, or assignee in one form. To Do
+changes stay on the individual item so task edits cannot bypass item history.
+Duplicate is a reviewable action in the canonical task workflow. It copies task
+intent, priority, the first open To Do as a new initial item, project, goal, and
+metric configuration, while resetting
 status to Planned, current progress to zero, event evidence and receipts to
 empty, and completion time to none. The user reviews and chooses the new due
 day before the new GBrain task is created and read back.
@@ -265,6 +281,7 @@ summary: One-line task summary
 detail: ""
 priority: normal
 next_action: ""
+next_action_history: []
 due_day: YYYY-MM-DD
 scheduled_day: null
 inbox: true
@@ -273,6 +290,37 @@ links:
   - to: collections/tonys-tasks
     type: member_of
 ```
+
+`next_action` and `next_action_history` are a bounded read-only compatibility
+projection during migration: they are recomputed from canonical To Do records
+and have no Mission Control write endpoint. Once initialized, the parent also
+records `todo_projection_version: 1`. New data uses three stable Markdown
+record types:
+
+```yaml
+# todos/<uuid>
+type: todo
+text: One concrete action
+detail: ""
+status: not_done # or done
+kind: action # or question/blocker
+created_at: 2026-08-01T20:00:00-07:00
+updated_at: 2026-08-01T20:00:00-07:00
+creator: people/tony-guan
+source: mission_control
+links:
+  - to: tasks/<uuid>
+    type: todo_for
+
+# todo-comments/<uuid> and todo-events/<uuid> each link to exactly one Todo
+# with comment_on and event_for respectively.
+```
+
+Comments are append-only. Creation, edits, comments, and status changes create
+stable idempotent audit events. Legacy current actions migrate to Not Done;
+legacy history migrates to Done with known timestamps and explicit legacy
+provenance. Migration and retries derive stable identities and create no
+duplicates.
 
 The domain model also validates these typed relationships:
 

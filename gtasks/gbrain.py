@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import hashlib
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from threading import BoundedSemaphore
-from typing import Any, Mapping, Protocol
-from urllib.parse import quote
+from pathlib import Path
+from threading import Condition, Lock, current_thread
+from time import sleep, time
+from typing import Any, Mapping, Protocol, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 from .domain import (
     ACTIVE_ROOT,
@@ -32,16 +38,20 @@ from .domain import (
     ProgressMetric,
     Project,
     PROPOSALS_ROOT,
+    QA_FIXTURES_ROOT,
     SYSTEM_TICKETS_ROOT,
     SystemTicket,
     TASK_SCOPE_ROOTS,
     Task,
     TaskProposal,
+    TodoComment,
+    TodoEvent,
+    TodoItem,
     new_task,
 )
 
 
-APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
+APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
 TONY_PROFILE_SLUG = "people/tony-guan"
 _MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
@@ -81,6 +91,16 @@ class LifecycleIntegrityError(ValueError):
         )
 
 
+class ConcurrentTodoUpdateError(ValueError):
+    """The canonical To Do changed after the caller rendered it."""
+
+    def __init__(self, todo_slug: str) -> None:
+        self.todo_slug = todo_slug
+        super().__init__(
+            f"To Do {todo_slug} changed since it was read. Refresh the task and retry the same item."
+        )
+
+
 class PartialMutationError(GBrainError):
     """A page may exist in GBrain, but the complete mutation was not verified."""
 
@@ -97,17 +117,54 @@ class SubprocessCommandRunner:
     def __init__(self, executable: str = "gbrain", timeout_seconds: float = 30) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
-        # Every gbrain CLI subprocess negotiates OAuth independently. Keep a
-        # narrow shared lane so concurrent dashboard reads remain responsive
-        # without recreating the /token burst that caused partial snapshots.
-        self._concurrency = BoundedSemaphore(2)
+        # Every gbrain CLI subprocess negotiates OAuth independently. A single
+        # canonical lane prevents concurrent token mints from invalidating
+        # otherwise safe reads. Higher-level adapters may still prepare work
+        # concurrently, but the remote CLI boundary remains serialized.
+        self._lane_condition = Condition()
+        self._lane_active = False
+        self._foreground_operations = 0
+        self._auth_recovery = Lock()
+
+    @contextmanager
+    def foreground_operation(self):
+        with self._lane_condition:
+            self._foreground_operations += 1
+            self._lane_condition.notify_all()
+        try:
+            yield
+        finally:
+            with self._lane_condition:
+                self._foreground_operations -= 1
+                self._lane_condition.notify_all()
+
+    @contextmanager
+    def _lane(self):
+        is_background_refresh = (
+            current_thread().name.startswith("gtasks-")
+            and current_thread().name.endswith("-refresh")
+        )
+        with self._lane_condition:
+            while self._lane_active or (
+                is_background_refresh and self._foreground_operations
+            ):
+                self._lane_condition.wait()
+            self._lane_active = True
+        try:
+            yield
+        finally:
+            with self._lane_condition:
+                self._lane_active = False
+                self._lane_condition.notify_all()
 
     def run(self, tool: str, params: dict[str, Any]) -> object:
         payload = json.dumps(params, separators=(",", ":"))
-        with self._concurrency:
+        command = [self.executable, "call", tool, payload]
+
+        def invoke() -> subprocess.CompletedProcess[str]:
             try:
-                result = subprocess.run(
-                    [self.executable, "call", tool, payload],
+                return subprocess.run(
+                    command,
                     check=False,
                     capture_output=True,
                     text=True,
@@ -122,8 +179,39 @@ class SubprocessCommandRunner:
                     f"GBrain tool {tool} timed out after {self.timeout_seconds:g}s"
                 ) from exc
 
+        with self._lane():
+            result = invoke()
+
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        safe_read = tool in {"get_page", "get_links", "get_backlinks", "list_pages"}
+        if (
+            result.returncode != 0
+            and safe_read
+            and "auth failed after token refresh" in detail.casefold()
+        ):
+            # The CLI authenticates per process. If two safe reads race a token
+            # refresh, perform a bounded serialized recovery with one short
+            # cooldown. Never retry a write because its remote outcome may be
+            # ambiguous.
+            with self._auth_recovery:
+                with self._lane():
+                    for recovery_attempt in range(2):
+                        if recovery_attempt:
+                            sleep(0.5)
+                        result = invoke()
+                        detail = (
+                            result.stderr.strip()
+                            or result.stdout.strip()
+                            or "unknown error"
+                        )
+                        if (
+                            result.returncode == 0
+                            or "auth failed after token refresh"
+                            not in detail.casefold()
+                        ):
+                            break
+
         if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise GBrainCommandError(f"GBrain tool {tool} failed: {detail}")
         try:
             return json.loads(result.stdout)
@@ -131,6 +219,175 @@ class SubprocessCommandRunner:
             raise GBrainProtocolError(
                 f"GBrain tool {tool} returned invalid JSON"
             ) from exc
+
+
+class RemoteHttpCommandRunner(SubprocessCommandRunner):
+    """Persistent-token thin-client runner for the remote stateless MCP."""
+
+    def __init__(
+        self,
+        *,
+        config_path: Path | None = None,
+        timeout_seconds: float = 30,
+    ) -> None:
+        super().__init__(timeout_seconds=timeout_seconds)
+        self._config_path = config_path or self._default_config_path()
+        self._token_lock = Lock()
+        self._token: str | None = None
+        self._token_expires_at = 0.0
+        self._token_endpoint: str | None = None
+
+    @staticmethod
+    def _default_config_path() -> Path:
+        configured_home = os.environ.get("GBRAIN_HOME")
+        base = Path(configured_home).expanduser() if configured_home else Path.home()
+        return base / ".gbrain" / "config.json"
+
+    def _remote_config(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+            raise GBrainCommandError("GBrain remote config is unavailable") from exc
+        remote = raw.get("remote_mcp") if isinstance(raw, Mapping) else None
+        if not isinstance(remote, Mapping):
+            raise GBrainCommandError("GBrain remote_mcp config is unavailable")
+        result: dict[str, str] = {}
+        for field in ("issuer_url", "mcp_url", "oauth_client_id"):
+            value = remote.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise GBrainCommandError(f"GBrain remote_mcp {field} is unavailable")
+            result[field] = value.strip()
+        secret = os.environ.get("GBRAIN_REMOTE_CLIENT_SECRET") or remote.get(
+            "oauth_client_secret"
+        )
+        if not isinstance(secret, str) or not secret:
+            raise GBrainCommandError("GBrain remote client secret is unavailable")
+        result["oauth_client_secret"] = secret
+        return result
+
+    def _read_json_response(self, request: Request) -> object:
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+                content_type = response.headers.get("Content-Type", "")
+        except HTTPError as exc:
+            raise GBrainCommandError(
+                f"GBrain remote request failed with HTTP {exc.code}"
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise GBrainCommandError("GBrain remote request failed") from exc
+        try:
+            if "text/event-stream" in content_type:
+                data_lines = [
+                    line[5:].strip()
+                    for line in raw.splitlines()
+                    if line.startswith("data:")
+                ]
+                if not data_lines:
+                    raise ValueError("missing SSE data")
+                return json.loads(data_lines[-1])
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise GBrainProtocolError("GBrain remote response was invalid") from exc
+
+    def _access_token(self, remote: Mapping[str, str]) -> str:
+        with self._token_lock:
+            if self._token is not None and self._token_expires_at > time() + 30:
+                return self._token
+            if self._token_endpoint is None:
+                discovery_url = (
+                    remote["issuer_url"].rstrip("/")
+                    + "/.well-known/oauth-authorization-server"
+                )
+                metadata = self._read_json_response(Request(discovery_url))
+                endpoint = (
+                    metadata.get("token_endpoint")
+                    if isinstance(metadata, Mapping)
+                    else None
+                )
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise GBrainProtocolError(
+                        "GBrain OAuth discovery omitted token_endpoint"
+                    )
+                self._token_endpoint = endpoint
+            body = urlencode(
+                {
+                    "grant_type": "client_credentials",
+                    "client_id": remote["oauth_client_id"],
+                    "client_secret": remote["oauth_client_secret"],
+                }
+            ).encode("utf-8")
+            token_payload = self._read_json_response(
+                Request(
+                    self._token_endpoint,
+                    data=body,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+            )
+            token = (
+                token_payload.get("access_token")
+                if isinstance(token_payload, Mapping)
+                else None
+            )
+            if not isinstance(token, str) or not token:
+                raise GBrainProtocolError("GBrain OAuth response omitted access_token")
+            expires_in = token_payload.get("expires_in", 3600)
+            ttl = float(expires_in) if isinstance(expires_in, (int, float)) else 3600.0
+            self._token = token
+            self._token_expires_at = time() + max(60.0, ttl)
+            return token
+
+    def _call(self, remote: Mapping[str, str], token: str, tool: str, params: dict[str, Any]) -> object:
+        envelope = self._read_json_response(
+            Request(
+                remote["mcp_url"],
+                data=json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": uuid.uuid4().hex,
+                        "method": "tools/call",
+                        "params": {"name": tool, "arguments": params},
+                    },
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+            )
+        )
+        result = envelope.get("result") if isinstance(envelope, Mapping) else None
+        if not isinstance(result, Mapping):
+            raise GBrainProtocolError("GBrain remote response omitted result")
+        content = result.get("content")
+        text_blocks = [
+            item.get("text", "")
+            for item in content
+            if isinstance(item, Mapping) and item.get("type") == "text"
+        ] if isinstance(content, list) else []
+        if result.get("isError"):
+            detail = "\n".join(str(value) for value in text_blocks if value).strip()
+            raise GBrainCommandError(
+                f"GBrain tool {tool} failed: {detail or 'unknown remote error'}"
+            )
+        if not text_blocks:
+            structured = result.get("structuredContent")
+            if structured is not None:
+                return structured
+            raise GBrainProtocolError("GBrain remote result omitted text content")
+        try:
+            return json.loads(str(text_blocks[-1]))
+        except json.JSONDecodeError as exc:
+            raise GBrainProtocolError(
+                f"GBrain tool {tool} returned invalid JSON"
+            ) from exc
+
+    def run(self, tool: str, params: dict[str, Any]) -> object:
+        remote = self._remote_config()
+        with self._lane():
+            token = self._access_token(remote)
+            return self._call(remote, token, tool, params)
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +621,36 @@ class NextActionMutationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class TodoRead:
+    todos: tuple[TodoItem, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+    next_cursor: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "todos": [todo.to_dict() for todo in self.todos],
+            "issues": [issue.to_dict() for issue in self.issues],
+            "next_cursor": self.next_cursor,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TodoMutationReceipt:
+    todo: TodoItem
+    verified: bool
+    idempotent: bool = False
+    parent_relationship_verified: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "todo": self.todo.to_dict(),
+            "verified": self.verified,
+            "idempotent": self.idempotent,
+            "parent_relationship_verified": self.parent_relationship_verified,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaskProgressMetricReceipt:
     task_slug: str
     task: Task
@@ -540,6 +827,9 @@ def render_task_page(task: Task) -> str:
             + _yaml_scalar(task.scheduled_day.isoformat() if task.scheduled_day else None)
         ),
         f"inbox: {_yaml_scalar(task.inbox)}",
+        f"qa_fixture: {_yaml_scalar(task.qa_fixture)}",
+        f"qa_owner: {_yaml_scalar(task.qa_owner)}",
+        f"qa_release: {_yaml_scalar(task.qa_release)}",
         (
             "completed_at: "
             + _yaml_scalar(task.completed_at.isoformat() if task.completed_at else None)
@@ -592,6 +882,94 @@ def render_task_page(task: Task) -> str:
     if task.detail:
         lines.extend([task.detail, ""])
     return "\n".join(lines)
+
+
+def render_todo_page(todo: TodoItem) -> str:
+    lines = [
+        "---",
+        "type: todo",
+        f"title: {_yaml_scalar(todo.text)}",
+        f"text: {_yaml_scalar(todo.text)}",
+        f"detail: {_yaml_scalar(todo.detail)}",
+        f"status: {_yaml_scalar(todo.status)}",
+        f"kind: {_yaml_scalar(todo.kind)}",
+        f"parent_task: {_yaml_scalar(todo.parent_task)}",
+        f"created_at: {_yaml_scalar(todo.created_at.isoformat())}",
+        f"updated_at: {_yaml_scalar(todo.updated_at.isoformat())}",
+        f"creator: {_yaml_scalar(todo.creator)}",
+        f"source: {_yaml_scalar(todo.source)}",
+        "comment_slugs: " + json.dumps(list(todo.comment_slugs), ensure_ascii=False),
+        "event_slugs: " + json.dumps(list(todo.event_slugs), ensure_ascii=False),
+        "legacy_provenance: "
+        + json.dumps(
+            dict(todo.legacy_provenance) if todo.legacy_provenance is not None else None,
+            ensure_ascii=False,
+        ),
+        "links:",
+        f"  - to: {_yaml_scalar(todo.parent_task)}",
+        "    type: todo_for",
+        "    context: Canonical parent task for this To Do.",
+        "---",
+        "",
+        f"# {todo.text}",
+        "",
+    ]
+    if todo.detail:
+        lines.extend([todo.detail, ""])
+    return "\n".join(lines)
+
+
+def render_todo_comment_page(comment: TodoComment) -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: todo_comment",
+            f"title: {_yaml_scalar('Comment on ' + comment.todo_slug)}",
+            f"todo_slug: {_yaml_scalar(comment.todo_slug)}",
+            f"body: {_yaml_scalar(comment.body)}",
+            f"author: {_yaml_scalar(comment.author)}",
+            f"source: {_yaml_scalar(comment.source)}",
+            f"created_at: {_yaml_scalar(comment.created_at.isoformat())}",
+            f"idempotency_key: {_yaml_scalar(comment.idempotency_key)}",
+            "links:",
+            f"  - to: {_yaml_scalar(comment.todo_slug)}",
+            "    type: comment_on",
+            "    context: Append-only comment on this To Do.",
+            "---",
+            "",
+            comment.body,
+            "",
+        ]
+    )
+
+
+def render_todo_event_page(event: TodoEvent) -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: todo_event",
+            f"title: {_yaml_scalar(event.event_type + ' · ' + event.todo_slug)}",
+            f"todo_slug: {_yaml_scalar(event.todo_slug)}",
+            f"event_type: {_yaml_scalar(event.event_type)}",
+            f"actor: {_yaml_scalar(event.actor)}",
+            f"source: {_yaml_scalar(event.source)}",
+            f"occurred_at: {_yaml_scalar(event.occurred_at.isoformat())}",
+            f"idempotency_key: {_yaml_scalar(event.idempotency_key)}",
+            "before: "
+            + json.dumps(dict(event.before) if event.before is not None else None, ensure_ascii=False),
+            "after: "
+            + json.dumps(dict(event.after) if event.after is not None else None, ensure_ascii=False),
+            f"comment_slug: {_yaml_scalar(event.comment_slug)}",
+            "links:",
+            f"  - to: {_yaml_scalar(event.todo_slug)}",
+            "    type: event_for",
+            "    context: Durable audit history for this To Do.",
+            "---",
+            "",
+            f"# {event.event_type}",
+            "",
+        ]
+    )
 
 
 def _history_after_next_action_change(
@@ -1121,7 +1499,13 @@ def _normalize_collection_task(
 
 class GBrainAdapter:
     def __init__(self, runner: CommandRunner | None = None) -> None:
-        self.runner = runner or SubprocessCommandRunner()
+        self.runner = runner or RemoteHttpCommandRunner()
+        # Comments and events are append-only canonical records. Cache only
+        # fully validated immutable children so repeated Todo hydration does
+        # not renegotiate OAuth through two CLI subprocesses per history item.
+        self._todo_comment_cache: dict[str, TodoComment] = {}
+        self._todo_event_cache: dict[str, TodoEvent] = {}
+        self._todo_child_cache_lock = Lock()
 
     @staticmethod
     def _identity_namespace(slug: str) -> str:
@@ -1869,7 +2253,7 @@ class GBrainAdapter:
         return {"slug": TONY_PROFILE_SLUG, "name": name, "avatar": avatar}
 
     def _bounded_map(self, function: Any, values: list[Any]) -> list[Any]:
-        if len(values) < 2 or not isinstance(self.runner, SubprocessCommandRunner):
+        if len(values) < 2 or isinstance(self.runner, SubprocessCommandRunner):
             return [function(value) for value in values]
         with ThreadPoolExecutor(max_workers=min(8, len(values))) as executor:
             return list(executor.map(function, values))
@@ -2154,7 +2538,7 @@ class GBrainAdapter:
             )
         return stored
 
-    def list_agent_work(self) -> AgentWorkRead:
+    def list_agent_work(self, *, include_todos: bool = True) -> AgentWorkRead:
         profiles = self.list_agent_profiles()
         tasks: list[dict[str, Any]] = []
         issues: list[CollectionIssue] = list(profiles.issues)
@@ -2238,9 +2622,18 @@ class GBrainAdapter:
                         raise DomainValidationError(
                             "agent task owner does not match its typed work collection"
                         )
+                    if include_todos:
+                        todo_read = self._list_task_todos_for_task(task, limit=100)
+                        issues.extend(todo_read.issues)
+                        task = replace(task, todos=todo_read.todos)
                     tasks.append(
                         {
                             **task.to_dict(),
+                            "open_todos": [
+                                todo.to_dict()
+                                for todo in task.todos
+                                if todo.status == "not_done"
+                            ],
                             "owner": {
                                 "slug": agent.slug,
                                 "name": agent.name,
@@ -2332,7 +2725,10 @@ class GBrainAdapter:
             if issue is not None:
                 issues.append(issue)
         try:
-            agent_work = self.list_agent_work()
+            # Proposal Inbox needs proposal fields, not every unrelated task's
+            # child checklist. Skipping that fan-out keeps this read bounded
+            # while the full Agent Work view retains its richer projection.
+            agent_work = self.list_agent_work(include_todos=False)
         except (GBrainError, IndexError):
             agent_work = AgentWorkRead(tasks=(), issues=(), roots=())
         issues.extend(agent_work.issues)
@@ -5174,3 +5570,952 @@ class GBrainAdapter:
             reciprocal_verified=True,
             reconciled=(task.goal == goal_slug and bool(journal)),
         )
+
+    @staticmethod
+    def _todo_identity(prefix: str, scope: str, idempotency_key: str) -> str:
+        identity = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"mission-control:{prefix}:{scope}:{idempotency_key}",
+        )
+        return f"{prefix}/{identity}"
+
+    @staticmethod
+    def _validate_todo_actor_source(
+        *,
+        actor: str | None,
+        source: str,
+        task: Task | None = None,
+    ) -> None:
+        if source not in {"mission_control", "agent", "legacy_next_action"}:
+            raise ValueError("todo source is invalid")
+        if source == "mission_control" and actor != TONY_PROFILE_SLUG:
+            raise ValueError("Mission Control To Do mutations require Tony as actor")
+        if source == "agent":
+            if not isinstance(actor, str) or not actor.startswith("agents/"):
+                raise ValueError("agent To Do mutations require a canonical agent actor")
+            if task is not None and task.owner_agent != actor:
+                raise ValueError("agent question actor must match the parent task owner")
+        if source == "legacy_next_action" and actor is not None:
+            raise ValueError("legacy migration does not invent an original actor")
+
+    @staticmethod
+    def _validate_todo_timestamp(value: datetime, field: str) -> None:
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise ValueError(f"{field} must include a timezone")
+
+    @staticmethod
+    def _normalize_todo_text(text: str, detail: str) -> tuple[str, str]:
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text.strip()) > 240
+            or "\n" in text.strip()
+            or "\r" in text.strip()
+        ):
+            raise ValueError("todo text must be one line of 1 to 240 characters")
+        if not isinstance(detail, str) or len(detail.strip()) > 5000:
+            raise ValueError("todo detail must be text up to 5000 characters")
+        return text.strip(), detail.strip()
+
+    @staticmethod
+    def _normalize_idempotency_key(value: str) -> str:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > 200
+            or "\n" in value
+            or "\r" in value
+        ):
+            raise ValueError("idempotency_key must be one line of 1 to 200 characters")
+        return value.strip()
+
+    @staticmethod
+    def _page_not_found(exc: GBrainCommandError) -> bool:
+        message = str(exc).casefold()
+        return "page_not_found" in message or "page not found" in message
+
+    def _read_todo_comment(
+        self,
+        slug: str,
+        *,
+        verified_edges: Sequence[Mapping[str, Any]] | None = None,
+    ) -> TodoComment:
+        with self._todo_child_cache_lock:
+            cached = self._todo_comment_cache.get(slug)
+        if cached is not None:
+            return cached
+        page = self.runner.run("get_page", {"slug": slug})
+        links = (
+            self.runner.run("get_links", {"slug": slug})
+            if verified_edges is None
+            else list(verified_edges)
+        )
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("todo comment readback was not structured")
+        stored = TodoComment.from_page(page, edges=links)
+        with self._todo_child_cache_lock:
+            self._todo_comment_cache.setdefault(slug, stored)
+            return self._todo_comment_cache[slug]
+
+    def _read_todo_event(
+        self,
+        slug: str,
+        *,
+        verified_edges: Sequence[Mapping[str, Any]] | None = None,
+    ) -> TodoEvent:
+        with self._todo_child_cache_lock:
+            cached = self._todo_event_cache.get(slug)
+        if cached is not None:
+            return cached
+        page = self.runner.run("get_page", {"slug": slug})
+        links = (
+            self.runner.run("get_links", {"slug": slug})
+            if verified_edges is None
+            else list(verified_edges)
+        )
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("todo event readback was not structured")
+        stored = TodoEvent.from_page(page, edges=links)
+        with self._todo_child_cache_lock:
+            self._todo_event_cache.setdefault(slug, stored)
+            return self._todo_event_cache[slug]
+
+    def _optional_todo_event(self, slug: str) -> TodoEvent | None:
+        try:
+            return self._read_todo_event(slug)
+        except GBrainCommandError as exc:
+            if self._page_not_found(exc):
+                return None
+            raise
+
+    def _optional_todo_comment(self, slug: str) -> TodoComment | None:
+        try:
+            return self._read_todo_comment(slug)
+        except GBrainCommandError as exc:
+            if self._page_not_found(exc):
+                return None
+            raise
+
+    def _read_todo_snapshot(
+        self,
+        slug: str,
+    ) -> tuple[TodoItem, Mapping[str, Any], list[Any]]:
+        page = self.runner.run("get_page", {"slug": slug})
+        links = self.runner.run("get_links", {"slug": slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("todo page or relationships were not structured")
+        shallow = TodoItem.from_page(page, edges=links)
+        history_slugs = set((*shallow.comment_slugs, *shallow.event_slugs))
+        history_edges: dict[str, list[Mapping[str, Any]]] = {
+            slug: [] for slug in history_slugs
+        }
+        if history_slugs:
+            raw_backlinks = self.runner.run("get_backlinks", {"slug": slug})
+            if not isinstance(raw_backlinks, list):
+                raise GBrainProtocolError("todo history backlinks were not a list")
+            for edge in raw_backlinks:
+                if not isinstance(edge, Mapping):
+                    continue
+                child_slug = edge.get("from_slug")
+                if isinstance(child_slug, str) and child_slug in history_edges:
+                    history_edges[child_slug].append(edge)
+        comments = tuple(
+            self._bounded_map(
+                lambda child_slug: self._read_todo_comment(
+                    child_slug,
+                    verified_edges=history_edges[child_slug],
+                ),
+                list(shallow.comment_slugs),
+            )
+        )
+        events = tuple(
+            self._bounded_map(
+                lambda child_slug: self._read_todo_event(
+                    child_slug,
+                    verified_edges=history_edges[child_slug],
+                ),
+                list(shallow.event_slugs),
+            )
+        )
+        todo = TodoItem.from_page(
+            page,
+            edges=links,
+            comments=comments,
+            events=events,
+        )
+        return todo, page, links
+
+    def _read_todo(self, slug: str) -> TodoItem:
+        todo, _page, _links = self._read_todo_snapshot(slug)
+        return todo
+
+    def _optional_todo(self, slug: str) -> TodoItem | None:
+        try:
+            return self._read_todo(slug)
+        except GBrainCommandError as exc:
+            if self._page_not_found(exc):
+                return None
+            raise
+
+    def list_task_todos(
+        self,
+        task_slug: str,
+        *,
+        status: str | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+    ) -> TodoRead:
+        task = self.get_task(task_slug)
+        return self._list_task_todos_for_task(
+            task,
+            status=status,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    def _list_task_todos_for_task(
+        self,
+        task: Task,
+        *,
+        status: str | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+    ) -> TodoRead:
+        if status is not None and status not in {"not_done", "done"}:
+            raise ValueError("todo status filter must be not_done or done")
+        if not isinstance(cursor, int) or cursor < 0:
+            raise ValueError("todo cursor must be a nonnegative integer")
+        if not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("todo limit must be between 1 and 100")
+        backlinks = self.runner.run("get_backlinks", {"slug": task.slug})
+        if not isinstance(backlinks, list):
+            raise GBrainProtocolError("todo parent backlinks were not a list")
+        slugs = tuple(
+            dict.fromkeys(
+                str(edge["from_slug"])
+                for edge in backlinks
+                if isinstance(edge, Mapping)
+                and edge.get("to_slug") == task.slug
+                and edge.get("link_type") == "todo_for"
+                and isinstance(edge.get("from_slug"), str)
+                and str(edge["from_slug"]).startswith("todos/")
+            )
+        )
+        def read(slug: str) -> tuple[TodoItem | None, CollectionIssue | None]:
+            try:
+                todo = self._read_todo(slug)
+                if todo.parent_task != task.slug:
+                    raise DomainValidationError("todo parent readback did not match task")
+                if status is None or todo.status == status:
+                    return todo, None
+            except (DomainValidationError, GBrainError) as exc:
+                return None, CollectionIssue(
+                        slug=slug,
+                        message=str(exc),
+                        category="todo_data",
+                        impact="This malformed To Do remains canonical but is omitted until repaired.",
+                )
+            return None, None
+        todos: list[TodoItem] = []
+        issues: list[CollectionIssue] = []
+        for todo, issue in self._bounded_map(read, list(slugs)):
+            if todo is not None:
+                todos.append(todo)
+            if issue is not None:
+                issues.append(issue)
+        todos.sort(
+            key=lambda todo: (
+                todo.status == "done",
+                todo.created_at,
+                todo.slug,
+            )
+        )
+        page = tuple(todos[cursor : cursor + limit])
+        next_cursor = cursor + limit if cursor + limit < len(todos) else None
+        return TodoRead(page, tuple(issues), next_cursor)
+
+    def enrich_tasks_with_todos(
+        self,
+        tasks: Sequence[Task],
+    ) -> tuple[tuple[Task, ...], tuple[CollectionIssue, ...]]:
+        def enrich(task: Task) -> tuple[Task, tuple[CollectionIssue, ...]]:
+            try:
+                todo_read = self._list_task_todos_for_task(task, limit=100)
+                return replace(task, todos=todo_read.todos), todo_read.issues
+            except (DomainValidationError, GBrainError, ValueError) as exc:
+                return task, (
+                    CollectionIssue(
+                        slug=task.slug,
+                        message=str(exc),
+                        category="todo_data",
+                        impact=(
+                            "The task remains visible, but its canonical To Do list "
+                            "is unavailable."
+                        ),
+                    ),
+                )
+        enriched: list[Task] = []
+        issues: list[CollectionIssue] = []
+        for task, task_issues in self._bounded_map(enrich, list(tasks)):
+            enriched.append(task)
+            issues.extend(task_issues)
+        return tuple(enriched), tuple(issues)
+
+    def _write_todo_event(self, event: TodoEvent) -> None:
+        self.runner.run(
+            "put_page",
+            {"slug": event.slug, "content": render_todo_event_page(event)},
+        )
+        self.runner.run(
+            "add_link",
+            {
+                "from": event.slug,
+                "to": event.todo_slug,
+                "link_type": "event_for",
+                "context": "Durable audit history for this To Do.",
+                "link_source": "gtasks",
+            },
+        )
+        if self._read_todo_event(event.slug) != event:
+            raise GBrainProtocolError("todo event readback did not match the write")
+
+    def _write_todo_comment(self, comment: TodoComment) -> None:
+        self.runner.run(
+            "put_page",
+            {"slug": comment.slug, "content": render_todo_comment_page(comment)},
+        )
+        self.runner.run(
+            "add_link",
+            {
+                "from": comment.slug,
+                "to": comment.todo_slug,
+                "link_type": "comment_on",
+                "context": "Append-only comment on this To Do.",
+                "link_source": "gtasks",
+            },
+        )
+        if self._read_todo_comment(comment.slug) != comment:
+            raise GBrainProtocolError("todo comment readback did not match the write")
+
+    @staticmethod
+    def _completion_time(todo: TodoItem) -> datetime:
+        for event in reversed(todo.events):
+            if (
+                event.event_type in {"status_changed", "legacy_migrated"}
+                and isinstance(event.after, Mapping)
+                and event.after.get("status") == "done"
+            ):
+                return event.occurred_at
+        return todo.updated_at
+
+    @staticmethod
+    def _links_preserved(
+        expected: list[Mapping[str, Any]],
+        actual: list[Mapping[str, Any]],
+    ) -> bool:
+        return all(
+            any(
+                candidate.get("from_slug") == edge.get("from_slug")
+                and candidate.get("to_slug") == edge.get("to_slug")
+                and candidate.get("link_type") == edge.get("link_type")
+                for candidate in actual
+                if isinstance(candidate, Mapping)
+            )
+            for edge in expected
+            if isinstance(edge, Mapping)
+        )
+
+    def _sync_task_todo_projection(self, task_slug: str) -> None:
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("todo parent projection snapshot was not structured")
+        frontmatter = raw_page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise GBrainProtocolError("todo parent projection has no frontmatter")
+        todos = self.list_task_todos(task_slug, limit=100).todos
+        open_items = [todo for todo in todos if todo.status == "not_done"]
+        done_items = [todo for todo in todos if todo.status == "done"]
+        desired_next_action = open_items[0].text if open_items else ""
+        desired_history = [
+            NextActionHistoryEntry(
+                action=todo.text,
+                completed_at=self._completion_time(todo),
+            ).to_dict()
+            for todo in done_items
+        ]
+        if (
+            frontmatter.get("next_action", "") == desired_next_action
+            and frontmatter.get("next_action_history", []) == desired_history
+            and frontmatter.get("todo_projection_version") == 1
+        ):
+            return
+        changed = deepcopy(dict(frontmatter))
+        changed["next_action"] = desired_next_action
+        changed["next_action_history"] = desired_history
+        changed["todo_projection_version"] = 1
+        self.runner.run(
+            "put_page",
+            {
+                "slug": task_slug,
+                "content": _render_preserved_task_page(raw_page, changed),
+            },
+        )
+        stored_page = self.runner.run("get_page", {"slug": task_slug})
+        stored_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+            raise GBrainProtocolError("todo compatibility projection readback was not structured")
+        stored = Task.from_page(stored_page, edges=stored_links)
+        if (
+            stored.next_action != desired_next_action
+            or [entry.to_dict() for entry in stored.next_action_history] != desired_history
+            or not self._links_preserved(raw_links, stored_links)
+        ):
+            raise GBrainProtocolError(
+                "todo compatibility projection or parent relationships did not read back"
+            )
+
+    def _delete_child_page(self, slug: str) -> bool:
+        with self._todo_child_cache_lock:
+            self._todo_comment_cache.pop(slug, None)
+            self._todo_event_cache.pop(slug, None)
+        try:
+            self.runner.run("delete_page", {"slug": slug})
+            return True
+        except GBrainCommandError as exc:
+            if self._page_not_found(exc):
+                return True
+            return False
+        except GBrainError:
+            return False
+
+    def _restore_page(self, page: Mapping[str, Any]) -> bool:
+        frontmatter = page.get("frontmatter")
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not isinstance(frontmatter, Mapping):
+            return False
+        try:
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": slug,
+                    "content": _render_preserved_page(page, deepcopy(dict(frontmatter))),
+                },
+            )
+            return True
+        except GBrainError:
+            return False
+
+    def _create_todo_record(
+        self,
+        task: Task,
+        *,
+        text: str,
+        detail: str,
+        status: str,
+        kind: str,
+        actor: str | None,
+        source: str,
+        idempotency_key: str,
+        created_at: datetime,
+        updated_at: datetime,
+        legacy_provenance: Mapping[str, Any] | None = None,
+        event_type: str = "created",
+        sync_projection: bool = True,
+    ) -> TodoMutationReceipt:
+        normalized_text, normalized_detail = self._normalize_todo_text(text, detail)
+        key = self._normalize_idempotency_key(idempotency_key)
+        self._validate_todo_timestamp(created_at, "todo created_at")
+        self._validate_todo_timestamp(updated_at, "todo updated_at")
+        if updated_at < created_at:
+            raise ValueError("todo updated_at cannot precede created_at")
+        if status not in {"not_done", "done"}:
+            raise ValueError("todo status must be not_done or done")
+        if kind not in {"action", "question", "blocker"}:
+            raise ValueError("todo kind is invalid")
+        self._validate_todo_actor_source(actor=actor, source=source, task=task)
+        slug = self._todo_identity("todos", task.slug, key)
+        event_slug = self._todo_identity("todo-events", slug, f"{event_type}:{key}")
+        existing = self._optional_todo(slug)
+        if existing is not None:
+            if (
+                existing.parent_task != task.slug
+                or existing.text != normalized_text
+                or existing.detail != normalized_detail
+                or existing.status != status
+                or existing.kind != kind
+                or existing.source != source
+                or existing.creator != actor
+            ):
+                raise ValueError("idempotency_key already identifies a different To Do request")
+            return TodoMutationReceipt(existing, True, idempotent=True)
+        parent_page = self.runner.run("get_page", {"slug": task.slug})
+        if not isinstance(parent_page, Mapping):
+            raise GBrainProtocolError("todo parent snapshot was not structured")
+        event = TodoEvent(
+            slug=event_slug,
+            todo_slug=slug,
+            event_type=event_type,
+            actor=actor,
+            source=source,
+            occurred_at=updated_at,
+            idempotency_key=key,
+            before=None,
+            after={
+                "text": normalized_text,
+                "detail": normalized_detail,
+                "status": status,
+                "kind": kind,
+            },
+        )
+        todo = TodoItem(
+            slug=slug,
+            parent_task=task.slug,
+            text=normalized_text,
+            detail=normalized_detail,
+            status=status,
+            kind=kind,
+            created_at=created_at,
+            updated_at=updated_at,
+            creator=actor,
+            source=source,
+            event_slugs=(event.slug,),
+            legacy_provenance=(
+                dict(legacy_provenance) if legacy_provenance is not None else None
+            ),
+        )
+        created_pages: list[str] = []
+        try:
+            self.runner.run(
+                "put_page", {"slug": todo.slug, "content": render_todo_page(todo)}
+            )
+            created_pages.append(todo.slug)
+            self.runner.run(
+                "add_link",
+                {
+                    "from": todo.slug,
+                    "to": task.slug,
+                    "link_type": "todo_for",
+                    "context": "Canonical parent task for this To Do.",
+                    "link_source": "gtasks",
+                },
+            )
+            created_pages.append(event.slug)
+            self._write_todo_event(event)
+            stored = self._read_todo(todo.slug)
+            if stored.to_dict() != replace(todo, events=(event,)).to_dict():
+                raise GBrainProtocolError("todo creation readback did not match the write")
+            if sync_projection:
+                self._sync_task_todo_projection(task.slug)
+            return TodoMutationReceipt(stored, True)
+        except (DomainValidationError, GBrainError) as exc:
+            rollback_ok = all(
+                self._delete_child_page(created)
+                for created in reversed(created_pages)
+            )
+            rollback_ok = self._restore_page(parent_page) and rollback_ok
+            raise PartialMutationError(
+                slug,
+                "To Do creation failed. "
+                + ("Rollback verified." if rollback_ok else "Rollback could not be verified."),
+            ) from exc
+
+    def create_todo(
+        self,
+        task_slug: str,
+        *,
+        text: str,
+        detail: str,
+        kind: str,
+        actor: str,
+        source: str,
+        idempotency_key: str,
+        now: datetime,
+    ) -> TodoMutationReceipt:
+        task = self.get_task(task_slug)
+        raw_task = self.runner.run("get_page", {"slug": task_slug})
+        raw_frontmatter = (
+            raw_task.get("frontmatter") if isinstance(raw_task, Mapping) else None
+        )
+        if (
+            isinstance(raw_frontmatter, Mapping)
+            and raw_frontmatter.get("todo_projection_version") != 1
+            and (task.next_action or task.next_action_history)
+        ):
+            self.migrate_legacy_next_actions(task_slug, now=now)
+            task = self.get_task(task_slug)
+        return self._create_todo_record(
+            task,
+            text=text,
+            detail=detail,
+            status="not_done",
+            kind=kind,
+            actor=actor,
+            source=source,
+            idempotency_key=idempotency_key,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def _todo_mutation_snapshot(
+        self,
+        todo_slug: str,
+        *,
+        expected_updated_at: datetime,
+        event_slug: str,
+    ) -> tuple[TodoItem, Mapping[str, Any], Mapping[str, Any]] | TodoMutationReceipt:
+        existing_event = self._optional_todo_event(event_slug)
+        if existing_event is not None:
+            return TodoMutationReceipt(self._read_todo(todo_slug), True, idempotent=True)
+        todo = self._read_todo(todo_slug)
+        if todo.updated_at != expected_updated_at:
+            raise ConcurrentTodoUpdateError(todo_slug)
+        raw_todo = self.runner.run("get_page", {"slug": todo_slug})
+        raw_parent = self.runner.run("get_page", {"slug": todo.parent_task})
+        if not isinstance(raw_todo, Mapping) or not isinstance(raw_parent, Mapping):
+            raise GBrainProtocolError("todo mutation snapshot was not structured")
+        return todo, raw_todo, raw_parent
+
+    def _rollback_existing_todo(
+        self,
+        *,
+        todo: TodoItem,
+        raw_todo: Mapping[str, Any],
+        raw_parent: Mapping[str, Any],
+        new_pages: Iterable[str],
+    ) -> bool:
+        deleted = all(self._delete_child_page(slug) for slug in new_pages)
+        restored = self._restore_page(raw_todo) and self._restore_page(raw_parent)
+        if not (deleted and restored):
+            return False
+        try:
+            return self._read_todo(todo.slug).to_dict() == todo.to_dict()
+        except (DomainValidationError, GBrainError):
+            return False
+
+    def edit_todo(
+        self,
+        todo_slug: str,
+        *,
+        text: str,
+        detail: str,
+        expected_updated_at: datetime,
+        actor: str,
+        source: str,
+        idempotency_key: str,
+        now: datetime,
+    ) -> TodoMutationReceipt:
+        normalized_text, normalized_detail = self._normalize_todo_text(text, detail)
+        key = self._normalize_idempotency_key(idempotency_key)
+        self._validate_todo_timestamp(expected_updated_at, "expected_updated_at")
+        self._validate_todo_timestamp(now, "todo updated_at")
+        event_slug = self._todo_identity("todo-events", todo_slug, f"edited:{key}")
+        snapshot = self._todo_mutation_snapshot(
+            todo_slug,
+            expected_updated_at=expected_updated_at,
+            event_slug=event_slug,
+        )
+        if isinstance(snapshot, TodoMutationReceipt):
+            return snapshot
+        todo, raw_todo, raw_parent = snapshot
+        self._validate_todo_actor_source(
+            actor=actor, source=source, task=self.get_task(todo.parent_task)
+        )
+        if now < todo.updated_at:
+            raise ValueError("todo updated_at cannot move backwards")
+        event = TodoEvent(
+            slug=event_slug,
+            todo_slug=todo.slug,
+            event_type="edited",
+            actor=actor,
+            source=source,
+            occurred_at=now,
+            idempotency_key=key,
+            before={"text": todo.text, "detail": todo.detail},
+            after={"text": normalized_text, "detail": normalized_detail},
+        )
+        updated = replace(
+            todo,
+            text=normalized_text,
+            detail=normalized_detail,
+            updated_at=now,
+            event_slugs=(*todo.event_slugs, event.slug),
+            events=(*todo.events, event),
+        )
+        try:
+            self._write_todo_event(event)
+            self.runner.run(
+                "put_page",
+                {"slug": todo.slug, "content": render_todo_page(updated)},
+            )
+            stored = self._read_todo(todo.slug)
+            if stored.to_dict() != updated.to_dict():
+                raise GBrainProtocolError("todo edit readback did not match the write")
+            self._sync_task_todo_projection(todo.parent_task)
+            return TodoMutationReceipt(stored, True)
+        except (DomainValidationError, GBrainError) as exc:
+            rollback = self._rollback_existing_todo(
+                todo=todo,
+                raw_todo=raw_todo,
+                raw_parent=raw_parent,
+                new_pages=(event.slug,),
+            )
+            raise PartialMutationError(
+                todo.slug,
+                "To Do edit failed. "
+                + ("Rollback verified." if rollback else "Rollback could not be verified."),
+            ) from exc
+
+    def add_todo_comment(
+        self,
+        todo_slug: str,
+        *,
+        body: str,
+        expected_updated_at: datetime,
+        author: str,
+        source: str,
+        idempotency_key: str,
+        now: datetime,
+    ) -> TodoMutationReceipt:
+        if not isinstance(body, str) or not body.strip() or len(body.strip()) > 4000:
+            raise ValueError("todo comment body must be 1 to 4000 characters")
+        key = self._normalize_idempotency_key(idempotency_key)
+        self._validate_todo_timestamp(expected_updated_at, "expected_updated_at")
+        self._validate_todo_timestamp(now, "todo updated_at")
+        comment_slug = self._todo_identity("todo-comments", todo_slug, key)
+        event_slug = self._todo_identity("todo-events", todo_slug, f"comment_added:{key}")
+        def read_idempotency_record(
+            item: tuple[str, str],
+        ) -> TodoComment | TodoEvent | None:
+            kind, slug = item
+            return (
+                self._optional_todo_comment(slug)
+                if kind == "comment"
+                else self._optional_todo_event(slug)
+            )
+
+        existing_comment, existing_event = self._bounded_map(
+            read_idempotency_record,
+            [("comment", comment_slug), ("event", event_slug)],
+        )
+        if existing_comment is not None or existing_event is not None:
+            if (
+                existing_comment is None
+                or existing_event is None
+                or existing_comment.body != body.strip()
+                or existing_comment.author != author
+            ):
+                raise GBrainProtocolError("comment idempotency readback was incomplete")
+            return TodoMutationReceipt(self._read_todo(todo_slug), True, idempotent=True)
+        todo, raw_todo, _todo_links = self._read_todo_snapshot(todo_slug)
+        if todo.updated_at != expected_updated_at:
+            raise ConcurrentTodoUpdateError(todo_slug)
+        raw_parent = self.runner.run("get_page", {"slug": todo.parent_task})
+        raw_parent_links = self.runner.run("get_links", {"slug": todo.parent_task})
+        if not isinstance(raw_parent, Mapping) or not isinstance(raw_parent_links, list):
+            raise GBrainProtocolError("todo comment parent snapshot was not structured")
+        task = Task.from_page(raw_parent, edges=raw_parent_links)
+        self._validate_todo_actor_source(actor=author, source=source, task=task)
+        if now < todo.updated_at:
+            raise ValueError("todo updated_at cannot move backwards")
+        comment = TodoComment(
+            slug=comment_slug,
+            todo_slug=todo.slug,
+            body=body.strip(),
+            author=author,
+            source=source,
+            created_at=now,
+            idempotency_key=key,
+        )
+        event = TodoEvent(
+            slug=event_slug,
+            todo_slug=todo.slug,
+            event_type="comment_added",
+            actor=author,
+            source=source,
+            occurred_at=now,
+            idempotency_key=key,
+            before=None,
+            after={"comment_slug": comment.slug},
+            comment_slug=comment.slug,
+        )
+        updated = replace(
+            todo,
+            updated_at=now,
+            comment_slugs=(*todo.comment_slugs, comment.slug),
+            event_slugs=(*todo.event_slugs, event.slug),
+            comments=(*todo.comments, comment),
+            events=(*todo.events, event),
+        )
+        try:
+            def write_child(item: tuple[str, TodoComment | TodoEvent]) -> None:
+                kind, child = item
+                if kind == "comment":
+                    self._write_todo_comment(child)  # type: ignore[arg-type]
+                else:
+                    self._write_todo_event(child)  # type: ignore[arg-type]
+
+            self._bounded_map(
+                write_child,
+                [("comment", comment), ("event", event)],
+            )
+            self.runner.run(
+                "put_page", {"slug": todo.slug, "content": render_todo_page(updated)}
+            )
+            stored = self._read_todo(todo.slug)
+            if stored.to_dict() != updated.to_dict():
+                raise GBrainProtocolError("todo comment append did not read back")
+            return TodoMutationReceipt(stored, True)
+        except (DomainValidationError, GBrainError) as exc:
+            rollback = self._rollback_existing_todo(
+                todo=todo,
+                raw_todo=raw_todo,
+                raw_parent=raw_parent,
+                new_pages=(event.slug, comment.slug),
+            )
+            raise PartialMutationError(
+                todo.slug,
+                "To Do comment append failed. "
+                + ("Rollback verified." if rollback else "Rollback could not be verified."),
+            ) from exc
+
+    def set_todo_status(
+        self,
+        todo_slug: str,
+        *,
+        status: str,
+        expected_updated_at: datetime,
+        actor: str,
+        source: str,
+        idempotency_key: str,
+        now: datetime,
+    ) -> TodoMutationReceipt:
+        if status not in {"not_done", "done"}:
+            raise ValueError("todo status must be not_done or done")
+        key = self._normalize_idempotency_key(idempotency_key)
+        self._validate_todo_timestamp(expected_updated_at, "expected_updated_at")
+        self._validate_todo_timestamp(now, "todo updated_at")
+        event_slug = self._todo_identity("todo-events", todo_slug, f"status_changed:{key}")
+        snapshot = self._todo_mutation_snapshot(
+            todo_slug,
+            expected_updated_at=expected_updated_at,
+            event_slug=event_slug,
+        )
+        if isinstance(snapshot, TodoMutationReceipt):
+            return snapshot
+        todo, raw_todo, raw_parent = snapshot
+        self._validate_todo_actor_source(
+            actor=actor, source=source, task=self.get_task(todo.parent_task)
+        )
+        if todo.status == status:
+            raise ValueError("todo already has the requested status")
+        if now < todo.updated_at:
+            raise ValueError("todo updated_at cannot move backwards")
+        event = TodoEvent(
+            slug=event_slug,
+            todo_slug=todo.slug,
+            event_type="status_changed",
+            actor=actor,
+            source=source,
+            occurred_at=now,
+            idempotency_key=key,
+            before={"status": todo.status},
+            after={"status": status},
+        )
+        updated = replace(
+            todo,
+            status=status,
+            updated_at=now,
+            event_slugs=(*todo.event_slugs, event.slug),
+            events=(*todo.events, event),
+        )
+        try:
+            self._write_todo_event(event)
+            self.runner.run(
+                "put_page", {"slug": todo.slug, "content": render_todo_page(updated)}
+            )
+            stored = self._read_todo(todo.slug)
+            if stored.to_dict() != updated.to_dict():
+                raise GBrainProtocolError("todo status readback did not match the write")
+            self._sync_task_todo_projection(todo.parent_task)
+            return TodoMutationReceipt(stored, True)
+        except (DomainValidationError, GBrainError) as exc:
+            rollback = self._rollback_existing_todo(
+                todo=todo,
+                raw_todo=raw_todo,
+                raw_parent=raw_parent,
+                new_pages=(event.slug,),
+            )
+            raise PartialMutationError(
+                todo.slug,
+                "To Do status change failed. "
+                + ("Rollback verified." if rollback else "Rollback could not be verified."),
+            ) from exc
+
+    def migrate_legacy_next_actions(
+        self,
+        task_slug: str,
+        *,
+        now: datetime,
+    ) -> TodoRead:
+        self._validate_todo_timestamp(now, "migration timestamp")
+        task = self.get_task(task_slug)
+        for index, entry in enumerate(task.next_action_history):
+            history_key = "legacy-history:" + hashlib.sha256(
+                json.dumps(
+                    {
+                        "index": index,
+                        "action": entry.action,
+                        "completed_at": entry.completed_at.isoformat(),
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            self._create_todo_record(
+                task,
+                text=entry.action,
+                detail="",
+                status="done",
+                kind="action",
+                actor=None,
+                source="legacy_next_action",
+                idempotency_key=history_key,
+                created_at=entry.completed_at,
+                updated_at=entry.completed_at,
+                legacy_provenance={
+                    "field": "next_action_history",
+                    "index": index,
+                    "completed_at": entry.completed_at.isoformat(),
+                },
+                event_type="legacy_migrated",
+                sync_projection=False,
+            )
+        if task.next_action:
+            current_time = task.updated_at or task.created_at or now
+            current_key = "legacy-current:" + hashlib.sha256(
+                task.next_action.encode("utf-8")
+            ).hexdigest()
+            self._create_todo_record(
+                task,
+                text=task.next_action,
+                detail="",
+                status="not_done",
+                kind="action",
+                actor=None,
+                source="legacy_next_action",
+                idempotency_key=current_key,
+                created_at=current_time,
+                updated_at=current_time,
+                legacy_provenance={
+                    "field": "next_action",
+                    "timestamp_basis": (
+                        "task.updated_at"
+                        if task.updated_at
+                        else "task.created_at" if task.created_at else "migration_time"
+                    ),
+                },
+                event_type="legacy_migrated",
+                sync_projection=False,
+            )
+        self._sync_task_todo_projection(task_slug)
+        return self.list_task_todos(task_slug, limit=100)

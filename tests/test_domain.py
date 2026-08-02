@@ -13,6 +13,7 @@ from gtasks.domain import (
     GOALS_ROOT,
     Goal,
     Task,
+    QA_FIXTURES_ROOT,
     default_goal_target_day,
     group_today,
     new_inbox_task,
@@ -53,6 +54,229 @@ def task_page(
             ],
         },
     }
+
+
+def todo_page(
+    slug: str = "todos/11111111-1111-5111-8111-111111111111",
+    *,
+    parent_task: str = "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    status: str = "not_done",
+    updated_at: str = "2026-08-01T10:05:00-07:00",
+) -> dict:
+    return {
+        "slug": slug,
+        "type": "todo",
+        "title": "Confirm the deployment window",
+        "compiled_truth": "# Confirm the deployment window",
+        "frontmatter": {
+            "type": "todo",
+            "text": "Confirm the deployment window",
+            "detail": "Tony should confirm whether 17:00 works.",
+            "status": status,
+            "kind": "question",
+            "parent_task": parent_task,
+            "created_at": "2026-08-01T10:00:00-07:00",
+            "updated_at": updated_at,
+            "creator": "agents/toddy",
+            "source": "agent",
+            "comment_slugs": [
+                "todo-comments/22222222-2222-5222-8222-222222222222"
+            ],
+            "event_slugs": [
+                "todo-events/33333333-3333-5333-8333-333333333333"
+            ],
+            "legacy_provenance": None,
+        },
+    }
+
+
+class QaFixtureTaskContractTests(unittest.TestCase):
+    def test_parses_explicit_qa_owned_task_only_in_qa_scope(self) -> None:
+        page = task_page(
+            "tasks/11111111-1111-4111-8111-111111111111",
+            links=[{"to": QA_FIXTURES_ROOT, "type": "member_of"}],
+        )
+        page["frontmatter"].update(
+            {
+                "qa_fixture": True,
+                "qa_owner": "independent_ui_qa",
+                "qa_release": "V0.0.65",
+            }
+        )
+
+        task = Task.from_page(page)
+
+        self.assertTrue(task.qa_fixture)
+        self.assertEqual(task.qa_owner, "independent_ui_qa")
+        self.assertEqual(task.lifecycle_root, QA_FIXTURES_ROOT)
+
+    def test_rejects_qa_marker_on_tony_task_scope(self) -> None:
+        page = task_page("tasks/22222222-2222-4222-8222-222222222222")
+        page["frontmatter"].update(
+            {"qa_fixture": True, "qa_owner": "independent_ui_qa"}
+        )
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "QA fixture metadata requires the QA fixture collection",
+        ):
+            Task.from_page(page)
+
+    def test_rejects_unmarked_task_in_qa_scope(self) -> None:
+        page = task_page(
+            "tasks/33333333-3333-4333-8333-333333333333",
+            links=[{"to": QA_FIXTURES_ROOT, "type": "member_of"}],
+        )
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "QA fixture collection requires explicit QA ownership",
+        ):
+            Task.from_page(page)
+
+
+class TodoDomainTests(unittest.TestCase):
+    def test_stable_todo_comment_and_event_records_validate_typed_parents(self) -> None:
+        self.assertTrue(hasattr(domain, "TodoItem"))
+        self.assertTrue(hasattr(domain, "TodoComment"))
+        self.assertTrue(hasattr(domain, "TodoEvent"))
+        todo_slug = "todos/11111111-1111-5111-8111-111111111111"
+        comment_slug = "todo-comments/22222222-2222-5222-8222-222222222222"
+        event_slug = "todo-events/33333333-3333-5333-8333-333333333333"
+        comment = domain.TodoComment.from_page(
+            {
+                "slug": comment_slug,
+                "type": "todo_comment",
+                "frontmatter": {
+                    "type": "todo_comment",
+                    "todo_slug": todo_slug,
+                    "body": "17:00 works. Proceed.",
+                    "author": "people/tony-guan",
+                    "source": "mission_control",
+                    "created_at": "2026-08-01T10:04:00-07:00",
+                    "idempotency_key": "reply-1",
+                },
+            },
+            edges=[
+                {
+                    "from_slug": comment_slug,
+                    "to_slug": todo_slug,
+                    "link_type": "comment_on",
+                }
+            ],
+        )
+        event = domain.TodoEvent.from_page(
+            {
+                "slug": event_slug,
+                "type": "todo_event",
+                "frontmatter": {
+                    "type": "todo_event",
+                    "todo_slug": todo_slug,
+                    "event_type": "comment_added",
+                    "actor": "people/tony-guan",
+                    "source": "mission_control",
+                    "occurred_at": "2026-08-01T10:05:00-07:00",
+                    "idempotency_key": "reply-1",
+                    "before": None,
+                    "after": {"comment_slug": comment_slug},
+                    "comment_slug": comment_slug,
+                },
+            },
+            edges=[
+                {
+                    "from_slug": event_slug,
+                    "to_slug": todo_slug,
+                    "link_type": "event_for",
+                }
+            ],
+        )
+        todo = domain.TodoItem.from_page(
+            todo_page(),
+            edges=[
+                {
+                    "from_slug": todo_slug,
+                    "to_slug": "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "link_type": "todo_for",
+                }
+            ],
+            comments=(comment,),
+            events=(event,),
+        )
+
+        self.assertEqual(todo.status, "not_done")
+        self.assertEqual(todo.status_label, "Not Done")
+        self.assertEqual(todo.kind, "question")
+        self.assertEqual(todo.comments, (comment,))
+        self.assertEqual(todo.events, (event,))
+        self.assertEqual(todo.to_dict()["comments"][0]["body"], "17:00 works. Proceed.")
+
+    def test_todo_requires_exactly_one_matching_parent_relationship(self) -> None:
+        self.assertTrue(hasattr(domain, "TodoItem"))
+        page = todo_page()
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "exactly one todo_for relationship",
+        ):
+            domain.TodoItem.from_page(
+                page,
+                edges=[
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": "tasks/one",
+                        "link_type": "todo_for",
+                    },
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": "tasks/two",
+                        "link_type": "todo_for",
+                    },
+                ],
+            )
+
+    def test_todo_rejects_invalid_lifecycle_timezone_and_history_order(self) -> None:
+        self.assertTrue(hasattr(domain, "TodoItem"))
+        page = todo_page(status="completed")
+        with self.assertRaisesRegex(DomainValidationError, "todo status"):
+            domain.TodoItem.from_page(
+                page,
+                edges=[
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": page["frontmatter"]["parent_task"],
+                        "link_type": "todo_for",
+                    }
+                ],
+            )
+
+        page = todo_page(updated_at="2026-08-01T10:05:00")
+        with self.assertRaisesRegex(DomainValidationError, "timezone"):
+            domain.TodoItem.from_page(
+                page,
+                edges=[
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": page["frontmatter"]["parent_task"],
+                        "link_type": "todo_for",
+                    }
+                ],
+            )
+
+    def test_task_read_model_exposes_todos_without_serializing_them_to_parent_page(self) -> None:
+        self.assertTrue(hasattr(domain, "TodoItem"))
+        task = Task.from_page(task_page("tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
+        todo = domain.TodoItem.from_page(
+            todo_page(),
+            edges=[
+                {
+                    "from_slug": "todos/11111111-1111-5111-8111-111111111111",
+                    "to_slug": task.slug,
+                    "link_type": "todo_for",
+                }
+            ],
+        )
+        enriched = replace(task, todos=(todo,))
+
+        self.assertEqual(enriched.to_dict()["todos"][0]["slug"], todo.slug)
 
 
 class TaskParsingTests(unittest.TestCase):

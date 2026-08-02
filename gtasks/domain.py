@@ -15,6 +15,7 @@ GOALS_ROOT = "collections/tonys-goals"
 PROJECTS_ROOT = "collections/tonys-projects"
 PROPOSALS_ROOT = "collections/gtasks-proposed-work"
 SYSTEM_TICKETS_ROOT = "collections/mission-control-system-tickets"
+QA_FIXTURES_ROOT = "collections/mission-control-qa-fixtures"
 AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
@@ -22,7 +23,7 @@ AGENT_SCOPES = (
 )
 AGENT_WORK_ROOTS = frozenset(root for _agent, root in AGENT_SCOPES)
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
-TASK_SCOPE_ROOTS = frozenset({*LIFECYCLE_ROOTS, *AGENT_WORK_ROOTS})
+TASK_SCOPE_ROOTS = frozenset({*LIFECYCLE_ROOTS, *AGENT_WORK_ROOTS, QA_FIXTURES_ROOT})
 AGENT_BY_WORK_ROOT = {
     work_root: agent_slug for agent_slug, work_root in AGENT_SCOPES
 }
@@ -47,6 +48,11 @@ GOAL_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelle
 PROJECT_STATUSES = frozenset({"planned", "active", "paused", "completed", "cancelled"})
 PROPOSAL_STATUSES = frozenset({"proposed", "review", "approved", "rejected"})
 PROPOSAL_RECIPIENTS = frozenset({"tony", "agent"})
+TODO_STATUSES = frozenset({"not_done", "done"})
+TODO_KINDS = frozenset({"action", "question", "blocker"})
+TODO_EVENT_TYPES = frozenset(
+    {"created", "edited", "status_changed", "comment_added", "legacy_migrated"}
+)
 
 
 class DomainValidationError(ValueError):
@@ -87,6 +93,363 @@ class NextActionHistoryEntry:
         return {
             "action": self.action,
             "completed_at": self.completed_at.isoformat(),
+        }
+
+
+def _child_record_parent(
+    slug: str,
+    frontmatter: Mapping[str, Any],
+    edges: Iterable[Mapping[str, Any]],
+    *,
+    field: str,
+    link_type: str,
+    parent_prefix: str,
+) -> str:
+    declared = frontmatter.get(field)
+    if not isinstance(declared, str) or not declared.startswith(parent_prefix):
+        raise DomainValidationError(f"{field} must be a canonical {parent_prefix} slug")
+    parents = tuple(
+        dict.fromkeys(
+            str(edge["to_slug"])
+            for edge in edges
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == slug
+            and edge.get("link_type") == link_type
+            and isinstance(edge.get("to_slug"), str)
+        )
+    )
+    parents = tuple(
+        dict.fromkeys(
+            (*parents, *(
+                link["to"]
+                for link in _links_from(frontmatter)
+                if link["type"] == link_type
+            ))
+        )
+    )
+    if len(parents) != 1 or parents[0] != declared:
+        raise DomainValidationError(
+            f"{slug} requires exactly one {link_type} relationship matching {field}"
+        )
+    return declared
+
+
+def _required_zoned_datetime(value: Any, field: str) -> datetime:
+    parsed = _optional_datetime(value, field)
+    if parsed is None or parsed.tzinfo is None:
+        raise DomainValidationError(f"{field} must include a timezone")
+    return parsed
+
+
+def _required_text(
+    value: Any,
+    field: str,
+    *,
+    maximum: int,
+    single_line: bool = False,
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise DomainValidationError(f"{field} is required")
+    normalized = value.strip()
+    if len(normalized) > maximum:
+        raise DomainValidationError(f"{field} must be {maximum} characters or fewer")
+    if single_line and ("\n" in normalized or "\r" in normalized):
+        raise DomainValidationError(f"{field} must be one line")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class TodoComment:
+    slug: str
+    todo_slug: str
+    body: str
+    author: str | None
+    source: str
+    created_at: datetime
+    idempotency_key: str
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "TodoComment":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("todo-comments/"):
+            raise DomainValidationError("todo comment slug must start with todo-comments/")
+        if page.get("type") != "todo_comment":
+            raise DomainValidationError(f"{slug} is not a todo_comment page")
+        frontmatter = _compiled_frontmatter(page)
+        todo_slug = _child_record_parent(
+            slug,
+            frontmatter,
+            edges,
+            field="todo_slug",
+            link_type="comment_on",
+            parent_prefix="todos/",
+        )
+        author = frontmatter.get("author")
+        if author is not None and (not isinstance(author, str) or not author.strip()):
+            raise DomainValidationError("todo comment author must be text or null")
+        source = _required_text(frontmatter.get("source"), "todo comment source", maximum=120)
+        return cls(
+            slug=slug,
+            todo_slug=todo_slug,
+            body=_required_text(frontmatter.get("body"), "todo comment body", maximum=4000),
+            author=author.strip() if isinstance(author, str) else None,
+            source=source,
+            created_at=_required_zoned_datetime(
+                frontmatter.get("created_at"), "todo comment created_at"
+            ),
+            idempotency_key=_required_text(
+                frontmatter.get("idempotency_key"),
+                "todo comment idempotency_key",
+                maximum=200,
+                single_line=True,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "todo_slug": self.todo_slug,
+            "body": self.body,
+            "author": self.author,
+            "source": self.source,
+            "created_at": self.created_at.isoformat(),
+            "idempotency_key": self.idempotency_key,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TodoEvent:
+    slug: str
+    todo_slug: str
+    event_type: str
+    actor: str | None
+    source: str
+    occurred_at: datetime
+    idempotency_key: str
+    before: Mapping[str, Any] | None = None
+    after: Mapping[str, Any] | None = None
+    comment_slug: str | None = None
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "TodoEvent":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("todo-events/"):
+            raise DomainValidationError("todo event slug must start with todo-events/")
+        if page.get("type") != "todo_event":
+            raise DomainValidationError(f"{slug} is not a todo_event page")
+        frontmatter = _compiled_frontmatter(page)
+        todo_slug = _child_record_parent(
+            slug,
+            frontmatter,
+            edges,
+            field="todo_slug",
+            link_type="event_for",
+            parent_prefix="todos/",
+        )
+        event_type = frontmatter.get("event_type")
+        if event_type not in TODO_EVENT_TYPES:
+            raise DomainValidationError("todo event_type is invalid")
+        actor = frontmatter.get("actor")
+        if actor is not None and (not isinstance(actor, str) or not actor.strip()):
+            raise DomainValidationError("todo event actor must be text or null")
+        before = frontmatter.get("before")
+        after = frontmatter.get("after")
+        if before is not None and not isinstance(before, Mapping):
+            raise DomainValidationError("todo event before must be an object or null")
+        if after is not None and not isinstance(after, Mapping):
+            raise DomainValidationError("todo event after must be an object or null")
+        comment_slug = frontmatter.get("comment_slug")
+        if comment_slug is not None and (
+            not isinstance(comment_slug, str)
+            or not comment_slug.startswith("todo-comments/")
+        ):
+            raise DomainValidationError("todo event comment_slug is invalid")
+        return cls(
+            slug=slug,
+            todo_slug=todo_slug,
+            event_type=str(event_type),
+            actor=actor.strip() if isinstance(actor, str) else None,
+            source=_required_text(frontmatter.get("source"), "todo event source", maximum=120),
+            occurred_at=_required_zoned_datetime(
+                frontmatter.get("occurred_at"), "todo event occurred_at"
+            ),
+            idempotency_key=_required_text(
+                frontmatter.get("idempotency_key"),
+                "todo event idempotency_key",
+                maximum=200,
+                single_line=True,
+            ),
+            before=dict(before) if isinstance(before, Mapping) else None,
+            after=dict(after) if isinstance(after, Mapping) else None,
+            comment_slug=comment_slug,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "todo_slug": self.todo_slug,
+            "event_type": self.event_type,
+            "actor": self.actor,
+            "source": self.source,
+            "occurred_at": self.occurred_at.isoformat(),
+            "idempotency_key": self.idempotency_key,
+            "before": dict(self.before) if self.before is not None else None,
+            "after": dict(self.after) if self.after is not None else None,
+            "comment_slug": self.comment_slug,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TodoItem:
+    slug: str
+    parent_task: str
+    text: str
+    detail: str
+    status: str
+    kind: str
+    created_at: datetime
+    updated_at: datetime
+    creator: str | None
+    source: str
+    comment_slugs: tuple[str, ...] = ()
+    event_slugs: tuple[str, ...] = ()
+    comments: tuple[TodoComment, ...] = ()
+    events: tuple[TodoEvent, ...] = ()
+    legacy_provenance: Mapping[str, Any] | None = None
+
+    @property
+    def status_label(self) -> str:
+        return "Done" if self.status == "done" else "Not Done"
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+        *,
+        comments: Iterable[TodoComment] = (),
+        events: Iterable[TodoEvent] = (),
+    ) -> "TodoItem":
+        slug = page.get("slug")
+        if not isinstance(slug, str) or not slug.startswith("todos/"):
+            raise DomainValidationError("todo slug must start with todos/")
+        if page.get("type") != "todo":
+            raise DomainValidationError(f"{slug} is not a todo page")
+        frontmatter = _compiled_frontmatter(page)
+        parent_task = _child_record_parent(
+            slug,
+            frontmatter,
+            edges,
+            field="parent_task",
+            link_type="todo_for",
+            parent_prefix="tasks/",
+        )
+        status = frontmatter.get("status")
+        if status not in TODO_STATUSES:
+            raise DomainValidationError("todo status must be not_done or done")
+        kind = frontmatter.get("kind", "action")
+        if kind not in TODO_KINDS:
+            raise DomainValidationError("todo kind is invalid")
+        detail = frontmatter.get("detail", "")
+        if not isinstance(detail, str) or len(detail.strip()) > 5000:
+            raise DomainValidationError("todo detail must be text up to 5000 characters")
+        created_at = _required_zoned_datetime(
+            frontmatter.get("created_at"), "todo created_at"
+        )
+        updated_at = _required_zoned_datetime(
+            frontmatter.get("updated_at"), "todo updated_at"
+        )
+        if updated_at < created_at:
+            raise DomainValidationError("todo updated_at cannot precede created_at")
+        creator = frontmatter.get("creator")
+        if creator is not None and (
+            not isinstance(creator, str) or not creator.strip()
+        ):
+            raise DomainValidationError("todo creator must be text or null")
+        def slug_list(field: str, prefix: str) -> tuple[str, ...]:
+            raw = frontmatter.get(field, [])
+            if raw is None:
+                raw = []
+            if (
+                not isinstance(raw, list)
+                or any(not isinstance(value, str) or not value.startswith(prefix) for value in raw)
+                or len(set(raw)) != len(raw)
+            ):
+                raise DomainValidationError(f"todo {field} contains invalid identities")
+            return tuple(raw)
+        comment_slugs = slug_list("comment_slugs", "todo-comments/")
+        event_slugs = slug_list("event_slugs", "todo-events/")
+        parsed_comments = tuple(comments)
+        parsed_events = tuple(events)
+        if parsed_comments and tuple(item.slug for item in parsed_comments) != comment_slugs:
+            raise DomainValidationError("todo comment references do not match readback")
+        if parsed_events and tuple(item.slug for item in parsed_events) != event_slugs:
+            raise DomainValidationError("todo event references do not match readback")
+        if any(item.todo_slug != slug for item in (*parsed_comments, *parsed_events)):
+            raise DomainValidationError("todo child record references another item")
+        if any(
+            left.created_at > right.created_at
+            for left, right in zip(parsed_comments, parsed_comments[1:])
+        ):
+            raise DomainValidationError("todo comments must be in deterministic order")
+        if any(
+            left.occurred_at > right.occurred_at
+            for left, right in zip(parsed_events, parsed_events[1:])
+        ):
+            raise DomainValidationError("todo events must be in deterministic order")
+        legacy = frontmatter.get("legacy_provenance")
+        if legacy is not None and not isinstance(legacy, Mapping):
+            raise DomainValidationError("todo legacy_provenance must be an object or null")
+        return cls(
+            slug=slug,
+            parent_task=parent_task,
+            text=_required_text(
+                frontmatter.get("text"), "todo text", maximum=240, single_line=True
+            ),
+            detail=detail.strip(),
+            status=str(status),
+            kind=str(kind),
+            created_at=created_at,
+            updated_at=updated_at,
+            creator=creator.strip() if isinstance(creator, str) else None,
+            source=_required_text(frontmatter.get("source"), "todo source", maximum=120),
+            comment_slugs=comment_slugs,
+            event_slugs=event_slugs,
+            comments=parsed_comments,
+            events=parsed_events,
+            legacy_provenance=dict(legacy) if isinstance(legacy, Mapping) else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "parent_task": self.parent_task,
+            "text": self.text,
+            "detail": self.detail,
+            "status": self.status,
+            "status_label": self.status_label,
+            "kind": self.kind,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "creator": self.creator,
+            "source": self.source,
+            "comment_slugs": list(self.comment_slugs),
+            "event_slugs": list(self.event_slugs),
+            "comments": [comment.to_dict() for comment in self.comments],
+            "events": [event.to_dict() for event in self.events],
+            "legacy_provenance": (
+                dict(self.legacy_provenance)
+                if self.legacy_provenance is not None
+                else None
+            ),
         }
 
 
@@ -799,7 +1162,11 @@ class Task:
     scheduled_day: date | None
     inbox: bool
     lifecycle_root: str
+    qa_fixture: bool = False
+    qa_owner: str | None = None
+    qa_release: str | None = None
     next_action_history: tuple[NextActionHistoryEntry, ...] = ()
+    todos: tuple[TodoItem, ...] = ()
     owner_agent: str | None = None
     project: str | None = None
     parent: str | None = None
@@ -874,6 +1241,33 @@ class Task:
                 "agent work scope"
             )
         lifecycle_root = lifecycle_roots[0]
+        qa_fixture = frontmatter.get("qa_fixture", False)
+        qa_owner = frontmatter.get("qa_owner")
+        qa_release = frontmatter.get("qa_release")
+        if not isinstance(qa_fixture, bool):
+            raise DomainValidationError("qa_fixture must be true or false")
+        if qa_owner is not None and (
+            not isinstance(qa_owner, str)
+            or not qa_owner.strip()
+            or len(qa_owner.strip()) > 120
+        ):
+            raise DomainValidationError("qa_owner must be concise text or null")
+        if qa_release is not None and (
+            not isinstance(qa_release, str)
+            or not qa_release.strip()
+            or len(qa_release.strip()) > 40
+        ):
+            raise DomainValidationError("qa_release must be concise text or null")
+        has_qa_metadata = qa_fixture or qa_owner is not None or qa_release is not None
+        if lifecycle_root == QA_FIXTURES_ROOT:
+            if not qa_fixture or not isinstance(qa_owner, str) or not qa_owner.strip():
+                raise DomainValidationError(
+                    "QA fixture collection requires explicit QA ownership"
+                )
+        elif has_qa_metadata:
+            raise DomainValidationError(
+                "QA fixture metadata requires the QA fixture collection"
+            )
         if (
             lifecycle_root in LIFECYCLE_ROOTS
             and status not in {"completed", "cancelled"}
@@ -1057,6 +1451,9 @@ class Task:
             ),
             inbox=inbox,
             lifecycle_root=lifecycle_root,
+            qa_fixture=qa_fixture,
+            qa_owner=qa_owner.strip() if isinstance(qa_owner, str) else None,
+            qa_release=qa_release.strip() if isinstance(qa_release, str) else None,
             next_action_history=next_action_history,
             owner_agent=owner_agent,
             project=project,
@@ -1101,6 +1498,7 @@ class Task:
             "next_action_history": [
                 entry.to_dict() for entry in self.next_action_history
             ],
+            "todos": [todo.to_dict() for todo in self.todos],
             "due_day": self.due_day.isoformat() if self.due_day else None,
             "due_at": self.due_at.isoformat() if self.due_at else None,
             "scheduled_day": (
@@ -1108,6 +1506,9 @@ class Task:
             ),
             "inbox": self.inbox,
             "lifecycle_root": self.lifecycle_root,
+            "qa_fixture": self.qa_fixture,
+            "qa_owner": self.qa_owner,
+            "qa_release": self.qa_release,
             "owner_agent": self.owner_agent,
             "project": self.project,
             "parent": self.parent,

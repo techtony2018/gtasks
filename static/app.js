@@ -51,6 +51,9 @@ const state = {
   selectedSlug: null,
   selectedKind: null,
   detailReturnFocus: null,
+  todoFilter: "all",
+  todoReturnFocus: null,
+  todoLoadingTask: null,
   weekStart: null,
   calendarMode: "week",
   calendarMonth: null,
@@ -78,6 +81,8 @@ const state = {
   logsNextCursor: null,
   logsLoading: false,
   tasksLoadPromise: null,
+  tasksReadState: null,
+  taskSurfacePollTimer: null,
   autoRefreshTimer: null,
   autoRefreshDueAt: null,
   refreshDeferred: false,
@@ -85,7 +90,8 @@ const state = {
   projects: [],
   projectIssues: [],
   projectWarningStateError: "",
-  projectsLoading: true,
+  projectsLoaded: false,
+  projectsLoading: false,
   projectsError: "",
   projectEditorSlug: null,
   goalAction: null,
@@ -95,6 +101,8 @@ const state = {
   taskEditorMode: "create",
   taskEditorSourceSlug: null,
   agents: [],
+  agentsLoaded: false,
+  agentsLoading: false,
   agentTasks: [],
   agentIssues: [],
   agentWorkLoaded: false,
@@ -103,7 +111,11 @@ const state = {
   showAgentTasks: readAgentTasksPreference(),
   proposals: [],
   proposalIssues: [],
-  proposalsLoading: true,
+  proposalsLoaded: false,
+  proposalsLoading: false,
+  proposalsLoadPromise: null,
+  proposalsReadState: null,
+  proposalSurfacePollTimer: null,
   proposalsError: "",
   proposalAgentFilter: "all",
   proposalAction: null,
@@ -340,7 +352,8 @@ const elements = {
   taskEditorStatusField: document.querySelector("#task-editor-status-field"),
   taskEditorStatus: document.querySelector("#task-editor-status"),
   taskEditorDue: document.querySelector("#task-editor-due"),
-  taskEditorNextAction: document.querySelector("#task-editor-next-action"),
+  taskEditorInitialTodoField: document.querySelector("#task-editor-initial-todo-field"),
+  taskEditorInitialTodo: document.querySelector("#task-editor-initial-todo"),
   taskEditorAssigneeField: document.querySelector("#task-editor-assignee-field"),
   taskEditorAssignee: document.querySelector("#task-editor-assignee"),
   taskEditorHandoffField: document.querySelector("#task-editor-handoff-field"),
@@ -438,8 +451,16 @@ const elements = {
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
-  taskNextActionValue: document.querySelector("#task-next-action-value"),
-  taskNextActionTimeline: document.querySelector("#task-next-action-timeline"),
+  taskTodoFilter: document.querySelector("#task-todo-filter"),
+  taskTodoAddForm: document.querySelector("#task-todo-add-form"),
+  taskTodoText: document.querySelector("#task-todo-text"),
+  taskTodoDetail: document.querySelector("#task-todo-detail"),
+  taskTodoKind: document.querySelector("#task-todo-kind"),
+  taskTodoAdd: document.querySelector("#task-todo-add"),
+  taskTodoLoading: document.querySelector("#task-todo-loading"),
+  taskTodoEmpty: document.querySelector("#task-todo-empty"),
+  taskTodoError: document.querySelector("#task-todo-error"),
+  taskTodoList: document.querySelector("#task-todo-list"),
   taskProgressDetail: document.querySelector("#task-progress-detail"),
   taskProgressLabel: document.querySelector("#task-progress-label"),
   taskProgressValue: document.querySelector("#task-progress-value"),
@@ -1080,6 +1101,16 @@ function actionIcon(symbol, label, { primary = false, className = "" } = {}) {
   return button;
 }
 
+function todoSummary(task) {
+  const todos = Array.isArray(task.open_todos)
+    ? task.open_todos
+    : (Array.isArray(task.todos) ? task.todos : []).filter(
+      (todo) => todo.status === "not_done",
+    );
+  if (!todos.length) return "No open To Dos";
+  return `To Do: ${todos[0].text}${todos.length > 1 ? ` · +${todos.length - 1} more` : ""}`;
+}
+
 function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
@@ -1110,7 +1141,7 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   const nextAction = node(
     "span",
     "task-next",
-    task.next_action || "Next action not set",
+    todoSummary(task),
   );
   appendTaskProgress(nextAction, task);
   const end = node("span", "task-end");
@@ -1119,7 +1150,7 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   end.append(node("span", `due-badge ${due.className}`, due.label));
 
   button.append(titleWrap, nextAction, end);
-  button.addEventListener("click", () => selectTask(task.slug));
+  button.addEventListener("click", () => selectTask(task.slug, null, button));
   row.append(button);
   // Inbox rows have intentional whitespace around their compact metadata. A
   // click anywhere except an explicit row action is still a detail-selection
@@ -1128,7 +1159,7 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   row.addEventListener("click", (event) => {
     if (event.target.closest(".task-row-actions")) return;
     if (event.target !== row) return;
-    selectTask(task.slug);
+    selectTask(task.slug, null, button);
   });
   if (todayActions) {
     const actions = node("div", "task-row-actions");
@@ -1533,6 +1564,7 @@ function renderMonthCalendar() {
       taskButton.classList.toggle("is-overdue-task", isOverdueExecutable(task));
       taskButton.classList.toggle("is-selected", state.selectedSlug === task.slug);
       taskButton.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false");
+      taskButton.setAttribute("aria-description", todoSummary(task));
       taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
     });
     icalEventsForDay(key).forEach((event) => cell.append(node("p", "ical-event", event.title || "Calendar event")));
@@ -1609,7 +1641,7 @@ function boardCard(task) {
       avatar: { kind: "initials", value: "T" },
     }),
     heading,
-    node("span", "board-card-next", task.next_action || "Next action not set"),
+    node("span", "board-card-next", todoSummary(task)),
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
@@ -1714,7 +1746,7 @@ function agentBoardCard(task) {
   button.append(
     ownerBadge(task.owner),
     heading,
-    node("span", "board-card-next", task.next_action || "Next action not set"),
+    node("span", "board-card-next", todoSummary(task)),
     meta,
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
@@ -2190,7 +2222,11 @@ function renderAgentWorkView() {
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
     workSummary.append(node("strong", "", work.length ? `${working.length} working · ${blocked.length} blocked` : "No authorized work yet"));
-    workSummary.append(node("span", "", latest ? `Next: ${latest.next_action || "No next step set"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or next step recorded."));
+    const openTodoCount = work.reduce(
+      (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
+      0,
+    );
+    workSummary.append(node("span", "", latest ? `${todoSummary(latest)} · ${openTodoCount} open To Do${openTodoCount === 1 ? "" : "s"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or open To Do recorded."));
     card.append(
       heading,
       node(
@@ -2376,6 +2412,8 @@ function renderProjectsView() {
 }
 
 async function loadAgents() {
+  if (state.agentsLoading) return;
+  state.agentsLoading = true;
   try {
     const response = await fetch("/api/agents", {
       headers: { Accept: "application/json" },
@@ -2386,9 +2424,12 @@ async function loadAgents() {
       throw new Error(payload.error || "Agent profiles could not be read.");
     }
     state.agents = Array.isArray(payload.agents) ? payload.agents : [];
+    state.agentsLoaded = true;
     render();
   } catch (_error) {
     state.agents = [];
+  } finally {
+    state.agentsLoading = false;
   }
 }
 
@@ -2417,32 +2458,64 @@ async function loadAgentWork() {
   }
 }
 
-async function loadProposals() {
+function scheduleSurfacePoll(surface) {
+  const timerKey = surface === "tasks"
+    ? "taskSurfacePollTimer"
+    : "proposalSurfacePollTimer";
+  if (state[timerKey] !== null) return;
+  state[timerKey] = window.setTimeout(() => {
+    state[timerKey] = null;
+    if (document.hidden) return;
+    if (surface === "tasks") void loadTasks({ reason: "poll" });
+    else void loadProposals({ poll: true });
+  }, 1000);
+}
+
+async function performProposalLoad({ refresh = false } = {}) {
   state.proposalsLoading = true;
   state.proposalsError = "";
-  if (state.snapshot) render();
+  render();
   try {
-    const response = await fetch("/api/proposals", {
+    const requestOptions = {
       headers: { Accept: "application/json" },
       cache: "no-store",
-    });
+    };
+    const response = refresh
+      ? await fetch("/api/proposals?refresh=1", requestOptions)
+      : await fetch("/api/proposals", requestOptions);
     const payload = await response.json();
     if (!response.ok) {
       throw new Error(payload.error || "Proposed tasks could not be read.");
     }
-    state.proposals = Array.isArray(payload.proposals)
-      ? payload.proposals
-      : [];
-    state.proposalIssues = Array.isArray(payload.issues)
-      ? payload.issues
-      : [];
+    state.proposalsReadState = payload.read_state || null;
+    if (response.status === 200) {
+      state.proposals = Array.isArray(payload.proposals)
+        ? payload.proposals
+        : [];
+      state.proposalIssues = Array.isArray(payload.issues)
+        ? payload.issues
+        : [];
+      state.proposalsLoaded = true;
+    }
+    if (payload.read_state?.error) {
+      state.proposalsError = payload.read_state.error;
+    }
+    if (payload.read_state?.refreshing) scheduleSurfacePoll("proposals");
   } catch (error) {
     state.proposalsError =
       error.message || "Proposed tasks could not be read.";
   } finally {
     state.proposalsLoading = false;
-    if (state.snapshot) render();
+    render();
   }
+}
+
+function loadProposals(options = {}) {
+  if (state.proposalsLoadPromise) return state.proposalsLoadPromise;
+  state.proposalsLoadPromise = performProposalLoad(options).finally(() => {
+    state.proposalsLoadPromise = null;
+  });
+  return state.proposalsLoadPromise;
 }
 
 async function loadProjects() {
@@ -2461,6 +2534,7 @@ async function loadProjects() {
     state.projects = payload.projects;
     state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
     state.projectWarningStateError = payload.warning_state_error || "";
+    state.projectsLoaded = true;
   } catch (error) {
     state.projectsError =
       error.message || "Projects could not be read from GBrain.";
@@ -3229,18 +3303,31 @@ function renderProposedWork() {
   filterLabel.append(filter);
   heading.append(title, filterLabel);
   section.append(heading);
-  if (state.proposalsLoading) {
+  if (
+    !state.proposalsLoaded &&
+    (state.proposalsLoading || state.proposalsReadState?.status === "loading")
+  ) {
     section.append(node("div", "section-empty", "Reading proposed work…"));
     return section;
   }
-  if (state.proposalsError) {
+  if (state.proposalsError && !state.proposalsLoaded) {
     const error = node("div", "section-empty", state.proposalsError);
     const retry = node("button", "secondary-button", "Try again");
     retry.type = "button";
-    retry.addEventListener("click", loadProposals);
+    retry.addEventListener("click", () => loadProposals({ refresh: true }));
     error.append(retry);
     section.append(error);
     return section;
+  }
+  if (state.proposalsLoaded && (state.proposalsLoading || state.proposalsReadState?.stale)) {
+    const status = node(
+      "p",
+      "surface-read-state",
+      state.proposalsError
+        ? `Last verified proposals remain visible. ${state.proposalsError}`
+        : "Last verified proposals remain visible while GBrain refreshes.",
+    );
+    section.append(status);
   }
   const visible = state.proposals.filter(
     (proposal) =>
@@ -3405,6 +3492,21 @@ async function submitProposalDecision() {
   }
 }
 
+function renderTaskSurfaceLoading(view) {
+  const wrapper = node("section", "section-empty task-surface-loading");
+  const message = state.tasksReadState?.error
+    ? state.tasksReadState.error
+    : "Reading canonical task data in the background…";
+  wrapper.append(node("h2", "", viewMeta[view]?.title || "Tasks"), node("p", "", message));
+  if (state.tasksReadState?.error) {
+    const retry = node("button", "secondary-button", "Try again");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadTasks({ reason: "manual" }));
+    wrapper.append(retry);
+  }
+  return wrapper;
+}
+
 function render() {
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
   hideHudTooltip();
@@ -3428,12 +3530,12 @@ function render() {
   // during navigation and while agent work is loading, so keep the control in
   // lockstep with state rather than relying on the previous DOM value.
   elements.showAgentTasks.checked = state.showAgentTasks;
-  if (state.loading) return;
-  if (!state.snapshot) return;
-
   const view = state.activeView;
-  const content =
-    view === "today"
+  const content = !state.snapshot
+    ? view === "system-tickets"
+      ? renderSystemTicketsView()
+      : renderTaskSurfaceLoading(view)
+    : view === "today"
       ? renderToday()
       : view === "week"
         ? renderCalendarView()
@@ -3457,12 +3559,16 @@ function render() {
       content,
     ],
   );
-  const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
-  elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  }).format(date);
+  if (state.snapshot) {
+    const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
+    elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    }).format(date);
+  } else {
+    elements.dateLabel.textContent = "Waiting for verified task data";
+  }
 }
 
 function renderSystemTicketsView() {
@@ -3628,38 +3734,358 @@ async function submitSystemTicket(event) {
   finally { elements.systemTicketSubmit.disabled = false; }
 }
 
-function renderNextActionTimeline(task) {
-  elements.taskNextActionTimeline.replaceChildren();
-  if (task.next_action) {
-    const current = node("li", "is-current");
-    current.append(
-      node("span", "next-action-state", "Current"),
-      node("strong", "", task.next_action),
-    );
-    elements.taskNextActionTimeline.append(current);
-  }
-  const history = Array.isArray(task.next_action_history)
-    ? [...task.next_action_history].reverse()
-    : [];
-  history.forEach((entry) => {
-    const item = node("li", "is-completed");
+function todoStatusLabel(todo) {
+  return todo.status === "done" ? "Done" : "Not Done";
+}
+
+function todoCard(todo) {
+  const card = node("article", "task-todo-card");
+  card.dataset.todoSlug = todo.slug;
+  card.setAttribute("role", "listitem");
+  card.tabIndex = -1;
+  const heading = node("div", "task-todo-card-heading");
+  const title = node("div");
+  title.append(
+    node("h4", "", todo.text),
+    node("span", `task-todo-status ${todo.status}`, todoStatusLabel(todo)),
+  );
+  const changeStatus = node(
+    "button",
+    "secondary-button",
+    todo.status === "done" ? "Reopen" : "Mark Done",
+  );
+  changeStatus.type = "button";
+  changeStatus.setAttribute(
+    "aria-label",
+    `${todo.status === "done" ? "Reopen" : "Mark Done"} To Do: ${todo.text}`,
+  );
+  changeStatus.addEventListener("click", () => changeTodoStatus(todo, changeStatus));
+  heading.append(title, changeStatus);
+
+  const details = node("details", "task-todo-details");
+  const summary = node("summary", "", `Open ${todo.kind || "action"} details, comments, and history`);
+  const detailCopy = node(
+    "p",
+    "task-todo-detail-copy",
+    todo.detail || "No additional detail.",
+  );
+  const provenance = node(
+    "p",
+    "task-todo-provenance",
+    `${todo.kind || "action"} · ${todo.creator || "Creator unavailable"} · ${todo.source || "Source unavailable"}`,
+  );
+
+  const editForm = node("form", "task-todo-edit-form");
+  const editText = document.createElement("input");
+  editText.type = "text";
+  editText.maxLength = 240;
+  editText.required = true;
+  editText.value = todo.text;
+  editText.setAttribute("aria-label", `Edit To Do text: ${todo.text}`);
+  const editDetail = document.createElement("textarea");
+  editDetail.rows = 2;
+  editDetail.maxLength = 5000;
+  editDetail.value = todo.detail || "";
+  editDetail.setAttribute("aria-label", `Edit To Do detail: ${todo.text}`);
+  const editSubmit = node("button", "secondary-button", "Save To Do");
+  editSubmit.type = "submit";
+  editForm.append(editText, editDetail, editSubmit);
+  editForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    editTaskTodo(todo, editText.value, editDetail.value, editSubmit);
+  });
+
+  const commentsHeading = node("h5", "", "Comments");
+  const comments = node("ol", "task-todo-comments");
+  (Array.isArray(todo.comments) ? todo.comments : []).forEach((comment) => {
+    const item = node("li");
     item.append(
-      node("span", "next-action-state", "Completed"),
-      node("strong", "", entry.action),
+      node("p", "", comment.body),
       node(
-        "time",
+        "small",
         "",
-        entry.completed_at
-          ? new Date(entry.completed_at).toLocaleString()
-          : "Completion time unavailable",
+        `${comment.author || "Author unavailable"} · ${comment.created_at ? new Date(comment.created_at).toLocaleString() : "Time unavailable"}`,
       ),
     );
-    elements.taskNextActionTimeline.append(item);
+    comments.append(item);
   });
-  if (!task.next_action && !history.length) {
-    elements.taskNextActionTimeline.append(
-      node("li", "is-empty", "No Next Action history recorded yet."),
+  if (!comments.children.length) {
+    comments.append(node("li", "is-empty", "No comments yet."));
+  }
+  const commentForm = node("form", "task-todo-comment-form");
+  const commentInput = document.createElement("textarea");
+  commentInput.rows = 2;
+  commentInput.maxLength = 4000;
+  commentInput.required = true;
+  commentInput.placeholder = "Reply to this To Do";
+  commentInput.setAttribute("aria-label", `Comment on To Do: ${todo.text}`);
+  const commentSubmit = node("button", "secondary-button", "Add Comment");
+  commentSubmit.type = "submit";
+  commentForm.append(commentInput, commentSubmit);
+  commentForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    commentOnTodo(todo, commentInput.value, commentSubmit);
+  });
+
+  const historyHeading = node("h5", "", "History");
+  const history = node("ol", "task-todo-history");
+  (Array.isArray(todo.events) ? todo.events : []).forEach((item) => {
+    const row = node("li");
+    row.append(
+      node("strong", "", item.event_type.replaceAll("_", " ")),
+      node(
+        "small",
+        "",
+        `${item.actor || "Actor unavailable"} · ${item.occurred_at ? new Date(item.occurred_at).toLocaleString() : "Time unavailable"}`,
+      ),
     );
+    history.append(row);
+  });
+  if (!history.children.length) {
+    history.append(node("li", "is-empty", "No canonical history available."));
+  }
+  details.append(
+    summary,
+    provenance,
+    detailCopy,
+    editForm,
+    commentsHeading,
+    comments,
+    commentForm,
+    historyHeading,
+    history,
+  );
+  card.append(heading, details);
+  return card;
+}
+
+function renderTaskTodos(task) {
+  const todos = Array.isArray(task.todos) ? task.todos : [];
+  const filtered = state.todoFilter === "all"
+    ? todos
+    : todos.filter((todo) => todo.status === state.todoFilter);
+  elements.taskTodoList.replaceChildren(...filtered.map(todoCard));
+  elements.taskTodoEmpty.classList.toggle("is-hidden", filtered.length > 0);
+  elements.taskTodoLoading.classList.toggle(
+    "is-hidden",
+    state.todoLoadingTask !== task.slug,
+  );
+  Array.from(elements.taskTodoFilter.querySelectorAll("button")).forEach((button) => {
+    const selected = button.dataset.todoFilter === state.todoFilter;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+  });
+}
+
+function todoErrorMessage(error) {
+  if (error.code === "todo_changed") {
+    return "This To Do changed in GBrain. Its latest canonical version has been reloaded; review it before retrying.";
+  }
+  if (error.code === "partial_write" && error.slug) {
+    return `${error.message} Inspect ${error.slug} before retrying.`;
+  }
+  return error.message || "The To Do change could not be verified.";
+}
+
+function replaceTaskTodos(taskSlug, todos) {
+  const task = findTaskBySlug(taskSlug);
+  if (!task) return null;
+  task.todos = Array.isArray(todos) ? todos : [];
+  return task;
+}
+
+function restoreTodoFocus() {
+  const returnFocus = state.todoReturnFocus;
+  state.todoReturnFocus = null;
+  if (!returnFocus) return;
+  window.requestAnimationFrame(() => {
+    const candidate = Array.from(
+      elements.taskTodoList.querySelectorAll(".task-todo-card"),
+    ).find((candidate) => candidate.dataset.todoSlug === returnFocus.slug);
+    const target = returnFocus.control === "summary"
+      ? candidate?.querySelector("summary")
+      : candidate || elements.taskTodoFilter.querySelector("button.is-active");
+    target?.focus({ preventScroll: true });
+  });
+}
+
+function applyVerifiedTodoMutation(taskSlug, todo, returnFocus) {
+  const task = findTaskBySlug(taskSlug);
+  if (!task) return null;
+  const todos = Array.isArray(task.todos) ? [...task.todos] : [];
+  const index = todos.findIndex((candidate) => candidate.slug === todo.slug);
+  if (index === -1) todos.push(todo);
+  else todos[index] = todo;
+  todos.sort((left, right) =>
+    Number(left.status === "done") - Number(right.status === "done") ||
+    String(left.created_at).localeCompare(String(right.created_at)) ||
+    left.slug.localeCompare(right.slug));
+  task.todos = todos;
+  state.todoReturnFocus = returnFocus;
+  if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+    renderTaskTodos(task);
+    restoreTodoFocus();
+  }
+  return task;
+}
+
+async function refreshTaskTodos(taskSlug, returnFocus = null) {
+  state.todoLoadingTask = taskSlug;
+  state.todoReturnFocus = returnFocus;
+  const current = findTaskBySlug(taskSlug);
+  if (current) renderTaskTodos(current);
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/todos`,
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const error = new Error(result.error || "Canonical To Dos could not be read.");
+      error.code = result.code;
+      throw error;
+    }
+    const task = replaceTaskTodos(taskSlug, result.todos);
+    if (task && state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+      renderTaskTodos(task);
+      restoreTodoFocus();
+    }
+    return task;
+  } finally {
+    state.todoLoadingTask = null;
+    const task = findTaskBySlug(taskSlug);
+    if (task && state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+      renderTaskTodos(task);
+    }
+  }
+}
+
+async function todoMutation(endpoint, method, body) {
+  const response = await fetch(endpoint, {
+    method,
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.receipt?.verified || !result.receipt?.todo) {
+    const error = new Error(result.error || "Canonical To Do readback was missing.");
+    error.code = result.code || "ambiguous_readback";
+    error.slug = result.slug;
+    throw error;
+  }
+  return result.receipt.todo;
+}
+
+async function createTaskTodo(event) {
+  event.preventDefault();
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  const taskSlug = state.selectedSlug;
+  elements.taskTodoError.classList.add("is-hidden");
+  elements.taskTodoAdd.disabled = true;
+  try {
+    const todo = await todoMutation(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/todos`,
+      "POST",
+      {
+        text: elements.taskTodoText.value,
+        detail: elements.taskTodoDetail.value,
+        kind: elements.taskTodoKind.value,
+        actor: "people/tony-guan",
+        source: "mission_control",
+        idempotency_key: crypto.randomUUID(),
+      },
+    );
+    state.todoFilter = "all";
+    elements.taskTodoAddForm.reset();
+    applyVerifiedTodoMutation(taskSlug, todo, { slug: todo.slug, control: "summary" });
+    showToast("To Do created and verified in GBrain.");
+  } catch (error) {
+    elements.taskTodoError.textContent = todoErrorMessage(error);
+    elements.taskTodoError.classList.remove("is-hidden");
+  } finally {
+    elements.taskTodoAdd.disabled = false;
+  }
+}
+
+async function editTaskTodo(todo, text, detail, submit) {
+  elements.taskTodoError.classList.add("is-hidden");
+  submit.disabled = true;
+  try {
+    const updated = await todoMutation(`/api/todos/${encodeURIComponent(todo.slug)}`, "PATCH", {
+      text,
+      detail,
+      expected_updated_at: todo.updated_at,
+      actor: "people/tony-guan",
+      source: "mission_control",
+      idempotency_key: crypto.randomUUID(),
+    });
+    applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
+    showToast("To Do edit verified in GBrain.");
+  } catch (error) {
+    elements.taskTodoError.textContent = todoErrorMessage(error);
+    elements.taskTodoError.classList.remove("is-hidden");
+    if (error.code === "todo_changed") {
+      await refreshTaskTodos(todo.parent_task, { slug: todo.slug, control: "summary" });
+    }
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function commentOnTodo(todo, body, submit) {
+  elements.taskTodoError.classList.add("is-hidden");
+  submit.disabled = true;
+  try {
+    const updated = await todoMutation(
+      `/api/todos/${encodeURIComponent(todo.slug)}/comments`,
+      "POST",
+      {
+        body,
+        expected_updated_at: todo.updated_at,
+        author: "people/tony-guan",
+        source: "mission_control",
+        idempotency_key: crypto.randomUUID(),
+      },
+    );
+    applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
+    showToast("Comment appended and verified in GBrain.");
+  } catch (error) {
+    elements.taskTodoError.textContent = todoErrorMessage(error);
+    elements.taskTodoError.classList.remove("is-hidden");
+    if (error.code === "todo_changed") {
+      await refreshTaskTodos(todo.parent_task, { slug: todo.slug, control: "summary" });
+    }
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function changeTodoStatus(todo, button) {
+  elements.taskTodoError.classList.add("is-hidden");
+  button.disabled = true;
+  try {
+    state.todoFilter = "all";
+    const updated = await todoMutation(
+      `/api/todos/${encodeURIComponent(todo.slug)}/status`,
+      "PATCH",
+      {
+        status: todo.status === "done" ? "not_done" : "done",
+        expected_updated_at: todo.updated_at,
+        actor: "people/tony-guan",
+        source: "mission_control",
+        idempotency_key: crypto.randomUUID(),
+      },
+    );
+    applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
+    showToast(`To Do marked ${todo.status === "done" ? "Not Done" : "Done"}.`);
+  } catch (error) {
+    elements.taskTodoError.textContent = todoErrorMessage(error);
+    elements.taskTodoError.classList.remove("is-hidden");
+    if (error.code === "todo_changed") {
+      await refreshTaskTodos(todo.parent_task, { slug: todo.slug, control: "summary" });
+    }
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -3777,8 +4203,8 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
-  elements.taskNextActionValue.textContent = task.next_action || "No next action set.";
-  renderNextActionTimeline(task);
+  elements.taskTodoError.classList.add("is-hidden");
+  renderTaskTodos(task);
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -3978,7 +4404,10 @@ function closeDetails() {
     window.requestAnimationFrame(() => {
       const target = returnFocus.element?.isConnected
         ? returnFocus.element
-        : Array.from(document.querySelectorAll(".proposal-card")).find(
+        : [
+          ...document.querySelectorAll(".proposal-card"),
+          ...document.querySelectorAll(".task-row-open"),
+        ].find(
           (candidate) => candidate.dataset.slug === returnFocus.slug,
         );
       target?.focus({ preventScroll: true });
@@ -4117,57 +4546,6 @@ async function saveTaskStatus() {
   }
 }
 
-function nextActionErrorMessage(error) {
-  if (error.code === "partial_write" && error.slug) {
-    return `${error.message} Inspect ${error.slug} before retrying.`;
-  }
-  return error.message || "Next action could not be saved.";
-}
-
-async function saveTaskNextAction() {
-  if (state.selectedKind !== "task" || !state.selectedSlug) return;
-  const taskSlug = state.selectedSlug;
-  const nextAction = elements.taskNextActionInput.value;
-  elements.taskNextActionError.classList.add("is-hidden");
-  elements.taskNextActionSave.disabled = true;
-  elements.taskNextActionSave.textContent = "Saving…";
-  try {
-    const response = await fetch(
-      `/api/tasks/${encodeURIComponent(taskSlug)}/next-action`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ next_action: nextAction }),
-      },
-    );
-    const result = await response.json();
-    if (!response.ok) {
-      const error = new Error(result.error || "Next action could not be saved.");
-      error.code = result.code;
-      error.slug = result.slug;
-      throw error;
-    }
-    showToast(
-      result.receipt.next_action
-        ? "Next action saved and verified in GBrain."
-        : "Next action cleared and verified in GBrain.",
-    );
-    await loadTasks();
-    selectTask(taskSlug);
-  } catch (error) {
-    elements.taskNextActionError.textContent = nextActionErrorMessage(error);
-    elements.taskNextActionError.classList.remove("is-hidden");
-  } finally {
-    elements.taskNextActionSave.textContent = "Save";
-    elements.taskNextActionSave.disabled =
-      elements.taskNextActionInput.value.trim() ===
-      elements.taskNextActionInput.dataset.currentValue;
-  }
-}
-
 function setView(view) {
   if (!viewMeta[view]) return;
   state.activeView = view;
@@ -4177,6 +4555,15 @@ function setView(view) {
     !state.agentWorkLoaded
   ) {
     void loadAgentWork();
+  }
+  if (view === "projects" && !state.projectsLoaded && !state.projectsLoading) {
+    void loadProjects();
+  }
+  if (view === "inbox" && !state.proposalsLoaded && !state.proposalsLoading) {
+    void loadProposals();
+  }
+  if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
+    void loadAgents();
   }
 }
 
@@ -4265,14 +4652,10 @@ async function performTaskLoad(reason) {
     reason === "automatic" ? "Refreshing from GBrain…" : "Reading GBrain…";
   elements.refreshButton.disabled = true;
   setConnection("loading", "Connecting");
-  if (!state.snapshot) {
-    const loading = node("div", "loading-state");
-    loading.append(node("span"), node("span"), node("span"));
-    elements.viewSurface.replaceChildren(loading);
-  }
+  render();
   try {
     const response = await fetch(
-      reason === "initial" ? "/api/tasks" : "/api/tasks?refresh=1",
+      ["initial", "poll"].includes(reason) ? "/api/tasks" : "/api/tasks?refresh=1",
       {
       headers: { Accept: "application/json" },
       cache: "no-store",
@@ -4280,14 +4663,34 @@ async function performTaskLoad(reason) {
     );
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Unable to read GBrain.");
-    state.snapshot = payload;
-    state.lastSyncedAt = Date.now();
+    state.tasksReadState = payload.read_state || null;
+    if (response.status === 202) scheduleSurfacePoll("tasks");
+    if (response.status === 200 && Array.isArray(payload.tasks)) {
+      state.snapshot = payload;
+      state.lastSyncedAt = payload.read_state?.last_valid_at
+        ? payload.read_state.last_valid_at * 1000
+        : Date.now();
+    }
     state.refreshDeferred = false;
-    setConnection("connected", "GBrain connected");
-    elements.syncLabel.textContent =
-      `Synced ${payload.tasks.length} task${payload.tasks.length === 1 ? "" : "s"} ` +
-      `at ${formatSyncTime(state.lastSyncedAt)}`;
-    scheduleAutoRefresh({ reset: true });
+    if (state.snapshot) {
+      setConnection("connected", "GBrain connected");
+      const suffix = payload.read_state?.refreshing
+        ? " · refreshing in background"
+        : payload.read_state?.error
+          ? " · refresh delayed; last verified data kept"
+          : "";
+      elements.syncLabel.textContent =
+        `Synced ${state.snapshot.tasks.length} task${state.snapshot.tasks.length === 1 ? "" : "s"} ` +
+        `at ${formatSyncTime(state.lastSyncedAt)}${suffix}`;
+      scheduleAutoRefresh({ reset: !payload.read_state?.refreshing });
+    } else {
+      setConnection(
+        payload.read_state?.status === "error" ? "error" : "loading",
+        payload.read_state?.status === "error" ? "GBrain refresh delayed" : "Connecting",
+      );
+      elements.syncLabel.textContent = payload.read_state?.error || "Reading GBrain in the background…";
+    }
+    if (payload.read_state?.refreshing) scheduleSurfacePoll("tasks");
   } catch (error) {
     if (previousSnapshot) {
       state.snapshot = previousSnapshot;
@@ -4301,14 +4704,20 @@ async function performTaskLoad(reason) {
       scheduleAutoRefresh();
     } else {
       state.snapshot = null;
+      state.tasksReadState = {
+        surface: "tasks",
+        status: "error",
+        refreshing: false,
+        stale: false,
+        error: error.message || "Unable to read GBrain.",
+      };
       setConnection("error", "GBrain unavailable");
       elements.syncLabel.textContent = "Read failed";
-      showLoadError(error);
     }
   } finally {
     state.loading = false;
     elements.refreshButton.disabled = false;
-    if (state.snapshot) render();
+    render();
   }
 }
 
@@ -4390,7 +4799,15 @@ function resetTaskEditorMetric(metric = null) {
   updateTaskMetricPreview();
 }
 
-function openCreateTask() {
+async function loadTaskEditorReferenceData() {
+  const loads = [];
+  if (!state.projectsLoaded && !state.projectsLoading) loads.push(loadProjects());
+  if (!state.agentsLoaded && !state.agentsLoading) loads.push(loadAgents());
+  await Promise.all(loads);
+}
+
+async function openCreateTask() {
+  await loadTaskEditorReferenceData();
   state.taskEditorMode = "create";
   state.taskEditorSourceSlug = null;
   elements.taskEditorForm.reset();
@@ -4401,6 +4818,9 @@ function openCreateTask() {
     "Mission Control reports success only after exact GBrain page and relationship readback.";
   elements.taskEditorDue.value = state.snapshot?.as_of || "";
   elements.taskEditorPriority.value = "normal";
+  elements.taskEditorInitialTodoField.classList.remove("is-hidden");
+  elements.taskEditorInitialTodo.classList.remove("is-hidden");
+  elements.taskEditorInitialTodo.value = "";
   populateTaskEditorAssignees();
   elements.taskEditorAssigneeField.classList.remove("is-hidden");
   elements.taskEditorStatusField.classList.add("is-hidden");
@@ -4413,10 +4833,11 @@ function openCreateTask() {
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
 }
 
-function openDuplicateTask() {
+async function openDuplicateTask() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
   const task = state.snapshot?.tasks.find((item) => item.slug === state.selectedSlug);
   if (!task) return;
+  await loadTaskEditorReferenceData();
   state.taskEditorMode = "duplicate";
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
@@ -4428,7 +4849,11 @@ function openDuplicateTask() {
   elements.taskEditorTitle.value = task.title || task.summary;
   elements.taskEditorDetail.value = task.detail || "";
   elements.taskEditorPriority.value = task.priority;
-  elements.taskEditorNextAction.value = task.next_action || "";
+  elements.taskEditorInitialTodoField.classList.remove("is-hidden");
+  elements.taskEditorInitialTodo.classList.remove("is-hidden");
+  elements.taskEditorInitialTodo.value = (task.todos || []).find(
+    (todo) => todo.status === "not_done",
+  )?.text || "";
   populateTaskEditorAssignees(task.owner_agent || "tony");
   elements.taskEditorAssigneeField.classList.remove("is-hidden");
   elements.taskEditorStatusField.classList.add("is-hidden");
@@ -4446,10 +4871,11 @@ function openDuplicateTask() {
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
 }
 
-function openEditTask() {
+async function openEditTask() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
   const task = findTaskBySlug(state.selectedSlug);
   if (!task) return;
+  await loadTaskEditorReferenceData();
   state.taskEditorMode = "edit";
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
@@ -4465,7 +4891,9 @@ function openEditTask() {
   elements.taskEditorStatus.value = isProposed ? "planned" : taskUiStatus(task);
   elements.taskEditorStatusField.classList.toggle("is-hidden", isProposed);
   elements.taskEditorDue.value = task.due_day || "";
-  elements.taskEditorNextAction.value = task.next_action || "";
+  elements.taskEditorInitialTodoField.classList.add("is-hidden");
+  elements.taskEditorInitialTodo.classList.add("is-hidden");
+  elements.taskEditorInitialTodo.value = "";
   elements.taskEditorAssigneeField.classList.toggle("is-hidden", isProposed);
   populateTaskEditorAssignees(task.owner_agent || "tony");
   elements.taskEditorHandoffField.classList.toggle("is-hidden", isProposed);
@@ -4517,14 +4945,16 @@ async function submitTaskEditor(event) {
       title: elements.taskEditorTitle.value,
       detail: elements.taskEditorDetail.value,
       priority: elements.taskEditorPriority.value,
-      next_action: elements.taskEditorNextAction.value,
       due_day: elements.taskEditorDue.value,
       project_slug: elements.taskEditorProject.value || null,
       goal_slug: elements.taskEditorGoal.value || null,
       progress_metric: taskEditorMetricPayload(),
       ...(state.taskEditorMode === "create"
         || state.taskEditorMode === "duplicate"
-        ? { assignee_slug: elements.taskEditorAssignee.value }
+        ? {
+          assignee_slug: elements.taskEditorAssignee.value,
+          initial_todo: elements.taskEditorInitialTodo.value,
+        }
         : {}),
       ...(state.taskEditorMode === "edit" ? {
         status: findTaskBySlug(state.taskEditorSourceSlug)?.status === "proposed" ? "proposed" : elements.taskEditorStatus.value,
@@ -4631,6 +5061,14 @@ elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
 elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.taskTodoAddForm.addEventListener("submit", createTaskTodo);
+elements.taskTodoFilter.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-todo-filter]");
+  if (!button) return;
+  state.todoFilter = button.dataset.todoFilter;
+  const task = findTaskBySlug(state.selectedSlug);
+  if (task) renderTaskTodos(task);
+});
 elements.taskEditorSaveApprove.addEventListener("click", saveAndApproveProposedTask);
 elements.agentProfileClose.addEventListener("click", () => {
   elements.agentProfileDialog.close();
@@ -4660,7 +5098,7 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });
   if (state.agentWorkLoaded || state.showAgentTasks) loadAgentWork();
-  loadProposals();
+  loadProposals({ refresh: true });
 });
 elements.showAgentTasks.addEventListener("change", () => {
   setAgentTasksVisible(elements.showAgentTasks.checked);
@@ -4869,8 +5307,4 @@ document.addEventListener("keydown", (event) => {
 
 bindHudTooltipEvents();
 loadReleases();
-loadTasks({ reason: "initial" }).finally(() => loadSystemTickets({ force: true }));
-loadProjects();
-loadAgents();
-loadProposals();
-loadSystemTickets();
+loadTasks({ reason: "initial" });

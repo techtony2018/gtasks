@@ -7,13 +7,12 @@ import os
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Condition
-from time import monotonic
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 from urllib.parse import quote, unquote
@@ -29,6 +28,7 @@ from .domain import (
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    QA_FIXTURES_ROOT,
     SYSTEM_TICKET_TARGETS,
     SYSTEM_TICKET_STATUSES,
     TASK_PRIORITIES,
@@ -44,10 +44,12 @@ from .domain import (
     new_system_ticket,
 )
 from .gbrain import (
+    ConcurrentTodoUpdateError,
     GBrainAdapter,
     GBrainError,
     LifecycleIntegrityError,
     PartialMutationError,
+    TONY_PROFILE_SLUG,
 )
 from .ical import CalendarPreferences, ICalendarError, ICalendarReader
 from .operational_logs import (
@@ -59,6 +61,7 @@ from .operational_logs import (
     OperationalLogStore,
 )
 from .releases import release_payload
+from .read_cache import ReadSnapshotStore, ReadSurfaceCache
 from .warnings import WarningDismissalStore
 
 
@@ -67,6 +70,7 @@ MAX_AVATAR_BYTES = 5 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
+PROPOSAL_CACHE_SECONDS = 5 * 60
 
 
 def _lifecycle_attention_payload(exc: LifecycleIntegrityError) -> dict[str, object]:
@@ -178,6 +182,14 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
             }
     active = _dedupe_tasks(list(active_read.tasks))
     archived = _dedupe_tasks(list(completed_read.tasks))
+    todo_issues = ()
+    enrich_todos = getattr(adapter, "enrich_tasks_with_todos", None)
+    if callable(enrich_todos):
+        active, active_todo_issues = enrich_todos(active)
+        archived, archived_todo_issues = enrich_todos(archived)
+        active = list(active)
+        archived = list(archived)
+        todo_issues = active_todo_issues + archived_todo_issues
     all_tasks = _dedupe_tasks(active + archived)
     completed = [
         task
@@ -249,7 +261,12 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         },
         "issues": [
             issue.to_dict()
-            for issue in active_read.issues + completed_read.issues + goal_read.issues
+            for issue in (
+                active_read.issues
+                + completed_read.issues
+                + goal_read.issues
+                + todo_issues
+            )
         ],
     }
 
@@ -264,13 +281,16 @@ def _handler_class(
     stargraph_url: str,
     ical_reader: ICalendarReader | None = None,
     calendar_preferences: CalendarPreferences | None = None,
+    read_cache: ReadSurfaceCache | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    snapshot_condition = Condition()
-    snapshot_payload: dict[str, Any] | None = None
-    snapshot_created_at = 0.0
-    snapshot_loading = False
+    active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
     active_calendar_preferences = calendar_preferences or CalendarPreferences()
+
+    def foreground_operation():
+        runner = getattr(adapter, "runner", None)
+        priority = getattr(runner, "foreground_operation", None)
+        return priority() if callable(priority) else nullcontext()
 
     def decorate_issues(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -293,39 +313,36 @@ def _handler_class(
         }
 
     def invalidate_snapshot() -> None:
-        nonlocal snapshot_payload, snapshot_created_at
-        with snapshot_condition:
-            snapshot_payload = None
-            snapshot_created_at = 0.0
+        # Keep the last verified projection usable while the authoritative
+        # refresh runs. Mutations mark both task and proposal projections stale
+        # because an agent proposal decision changes the same canonical task.
+        active_read_cache.invalidate("tasks", "proposals")
 
-    def read_snapshot(force: bool = False) -> dict[str, Any]:
-        nonlocal snapshot_payload, snapshot_created_at, snapshot_loading
-        with snapshot_condition:
-            while snapshot_loading:
-                snapshot_condition.wait()
-                if snapshot_payload is not None:
-                    return snapshot_payload
-            age = monotonic() - snapshot_created_at
-            if (
-                not force
-                and snapshot_payload is not None
-                and age <= SNAPSHOT_CACHE_SECONDS
-            ):
-                return snapshot_payload
-            snapshot_loading = True
-        try:
-            payload = build_task_snapshot(adapter, clock().date())
-        except Exception:
-            with snapshot_condition:
-                snapshot_loading = False
-                snapshot_condition.notify_all()
-            raise
-        with snapshot_condition:
-            snapshot_payload = payload
-            snapshot_created_at = monotonic()
-            snapshot_loading = False
-            snapshot_condition.notify_all()
-            return payload
+    def read_snapshot(force: bool = False):
+        return active_read_cache.read(
+            "tasks",
+            lambda: build_task_snapshot(adapter, clock().date()),
+            ttl_seconds=SNAPSHOT_CACHE_SECONDS,
+            force=force,
+        )
+
+    def read_proposals(force: bool = False):
+        def load() -> dict[str, Any]:
+            # A task refresh is the action-first surface. Let an already-running
+            # task read finish before the much larger proposal projection starts
+            # consuming the shared, rate-safe GBrain CLI lane.
+            active_read_cache.wait_for_idle(
+                "tasks",
+                timeout_seconds=35,
+            )
+            return adapter.list_proposals().to_dict()
+
+        return active_read_cache.read(
+            "proposals",
+            load,
+            ttl_seconds=PROPOSAL_CACHE_SECONDS,
+            force=force,
+        )
 
     class GTasksHandler(BaseHTTPRequestHandler):
         server_version = f"GTasks/{__version__}"
@@ -342,6 +359,7 @@ def _handler_class(
         def _json(self, status: int, payload: dict[str, Any]) -> None:
             operational_messages = {
                 "gbrain_unavailable": "A GBrain operation was unavailable.",
+                "gbrain_refresh_delayed": "A GBrain operation was unavailable.",
                 "partial_write": (
                     "A GBrain mutation needs verification before it is retried."
                 ),
@@ -485,11 +503,54 @@ def _handler_class(
                             root for _agent, root in AGENT_SCOPES
                         ],
                         "proposals_root": PROPOSALS_ROOT,
+                        "qa_fixtures_root": QA_FIXTURES_ROOT,
+                        "read_surfaces": "last_verified_local_cache",
                     },
                 )
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            todo_list_prefix = "/api/tasks/"
+            todo_list_suffix = "/todos"
+            if path.startswith(todo_list_prefix) and path.endswith(todo_list_suffix):
+                task_slug = unquote(
+                    path[len(todo_list_prefix) : -len(todo_list_suffix)]
+                )
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if any(
+                    key not in {"status", "cursor", "limit"} or len(values) != 1
+                    for key, values in query.items()
+                ):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Unsupported or repeated To Do filter."},
+                    )
+                    return
+                status_filter = query.get("status", [None])[0] or None
+                try:
+                    cursor = int(query.get("cursor", ["0"])[0])
+                    limit = int(query.get("limit", ["50"])[0])
+                    with foreground_operation():
+                        payload = adapter.list_task_todos(
+                            task_slug,
+                            status=status_filter,
+                            cursor=cursor,
+                            limit=limit,
+                        ).to_dict()
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, payload)
                 return
             if path == "/api/agents":
                 try:
@@ -514,15 +575,34 @@ def _handler_class(
                 self._json(HTTPStatus.OK, decorate_issues(payload))
                 return
             if path == "/api/proposals":
-                try:
-                    payload = adapter.list_proposals().to_dict()
-                except GBrainError as exc:
+                force = urlsplit(self.path).query == "refresh=1"
+                result = read_proposals(force=force)
+                if result.payload is None:
+                    if result.state.get("status") == "error":
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": result.state.get("error") or "The canonical GBrain proposal refresh failed.",
+                                "code": "gbrain_refresh_delayed",
+                                "read_state": result.state,
+                            },
+                        )
+                        return
                     self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
+                        HTTPStatus.ACCEPTED,
+                        {
+                            "proposals": [],
+                            "issues": [],
+                            "read_state": result.state,
+                        },
                     )
                     return
-                self._json(HTTPStatus.OK, decorate_issues(payload))
+                self._json(
+                    HTTPStatus.OK,
+                    decorate_issues(
+                        {**result.payload, "read_state": result.state}
+                    ),
+                )
                 return
             if path == "/api/logs":
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
@@ -586,18 +666,30 @@ def _handler_class(
                 )
                 return
             if path == "/api/tasks":
-                try:
-                    force = (
-                        urlsplit(self.path).query == "refresh=1"
-                    )
-                    payload = read_snapshot(force=force)
-                except GBrainError as exc:
+                force = urlsplit(self.path).query == "refresh=1"
+                result = read_snapshot(force=force)
+                if result.payload is None:
+                    if result.state.get("status") == "error":
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": result.state.get("error") or "The canonical GBrain task refresh failed.",
+                                "code": "gbrain_refresh_delayed",
+                                "read_state": result.state,
+                            },
+                        )
+                        return
                     self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
+                        HTTPStatus.ACCEPTED,
+                        {"read_state": result.state},
                     )
                     return
-                self._json(HTTPStatus.OK, decorate_issues(payload))
+                self._json(
+                    HTTPStatus.OK,
+                    decorate_issues(
+                        {**result.payload, "read_state": result.state}
+                    ),
+                )
                 return
             if path == "/api/projects":
                 try:
@@ -676,6 +768,156 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            task_todo_prefix = "/api/tasks/"
+            migration_suffix = "/todos/migrate"
+            if path.startswith(task_todo_prefix) and path.endswith(migration_suffix):
+                task_slug = unquote(
+                    path[len(task_todo_prefix) : -len(migration_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if payload:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do migration takes no options.", "code": "invalid_todo"},
+                    )
+                    return
+                try:
+                    result = adapter.migrate_legacy_next_actions(
+                        task_slug,
+                        now=clock(),
+                    )
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {**result.to_dict(), "verified": True})
+                return
+            todo_comment_prefix = "/api/todos/"
+            todo_comment_suffix = "/comments"
+            if path.startswith(todo_comment_prefix) and path.endswith(todo_comment_suffix):
+                todo_slug = unquote(
+                    path[len(todo_comment_prefix) : -len(todo_comment_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "body", "expected_updated_at", "author", "source", "idempotency_key"
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do comment requires exact mutation context.", "code": "invalid_todo"},
+                    )
+                    return
+                try:
+                    expected = datetime.fromisoformat(
+                        str(payload["expected_updated_at"]).replace("Z", "+00:00")
+                    )
+                    with foreground_operation():
+                        receipt = adapter.add_todo_comment(
+                            todo_slug,
+                            body=payload["body"],
+                            expected_updated_at=expected,
+                            author=payload["author"],
+                            source=payload["source"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except ConcurrentTodoUpdateError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "todo_changed", "slug": exc.todo_slug},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
+                return
+            todo_create_suffix = "/todos"
+            if path.startswith(task_todo_prefix) and path.endswith(todo_create_suffix):
+                task_slug = unquote(
+                    path[len(task_todo_prefix) : -len(todo_create_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "text", "detail", "kind", "actor", "source", "idempotency_key"
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do creation requires exact identity and actor context.", "code": "invalid_todo"},
+                    )
+                    return
+                try:
+                    with foreground_operation():
+                        receipt = adapter.create_todo(
+                            task_slug,
+                            text=payload["text"],
+                            detail=payload["detail"],
+                            kind=payload["kind"],
+                            actor=payload["actor"],
+                            source=payload["source"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
+                return
             if path == "/api/ical-access":
                 try:
                     self._json(HTTPStatus.OK, active_ical_reader.request_full_access())
@@ -1063,7 +1305,7 @@ def _handler_class(
                     "due_day",
                     "detail",
                     "priority",
-                    "next_action",
+                    "initial_todo",
                     "project_slug",
                     "goal_slug",
                     "progress_metric",
@@ -1079,6 +1321,14 @@ def _handler_class(
                     )
                     return
                 now = clock()
+                initial_todo_payload = None
+                initial_todo = payload.get("initial_todo", "")
+                if not isinstance(initial_todo, str):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "initial_todo must be text.", "code": "invalid_task"},
+                    )
+                    return
                 raw_due_day = payload.get("due_day")
                 due_day = now.date()
                 due_source = "task_creation_day"
@@ -1116,7 +1366,7 @@ def _handler_class(
                         title=payload.get("title", ""),
                         detail=payload.get("detail", ""),
                         priority=payload.get("priority", "normal"),
-                        next_action=payload.get("next_action", ""),
+                        next_action="",
                         due_day=due_day,
                         project=payload.get("project_slug") or None,
                         goal=payload.get("goal_slug") or None,
@@ -1134,6 +1384,22 @@ def _handler_class(
                         receipt = adapter.create_agent_task(task, assignee_slug)
                     else:
                         receipt = adapter.duplicate_task(source_slug, task)
+                    if initial_todo.strip():
+                        todo_receipt = adapter.create_todo(
+                            task.slug,
+                            text=initial_todo,
+                            detail="",
+                            kind="action",
+                            actor=TONY_PROFILE_SLUG,
+                            source="mission_control",
+                            idempotency_key="task-create-initial-todo",
+                            now=now,
+                        )
+                        initial_todo_payload = (
+                            todo_receipt.todo.to_dict()
+                            if hasattr(todo_receipt.todo, "to_dict")
+                            else todo_receipt.todo
+                        )
                 except LifecycleIntegrityError as exc:
                     self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
                     return
@@ -1164,7 +1430,20 @@ def _handler_class(
                     HTTPStatus.CREATED,
                     {
                         "source_slug": source_slug,
-                        "task": task.to_dict(),
+                        "task": {
+                            **task.to_dict(),
+                            "next_action": (
+                                initial_todo_payload["text"]
+                                if initial_todo_payload is not None
+                                else task.next_action
+                            ),
+                            "next_action_history": [],
+                            "todos": (
+                                [initial_todo_payload]
+                                if initial_todo_payload is not None
+                                else []
+                            ),
+                        },
                         "receipt": receipt.to_dict(),
                         "due_day_source": due_source,
                     },
@@ -1210,7 +1489,7 @@ def _handler_class(
                 *quick_add_fields,
                 "detail",
                 "priority",
-                "next_action",
+                "initial_todo",
                 "project_slug",
                 "goal_slug",
                 "progress_metric",
@@ -1227,8 +1506,12 @@ def _handler_class(
                 )
                 return
             is_full_creation = bool(set(payload) - quick_add_fields)
+            initial_todo_payload = None
             try:
                 if is_full_creation:
+                    initial_todo = payload.get("initial_todo", "")
+                    if not isinstance(initial_todo, str):
+                        raise DomainValidationError("initial_todo must be text")
                     progress_metric, event_progress = (
                         _progress_metric_from_request(
                             payload.get("progress_metric"),
@@ -1250,7 +1533,7 @@ def _handler_class(
                         title=raw_title,
                         detail=payload.get("detail", ""),
                         priority=payload.get("priority", "normal"),
-                        next_action=payload.get("next_action", ""),
+                        next_action="",
                         due_day=due_day,
                         project=project_slug,
                         goal=goal_slug,
@@ -1271,6 +1554,22 @@ def _handler_class(
                         receipt = adapter.create_agent_task(
                             task,
                             assignee_slug,
+                        )
+                    if initial_todo.strip():
+                        todo_receipt = adapter.create_todo(
+                            task.slug,
+                            text=initial_todo,
+                            detail="",
+                            kind="action",
+                            actor=TONY_PROFILE_SLUG,
+                            source="mission_control",
+                            idempotency_key="task-create-initial-todo",
+                            now=now,
+                        )
+                        initial_todo_payload = (
+                            todo_receipt.todo.to_dict()
+                            if hasattr(todo_receipt.todo, "to_dict")
+                            else todo_receipt.todo
                         )
                 else:
                     task = new_inbox_task(
@@ -1310,7 +1609,20 @@ def _handler_class(
             self._json(
                 HTTPStatus.CREATED,
                 {
-                    "task": task.to_dict(),
+                    "task": {
+                        **task.to_dict(),
+                        "next_action": (
+                            initial_todo_payload["text"]
+                            if initial_todo_payload is not None
+                            else task.next_action
+                        ),
+                        "next_action_history": [],
+                        "todos": (
+                            [initial_todo_payload]
+                            if initial_todo_payload is not None
+                            else []
+                        ),
+                    },
                     "receipt": receipt.to_dict(),
                     "due_day_source": due_source,
                 },
@@ -1318,6 +1630,125 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            todo_prefix = "/api/todos/"
+            todo_status_suffix = "/status"
+            if path.startswith(todo_prefix) and path.endswith(todo_status_suffix):
+                todo_slug = unquote(path[len(todo_prefix) : -len(todo_status_suffix)])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "status", "expected_updated_at", "actor", "source", "idempotency_key"
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do status change requires exact mutation context.", "code": "invalid_todo"},
+                    )
+                    return
+                if payload.get("status") not in {"not_done", "done"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do status must be not_done or done.", "code": "invalid_todo"},
+                    )
+                    return
+                try:
+                    expected = datetime.fromisoformat(
+                        str(payload["expected_updated_at"]).replace("Z", "+00:00")
+                    )
+                    with foreground_operation():
+                        receipt = adapter.set_todo_status(
+                            todo_slug,
+                            status=payload["status"],
+                            expected_updated_at=expected,
+                            actor=payload["actor"],
+                            source=payload["source"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except ConcurrentTodoUpdateError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "todo_changed", "slug": exc.todo_slug},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
+            if path.startswith(todo_prefix) and "/" not in path[len(todo_prefix) :]:
+                todo_slug = unquote(path[len(todo_prefix) :])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "text", "detail", "expected_updated_at", "actor", "source", "idempotency_key"
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "To Do edit requires exact mutation context.", "code": "invalid_todo"},
+                    )
+                    return
+                try:
+                    expected = datetime.fromisoformat(
+                        str(payload["expected_updated_at"]).replace("Z", "+00:00")
+                    )
+                    with foreground_operation():
+                        receipt = adapter.edit_todo(
+                            todo_slug,
+                            text=payload["text"],
+                            detail=payload["detail"],
+                            expected_updated_at=expected,
+                            actor=payload["actor"],
+                            source=payload["source"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except ConcurrentTodoUpdateError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "todo_changed", "slug": exc.todo_slug},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_todo"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             system_ticket_prefix = "/api/system-tickets/"
             if path.startswith(system_ticket_prefix) and "/" not in path[len(system_ticket_prefix) :]:
                 ticket_slug = unquote(path[len(system_ticket_prefix) :])
@@ -1562,7 +1993,7 @@ def _handler_class(
                 if payload is None:
                     return
                 allowed = {
-                    "title", "detail", "priority", "due_day", "next_action",
+                    "title", "detail", "priority", "due_day",
                     "project_slug", "goal_slug", "status", "assignee_slug",
                     "progress_metric", "handoff_reason", "complete_when_target_reached",
                 }
@@ -1602,7 +2033,7 @@ def _handler_class(
                         task_slug,
                         title=payload.get("title", ""), detail=payload.get("detail", ""),
                         priority=payload.get("priority", "normal"), due_day=due_day,
-                        next_action=payload.get("next_action", ""),
+                        next_action=current.next_action,
                         project_slug=payload.get("project_slug") or None,
                         goal_slug=payload.get("goal_slug") or None,
                         status=requested_status,
@@ -1699,54 +2130,16 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "next_action":
-                requested_next_action = payload.get("next_action")
-                if (
-                    not isinstance(requested_next_action, str)
-                    or len(requested_next_action.strip()) > 240
-                    or "\n" in requested_next_action
-                    or "\r" in requested_next_action
-                ):
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {
-                            "error": (
-                                "next_action must be one concise line of "
-                                "240 characters or fewer."
-                            ),
-                            "code": "invalid_next_action",
-                        },
-                    )
-                    return
-                try:
-                    receipt = adapter.set_task_next_action(
-                        task_slug,
-                        requested_next_action,
-                        clock(),
-                    )
-                except ValueError as exc:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": str(exc), "code": "invalid_next_action"},
-                    )
-                    return
-                except PartialMutationError as exc:
-                    self._json(
-                        HTTPStatus.BAD_GATEWAY,
-                        {
-                            "error": str(exc),
-                            "code": "partial_write",
-                            "slug": exc.slug,
-                        },
-                    )
-                    return
-                except GBrainError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
-                    )
-                    return
-                invalidate_snapshot()
-                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                self._json(
+                    HTTPStatus.GONE,
+                    {
+                        "error": (
+                            "The single Next Action write endpoint is retired. "
+                            "Create or update a canonical per-item To Do instead."
+                        ),
+                        "code": "next_action_retired",
+                    },
+                )
                 return
             if action == "progress_metric":
                 if set(payload) - {"progress_metric", "task_day"}:
@@ -2060,6 +2453,7 @@ def build_server(
     stargraph_url: str = "http://127.0.0.1:8788",
     ical_reader: ICalendarReader | None = None,
     calendar_preferences: CalendarPreferences | None = None,
+    read_cache: ReadSurfaceCache | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -2079,6 +2473,7 @@ def build_server(
         stargraph_url.rstrip("/"),
         ical_reader,
         calendar_preferences,
+        read_cache,
     )
     return ThreadingHTTPServer((host, port), handler)
 

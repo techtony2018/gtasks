@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from gtasks.domain import (
@@ -35,6 +37,7 @@ from gtasks.gbrain import (
     NextActionMutationReceipt,
     PartialMutationError,
     ProposalRead,
+    RemoteHttpCommandRunner,
     LifecycleIntegrityError,
     SubprocessCommandRunner,
     _render_preserved_page,
@@ -303,6 +306,17 @@ class StatefulIdentityMigrationRunner:
                 )
             ]
             return {"removed": True}
+        if tool == "delete_page":
+            slug = params["slug"]
+            if slug not in self.pages:
+                raise GBrainCommandError("page_not_found")
+            self.pages[slug]["deleted_at"] = "2026-08-01T12:00:00Z"
+            self.links = [
+                edge
+                for edge in self.links
+                if edge.get("from_slug") != slug and edge.get("to_slug") != slug
+            ]
+            return {"slug": slug, "deleted": True}
         raise AssertionError(f"unexpected tool: {tool}")
 
 
@@ -2352,6 +2366,7 @@ class AgentReadTests(unittest.TestCase):
                     ],
                     [],
                     [],
+                    [],
                 ],
             }
         )
@@ -2366,6 +2381,7 @@ class AgentReadTests(unittest.TestCase):
             "collections/toddys-tasks",
         )
         self.assertFalse(result.tasks[0]["read_only"])
+        self.assertEqual(result.tasks[0]["open_todos"], [])
         self.assertNotIn(
             "tasks/ignored-untyped",
             [item["slug"] for item in result.tasks],
@@ -2420,6 +2436,19 @@ class AgentReadTests(unittest.TestCase):
 
 
 class ProposalReadTests(unittest.TestCase):
+    def test_proposal_projection_does_not_hydrate_unrelated_agent_task_todos(self) -> None:
+        runner = FakeRunner({"get_backlinks": [[]]})
+        calls: list[bool] = []
+
+        class Adapter(GBrainAdapter):
+            def list_agent_work(self, *, include_todos: bool = True):
+                calls.append(include_todos)
+                return AgentWorkRead(tasks=())
+
+        Adapter(runner).list_proposals()
+
+        self.assertEqual(calls, [False])
+
     def test_keeps_decided_task_proposal_in_history_with_resulting_status(self) -> None:
         decided_at = datetime(
             2026, 8, 1, 10, tzinfo=timezone(timedelta(hours=-7))
@@ -2458,7 +2487,7 @@ class ProposalReadTests(unittest.TestCase):
         runner = FakeRunner({"get_backlinks": [[]]})
 
         class Adapter(GBrainAdapter):
-            def list_agent_work(self):
+            def list_agent_work(self, *, include_todos: bool = True):
                 return AgentWorkRead(tasks=(task,))
 
         result = Adapter(runner).list_proposals()
@@ -3008,6 +3037,665 @@ class ProposalDecisionTimelineTests(unittest.TestCase):
         self.assertIn("readback", str(raised.exception).lower())
 
 
+class TodoAdapterTests(unittest.TestCase):
+    def _fixture(
+        self,
+        *,
+        next_action: str = "",
+        history: list[dict] | None = None,
+        agent_slug: str | None = None,
+    ) -> tuple[StatefulIdentityMigrationRunner, Task]:
+        now = datetime.fromisoformat("2026-08-01T09:00:00-07:00")
+        task = new_task(
+            title="Ship the release",
+            detail="Preserve every unrelated relationship.",
+            priority="high",
+            next_action=next_action,
+            due_day=date(2026, 8, 2),
+            project=None,
+            goal=None,
+            now=now,
+            identity="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["next_action_history"] = history or []
+        page["frontmatter"]["updated_at"] = now.isoformat()
+        links = [
+            {
+                "from_slug": task.slug,
+                "to_slug": ACTIVE_ROOT,
+                "link_type": "member_of",
+                "context": "Tony task",
+                "link_source": "gtasks",
+            },
+            {
+                "from_slug": task.slug,
+                "to_slug": "goals/11111111-1111-4111-8111-111111111111",
+                "link_type": "advances_goal",
+                "context": "Goal",
+                "link_source": "gtasks",
+            },
+        ]
+        if agent_slug:
+            root = {
+                "agents/toddy": "collections/toddys-tasks",
+                "agents/timmy": "collections/timmys-tasks",
+                "agents/tammy": "collections/tammys-tasks",
+            }[agent_slug]
+            page["frontmatter"]["links"] = [
+                {"to": root, "type": "member_of"},
+                {"to": agent_slug, "type": "assigned_to"},
+            ]
+            links[0]["to_slug"] = root
+            links.append(
+                {
+                    "from_slug": task.slug,
+                    "to_slug": agent_slug,
+                    "link_type": "assigned_to",
+                    "context": "Agent owner",
+                    "link_source": "gtasks",
+                }
+            )
+            task = Task.from_page(page, edges=links)
+        return StatefulIdentityMigrationRunner({task.slug: page}, links), task
+
+    def test_creates_multiple_stable_todos_and_projects_first_open_text(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "create_todo"))
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        first = adapter.create_todo(
+            task.slug,
+            text="Draft the release notes",
+            detail="Cover migration and rollback.",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="create-first",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+        second = adapter.create_todo(
+            task.slug,
+            text="Verify the dashboard restart",
+            detail="Read back the live version.",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="create-second",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        )
+
+        self.assertNotEqual(first.todo.slug, second.todo.slug)
+        self.assertTrue(first.todo.slug.startswith("todos/"))
+        self.assertEqual(first.todo.status, "not_done")
+        self.assertEqual(runner.pages[first.todo.slug]["type"], "todo")
+        self.assertTrue(
+            any(
+                edge["from_slug"] == first.todo.slug
+                and edge["to_slug"] == task.slug
+                and edge["link_type"] == "todo_for"
+                for edge in runner.links
+            )
+        )
+        self.assertEqual(
+            runner.pages[task.slug]["frontmatter"]["next_action"],
+            "Draft the release notes",
+        )
+        stored = adapter.list_task_todos(task.slug, limit=100)
+        self.assertEqual([todo.text for todo in stored.todos], [
+            "Draft the release notes",
+            "Verify the dashboard restart",
+        ])
+
+    def test_create_retry_is_idempotent_and_does_not_duplicate_event(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "create_todo"))
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        request = dict(
+            text="Draft the release notes",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="same-request",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+
+        first = adapter.create_todo(task.slug, **request)
+        second = adapter.create_todo(task.slug, **request)
+
+        self.assertEqual(first.todo.slug, second.todo.slug)
+        self.assertTrue(second.idempotent)
+        event_pages = [
+            slug for slug, page in runner.pages.items()
+            if page.get("type") == "todo_event" and not page.get("deleted_at")
+        ]
+        self.assertEqual(len(event_pages), 1)
+
+    def test_list_is_deterministic_filterable_bounded_and_restart_persistent(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "list_task_todos"))
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        created = []
+        for index, text in enumerate(("First", "Second", "Third")):
+            created.append(adapter.create_todo(
+                task.slug, text=text, detail="", kind="action",
+                actor="people/tony-guan", source="mission_control",
+                idempotency_key=f"todo-{index}",
+                now=datetime.fromisoformat(f"2026-08-01T10:0{index}:00-07:00"),
+            ).todo)
+        adapter.set_todo_status(
+            created[1].slug, status="done", expected_updated_at=created[1].updated_at,
+            actor="people/tony-guan", source="mission_control", idempotency_key="done-second",
+            now=datetime.fromisoformat("2026-08-01T10:05:00-07:00"),
+        )
+
+        restarted = GBrainAdapter(runner)
+        first_page = restarted.list_task_todos(task.slug, cursor=0, limit=2)
+        second_page = restarted.list_task_todos(task.slug, cursor=2, limit=2)
+        done = restarted.list_task_todos(task.slug, status="done", limit=100)
+
+        self.assertEqual([todo.text for todo in first_page.todos], ["First", "Third"])
+        self.assertEqual(first_page.next_cursor, 2)
+        self.assertEqual([todo.text for todo in second_page.todos], ["Second"])
+        self.assertIsNone(second_page.next_cursor)
+        self.assertEqual([todo.text for todo in done.todos], ["Second"])
+
+    def test_comments_status_and_edit_history_are_per_item_append_only(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "add_todo_comment"))
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        first = adapter.create_todo(
+            task.slug, text="Confirm window", detail="Ask Tony.", kind="question",
+            actor="people/tony-guan", source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        second = adapter.create_todo(
+            task.slug, text="Publish notes", detail="", kind="action",
+            actor="people/tony-guan", source="mission_control",
+            idempotency_key="todo-two",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        ).todo
+        edited = adapter.edit_todo(
+            first.slug,
+            text="Confirm the 17:00 deployment window",
+            detail="Tony must answer before deploy.",
+            expected_updated_at=first.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="edit-one",
+            now=datetime.fromisoformat("2026-08-01T10:02:00-07:00"),
+        ).todo
+        reply = adapter.add_todo_comment(
+            first.slug,
+            body="17:00 works. Proceed.",
+            expected_updated_at=edited.updated_at,
+            author="people/tony-guan",
+            source="mission_control",
+            idempotency_key="reply-one",
+            now=datetime.fromisoformat("2026-08-01T10:03:00-07:00"),
+        ).todo
+        done = adapter.set_todo_status(
+            first.slug,
+            status="done",
+            expected_updated_at=reply.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="done-one",
+            now=datetime.fromisoformat("2026-08-01T10:04:00-07:00"),
+        ).todo
+
+        self.assertEqual(done.status, "done")
+        self.assertEqual([comment.body for comment in done.comments], ["17:00 works. Proceed."])
+        self.assertEqual(
+            [event.event_type for event in done.events],
+            ["created", "edited", "comment_added", "status_changed"],
+        )
+        untouched = next(
+            item
+            for item in adapter.list_task_todos(task.slug, limit=100).todos
+            if item.slug == second.slug
+        )
+        self.assertEqual(untouched.slug, second.slug)
+        self.assertEqual(untouched.comments, ())
+        self.assertEqual(untouched.status, "not_done")
+        self.assertEqual(runner.pages[task.slug]["frontmatter"]["next_action"], "Publish notes")
+        self.assertEqual(
+            runner.pages[task.slug]["frontmatter"]["next_action_history"],
+            [{"action": "Confirm the 17:00 deployment window", "completed_at": "2026-08-01T10:04:00-07:00"}],
+        )
+
+    def test_comment_mutation_reuses_verified_immutable_history(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Confirm window",
+            detail="Ask Tony.",
+            kind="question",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        edited = adapter.edit_todo(
+            todo.slug,
+            text="Confirm the 17:00 deployment window",
+            detail="Tony must answer before deploy.",
+            expected_updated_at=todo.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="edit-one",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        ).todo
+        first_reply = adapter.add_todo_comment(
+            todo.slug,
+            body="17:00 works.",
+            expected_updated_at=edited.updated_at,
+            author="people/tony-guan",
+            source="mission_control",
+            idempotency_key="reply-one",
+            now=datetime.fromisoformat("2026-08-01T10:02:00-07:00"),
+        ).todo
+
+        warmed = adapter.list_task_todos(task.slug, limit=100).todos[0]
+        immutable_history = set((*warmed.comment_slugs, *warmed.event_slugs))
+        runner.calls.clear()
+        adapter.add_todo_comment(
+            todo.slug,
+            body="Proceed with the verified window.",
+            expected_updated_at=first_reply.updated_at,
+            author="people/tony-guan",
+            source="mission_control",
+            idempotency_key="reply-two",
+            now=datetime.fromisoformat("2026-08-01T10:03:00-07:00"),
+        )
+
+        reread_immutable_history = [
+            (tool, params["slug"])
+            for tool, params in runner.calls
+            if tool in {"get_page", "get_links"}
+            and params.get("slug") in immutable_history
+        ]
+        self.assertEqual(reread_immutable_history, [])
+        self.assertEqual(
+            sum(
+                tool == "get_page" and params.get("slug") == todo.slug
+                for tool, params in runner.calls
+            ),
+            2,
+        )
+        self.assertEqual(
+            sum(
+                tool == "get_page" and params.get("slug") == task.slug
+                for tool, params in runner.calls
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                tool == "get_links" and params.get("slug") == task.slug
+                for tool, params in runner.calls
+            ),
+            1,
+        )
+
+    def test_cold_todo_hydration_respects_canonical_cli_lane(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Confirm window",
+            detail="Ask Tony.",
+            kind="question",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        edited = adapter.edit_todo(
+            todo.slug,
+            text="Confirm 17:00",
+            detail="Ask Tony.",
+            expected_updated_at=todo.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="edit-one",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        ).todo
+        adapter.add_todo_comment(
+            todo.slug,
+            body="17:00 works.",
+            expected_updated_at=edited.updated_at,
+            author="people/tony-guan",
+            source="mission_control",
+            idempotency_key="reply-one",
+            now=datetime.fromisoformat("2026-08-01T10:02:00-07:00"),
+        )
+
+        class DelayedSubprocessFixtureRunner(
+            StatefulIdentityMigrationRunner,
+            SubprocessCommandRunner,
+        ):
+            def __init__(self, pages: dict[str, dict], links: list[dict]) -> None:
+                StatefulIdentityMigrationRunner.__init__(self, pages, links)
+                self._activity_lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                with self._activity_lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.005)
+                    return StatefulIdentityMigrationRunner.run(self, tool, params)
+                finally:
+                    with self._activity_lock:
+                        self.active -= 1
+
+        cold_runner = DelayedSubprocessFixtureRunner(runner.pages, runner.links)
+        cold = GBrainAdapter(cold_runner)
+        readback = cold.list_task_todos(task.slug, limit=100)
+
+        self.assertEqual(len(readback.todos[0].comments), 1)
+        self.assertEqual(cold_runner.max_active, 1)
+        immutable_history = set(
+            (*readback.todos[0].comment_slugs, *readback.todos[0].event_slugs)
+        )
+        self.assertEqual(
+            [
+                params["slug"]
+                for tool, params in cold_runner.calls
+                if tool == "get_links" and params.get("slug") in immutable_history
+            ],
+            [],
+        )
+        self.assertEqual(
+            sum(
+                tool == "get_backlinks" and params.get("slug") == todo.slug
+                for tool, params in cold_runner.calls
+            ),
+            1,
+        )
+
+    def test_task_enrichment_respects_canonical_cli_lane(self) -> None:
+        runner, task = self._fixture()
+        second = new_task(
+            title="Verify the deployment",
+            detail="",
+            priority="normal",
+            next_action="",
+            due_day=date(2026, 8, 2),
+            project=None,
+            goal=None,
+            now=datetime.fromisoformat("2026-08-01T09:05:00-07:00"),
+            identity="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        )
+        runner.pages[second.slug] = stored_page(second)
+        runner.links.append({
+            "from_slug": second.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+            "context": "Tony task",
+            "link_source": "gtasks",
+        })
+
+        class DelayedSubprocessFixtureRunner(
+            StatefulIdentityMigrationRunner,
+            SubprocessCommandRunner,
+        ):
+            def __init__(self, pages: dict[str, dict], links: list[dict]) -> None:
+                StatefulIdentityMigrationRunner.__init__(self, pages, links)
+                self._activity_lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                with self._activity_lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.005)
+                    return StatefulIdentityMigrationRunner.run(self, tool, params)
+                finally:
+                    with self._activity_lock:
+                        self.active -= 1
+
+        cold_runner = DelayedSubprocessFixtureRunner(runner.pages, runner.links)
+        enriched, issues = GBrainAdapter(cold_runner).enrich_tasks_with_todos(
+            (task, second)
+        )
+
+        self.assertEqual(len(enriched), 2)
+        self.assertEqual(issues, ())
+        self.assertEqual(cold_runner.max_active, 1)
+
+    def test_task_todo_list_reads_multiple_items_through_canonical_cli_lane(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        for index in range(3):
+            adapter.create_todo(
+                task.slug,
+                text=f"Item {index}",
+                detail="",
+                kind="action",
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key=f"todo-{index}",
+                now=datetime.fromisoformat(f"2026-08-01T10:0{index}:00-07:00"),
+            )
+
+        class DelayedSubprocessFixtureRunner(
+            StatefulIdentityMigrationRunner,
+            SubprocessCommandRunner,
+        ):
+            def __init__(self, pages: dict[str, dict], links: list[dict]) -> None:
+                StatefulIdentityMigrationRunner.__init__(self, pages, links)
+                self._activity_lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                with self._activity_lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.005)
+                    return StatefulIdentityMigrationRunner.run(self, tool, params)
+                finally:
+                    with self._activity_lock:
+                        self.active -= 1
+
+        cold_runner = DelayedSubprocessFixtureRunner(runner.pages, runner.links)
+        readback = GBrainAdapter(cold_runner).list_task_todos(task.slug, limit=100)
+
+        self.assertEqual(len(readback.todos), 3)
+        self.assertEqual(cold_runner.max_active, 1)
+
+    def test_comment_and_audit_event_writes_respect_canonical_cli_lane(self) -> None:
+        runner, task = self._fixture()
+        seeded = GBrainAdapter(runner).create_todo(
+            task.slug,
+            text="Confirm window",
+            detail="",
+            kind="question",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+
+        class DelayedSubprocessFixtureRunner(
+            StatefulIdentityMigrationRunner,
+            SubprocessCommandRunner,
+        ):
+            def __init__(self, pages: dict[str, dict], links: list[dict]) -> None:
+                StatefulIdentityMigrationRunner.__init__(self, pages, links)
+                self._activity_lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                with self._activity_lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    time.sleep(0.005)
+                    return StatefulIdentityMigrationRunner.run(self, tool, params)
+                finally:
+                    with self._activity_lock:
+                        self.active -= 1
+
+        delayed_runner = DelayedSubprocessFixtureRunner(runner.pages, runner.links)
+        adapter = GBrainAdapter(delayed_runner)
+        warmed = adapter.list_task_todos(task.slug, limit=100).todos[0]
+        delayed_runner.max_active = 0
+        adapter.add_todo_comment(
+            seeded.slug,
+            body="Proceed.",
+            expected_updated_at=warmed.updated_at,
+            author="people/tony-guan",
+            source="mission_control",
+            idempotency_key="reply-one",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        )
+
+        self.assertEqual(delayed_runner.max_active, 1)
+
+    def test_rejects_stale_concurrent_edit_without_lost_update(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "edit_todo"))
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug, text="Confirm window", detail="", kind="action",
+            actor="people/tony-guan", source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        adapter.edit_todo(
+            todo.slug, text="Confirm 17:00", detail="", expected_updated_at=todo.updated_at,
+            actor="people/tony-guan", source="mission_control", idempotency_key="edit-a",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        )
+
+        with self.assertRaisesRegex(Exception, "changed since it was read"):
+            adapter.edit_todo(
+                todo.slug, text="Confirm 18:00", detail="", expected_updated_at=todo.updated_at,
+                actor="people/tony-guan", source="mission_control", idempotency_key="edit-b",
+                now=datetime.fromisoformat("2026-08-01T10:02:00-07:00"),
+            )
+
+    def test_failed_event_write_rolls_back_todo_and_projection(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "edit_todo"))
+
+        class FailingEventRunner(StatefulIdentityMigrationRunner):
+            fail_event_write = False
+
+            def run(self, tool: str, params: dict) -> object:
+                if (
+                    self.fail_event_write
+                    and tool == "put_page"
+                    and str(params.get("slug", "")).startswith("todo-events/")
+                ):
+                    raise GBrainCommandError("forced event write failure")
+                return super().run(tool, params)
+
+        base, task = self._fixture()
+        runner = FailingEventRunner(base.pages, base.links)
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug, text="Confirm window", detail="", kind="action",
+            actor="people/tony-guan", source="mission_control",
+            idempotency_key="todo-one",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        runner.fail_event_write = True
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            adapter.edit_todo(
+                todo.slug,
+                text="Confirm 17:00",
+                detail="",
+                expected_updated_at=todo.updated_at,
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key="edit-fails",
+                now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+            )
+
+        stored = adapter.list_task_todos(task.slug, limit=100).todos[0]
+        self.assertEqual(stored.text, "Confirm window")
+        self.assertEqual(runner.pages[task.slug]["frontmatter"]["next_action"], "Confirm window")
+        self.assertEqual([event.event_type for event in stored.events], ["created"])
+
+    def test_migrates_legacy_next_action_and_history_once(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "migrate_legacy_next_actions"))
+        runner, task = self._fixture(
+            next_action="Draft the release notes",
+            history=[
+                {"action": "Collect evidence", "completed_at": "2026-07-31T09:00:00-07:00"},
+                {"action": "Review scope", "completed_at": "2026-07-31T10:00:00-07:00"},
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+        now = datetime.fromisoformat("2026-08-01T10:00:00-07:00")
+
+        first = adapter.migrate_legacy_next_actions(task.slug, now=now)
+        second = adapter.migrate_legacy_next_actions(task.slug, now=now)
+
+        self.assertEqual(len(first.todos), 3)
+        self.assertEqual(len(second.todos), 3)
+        self.assertEqual([todo.status for todo in first.todos], ["not_done", "done", "done"])
+        first_history = next(
+            todo
+            for todo in first.todos
+            if todo.legacy_provenance.get("index") == 0
+        )
+        self.assertEqual(first_history.updated_at.isoformat(), "2026-07-31T09:00:00-07:00")
+        self.assertEqual(first_history.legacy_provenance["field"], "next_action_history")
+        current = next(todo for todo in first.todos if todo.status == "not_done")
+        self.assertEqual(current.legacy_provenance["field"], "next_action")
+        self.assertEqual(
+            len([page for page in runner.pages.values() if page.get("type") == "todo" and not page.get("deleted_at")]),
+            3,
+        )
+
+    def test_migrates_maximum_length_legacy_action_with_bounded_identity_key(self) -> None:
+        long_action = "A" * 240
+        runner, task = self._fixture(next_action=long_action)
+
+        result = GBrainAdapter(runner).migrate_legacy_next_actions(
+            task.slug,
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+
+        self.assertEqual(len(result.todos), 1)
+        self.assertEqual(result.todos[0].text, long_action)
+        self.assertLessEqual(len(result.todos[0].events[0].idempotency_key), 200)
+
+    def test_agent_question_preserves_parent_lifecycle_and_relationships(self) -> None:
+        self.assertTrue(hasattr(GBrainAdapter, "create_todo"))
+        runner, task = self._fixture(agent_slug="agents/toddy")
+        original_links = deepcopy(runner.links)
+        receipt = GBrainAdapter(runner).create_todo(
+            task.slug,
+            text="Tony: choose the deployment window",
+            detail="Reply with 17:00 or 18:00.",
+            kind="question",
+            actor="agents/toddy",
+            source="agent",
+            idempotency_key="toddy-question-window",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+
+        self.assertEqual(receipt.todo.status, "not_done")
+        self.assertEqual(receipt.todo.creator, "agents/toddy")
+        self.assertEqual(runner.pages[task.slug]["frontmatter"]["status"], "planned")
+        for edge in original_links:
+            self.assertIn(edge, runner.links)
+
+
 class TaskNextActionMutationTests(unittest.TestCase):
     def test_full_task_edit_uses_same_history_preserving_write(self) -> None:
         now = datetime(2026, 7, 30, 15, tzinfo=timezone.utc)
@@ -3548,6 +4236,152 @@ class TaskProgressMetricMutationTests(unittest.TestCase):
 
 
 class SubprocessRunnerTests(unittest.TestCase):
+    @patch("gtasks.gbrain.urlopen")
+    def test_remote_http_runner_reuses_one_oauth_token_across_calls(self, open_url) -> None:
+        class Response:
+            def __init__(self, payload: object, content_type: str = "application/json") -> None:
+                self.payload = payload
+                self.headers = {"Content-Type": content_type}
+                self.status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                if isinstance(self.payload, str):
+                    return self.payload.encode("utf-8")
+                return json.dumps(self.payload).encode("utf-8")
+
+        calls: list[tuple[str, str | None]] = []
+
+        def respond(request, **_kwargs):
+            calls.append((request.full_url, request.headers.get("Authorization")))
+            if request.full_url.endswith("/.well-known/oauth-authorization-server"):
+                return Response({"token_endpoint": "https://brain.test/token"})
+            if request.full_url == "https://brain.test/token":
+                return Response({"access_token": "token-one", "expires_in": 3600})
+            return Response(
+                "data: "
+                + json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "one",
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({"slug": "tasks/one"}),
+                                }
+                            ]
+                        },
+                    }
+                )
+                + "\n\n",
+                "text/event-stream",
+            )
+
+        open_url.side_effect = respond
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "issuer_url": "https://brain.test",
+                            "mcp_url": "https://brain.test/mcp",
+                            "oauth_client_id": "client-one",
+                            "oauth_client_secret": "secret-one",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = RemoteHttpCommandRunner(config_path=config_path)
+            first = runner.run("get_page", {"slug": "tasks/one"})
+            second = runner.run("get_page", {"slug": "tasks/one"})
+
+        self.assertEqual(first, {"slug": "tasks/one"})
+        self.assertEqual(second, first)
+        self.assertEqual(
+            sum(url == "https://brain.test/token" for url, _auth in calls),
+            1,
+        )
+        self.assertEqual(
+            [auth for url, auth in calls if url == "https://brain.test/mcp"],
+            ["Bearer token-one", "Bearer token-one"],
+        )
+
+    @patch("gtasks.gbrain.subprocess.run")
+    def test_retries_one_read_after_serialized_oauth_refresh_failure(self, run) -> None:
+        run.side_effect = [
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr="Auth failed after token refresh. Verify oauth_client_id and secret.",
+            ),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"slug":"tasks/recovered"}',
+                stderr="",
+            ),
+        ]
+
+        result = SubprocessCommandRunner().run(
+            "get_page", {"slug": "tasks/recovered"}
+        )
+
+        self.assertEqual(result, {"slug": "tasks/recovered"})
+        self.assertEqual(run.call_count, 2)
+
+    @patch("gtasks.gbrain.sleep")
+    @patch("gtasks.gbrain.subprocess.run")
+    def test_retries_second_read_after_persistent_refresh_race(self, run, sleep) -> None:
+        auth_failure = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Auth failed after token refresh. Verify oauth_client_id and secret.",
+        )
+        run.side_effect = [
+            auth_failure,
+            auth_failure,
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"slug":"tasks/recovered-after-cooldown"}',
+                stderr="",
+            ),
+        ]
+
+        result = SubprocessCommandRunner().run(
+            "get_page", {"slug": "tasks/recovered-after-cooldown"}
+        )
+
+        self.assertEqual(result, {"slug": "tasks/recovered-after-cooldown"})
+        self.assertEqual(run.call_count, 3)
+        sleep.assert_called_once_with(0.5)
+
+    @patch("gtasks.gbrain.subprocess.run")
+    def test_does_not_retry_write_after_oauth_refresh_failure(self, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Auth failed after token refresh. Verify oauth_client_id and secret.",
+        )
+
+        with self.assertRaisesRegex(GBrainCommandError, "Auth failed"):
+            SubprocessCommandRunner().run(
+                "put_page", {"slug": "tasks/write", "content": "---\ntype: task\n---"}
+            )
+
+        self.assertEqual(run.call_count, 1)
+
     @patch("gtasks.gbrain.subprocess.run")
     def test_bounds_cli_calls_to_avoid_oauth_token_bursts(self, run) -> None:
         active = 0
@@ -3577,7 +4411,49 @@ class SubprocessRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(results, [{"ok": True}, {"ok": True}, {"ok": True}])
-        self.assertEqual(maximum, 2)
+        self.assertEqual(maximum, 1)
+
+    @patch("gtasks.gbrain.subprocess.run")
+    def test_foreground_operation_preempts_background_refresh_between_calls(self, run) -> None:
+        first_background_started = threading.Event()
+        release_first_background = threading.Event()
+        order: list[str] = []
+        order_lock = threading.Lock()
+
+        def invoke(command, **_kwargs):
+            slug = json.loads(command[-1])["slug"]
+            with order_lock:
+                order.append(slug)
+            if slug == "tasks/background-one":
+                first_background_started.set()
+                release_first_background.wait(timeout=1)
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"ok":true}', stderr=""
+            )
+
+        run.side_effect = invoke
+        runner = SubprocessCommandRunner()
+
+        def refresh() -> None:
+            runner.run("get_page", {"slug": "tasks/background-one"})
+            runner.run("get_page", {"slug": "tasks/background-two"})
+
+        background = threading.Thread(
+            target=refresh,
+            name="gtasks-tasks-refresh",
+        )
+        background.start()
+        self.assertTrue(first_background_started.wait(timeout=1))
+        with runner.foreground_operation():
+            release_first_background.set()
+            runner.run("get_page", {"slug": "tasks/foreground"})
+        background.join(timeout=1)
+
+        self.assertFalse(background.is_alive())
+        self.assertEqual(
+            order,
+            ["tasks/background-one", "tasks/foreground", "tasks/background-two"],
+        )
 
     @patch("gtasks.gbrain.subprocess.run")
     def test_invokes_gbrain_without_a_shell(self, run) -> None:

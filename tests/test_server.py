@@ -7,6 +7,8 @@ from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 
+import gtasks.gbrain as gbrain
+
 from gtasks.domain import (
     ACTIVE_ROOT,
     AgentProfile,
@@ -14,6 +16,7 @@ from gtasks.domain import (
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
+    QA_FIXTURES_ROOT,
     Goal,
     ProgressMetric,
     Project,
@@ -47,9 +50,36 @@ from gtasks.gbrain import (
     LifecycleIntegrityError,
 )
 from gtasks.server import build_server
+from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 from gtasks.ical import CalendarPreferences
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
 from gtasks.warnings import WarningDismissalStore
+
+
+class FakeTodoRead:
+    def __init__(self, todos: tuple[dict, ...], *, next_cursor: int | None = None) -> None:
+        self.todos = todos
+        self.next_cursor = next_cursor
+
+    def to_dict(self) -> dict:
+        return {
+            "todos": list(self.todos),
+            "next_cursor": self.next_cursor,
+        }
+
+
+class FakeTodoReceipt:
+    def __init__(self, todo: dict, *, idempotent: bool = False) -> None:
+        self.todo = todo
+        self.idempotent = idempotent
+
+    def to_dict(self) -> dict:
+        return {
+            "todo": self.todo,
+            "verified": True,
+            "idempotent": self.idempotent,
+            "parent_relationship_verified": True,
+        }
 
 
 class FakeAdapter:
@@ -80,6 +110,13 @@ class FakeAdapter:
         self.goal_links: list[tuple[str, str | None]] = []
         self.status_updates: list[tuple[str, str, datetime]] = []
         self.next_action_updates: list[tuple[str, str, datetime]] = []
+        self.todo_reads: list[tuple[str, str | None, int, int]] = []
+        self.todo_creates: list[dict] = []
+        self.todo_edits: list[dict] = []
+        self.todo_comments: list[dict] = []
+        self.todo_status_updates: list[dict] = []
+        self.todo_migrations: list[tuple[str, datetime]] = []
+        self.todos: dict[str, dict] = {}
         self.membership_repairs: list[str] = []
         self.created_projects: list[Project] = []
         self.project_assignments: list[tuple[str, str | None]] = []
@@ -353,6 +390,81 @@ class FakeAdapter:
             verified=True,
         )
 
+    def list_task_todos(
+        self,
+        task_slug: str,
+        *,
+        status: str | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+    ) -> FakeTodoRead:
+        self.todo_reads.append((task_slug, status, cursor, limit))
+        values = [
+            todo for todo in self.todos.values()
+            if todo["parent_task"] == task_slug
+            and (status is None or todo["status"] == status)
+        ]
+        return FakeTodoRead(tuple(values[cursor : cursor + limit]))
+
+    def create_todo(self, task_slug: str, **payload) -> FakeTodoReceipt:
+        self.todo_creates.append({"task_slug": task_slug, **payload})
+        slug = f"todos/{len(self.todos) + 1:032d}"
+        todo = {
+            "slug": slug,
+            "parent_task": task_slug,
+            "text": payload["text"].strip(),
+            "detail": payload["detail"].strip(),
+            "status": "not_done",
+            "status_label": "Not Done",
+            "kind": payload["kind"],
+            "creator": payload["actor"],
+            "source": payload["source"],
+            "created_at": payload["now"].isoformat(),
+            "updated_at": payload["now"].isoformat(),
+            "comments": [],
+            "events": [],
+        }
+        self.todos[slug] = todo
+        return FakeTodoReceipt(todo)
+
+    def edit_todo(self, todo_slug: str, **payload) -> FakeTodoReceipt:
+        self.todo_edits.append({"todo_slug": todo_slug, **payload})
+        todo = self.todos[todo_slug] = {
+            **self.todos[todo_slug],
+            "text": payload["text"].strip(),
+            "detail": payload["detail"].strip(),
+            "updated_at": payload["now"].isoformat(),
+        }
+        return FakeTodoReceipt(todo)
+
+    def add_todo_comment(self, todo_slug: str, **payload) -> FakeTodoReceipt:
+        self.todo_comments.append({"todo_slug": todo_slug, **payload})
+        todo = self.todos[todo_slug]
+        todo["comments"] = [
+            *todo["comments"],
+            {
+                "slug": f"todo-comments/{len(todo['comments']) + 1:032d}",
+                "body": payload["body"].strip(),
+                "author": payload["author"],
+                "source": payload["source"],
+                "created_at": payload["now"].isoformat(),
+            },
+        ]
+        todo["updated_at"] = payload["now"].isoformat()
+        return FakeTodoReceipt(todo)
+
+    def set_todo_status(self, todo_slug: str, **payload) -> FakeTodoReceipt:
+        self.todo_status_updates.append({"todo_slug": todo_slug, **payload})
+        todo = self.todos[todo_slug]
+        todo["status"] = payload["status"]
+        todo["status_label"] = "Done" if payload["status"] == "done" else "Not Done"
+        todo["updated_at"] = payload["now"].isoformat()
+        return FakeTodoReceipt(todo)
+
+    def migrate_legacy_next_actions(self, task_slug: str, *, now: datetime) -> FakeTodoRead:
+        self.todo_migrations.append((task_slug, now))
+        return self.list_task_todos(task_slug, limit=100)
+
     def repair_active_membership(self, task_slug: str) -> MembershipRepairReceipt:
         self.membership_repairs.append(task_slug)
         return MembershipRepairReceipt(task_slug=task_slug, verified=True)
@@ -449,6 +561,7 @@ class ServerHarness:
         warning_store: WarningDismissalStore | None = None,
         log_reader: OperationalLogReader | None = None,
         ical_reader=None,
+        read_cache: ReadSurfaceCache | None = None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -485,6 +598,10 @@ class ServerHarness:
             ical_reader=ical_reader,
             calendar_preferences=CalendarPreferences(
                 runtime_path / "calendar-preferences.json"
+            ),
+            read_cache=read_cache or ReadSurfaceCache(
+                ReadSnapshotStore(runtime_path / "read-snapshots.json"),
+                background=False,
             ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -567,6 +684,15 @@ class CalendarApiTests(unittest.TestCase):
 
 
 class HealthApiTests(unittest.TestCase):
+    def test_health_declares_read_cache_and_isolated_qa_scope(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+
+        status, payload, _ = harness.request("GET", "/api/health")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["qa_fixtures_root"], QA_FIXTURES_ROOT)
+        self.assertEqual(payload["read_surfaces"], "last_verified_local_cache")
+
     def test_static_mission_control_identity_assets_are_allowlisted(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
 
@@ -611,7 +737,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.64")
+        self.assertEqual(payload["version"], "V0.0.65")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -619,11 +745,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.64")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.64")
+        self.assertEqual(payload["current_version"], "V0.0.65")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.65")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.65",
                 "V0.0.64",
                 "V0.0.63",
                 "V0.0.62",
@@ -1307,7 +1434,7 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 "title": "Prepare interview notes",
                 "detail": "",
                 "priority": "normal",
-                "next_action": "",
+                "initial_todo": "",
                 "due_day": "2026-07-31",
                 "project_slug": None,
                 "goal_slug": None,
@@ -1350,7 +1477,7 @@ class FullTaskCreationApiTests(unittest.TestCase):
                         "title": "Prepare a goal update",
                         "detail": "",
                         "priority": "normal",
-                        "next_action": "Draft the update",
+                        "initial_todo": "Draft the update",
                         "due_day": "2026-07-31",
                         "project_slug": None,
                         "goal_slug": None,
@@ -1368,6 +1495,8 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 self.assertEqual(task.lifecycle_root, work_root)
                 self.assertEqual(task.status, "planned")
                 self.assertTrue(task.inbox)
+                self.assertEqual(adapter.todo_creates[0]["task_slug"], task.slug)
+                self.assertEqual(adapter.todo_creates[0]["text"], "Draft the update")
                 self.assertEqual(payload["task"]["owner_agent"], agent_slug)
                 harness.close()
 
@@ -1382,7 +1511,7 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 "title": "Unsafe assignment",
                 "detail": "",
                 "priority": "normal",
-                "next_action": "",
+                "initial_todo": "",
                 "due_day": "2026-07-31",
                 "project_slug": None,
                 "goal_slug": None,
@@ -1410,7 +1539,7 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 "title": "Apply for five companies",
                 "detail": "Use the approved resume.",
                 "priority": "high",
-                "next_action": "Choose the next company",
+                "initial_todo": "Choose the next company",
                 "due_day": "2026-07-31",
                 "project_slug": "projects/ship-product",
                 "goal_slug": "goals/ship-product",
@@ -1432,6 +1561,10 @@ class FullTaskCreationApiTests(unittest.TestCase):
         self.assertEqual(created.progress_metric.label, "Job applications")
         self.assertEqual(created.progress_metric.current, 5)
         self.assertIsNone(created.event_progress)
+        self.assertEqual(adapter.todo_creates[0]["task_slug"], created.slug)
+        self.assertEqual(adapter.todo_creates[0]["text"], "Choose the next company")
+        self.assertEqual(payload["task"]["todos"][0]["status"], "not_done")
+        self.assertEqual(payload["task"]["next_action"], "Choose the next company")
         self.assertEqual(payload["task"]["progress_metric"]["current"], 5)
 
     def test_duplicate_review_resets_bound_progress_and_historical_receipts(self) -> None:
@@ -1478,7 +1611,7 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 "title": "Apply for five companies",
                 "detail": source.detail,
                 "priority": source.priority,
-                "next_action": source.next_action,
+                "initial_todo": "Choose a fresh company",
                 "due_day": "2026-07-31",
                 "project_slug": None,
                 "goal_slug": None,
@@ -1504,7 +1637,50 @@ class FullTaskCreationApiTests(unittest.TestCase):
         self.assertEqual(duplicate.progress_metric.task_day, date(2026, 7, 31))
         self.assertEqual(duplicate.event_progress.evidence_slugs, ())
         self.assertEqual(duplicate.event_progress.receipt_ids, ())
+        self.assertEqual(adapter.todo_creates[0]["task_slug"], duplicate.slug)
+        self.assertEqual(adapter.todo_creates[0]["text"], "Choose a fresh company")
         self.assertTrue(payload["receipt"]["verified"])
+
+    def test_task_editor_rejects_legacy_next_action_field(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        create_status, create_payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Legacy write",
+                "detail": "",
+                "priority": "normal",
+                "next_action": "Must not bypass canonical To Dos",
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": None,
+            },
+        )
+        edit_status, edit_payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks",
+            {
+                "title": "Ship GTasks",
+                "detail": "",
+                "priority": "normal",
+                "next_action": "Must not bypass canonical To Dos",
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "status": "planned",
+                "assignee_slug": "tony",
+                "progress_metric": None,
+                "handoff_reason": "",
+            },
+        )
+
+        self.assertEqual((create_status, edit_status), (422, 422))
+        self.assertEqual(create_payload["code"], "invalid_task")
+        self.assertEqual(edit_payload["code"], "invalid_task_edit")
+        self.assertEqual(adapter.created, [])
 
 
 class GoalLinkApiTests(unittest.TestCase):
@@ -1609,72 +1785,205 @@ class TaskStatusApiTests(unittest.TestCase):
         self.assertEqual(payload["slug"], "tasks/ship-gtasks")
 
 
-class TaskNextActionApiTests(unittest.TestCase):
-    def test_updates_and_clears_next_action_with_the_server_local_clock(self) -> None:
+class TaskTodoApiTests(unittest.TestCase):
+    def test_lists_bounded_filtered_todos_for_one_parent(self) -> None:
+        adapter = FakeAdapter()
+        adapter.todos = {
+            "todos/one": {
+                "slug": "todos/one", "parent_task": "tasks/ship-gtasks",
+                "text": "First", "detail": "", "status": "not_done",
+                "status_label": "Not Done", "kind": "action", "comments": [], "events": [],
+            },
+            "todos/two": {
+                "slug": "todos/two", "parent_task": "tasks/ship-gtasks",
+                "text": "Second", "detail": "", "status": "done",
+                "status_label": "Done", "kind": "action", "comments": [], "events": [],
+            },
+        }
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "GET",
+            "/api/tasks/tasks%2Fship-gtasks/todos?status=not_done&cursor=0&limit=25",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual([todo["slug"] for todo in payload["todos"]], ["todos/one"])
+        self.assertEqual(adapter.todo_reads[-1], ("tasks/ship-gtasks", "not_done", 0, 25))
+
+    def test_creates_action_and_agent_question_todos_with_idempotency(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        payload = {
+            "text": "Tony: choose the deployment window",
+            "detail": "Reply with 17:00 or 18:00.",
+            "kind": "question",
+            "actor": "agents/toddy",
+            "source": "agent",
+            "idempotency_key": "toddy-window-question",
+        }
+
+        status, body, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fship-gtasks/todos",
+            payload,
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(body["receipt"]["todo"]["status"], "not_done")
+        self.assertEqual(body["receipt"]["todo"]["kind"], "question")
+        self.assertEqual(adapter.todo_creates[0]["actor"], "agents/toddy")
+        self.assertIsNotNone(adapter.todo_creates[0]["now"].tzinfo)
+
+    def test_edits_comments_and_changes_status_with_expected_version(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        create_status, created, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fship-gtasks/todos",
+            {
+                "text": "Confirm window", "detail": "", "kind": "question",
+                "actor": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "create-one",
+            },
+        )
+        self.assertEqual(create_status, 201)
+        todo = created["receipt"]["todo"]
+        encoded = todo["slug"].replace("/", "%2F")
+
+        status, edited, _ = harness.request(
+            "PATCH",
+            f"/api/todos/{encoded}",
+            {
+                "text": "Confirm 17:00 window", "detail": "Answer before deploy.",
+                "expected_updated_at": todo["updated_at"], "actor": "people/tony-guan",
+                "source": "mission_control", "idempotency_key": "edit-one",
+            },
+        )
+        self.assertEqual(status, 200)
+        current = edited["receipt"]["todo"]
+
+        status, commented, _ = harness.request(
+            "POST",
+            f"/api/todos/{encoded}/comments",
+            {
+                "body": "17:00 works.", "expected_updated_at": current["updated_at"],
+                "author": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "reply-one",
+            },
+        )
+        self.assertEqual(status, 201)
+        current = commented["receipt"]["todo"]
+        self.assertEqual(current["comments"][0]["body"], "17:00 works.")
+
+        status, completed, _ = harness.request(
+            "PATCH",
+            f"/api/todos/{encoded}/status",
+            {
+                "status": "done", "expected_updated_at": current["updated_at"],
+                "actor": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "done-one",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(completed["receipt"]["todo"]["status_label"], "Done")
+
+    def test_rejects_invalid_todo_payloads_before_mutation(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
 
         status, payload, _ = harness.request(
-            "PATCH",
-            "/api/tasks/tasks%2Fship-gtasks/next-action",
-            {"next_action": "  Draft three STAR examples  "},
+            "POST",
+            "/api/tasks/tasks%2Fship-gtasks/todos",
+            {"text": "x", "detail": "", "kind": "action"},
         )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_todo")
+        self.assertEqual(adapter.todo_creates, [])
 
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["receipt"]["next_action"], "Draft three STAR examples")
-        self.assertEqual(
-            adapter.next_action_updates[0][0:2],
-            ("tasks/ship-gtasks", "  Draft three STAR examples  "),
-        )
-        self.assertIsNotNone(adapter.next_action_updates[0][2].tzinfo)
-
+        adapter.todos["todos/one"] = {
+            "slug": "todos/one", "parent_task": "tasks/ship-gtasks",
+            "text": "First", "detail": "", "status": "not_done",
+            "status_label": "Not Done", "kind": "action", "comments": [], "events": [],
+            "updated_at": "2026-08-01T10:00:00-07:00",
+        }
         status, payload, _ = harness.request(
             "PATCH",
-            "/api/tasks/tasks%2Fship-gtasks/next-action",
-            {"next_action": ""},
+            "/api/todos/todos%2Fone/status",
+            {
+                "status": "completed", "expected_updated_at": "2026-08-01T10:00:00-07:00",
+                "actor": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "bad-status",
+            },
         )
-        self.assertEqual(status, 200)
-        self.assertEqual(payload["receipt"]["next_action"], "")
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_todo")
+        self.assertEqual(adapter.todo_status_updates, [])
 
-    def test_rejects_non_text_or_overlong_next_action_before_mutation(self) -> None:
-        adapter = FakeAdapter()
-        harness = ServerHarness(self, adapter)
+    def test_reports_verified_rollback_and_concurrent_conflict_distinctly(self) -> None:
+        class FailureAdapter(FakeAdapter):
+            def create_todo(self, task_slug: str, **payload) -> FakeTodoReceipt:
+                raise PartialMutationError(task_slug, "To Do write failed. Rollback verified.")
 
-        for value in (42, "x" * 241):
-            status, payload, _ = harness.request(
-                "PATCH",
-                "/api/tasks/tasks%2Fship-gtasks/next-action",
-                {"next_action": value},
-            )
-            self.assertEqual(status, 422)
-            self.assertEqual(payload["code"], "invalid_next_action")
-
-        self.assertEqual(adapter.next_action_updates, [])
-
-    def test_reports_a_rolled_back_next_action_write(self) -> None:
-        class PartialWriteAdapter(FakeAdapter):
-            def set_task_next_action(
-                self,
-                task_slug: str,
-                next_action: str,
-                now: datetime,
-            ) -> NextActionMutationReceipt:
-                raise PartialMutationError(
-                    task_slug,
-                    "GBrain next action readback failed. Rollback verified.",
-                )
-
-        harness = ServerHarness(self, PartialWriteAdapter())
-
+        harness = ServerHarness(self, FailureAdapter())
         status, payload, _ = harness.request(
-            "PATCH",
-            "/api/tasks/tasks%2Fship-gtasks/next-action",
-            {"next_action": "Draft three STAR examples"},
+            "POST",
+            "/api/tasks/tasks%2Fship-gtasks/todos",
+            {
+                "text": "Confirm window", "detail": "", "kind": "action",
+                "actor": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "create-one",
+            },
         )
-
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "partial_write")
-        self.assertEqual(payload["slug"], "tasks/ship-gtasks")
+        self.assertIn("Rollback verified", payload["error"])
+
+        self.assertTrue(hasattr(gbrain, "ConcurrentTodoUpdateError"))
+
+        class ConcurrentAdapter(FakeAdapter):
+            def edit_todo(self, todo_slug: str, **payload) -> FakeTodoReceipt:
+                raise gbrain.ConcurrentTodoUpdateError(todo_slug)
+
+        concurrent = ConcurrentAdapter()
+        concurrent.todos["todos/one"] = {
+            "slug": "todos/one", "parent_task": "tasks/ship-gtasks",
+            "text": "First", "detail": "", "status": "not_done",
+            "status_label": "Not Done", "kind": "action", "comments": [], "events": [],
+            "updated_at": "2026-08-01T10:00:00-07:00",
+        }
+        harness = ServerHarness(self, concurrent)
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/todos/todos%2Fone",
+            {
+                "text": "Changed", "detail": "", "expected_updated_at": "2026-08-01T10:00:00-07:00",
+                "actor": "people/tony-guan", "source": "mission_control",
+                "idempotency_key": "stale-edit",
+            },
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "todo_changed")
+
+    def test_migration_endpoint_is_idempotent_and_legacy_next_action_write_is_retired(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, _, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fship-gtasks/todos/migrate",
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(adapter.todo_migrations[0][0], "tasks/ship-gtasks")
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/next-action",
+            {"next_action": "Legacy divergent write"},
+        )
+        self.assertEqual(status, 410)
+        self.assertEqual(payload["code"], "next_action_retired")
 
 
 class TaskProgressMetricApiTests(unittest.TestCase):
@@ -1984,6 +2293,54 @@ class SystemTicketApiTests(unittest.TestCase):
 
 
 class ProposalApiTests(unittest.TestCase):
+    def test_cold_proposal_failure_is_a_bounded_safe_error(self) -> None:
+        class FailingProposalAdapter(FakeAdapter):
+            def list_proposals(self) -> ProposalRead:
+                raise RuntimeError("private oauth response")
+
+        harness = ServerHarness(self, FailingProposalAdapter())
+
+        status, payload, _ = harness.request("GET", "/api/proposals")
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "gbrain_refresh_delayed")
+        self.assertNotIn("oauth", json.dumps(payload).lower())
+
+    def test_cold_proposal_refresh_does_not_block_task_surface(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowProposalAdapter(FakeAdapter):
+            def list_proposals(self) -> ProposalRead:
+                entered.set()
+                release.wait(timeout=2)
+                return ProposalRead(proposals=())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(
+                ReadSnapshotStore(Path(temporary) / "reads.json"),
+                background=True,
+            )
+            harness = ServerHarness(
+                self,
+                SlowProposalAdapter(),
+                read_cache=cache,
+            )
+
+            proposal_status, proposal_payload, _ = harness.request(
+                "GET", "/api/proposals"
+            )
+            self.assertEqual(proposal_status, 202)
+            self.assertEqual(proposal_payload["read_state"]["status"], "loading")
+            self.assertTrue(entered.wait(timeout=1))
+
+            task_status, task_payload, _ = harness.request("GET", "/api/tasks")
+            self.assertEqual(task_status, 202)
+            self.assertEqual(task_payload["read_state"]["surface"], "tasks")
+            release.set()
+            self.assertTrue(cache.wait_for_idle("proposals"))
+            self.assertTrue(cache.wait_for_idle("tasks"))
+
     def test_lists_one_canonical_proposal_without_creating_work(self) -> None:
         adapter = FakeAdapter(proposals=(sample_proposal(),))
         harness = ServerHarness(self, adapter)

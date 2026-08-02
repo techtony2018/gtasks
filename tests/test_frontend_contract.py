@@ -7,6 +7,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class FrontendContractTests(unittest.TestCase):
 
+    def test_slow_reads_keep_surfaces_independent_and_last_valid_content_visible(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        render_body = javascript[
+            javascript.index("function render()") : javascript.index("function renderSystemTicketsView")
+        ]
+        proposal_renderer = javascript[
+            javascript.index("function renderProposedWork") : javascript.index("async function submitProposalReview")
+        ]
+
+        self.assertNotIn("if (state.loading) return;", render_body)
+        self.assertIn("renderTaskSurfaceLoading", render_body)
+        self.assertIn("payload.read_state", javascript)
+        self.assertIn("scheduleSurfacePoll", javascript)
+        self.assertIn("state.proposals.length", proposal_renderer)
+        self.assertIn("Last verified proposals", proposal_renderer)
+
     def test_narrow_desktop_calendar_keeps_detail_panel_in_layout_flow(self) -> None:
         stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(
             encoding="utf-8"
@@ -93,7 +109,7 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         move_body = javascript[
             javascript.index("async function moveBoardTask")
-            : javascript.index("function nextActionErrorMessage")
+            : javascript.index("function setView")
         ]
 
         self.assertIn("result.receipt?.task", javascript)
@@ -214,15 +230,21 @@ class FrontendContractTests(unittest.TestCase):
         )
         self.assertNotIn('fetch("/api/logs", {\n      method:', javascript)
 
-    def test_task_detail_is_read_only_until_the_full_editor_opens(self) -> None:
+    def test_task_detail_exposes_per_item_todos_without_legacy_next_action_editor(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('id="task-next-action-value"', html)
+        self.assertIn('id="task-todo-list"', html)
+        self.assertIn('id="task-todo-filter"', html)
+        self.assertIn('id="task-todo-add-form"', html)
+        self.assertIn('id="task-todo-text"', html)
+        self.assertIn('id="task-todo-detail"', html)
+        self.assertIn('id="task-todo-error"', html)
         self.assertIn('id="task-edit-button"', html)
         self.assertIn('id="task-duplicate-button"', html)
-        self.assertIn('id="task-editor-next-action"', html)
-        self.assertNotIn('id="task-next-action-save"', html)
+        self.assertIn('id="task-editor-initial-todo"', html)
+        self.assertNotIn('id="task-editor-next-action"', html)
+        self.assertNotIn('id="task-next-action-value"', html)
         self.assertIn("function openEditTask", javascript)
         self.assertIn("elements.taskDuplicateButton.addEventListener", javascript)
         self.assertIn('method: state.taskEditorMode === "edit" ? "PATCH" : "POST"', javascript)
@@ -429,6 +451,25 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
         self.assertIn("target?.focus({ preventScroll: true })", close_details)
 
+    def test_task_keyboard_detail_returns_to_origin_after_list_rerender(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        task_row = javascript[
+            javascript.index("function taskRow")
+            : javascript.index("function section")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails")
+            : javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn(
+            'button.addEventListener("click", () => selectTask(task.slug, null, button))',
+            task_row,
+        )
+        self.assertIn('document.querySelectorAll(".task-row-open")', close_details)
+        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
+        self.assertIn("target?.focus({ preventScroll: true })", close_details)
+
     def test_proposal_decision_notes_are_not_styled_as_completed_actions(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
@@ -446,8 +487,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.64"', html)
-        self.assertIn('src="/app.js?v=0.0.64"', html)
+        self.assertIn('href="/styles.css?v=0.0.65"', html)
+        self.assertIn('src="/app.js?v=0.0.65"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -482,15 +523,92 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("grid.scrollLeft = Math.min(day.offsetLeft, maxScroll)", javascript)
         self.assertIn("keepSelectedCalendarTaskVisible(task.slug)", javascript)
 
-    def test_task_detail_renders_current_and_historical_next_actions(self) -> None:
+    def test_task_detail_renders_ordered_todos_comments_and_audit_history(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
-        self.assertIn('id="task-next-action-timeline"', html)
-        self.assertIn("function renderNextActionTimeline(task)", javascript)
-        self.assertIn("task.next_action_history", javascript)
-        self.assertIn(".next-action-timeline", css)
+        self.assertIn('aria-labelledby="task-todo-heading"', html)
+        self.assertIn("function renderTaskTodos(task)", javascript)
+        self.assertIn("function todoCard(todo)", javascript)
+        self.assertIn("todo.comments", javascript)
+        self.assertIn("todo.events", javascript)
+        self.assertIn('"Not Done"', javascript)
+        self.assertIn('"Done"', javascript)
+        self.assertIn(">All<", html)
+        self.assertIn(">Not Done<", html)
+        self.assertIn(">Done<", html)
+        self.assertIn(".task-todo-list", css)
+        self.assertIn(".task-todo-card", css)
+
+    def test_todo_ui_calls_item_apis_and_restores_keyboard_focus(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('role="status" id="task-todo-loading"', html)
+        self.assertIn('role="alert" id="task-todo-error"', html)
+        self.assertIn("async function createTaskTodo", javascript)
+        self.assertIn("async function editTaskTodo", javascript)
+        self.assertIn("async function commentOnTodo", javascript)
+        self.assertIn("async function changeTodoStatus", javascript)
+        self.assertIn('`/api/tasks/${encodeURIComponent(taskSlug)}/todos`', javascript)
+        self.assertIn('`/api/todos/${encodeURIComponent(todo.slug)}/comments`', javascript)
+        self.assertIn('`/api/todos/${encodeURIComponent(todo.slug)}/status`', javascript)
+        self.assertIn("crypto.randomUUID()", javascript)
+        self.assertIn("state.todoReturnFocus", javascript)
+        self.assertIn("candidate.dataset.todoSlug", javascript)
+        self.assertIn("target?.focus({ preventScroll: true })", javascript)
+
+    def test_initial_load_does_not_contend_with_offscreen_canonical_collections(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        bootstrap = javascript[javascript.index("bindHudTooltipEvents();") :]
+
+        self.assertIn('loadTasks({ reason: "initial" })', bootstrap)
+        self.assertNotIn("loadProjects();", bootstrap)
+        self.assertNotIn("loadAgents();", bootstrap)
+        self.assertNotIn("loadProposals();", bootstrap)
+        self.assertNotIn("loadSystemTickets();", bootstrap)
+        self.assertNotIn("loadSystemTickets({ force: true })", bootstrap)
+        self.assertIn('view === "projects" && !state.projectsLoaded', javascript)
+        self.assertIn('view === "inbox" && !state.proposalsLoaded', javascript)
+        self.assertIn('view === "agent-work" && !state.agentsLoaded', javascript)
+
+    def test_verified_todo_mutation_receipt_updates_ui_without_duplicate_read(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        create = javascript[javascript.index("async function createTaskTodo") : javascript.index("async function editTaskTodo")]
+        edit = javascript[javascript.index("async function editTaskTodo") : javascript.index("async function commentOnTodo")]
+        comment = javascript[javascript.index("async function commentOnTodo") : javascript.index("async function changeTodoStatus")]
+        status = javascript[javascript.index("async function changeTodoStatus") : javascript.index("function renderProposalDecisionTimeline")]
+
+        self.assertIn("function applyVerifiedTodoMutation", javascript)
+        for mutation in (create, edit, comment, status):
+            self.assertIn("applyVerifiedTodoMutation", mutation)
+            self.assertNotIn("await refreshTaskTodos", mutation.split("catch", 1)[0])
+
+    def test_cold_canonical_reads_poll_accepted_state_until_terminal_response(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        task_load = javascript[javascript.index("async function performTaskLoad") : javascript.index("function loadTasks")]
+        proposal_load = javascript[javascript.index("async function performProposalLoad") : javascript.index("function loadProposals")]
+
+        self.assertIn('response.status === 202', task_load)
+        self.assertIn('scheduleSurfacePoll("tasks")', task_load)
+        self.assertIn('["initial", "poll"].includes(reason)', task_load)
+        self.assertIn('payload.read_state?.refreshing', proposal_load)
+        self.assertIn('scheduleSurfacePoll("proposals")', proposal_load)
+
+    def test_task_list_board_calendar_and_agent_surfaces_use_todo_terminology(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        task_row = javascript[javascript.index("function taskRow") : javascript.index("function section")]
+        board = javascript[javascript.index("function boardCard") : javascript.index("function renderBoard")]
+        calendar = javascript[javascript.index("function renderWeekView") : javascript.index("function boardCard")]
+        agent_work = javascript[javascript.index("function renderAgentWorkView") : javascript.index("function renderCoordinatorSummary")]
+
+        self.assertIn("function todoSummary(task)", javascript)
+        self.assertIn("todoSummary(task)", task_row)
+        self.assertIn("todoSummary(task)", board)
+        self.assertIn("todoSummary(task)", calendar)
+        self.assertIn("open_todos", agent_work)
+        self.assertIn("To Do", agent_work)
 
     def test_calendar_has_default_on_ical_events_filter(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -531,7 +649,10 @@ class FrontendContractTests(unittest.TestCase):
         task_row = javascript[javascript.index("function taskRow") : javascript.index("function section")]
         proposal_card = javascript[javascript.index("function proposalCard") : javascript.index("function renderProposedWork")]
 
-        self.assertIn('button.addEventListener("click", () => selectTask(task.slug))', task_row)
+        self.assertIn(
+            'button.addEventListener("click", () => selectTask(task.slug, null, button))',
+            task_row,
+        )
         self.assertIn('row.addEventListener("click", (event) =>', task_row)
         self.assertIn('if (event.target.closest(".task-row-actions")) return;', task_row)
         self.assertIn(
@@ -593,7 +714,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("Open Agent Profile", agent_work)
         self.assertIn('node("h3", "", "Current work")', agent_work)
         self.assertIn("No authorized work yet", agent_work)
-        self.assertIn("No current task or next step recorded.", agent_work)
+        self.assertIn("No current task or open To Do recorded.", agent_work)
 
     def test_task_write_paths_use_fail_closed_type_preservation(self) -> None:
         adapter = (PROJECT_ROOT / "gtasks" / "gbrain.py").read_text(encoding="utf-8")
