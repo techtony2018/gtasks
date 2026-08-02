@@ -52,6 +52,7 @@ const state = {
   selectedKind: null,
   detailReturnFocus: null,
   todoFilter: "all",
+  todoAddOpen: false,
   todoReturnFocus: null,
   todoLoadingTask: null,
   weekStart: null,
@@ -426,6 +427,18 @@ const elements = {
   detailContent: document.querySelector("#detail-content"),
   goalDetailContent: document.querySelector("#goal-detail-content"),
   systemTicketDetailContent: document.querySelector("#system-ticket-detail-content"),
+  projectDetailContent: document.querySelector("#project-detail-content"),
+  projectDetailStatus: document.querySelector("#project-detail-status"),
+  projectEditButton: document.querySelector("#project-edit-button"),
+  projectDetailClose: document.querySelector("#project-detail-close"),
+  projectDetailTitle: document.querySelector("#project-detail-title"),
+  projectDetailSummary: document.querySelector("#project-detail-summary"),
+  projectDetailCreated: document.querySelector("#project-detail-created"),
+  projectDetailUpdated: document.querySelector("#project-detail-updated"),
+  projectDetailGoals: document.querySelector("#project-detail-goals"),
+  projectDetailTasks: document.querySelector("#project-detail-tasks"),
+  projectDetailGbrainLink: document.querySelector("#project-detail-gbrain-link"),
+  projectDetailSlug: document.querySelector("#project-detail-slug"),
   systemTicketDetailStatus: document.querySelector("#system-ticket-detail-status"),
   systemTicketEditButton: document.querySelector("#system-ticket-edit-button"),
   systemTicketDetailClose: document.querySelector("#system-ticket-detail-close"),
@@ -452,11 +465,13 @@ const elements = {
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
   taskTodoFilter: document.querySelector("#task-todo-filter"),
+  taskTodoAddToggle: document.querySelector("#task-todo-add-toggle"),
   taskTodoAddForm: document.querySelector("#task-todo-add-form"),
   taskTodoText: document.querySelector("#task-todo-text"),
   taskTodoDetail: document.querySelector("#task-todo-detail"),
   taskTodoKind: document.querySelector("#task-todo-kind"),
   taskTodoAdd: document.querySelector("#task-todo-add"),
+  taskTodoAddCancel: document.querySelector("#task-todo-add-cancel"),
   taskTodoLoading: document.querySelector("#task-todo-loading"),
   taskTodoEmpty: document.querySelector("#task-todo-empty"),
   taskTodoError: document.querySelector("#task-todo-error"),
@@ -519,6 +534,10 @@ const elements = {
   newProjectDialog: document.querySelector("#new-project-dialog"),
   newProjectForm: document.querySelector("#new-project-form"),
   newProjectTitle: document.querySelector("#new-project-title"),
+  newProjectSummaryField: document.querySelector("#new-project-summary-field"),
+  newProjectSummary: document.querySelector("#new-project-summary"),
+  newProjectStatusField: document.querySelector("#new-project-status-field"),
+  newProjectStatus: document.querySelector("#new-project-status"),
   newProjectMode: document.querySelector("#new-project-mode"),
   newProjectHeading: document.querySelector("#new-project-heading"),
   newProjectGoals: document.querySelector("#new-project-goals"),
@@ -2387,7 +2406,21 @@ function renderProjectsView() {
       (task) => task.project === project.slug,
     );
     const card = node("article", "project-card");
-    card.append(
+    card.classList.toggle(
+      "is-selected",
+      state.selectedKind === "project" && state.selectedSlug === project.slug,
+    );
+    const open = node("button", "project-card-open");
+    open.type = "button";
+    open.dataset.slug = project.slug;
+    open.setAttribute("aria-label", `Open Project ${project.title}`);
+    open.setAttribute(
+      "aria-current",
+      state.selectedKind === "project" && state.selectedSlug === project.slug
+        ? "true"
+        : "false",
+    );
+    open.append(
       node("span", "project-card-status", project.status),
       node("h2", "", project.title),
       node(
@@ -2401,14 +2434,75 @@ function renderProjectsView() {
     const goalNames = (project.supporting_goal_slugs || [])
       .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug)?.title)
       .filter(Boolean);
-    card.append(node("p", "", goalNames.length ? `Supports: ${goalNames.join(", ")}` : "No supporting goals selected."));
-    const edit = actionIcon("✎", `Edit ${project.title}`);
-    edit.addEventListener("click", () => openEditProject(project));
-    card.append(edit);
+    open.append(node("p", "", goalNames.length ? `Supports: ${goalNames.join(", ")}` : "No supporting goals selected."));
+    open.addEventListener("click", () => selectProject(project.slug, open));
+    card.append(open);
     grid.append(card);
   });
   fragment.append(grid);
   return fragment;
+}
+
+function renderProjectRelationList(container, entries, emptyCopy) {
+  container.replaceChildren();
+  if (!entries.length) {
+    container.append(node("li", "is-empty", emptyCopy));
+    return;
+  }
+  entries.forEach((entry) => container.append(node("li", "", entry)));
+}
+
+function selectProject(slug, returnFocus = undefined) {
+  const project = state.projects.find((item) => item.slug === slug);
+  if (!project) return;
+  if (returnFocus !== undefined) {
+    state.detailReturnFocus = returnFocus
+      ? { element: returnFocus, slug }
+      : null;
+  }
+  state.selectedSlug = slug;
+  state.selectedKind = "project";
+  elements.detailPanel.setAttribute("aria-hidden", "false");
+  elements.detailPanel.setAttribute("aria-label", "Project details");
+  elements.detailEmpty.classList.add("is-hidden");
+  elements.detailContent.classList.add("is-hidden");
+  elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.remove("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.projectDetailStatus.textContent = project.status;
+  elements.projectDetailTitle.textContent = project.title;
+  renderSafeMarkdown(elements.projectDetailSummary, project.summary);
+  elements.projectDetailCreated.textContent = project.created_at
+    ? new Date(project.created_at).toLocaleString()
+    : "Not recorded";
+  elements.projectDetailUpdated.textContent = project.updated_at
+    ? new Date(project.updated_at).toLocaleString()
+    : "Not recorded";
+  const goals = (project.supporting_goal_slugs || []).map((goalSlug) =>
+    state.snapshot.goals.find((goal) => goal.slug === goalSlug)?.title || goalSlug);
+  const tasks = state.snapshot.tasks
+    .filter((task) => task.project === project.slug)
+    .map((task) => `${task.title || task.summary} · ${taskUiStatus(task)}`);
+  renderProjectRelationList(
+    elements.projectDetailGoals,
+    goals,
+    "No supporting Goals linked.",
+  );
+  renderProjectRelationList(
+    elements.projectDetailTasks,
+    tasks,
+    "No Tasks assigned.",
+  );
+  elements.projectDetailGbrainLink.href =
+    `http://127.0.0.1:8788/?slug=${encodeURIComponent(project.slug)}`;
+  elements.projectDetailSlug.textContent = project.slug;
+  render();
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+    elements.projectDetailTitle.focus({ preventScroll: true });
+  });
 }
 
 async function loadAgents() {
@@ -2547,11 +2641,15 @@ async function loadProjects() {
 function openNewProject() {
   state.projectEditorSlug = null;
   elements.newProjectForm.reset();
+  elements.newProjectSummaryField.classList.add("is-hidden");
+  elements.newProjectStatusField.classList.add("is-hidden");
+  elements.newProjectStatus.value = "active";
   populateProjectGoalChoices();
   elements.newProjectError.classList.add("is-hidden");
   elements.newProjectMode.textContent = "New durable project";
   elements.newProjectHeading.textContent = "Create a Project";
   elements.newProjectSubmit.textContent = "Create project";
+  elements.newProjectClose.setAttribute("aria-label", "Close New Project");
   elements.newProjectDialog.showModal();
   window.setTimeout(() => elements.newProjectTitle.focus(), 0);
 }
@@ -2570,10 +2668,15 @@ function populateProjectGoalChoices(selected = []) {
 function openEditProject(project) {
   state.projectEditorSlug = project.slug;
   elements.newProjectTitle.value = project.title;
+  elements.newProjectSummary.value = project.summary;
+  elements.newProjectStatus.value = project.status;
+  elements.newProjectSummaryField.classList.remove("is-hidden");
+  elements.newProjectStatusField.classList.remove("is-hidden");
   populateProjectGoalChoices(project.supporting_goal_slugs || []);
   elements.newProjectMode.textContent = "Existing durable project";
   elements.newProjectHeading.textContent = "Edit";
   elements.newProjectSubmit.textContent = "Save changes";
+  elements.newProjectClose.setAttribute("aria-label", "Close Project editor");
   elements.newProjectError.classList.add("is-hidden");
   elements.newProjectDialog.showModal();
   window.setTimeout(() => elements.newProjectTitle.focus(), 0);
@@ -2586,13 +2689,25 @@ async function submitNewProject(event) {
   const editing = Boolean(state.projectEditorSlug);
   elements.newProjectSubmit.textContent = editing ? "Saving in GBrain…" : "Creating in GBrain…";
   try {
+    const projectPayload = {
+      title: elements.newProjectTitle.value,
+      supporting_goal_slugs: [...elements.newProjectGoals.selectedOptions].map(
+        (option) => option.value,
+      ),
+    };
+    if (editing) {
+      Object.assign(projectPayload, {
+        summary: elements.newProjectSummary.value,
+        status: elements.newProjectStatus.value,
+      });
+    }
     const response = await fetch(editing ? `/api/projects/${encodeURIComponent(state.projectEditorSlug)}` : "/api/projects", {
       method: editing ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ title: elements.newProjectTitle.value, supporting_goal_slugs: [...elements.newProjectGoals.selectedOptions].map((option) => option.value) }),
+      body: JSON.stringify(projectPayload),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -2600,6 +2715,9 @@ async function submitNewProject(event) {
       error.code = result.code;
       error.slug = result.slug;
       throw error;
+    }
+    if (!result.receipt?.verified || !result.project) {
+      throw new Error("GBrain project readback was not verified.");
     }
     await loadProjects();
     const created = state.projects.some(
@@ -2612,8 +2730,9 @@ async function submitNewProject(event) {
     }
     elements.newProjectDialog.close();
     state.activeView = "projects";
+    if (editing) selectProject(result.project.slug);
     showToast(editing ? "Project changes verified in GBrain." : "Project created, linked, and verified in GBrain.");
-    render();
+    if (!editing) render();
   } catch (error) {
     elements.newProjectError.textContent =
       error.code === "partial_write" && error.slug
@@ -3648,6 +3767,7 @@ function selectSystemTicket(ticketSlug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.remove("is-hidden");
   elements.systemTicketDetailStatus.textContent = ticket.status;
   elements.systemTicketDetailTitle.textContent = ticket.title;
@@ -3732,6 +3852,21 @@ async function submitSystemTicket(event) {
   }
   catch(error){ elements.systemTicketError.textContent=error.message; elements.systemTicketError.classList.remove("is-hidden"); }
   finally { elements.systemTicketSubmit.disabled = false; }
+}
+
+function setTodoAddOpen(open, { focus = true } = {}) {
+  state.todoAddOpen = Boolean(open);
+  elements.taskTodoAddForm.classList.toggle("is-hidden", !state.todoAddOpen);
+  elements.taskTodoAddToggle.setAttribute(
+    "aria-expanded",
+    state.todoAddOpen ? "true" : "false",
+  );
+  if (!state.todoAddOpen) elements.taskTodoAddForm.reset();
+  if (!focus) return;
+  window.setTimeout(() => {
+    if (state.todoAddOpen) elements.taskTodoText.focus({ preventScroll: true });
+    else elements.taskTodoAddToggle.focus({ preventScroll: true });
+  }, 0);
 }
 
 function todoStatusLabel(todo) {
@@ -3865,7 +4000,13 @@ function renderTaskTodos(task) {
     ? todos
     : todos.filter((todo) => todo.status === state.todoFilter);
   elements.taskTodoList.replaceChildren(...filtered.map(todoCard));
+  elements.taskTodoEmpty.textContent = todos.length ? "No To Dos in this section." : "No To Do yet";
   elements.taskTodoEmpty.classList.toggle("is-hidden", filtered.length > 0);
+  elements.taskTodoAddForm.classList.toggle("is-hidden", !state.todoAddOpen);
+  elements.taskTodoAddToggle.setAttribute(
+    "aria-expanded",
+    state.todoAddOpen ? "true" : "false",
+  );
   elements.taskTodoLoading.classList.toggle(
     "is-hidden",
     state.todoLoadingTask !== task.slug,
@@ -3996,7 +4137,7 @@ async function createTaskTodo(event) {
       },
     );
     state.todoFilter = "all";
-    elements.taskTodoAddForm.reset();
+    setTodoAddOpen(false, { focus: false });
     applyVerifiedTodoMutation(taskSlug, todo, { slug: todo.slug, control: "summary" });
     showToast("To Do created and verified in GBrain.");
   } catch (error) {
@@ -4159,11 +4300,13 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
+  setTodoAddOpen(false, { focus: false });
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "Task details");
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.taskDetailStatus.textContent = taskUiStatus(task) === "active" ? "In Progress" : taskUiStatus(task);
   const isProposed = task.status === "proposed";
@@ -4347,6 +4490,7 @@ function selectGoal(slug) {
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.remove("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.goalDetailStatus.textContent = goal.status;
   elements.goalPauseButton.disabled = goal.status === "paused";
@@ -4397,6 +4541,7 @@ function closeDetails() {
   elements.detailPanel.setAttribute("aria-hidden", "true");
   elements.detailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.detailEmpty.classList.remove("is-hidden");
   render();
@@ -4407,6 +4552,7 @@ function closeDetails() {
         : [
           ...document.querySelectorAll(".proposal-card"),
           ...document.querySelectorAll(".task-row-open"),
+          ...document.querySelectorAll(".project-card-open"),
         ].find(
           (candidate) => candidate.dataset.slug === returnFocus.slug,
         );
@@ -5061,6 +5207,12 @@ elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
 elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.taskTodoAddToggle.addEventListener("click", () => {
+  setTodoAddOpen(true);
+});
+elements.taskTodoAddCancel.addEventListener("click", () => {
+  setTodoAddOpen(false);
+});
 elements.taskTodoAddForm.addEventListener("submit", createTaskTodo);
 elements.taskTodoFilter.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-todo-filter]");
@@ -5105,7 +5257,12 @@ elements.showAgentTasks.addEventListener("change", () => {
 });
 elements.detailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
+elements.projectDetailClose.addEventListener("click", closeDetails);
 elements.systemTicketDetailClose.addEventListener("click", closeDetails);
+elements.projectEditButton.addEventListener("click", () => {
+  const project = state.projects.find((item) => item.slug === state.selectedSlug);
+  if (state.selectedKind === "project" && project) openEditProject(project);
+});
 elements.systemTicketEditButton.addEventListener("click", openEditSystemTicket);
 elements.taskEditButton.addEventListener("click", openEditTask);
 elements.taskDuplicateButton.addEventListener("click", openDuplicateTask);

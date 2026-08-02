@@ -487,8 +487,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.65"', html)
-        self.assertIn('src="/app.js?v=0.0.65"', html)
+        self.assertIn('href="/styles.css?v=0.0.66"', html)
+        self.assertIn('src="/app.js?v=0.0.66"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -558,6 +558,95 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.todoReturnFocus", javascript)
         self.assertIn("candidate.dataset.todoSlug", javascript)
         self.assertIn("target?.focus({ preventScroll: true })", javascript)
+
+    def test_task_todo_add_form_is_read_only_until_explicit_plus_action(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'id="task-todo-add-toggle" type="button" aria-label="Add a To Do"',
+            html,
+        )
+        self.assertIn('data-tooltip="Add a To Do"', html)
+        self.assertIn(
+            'class="task-todo-add-form is-hidden" id="task-todo-add-form"',
+            html,
+        )
+        self.assertIn('id="task-todo-add-cancel" type="button"', html)
+        self.assertIn("todoAddOpen: false", javascript)
+        self.assertIn("function setTodoAddOpen(open, { focus = true } = {})", javascript)
+        self.assertIn("elements.taskTodoAddToggle.setAttribute", javascript)
+        self.assertIn("elements.taskTodoText.focus", javascript)
+        self.assertIn("elements.taskTodoAddToggle.focus", javascript)
+        self.assertIn('todos.length ? "No To Dos in this section." : "No To Do yet"', javascript)
+
+    def test_projects_open_edit_and_restore_focus_through_the_detail_sidebar(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        for identifier in (
+            "project-detail-content",
+            "project-detail-title",
+            "project-detail-summary",
+            "project-detail-goals",
+            "project-detail-tasks",
+            "project-detail-created",
+            "project-detail-updated",
+            "project-detail-slug",
+            "project-edit-button",
+            "project-detail-close",
+            "new-project-summary",
+            "new-project-status",
+        ):
+            self.assertIn(f'id="{identifier}"', html)
+        self.assertIn('id="project-detail-title" tabindex="-1"', html)
+
+        projects_view = javascript[
+            javascript.index("function renderProjectsView()")
+            : javascript.index("async function loadAgents()")
+        ]
+        select_project = javascript[
+            javascript.index("function selectProject")
+            : javascript.index("async function loadAgents()")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails")
+            : javascript.index("async function saveTaskGoal")
+        ]
+        edit_project = javascript[
+            javascript.index("function openEditProject")
+            : javascript.index("async function submitNewProject")
+        ]
+        new_project = javascript[
+            javascript.index("function openNewProject")
+            : javascript.index("function populateProjectGoalChoices")
+        ]
+        submit_project = javascript[
+            javascript.index("async function submitNewProject")
+            : javascript.index("function openNewGoal")
+        ]
+
+        self.assertIn('const open = node("button", "project-card-open")', projects_view)
+        self.assertIn("open.dataset.slug = project.slug", projects_view)
+        self.assertIn("selectProject(project.slug, open)", projects_view)
+        self.assertIn('state.selectedKind = "project"', select_project)
+        self.assertIn('elements.detailPanel.setAttribute("aria-label", "Project details")', select_project)
+        self.assertIn("renderSafeMarkdown(elements.projectDetailSummary, project.summary)", select_project)
+        self.assertIn("elements.projectDetailTitle.focus({ preventScroll: true })", select_project)
+        self.assertIn('document.querySelectorAll(".project-card-open")', close_details)
+        self.assertIn("elements.newProjectSummary.value = project.summary", edit_project)
+        self.assertIn("elements.newProjectStatus.value = project.status", edit_project)
+        self.assertIn(
+            'elements.newProjectClose.setAttribute("aria-label", "Close New Project")',
+            new_project,
+        )
+        self.assertIn(
+            'elements.newProjectClose.setAttribute("aria-label", "Close Project editor")',
+            edit_project,
+        )
+        self.assertIn("summary: elements.newProjectSummary.value", submit_project)
+        self.assertIn("status: elements.newProjectStatus.value", submit_project)
+        self.assertIn("selectProject(result.project.slug)", submit_project)
 
     def test_initial_load_does_not_contend_with_offscreen_canonical_collections(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

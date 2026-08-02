@@ -119,6 +119,7 @@ class FakeAdapter:
         self.todos: dict[str, dict] = {}
         self.membership_repairs: list[str] = []
         self.created_projects: list[Project] = []
+        self.updated_projects: list[str] = []
         self.project_assignments: list[tuple[str, str | None]] = []
         self.created_goals: list[Goal] = []
         self.paused_goals: list[str] = []
@@ -326,6 +327,14 @@ class FakeAdapter:
     def create_project(self, project: Project) -> ProjectMutationReceipt:
         self.created_projects.append(project)
         self.projects = (*self.projects, project)
+        return ProjectMutationReceipt(project_slug=project.slug, verified=True)
+
+    def update_project(self, project: Project) -> ProjectMutationReceipt:
+        self.updated_projects.append(project.slug)
+        self.projects = tuple(
+            project if item.slug == project.slug else item
+            for item in self.projects
+        )
         return ProjectMutationReceipt(project_slug=project.slug, verified=True)
 
     def set_task_project(
@@ -737,7 +746,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.65")
+        self.assertEqual(payload["version"], "V0.0.66")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -745,11 +754,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.65")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.65")
+        self.assertEqual(payload["current_version"], "V0.0.66")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.66")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.66",
                 "V0.0.65",
                 "V0.0.64",
                 "V0.0.63",
@@ -2139,6 +2149,28 @@ class ProjectApiTests(unittest.TestCase):
         self.assertTrue(payload["receipt"]["verified"])
         self.assertEqual(adapter.created_projects[0].title, "Interview preparation")
         self.assertTrue(payload["project"]["slug"].startswith("projects/"))
+
+    def test_edits_the_same_project_and_returns_verified_canonical_readback(self) -> None:
+        adapter = FakeAdapter(projects=(sample_project(),))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/projects/projects%2Fship-product",
+            {
+                "title": "Ship Mission Control",
+                "summary": "## Updated\n\nVerified project detail.",
+                "status": "paused",
+                "supporting_goal_slugs": [],
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(payload["project"]["slug"], "projects/ship-product")
+        self.assertEqual(payload["project"]["title"], "Ship Mission Control")
+        self.assertEqual(payload["project"]["status"], "paused")
+        self.assertEqual(adapter.updated_projects, [payload["project"]["slug"]])
 
     def test_assigns_a_task_to_a_durable_project_separately(self) -> None:
         adapter = FakeAdapter(projects=(sample_project(),))

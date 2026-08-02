@@ -1174,6 +1174,17 @@ kbd {
   line-height: 1.45;
 }
 
+.task-todo-heading-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.task-todo-heading-controls > .action-icon-button {
+  flex: 0 0 auto;
+}
+
 .task-todo-filter {
   display: flex;
   gap: 4px;
@@ -1222,6 +1233,11 @@ kbd {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.task-todo-add-actions {
+  display: flex;
+  gap: 7px;
 }
 
 .task-todo-add-form input,
@@ -2429,10 +2445,35 @@ kbd {
 
 .project-card {
   min-width: 0;
-  padding: 17px;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
+}
+
+.project-card-open {
+  width: 100%;
+  min-height: 100%;
+  display: block;
+  padding: 17px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-card:hover,
+.project-card.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.project-card-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 
 .project-card-status {
@@ -2451,6 +2492,33 @@ kbd {
 .project-card code {
   color: var(--muted);
   font-size: 10px;
+}
+
+.project-relation-section {
+  margin-top: 18px;
+}
+
+.project-relation-section h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.project-relation-section ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.project-relation-section li {
+  padding: 8px 9px;
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-muted);
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .project-card code {
@@ -4990,6 +5058,11 @@ button:active {
     width: 100%;
   }
 
+  .task-todo-heading-controls {
+    width: 100%;
+    align-items: stretch;
+  }
+
   .task-todo-filter button,
   .task-todo-card-heading > .secondary-button {
     min-height: 44px;
@@ -5001,6 +5074,11 @@ button:active {
 
   .task-todo-add-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-todo-add-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .task-todo-add-row .secondary-button,

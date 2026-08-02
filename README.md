@@ -84,7 +84,11 @@ alone, task links, titles, and age never imply ownership. Existing GBrain
 projects are not imported. The first explicit New Project action may initialize
 the missing Tony's Projects collection, then creates the project and verifies
 both page and typed scope membership before reporting success. Merely opening
-or refreshing Projects never creates that collection.
+or refreshing Projects never creates that collection. Every Project card uses
+a native keyboard-selectable control to open the shared right sidebar. The
+sidebar shows canonical summary Markdown, status, supporting Goals, assigned
+Tasks, timestamps, and slug; Edit preserves the same project identity and
+relationships and reports success only after verified canonical readback.
 
 The server binds to `127.0.0.1` by default. To choose another local port:
 
@@ -257,10 +261,13 @@ always equals both unique evidence and receipt counts. GTasks requires
 `job_applied` event completes the task, using the same verified canonical
 status mutation as the UI.
 
-Task detail exposes a per-task To Do list with All, Not Done, and Done filters.
-Each item can be opened for its detail, append-only comments, and audit history;
-text/detail edits and status changes use the item's last-read timestamp to
-reject lost updates. Marking an item Done never completes its parent task.
+Task detail exposes a read-only per-task To Do list with All, Not Done, and
+Done filters. The Add form remains hidden until the accessible Plus action is
+activated; cancelling returns to the unchanged list and an empty task says
+`No To Do yet`. Each item can be opened for its detail, append-only comments,
+and audit history; text/detail edits and status changes use the item's
+last-read timestamp to reject lost updates. Marking an item Done never
+completes its parent task.
 
 Select Edit to change the parent task's title, status, priority, due date,
 project, associated goal, optional metric, or assignee in one form. To Do
@@ -384,7 +391,7 @@ configuration, or relationship repair mutates GBrain.
 - Goals
 - Completed
 
-Task rows show title, project, priority, next action, due date, and configured
+Task rows show title, project, priority, open To Do summary, due date, and configured
 metric progress such as `Job applications: 3 / 5`. Board cards show the same
 canonical tasks by status and progress. Selecting either opens the shared
 detail panel, where status and progress context remain visible without leaving

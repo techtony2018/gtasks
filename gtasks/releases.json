@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.65",
+  "current_version": "V0.0.66",
   "releases": [
     {
       "version": "V0.0.1",
@@ -390,6 +390,12 @@
       "date": "2026-08-01",
       "title": "Canonical To Dos and responsive reads",
       "summary": "Replaces single Next Action editing with stable per-task To Do records, append-only comments, idempotent audit history, and verified item-level APIs. Task and proposal reads now coalesce in the background, retain clearly labelled last-verified data during slow GBrain refreshes, and define an explicit isolated QA-fixture scope so test work cannot become Tony work."
+    },
+    {
+      "version": "V0.0.66",
+      "date": "2026-08-01",
+      "title": "Focused To Do entry and Project details",
+      "summary": "Keeps Task To Dos read-only until an explicit accessible Plus action opens the Add form, and makes every Project card open a focus-managed right sidebar with canonical description, status, relationships, timestamps, identity-preserving Edit, and verified readback."
     }
   ]
 }

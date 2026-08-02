@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.65">
-    <script src="/app.js?v=0.0.65" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.66">
+    <script src="/app.js?v=0.0.66" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -189,13 +189,16 @@
                 <h3 id="task-todo-heading">To Dos</h3>
                 <p>Each item, comment, and change is durable in GBrain.</p>
               </div>
-              <div class="task-todo-filter" id="task-todo-filter" role="group" aria-label="Filter To Dos">
-                <button type="button" data-todo-filter="all">All</button>
-                <button type="button" data-todo-filter="not_done">Not Done</button>
-                <button type="button" data-todo-filter="done">Done</button>
+              <div class="task-todo-heading-controls">
+                <button class="action-icon-button has-tooltip" id="task-todo-add-toggle" type="button" aria-label="Add a To Do" data-tooltip="Add a To Do" aria-expanded="false" aria-controls="task-todo-add-form"><span aria-hidden="true">+</span></button>
+                <div class="task-todo-filter" id="task-todo-filter" role="group" aria-label="Filter To Dos">
+                  <button type="button" data-todo-filter="all">All</button>
+                  <button type="button" data-todo-filter="not_done">Not Done</button>
+                  <button type="button" data-todo-filter="done">Done</button>
+                </div>
               </div>
             </div>
-            <form class="task-todo-add-form" id="task-todo-add-form">
+            <form class="task-todo-add-form is-hidden" id="task-todo-add-form">
               <label for="task-todo-text">Add a To Do</label>
               <input id="task-todo-text" type="text" maxlength="240" required placeholder="One concrete action, question, or blocker">
               <label for="task-todo-detail">Detail <span>optional</span></label>
@@ -206,11 +209,14 @@
                   <option value="question">Question</option>
                   <option value="blocker">Blocker</option>
                 </select>
-                <button class="secondary-button" id="task-todo-add" type="submit">Add To Do</button>
+                <div class="task-todo-add-actions">
+                  <button class="secondary-button" id="task-todo-add-cancel" type="button">Cancel</button>
+                  <button class="secondary-button" id="task-todo-add" type="submit">Add To Do</button>
+                </div>
               </div>
             </form>
             <p class="is-hidden" role="status" id="task-todo-loading">Loading canonical To Dos…</p>
-            <p class="is-hidden" id="task-todo-empty">No To Dos in this section.</p>
+            <p class="is-hidden" id="task-todo-empty">No To Do yet</p>
             <p class="form-error is-hidden" role="alert" id="task-todo-error"></p>
             <div class="task-todo-list" id="task-todo-list" role="list"></div>
           </section>
@@ -298,6 +304,29 @@
             Open goal in Memory Stargraph
           </a>
           <code class="slug-label" id="goal-detail-slug"></code>
+        </div>
+        <div class="project-detail-content is-hidden" id="project-detail-content">
+          <div class="detail-toolbar">
+            <span class="detail-status" id="project-detail-status"></span>
+            <button class="action-icon-button has-tooltip" id="project-edit-button" type="button" aria-label="Edit project" data-tooltip="Edit project"><span aria-hidden="true">✎</span></button>
+            <button class="icon-button" id="project-detail-close" type="button" aria-label="Close project details">×</button>
+          </div>
+          <h2 id="project-detail-title" tabindex="-1"></h2>
+          <div class="detail-copy" id="project-detail-summary"></div>
+          <dl class="detail-list project-detail-list">
+            <div><dt>Created</dt><dd id="project-detail-created"></dd></div>
+            <div><dt>Updated</dt><dd id="project-detail-updated"></dd></div>
+          </dl>
+          <section class="project-relation-section" aria-labelledby="project-detail-goals-heading">
+            <h3 id="project-detail-goals-heading">Supporting Goals</h3>
+            <ul id="project-detail-goals"></ul>
+          </section>
+          <section class="project-relation-section" aria-labelledby="project-detail-tasks-heading">
+            <h3 id="project-detail-tasks-heading">Assigned Tasks</h3>
+            <ul id="project-detail-tasks"></ul>
+          </section>
+          <a class="gbrain-link" id="project-detail-gbrain-link" target="_blank" rel="noreferrer">Open project in Memory Stargraph</a>
+          <code class="slug-label" id="project-detail-slug"></code>
         </div>
         <div class="system-ticket-detail-content is-hidden" id="system-ticket-detail-content">
           <div class="detail-toolbar">
@@ -516,6 +545,20 @@
           placeholder="e.g. Prepare for OpenAI interviews"
           required
         >
+        <div class="is-hidden" id="new-project-summary-field">
+          <label for="new-project-summary">Project description</label>
+          <textarea id="new-project-summary" rows="4" maxlength="500"></textarea>
+        </div>
+        <div class="is-hidden" id="new-project-status-field">
+          <label for="new-project-status">Status</label>
+          <select id="new-project-status">
+            <option value="planned">Planned</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
         <label for="new-project-goals">Goals this project supports (optional)</label>
         <select id="new-project-goals" multiple size="5" aria-describedby="new-project-goals-help"></select>
         <p id="new-project-goals-help">Select one or more canonical Goals. These create typed supports_goal links and do not change task project assignments.</p>
