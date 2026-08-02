@@ -1,14 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="Mission Control Big Dipper and North Star">
-  <path d="M3.5.75h9l2.75 2.75v9l-2.75 2.75h-9L.75 12.5v-9Z" fill="#020816" stroke="#38BDF8" stroke-width=".55"/>
-  <g transform="matrix(.962 -.5015 .5015 .962 -5.158 5.176)">
-  <path d="M2.1 9.1 3.5 8.4 4.9 8.7 6.3 9.35 8.7 9.55 8.25 10.5 6.05 10.9 6.3 9.35" fill="none" stroke="#6E95AE" stroke-opacity=".65" stroke-width=".42" stroke-linecap="round" stroke-linejoin="round"/>
-  <g fill="#A8C1D3" opacity=".72"><circle cx="2.1" cy="9.1" r=".25"/><circle cx="3.5" cy="8.4" r=".28"/><circle cx="4.9" cy="8.7" r=".255"/><circle cx="6.3" cy="9.35" r=".3"/><circle cx="6.05" cy="10.9" r=".265"/><circle cx="8.25" cy="10.5" r=".29"/><circle cx="8.7" cy="9.55" r=".33"/></g>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Mission Control Big Dipper and North Star mark</title>
+  <desc id="desc">A centered dimensional Big Dipper with Polaris correctly positioned beyond the Dubhe and Merak pointer stars.</desc>
+  <defs>
+    <radialGradient id="space" cx="60%" cy="32%" r="74%"><stop stop-color="#0B1C36"/><stop offset=".58" stop-color="#020816"/><stop offset="1" stop-color="#01040D"/></radialGradient>
+    <radialGradient id="orb" cx="34%" cy="28%" r="70%"><stop offset="0" stop-color="#E8F3FF"/><stop offset=".28" stop-color="#B8D5E8"/><stop offset=".66" stop-color="#4F83A8"/><stop offset="1" stop-color="#1C3E63"/></radialGradient>
+    <radialGradient id="polar-aura"><stop stop-color="#FFFFFF" stop-opacity=".9"/><stop offset=".26" stop-color="#67E8F9" stop-opacity=".45"/><stop offset="1" stop-color="#38BDF8" stop-opacity="0"/></radialGradient>
+    <filter id="orb-glow" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation=".65" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="polar-glow" x="-160%" y="-160%" width="420%" height="420%"><feGaussianBlur stdDeviation="2.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <path d="M14 3h36l11 11v36L50 61H14L3 50V14Z" fill="url(#space)" stroke="#38BDF8" stroke-width="1.45"/>
+  <path d="M11 22v-9h9M44 52h8v-8" fill="none" stroke="#22D3EE" stroke-width="1" stroke-linecap="round" opacity=".72"/>
+  <g transform="matrix(.8 -.4 .4 .8 -11.6 24.8)">
+  <g aria-label="Big Dipper" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 31 16 28 22 29 28 32 38 33 36 37 27 39 28 32" stroke="#2F6F91" stroke-opacity=".2" stroke-width="1.8"/>
+    <path d="M10 31 16 28 22 29 28 32 38 33 36 37 27 39 28 32" stroke="#87AFC7" stroke-opacity=".52" stroke-width=".65"/>
   </g>
-  <g transform="translate(-3.15 -.6)">
-  <path d="m11.15 1.5.85 2.6 2.65.75-2.65.8-.85 2.7-.85-2.7-2.65-.8 2.65-.75Z" fill="#FFFFFF" stroke="#67E8F9" stroke-width=".32" stroke-linejoin="round"/>
-  <path d="M11.15 2.55v4.6M8.85 4.85h4.6m-3.93-1.63 3.26 3.26m0-3.26-3.26 3.26" stroke="#FFFFFF" stroke-width=".28" stroke-linecap="round"/>
-  <circle cx="11.15" cy="4.85" r=".68" fill="#FFFFFF" stroke="#67E8F9" stroke-width=".24"/>
-  <circle cx="11.15" cy="4.85" r=".28" fill="#38BDF8"/>
+  <g filter="url(#orb-glow)" stroke="#B8D5E8" stroke-width=".4" opacity=".72">
+    <g><circle cx="10" cy="31" r="1.125" fill="url(#orb)"/><circle cx="9.72" cy="30.7" r=".23" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="16" cy="28" r="1.275" fill="url(#orb)"/><circle cx="15.68" cy="27.65" r=".25" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="22" cy="29" r="1.175" fill="url(#orb)"/><circle cx="21.7" cy="28.68" r=".24" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="28" cy="32" r="1.4" fill="url(#orb)"/><circle cx="27.63" cy="31.63" r=".28" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="27" cy="39" r="1.225" fill="url(#orb)"/><circle cx="26.68" cy="38.68" r=".24" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="36" cy="37" r="1.35" fill="url(#orb)"/><circle cx="35.65" cy="36.65" r=".27" fill="#E8F3FF" stroke="none"/></g>
+    <g><circle cx="38" cy="33" r="1.5" fill="url(#orb)"/><circle cx="37.6" cy="32.6" r=".3" fill="#E8F3FF" stroke="none"/></g>
   </g>
+  </g>
+  <g filter="url(#polar-glow)" aria-label="Polaris" transform="translate(-16 3)">
+    <circle cx="48" cy="13" r="10.5" fill="url(#polar-aura)" opacity=".58"/>
+    <path d="M48 5 50.1 11.2 56.5 13 50.1 14.8 48 21.5 45.9 14.8 39.5 13 45.9 11.2Z" fill="#FFFFFF" stroke="#67E8F9" stroke-width=".75" stroke-linejoin="round"/>
+    <g stroke="#FFFFFF" stroke-linecap="round">
+      <path d="M48 7.2V10M48 16v2.8M42.2 13H45M51 13h2.8" stroke-width="1.15"/>
+      <path d="m43.9 8.9 2 2m4.2 4.2 2 2m0-8.2-2 2m-4.2 4.2-2 2" stroke-width=".75" opacity=".88"/>
+    </g>
+    <circle cx="48" cy="13" r="2.15" fill="#FFFFFF" stroke="#BFF8FF" stroke-width=".75"/>
+    <circle cx="48" cy="13" r=".85" fill="#38BDF8" stroke="none"/>
+  </g>
+  <path d="M48 2.5v21M37.5 13h21" transform="translate(-16 3)" stroke="#67E8F9" stroke-width=".55" stroke-opacity=".46"/>
 </svg>
