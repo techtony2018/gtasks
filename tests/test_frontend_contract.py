@@ -339,7 +339,7 @@ class FrontendContractTests(unittest.TestCase):
             javascript.index("function agentBoardCard") : javascript.index("function updateBoardStatus")
         ]
         self.assertIn("selectTask(task.slug, task)", card)
-        self.assertIn("function selectTask(slug, taskFallback = null)", javascript)
+        self.assertIn("function selectTask(slug, taskFallback = null, returnFocus = null)", javascript)
         self.assertIn("findTaskBySlug(slug) || taskFallback", javascript)
 
     def test_mobile_task_detail_is_a_visible_focused_sheet(self) -> None:
@@ -381,6 +381,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", css)
         self.assertIn(".proposal-agent-group { grid-template-columns: 1fr; }", css)
 
+    def test_proposal_decisions_remain_visible_with_status_and_timeline(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="proposal-decision-timeline"', html)
+        self.assertIn("function proposalStateLabel(proposal)", javascript)
+        self.assertIn('"Approved · Planned"', javascript)
+        self.assertIn('"Rejected · Cancelled"', javascript)
+        self.assertIn('"Pending review"', javascript)
+        self.assertIn('"Recent decisions"', javascript)
+        self.assertIn("task.decision_events", javascript)
+        self.assertIn("task.proposal_decision", javascript)
+        self.assertIn("task.proposal_decided_at", javascript)
+        self.assertIn("renderProposalDecisionTimeline(task)", javascript)
+
     def test_mobile_task_selection_reveals_and_focuses_detail_panel(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -390,6 +405,49 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('window.matchMedia("(max-width: 760px)").matches', body)
         self.assertIn('elements.detailPanel.scrollIntoView', body)
         self.assertIn('elements.detailTitle.focus({ preventScroll: true })', body)
+
+    def test_proposal_keyboard_detail_focuses_heading_and_returns_to_origin(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        proposal_card = javascript[
+            javascript.index("function proposalCard")
+            : javascript.index("function renderProposedWork")
+        ]
+        select_task = javascript[
+            javascript.index("function selectTask")
+            : javascript.index("function goalTaskLinks")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails")
+            : javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn("card.dataset.slug = proposal.slug", proposal_card)
+        self.assertIn("selectTask(proposal.slug, null, card)", proposal_card)
+        self.assertIn("state.detailReturnFocus", select_task)
+        self.assertIn("elements.detailTitle.focus({ preventScroll: true })", select_task)
+        self.assertIn('document.querySelectorAll(".proposal-card")', close_details)
+        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
+        self.assertIn("target?.focus({ preventScroll: true })", close_details)
+
+    def test_proposal_decision_notes_are_not_styled_as_completed_actions(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        timeline = javascript[
+            javascript.index("function renderProposalDecisionTimeline")
+            : javascript.index("function keepSelectedCalendarTaskVisible")
+        ]
+
+        self.assertIn('const item = node("li", "is-decision")', timeline)
+        self.assertNotIn('node("li", "is-completed")', timeline)
+        self.assertIn(".next-action-timeline li.is-decision", css)
+        decision_style = css[css.index(".next-action-timeline li.is-decision") :]
+        self.assertIn("text-decoration: none", decision_style[:300])
+
+    def test_static_asset_cache_keys_match_current_release(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('href="/styles.css?v=0.0.64"', html)
+        self.assertIn('src="/app.js?v=0.0.64"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -476,7 +534,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('button.addEventListener("click", () => selectTask(task.slug))', task_row)
         self.assertIn('row.addEventListener("click", (event) =>', task_row)
         self.assertIn('if (event.target.closest(".task-row-actions")) return;', task_row)
-        self.assertIn('const open = () => selectTask(proposal.slug);', proposal_card)
+        self.assertIn(
+            'const open = () => selectTask(proposal.slug, null, card);',
+            proposal_card,
+        )
         self.assertIn('card.addEventListener("click", open);', proposal_card)
 
     def test_proposed_tasks_are_inbox_only_grouped_by_agent_and_confirmation_bound(

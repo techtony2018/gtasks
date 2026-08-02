@@ -56,6 +56,83 @@ def task_page(
 
 
 class TaskParsingTests(unittest.TestCase):
+    def test_parses_canonical_proposal_decision_timeline_events(self) -> None:
+        page = task_page(
+            "tasks/decision-history",
+            status="planned",
+            links=[
+                {"to": "collections/toddys-tasks", "type": "member_of"},
+                {"to": "agents/toddy", "type": "assigned_to"},
+            ],
+        )
+        page["frontmatter"].update(
+            {
+                "proposal_recipient": "agent",
+                "proposal_submitted_at": "2026-08-01T09:00:00-07:00",
+                "proposal_decision": "approve",
+                "proposal_decided_at": "2026-08-01T10:00:00-07:00",
+                "proposal_decision_note": "Proceed with the bounded task.",
+                "proposal_decision_events": [
+                    {
+                        "event_id": "proposal-decision:decision-history:approve",
+                        "event_type": "proposal_decision",
+                        "occurred_at": "2026-08-01T10:00:00-07:00",
+                        "actor": "people/tony-guan",
+                        "source": "mission_control",
+                        "decision": "approve",
+                        "decision_note": "Proceed with the bounded task.",
+                        "previous_status": "proposed",
+                        "resulting_status": "planned",
+                        "proposal_slug": "tasks/decision-history",
+                    }
+                ],
+            }
+        )
+        page["frontmatter"]["status"] = "planned"
+
+        task = Task.from_page(
+            page,
+            edges=[
+                {
+                    "from_slug": "tasks/decision-history",
+                    "to_slug": "agents/toddy",
+                    "link_type": "assigned_to",
+                }
+            ],
+        )
+
+        self.assertEqual(task.proposal_decision, "approve")
+        self.assertEqual(len(task.proposal_decision_events), 1)
+        event = task.proposal_decision_events[0]
+        self.assertEqual(event.resulting_status, "planned")
+        self.assertEqual(
+            task.to_dict()["proposal_decision_events"][0]["event_id"],
+            "proposal-decision:decision-history:approve",
+        )
+
+    def test_rejects_proposal_decision_event_for_another_task(self) -> None:
+        page = task_page("tasks/decision-history")
+        page["frontmatter"]["proposal_decision_events"] = [
+            {
+                "event_id": "proposal-decision:other:reject",
+                "event_type": "proposal_decision",
+                "occurred_at": "2026-08-01T10:00:00-07:00",
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "decision": "reject",
+                "decision_note": "No.",
+                "previous_status": "proposed",
+                "resulting_status": "cancelled",
+                "proposal_slug": "tasks/other",
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "proposal decision event must reference its own task",
+        ):
+            Task.from_page(page)
+
     def test_compiled_markdown_does_not_override_structured_task_frontmatter(self) -> None:
         page = task_page("tasks/compiled-task")
         page["compiled_truth"] = "\n".join(

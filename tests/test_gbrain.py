@@ -1,6 +1,9 @@
 import json
 import subprocess
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -13,8 +16,10 @@ from gtasks.domain import (
     GOALS_ROOT,
     PROJECTS_ROOT,
     PROPOSALS_ROOT,
+    TaskProposal,
     SYSTEM_TICKETS_ROOT,
     SystemTicket,
+    Task,
     ProgressMetric,
     new_goal,
     new_inbox_task,
@@ -23,11 +28,13 @@ from gtasks.domain import (
 )
 from gtasks.gbrain import (
     GBrainAdapter,
+    AgentWorkRead,
     GBrainCommandError,
     GBrainProtocolError,
     GoalLinkReceipt,
     NextActionMutationReceipt,
     PartialMutationError,
+    ProposalRead,
     LifecycleIntegrityError,
     SubprocessCommandRunner,
     _render_preserved_page,
@@ -2413,6 +2420,55 @@ class AgentReadTests(unittest.TestCase):
 
 
 class ProposalReadTests(unittest.TestCase):
+    def test_keeps_decided_task_proposal_in_history_with_resulting_status(self) -> None:
+        decided_at = datetime(
+            2026, 8, 1, 10, tzinfo=timezone(timedelta(hours=-7))
+        )
+        slug = "tasks/2dcb6465-46de-45fc-b4eb-170707df3c28"
+        event = {
+            "event_id": "proposal-decision:2dcb6465:approve",
+            "event_type": "proposal_decision",
+            "occurred_at": decided_at.isoformat(),
+            "actor": "people/tony-guan",
+            "source": "mission_control",
+            "decision": "approve",
+            "decision_note": "Proceed.",
+            "previous_status": "proposed",
+            "resulting_status": "planned",
+            "proposal_slug": slug,
+        }
+        task = {
+            "slug": slug,
+            "title": "Prepare the launch",
+            "status": "planned",
+            "owner_agent": "agents/toddy",
+            "proposal_recipient": "agent",
+            "proposal_submitted_at": "2026-08-01T09:00:00-07:00",
+            "proposal_decision": "approve",
+            "proposal_decided_at": decided_at.isoformat(),
+            "proposal_decision_note": "Proceed.",
+            "proposal_decision_events": [event],
+            "created_at": "2026-08-01T09:00:00-07:00",
+            "updated_at": decided_at.isoformat(),
+            "detail": "Prepare a bounded launch.",
+            "next_action": "Draft the launch checklist.",
+            "due_day": "2026-08-02",
+            "goal": "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+        }
+        runner = FakeRunner({"get_backlinks": [[]]})
+
+        class Adapter(GBrainAdapter):
+            def list_agent_work(self):
+                return AgentWorkRead(tasks=(task,))
+
+        result = Adapter(runner).list_proposals()
+
+        self.assertEqual(len(result.proposals), 1)
+        proposal = result.proposals[0]
+        self.assertEqual(proposal.status, "approved")
+        self.assertEqual(proposal.resulting_status, "planned")
+        self.assertEqual(proposal.decision_events[0].event_id, event["event_id"])
+
     def test_excludes_decided_legacy_proposals_from_active_review(self) -> None:
         slug = "proposals/tammy-decided-legacy"
         page = {
@@ -2525,6 +2581,121 @@ class TaskStatusMutationTests(unittest.TestCase):
             )
 
         self.assertEqual(runner.calls, [])
+
+
+class ProposalDecisionTimelineTests(unittest.TestCase):
+    def test_task_proposal_decision_is_one_atomic_idempotent_page_write(self) -> None:
+        now = datetime(2026, 8, 1, 10, tzinfo=timezone(timedelta(hours=-7)))
+        task = replace(
+            new_task(title="Review the launch", now=now, identity="launch01"),
+            status="proposed",
+            lifecycle_root="collections/toddys-tasks",
+            owner_agent="agents/toddy",
+            proposal_recipient="agent",
+            proposal_submitted_at=now - timedelta(hours=1),
+        )
+        page = stored_page(task)
+        page["frontmatter"].update(
+            {
+                "status": "proposed",
+                "proposal_recipient": "agent",
+                "proposal_submitted_at": (now - timedelta(hours=1)).isoformat(),
+                "proposal_decision_note": "",
+                "created_at": task.created_at.isoformat(),
+                "updated_at": task.updated_at.isoformat(),
+            }
+        )
+        page["frontmatter"]["links"] = [
+            {"to": "collections/toddys-tasks", "type": "member_of"},
+            {"to": "agents/toddy", "type": "assigned_to"},
+        ]
+        links = [
+            {
+                "from_slug": task.slug,
+                "to_slug": "collections/toddys-tasks",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": task.slug,
+                "to_slug": "agents/toddy",
+                "link_type": "assigned_to",
+            },
+        ]
+        proposal = TaskProposal(
+            slug=task.slug,
+            title=task.title,
+            status="proposed",
+            recipient="agent",
+            proposing_agent="agents/toddy",
+            rationale=task.detail or "Review the bounded launch.",
+            proposed_next_step=task.next_action or "Review it.",
+            due_day=task.due_day,
+            submitted_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(hours=1),
+            source_kind="task",
+        )
+        runner = StatefulTaskRunner(page, links)
+
+        class Adapter(GBrainAdapter):
+            def list_proposals(self):
+                current = Task.from_page(runner.page, edges=runner.links)
+                return ProposalRead(
+                    (
+                        replace(
+                            proposal,
+                            status=(
+                                "approved"
+                                if current.proposal_decision == "approve"
+                                else "rejected"
+                                if current.proposal_decision == "reject"
+                                else "proposed"
+                            ),
+                            decision=current.proposal_decision,
+                            decision_at=current.proposal_decided_at,
+                            resulting_status=(
+                                current.status if current.proposal_decision else None
+                            ),
+                            decision_events=current.proposal_decision_events,
+                        ),
+                    )
+                )
+
+            def get_task(self, _slug):
+                return Task.from_page(runner.page, edges=runner.links)
+
+        adapter = Adapter(runner)
+
+        receipt = adapter.decide_proposal(
+            task.slug,
+            action="approve",
+            decision_note="Proceed.",
+            now=now,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.status, "approved")
+        self.assertEqual(receipt.proposal.resulting_status, "planned")
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("put_page"),
+            1,
+        )
+        events = runner.page["frontmatter"]["proposal_decision_events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["decision"], "approve")
+
+        second = adapter.decide_proposal(
+            task.slug,
+            action="approve",
+            decision_note="Proceed.",
+            now=now + timedelta(minutes=1),
+        )
+        self.assertTrue(second.verified)
+        self.assertEqual(second.status, "approved")
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("put_page"),
+            1,
+        )
+
 
     def test_agent_status_update_preserves_owner_scope_and_task_identity(
         self,
@@ -3377,6 +3548,37 @@ class TaskProgressMetricMutationTests(unittest.TestCase):
 
 
 class SubprocessRunnerTests(unittest.TestCase):
+    @patch("gtasks.gbrain.subprocess.run")
+    def test_bounds_cli_calls_to_avoid_oauth_token_bursts(self, run) -> None:
+        active = 0
+        maximum = 0
+        lock = threading.Lock()
+
+        def invoke(*_args, **_kwargs):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"ok":true}', stderr=""
+            )
+
+        run.side_effect = invoke
+        runner = SubprocessCommandRunner()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            results = list(
+                executor.map(
+                    lambda index: runner.run("get_page", {"slug": f"tasks/{index}"}),
+                    range(3),
+                )
+            )
+
+        self.assertEqual(results, [{"ok": True}, {"ok": True}, {"ok": True}])
+        self.assertEqual(maximum, 2)
+
     @patch("gtasks.gbrain.subprocess.run")
     def test_invokes_gbrain_without_a_shell(self, run) -> None:
         run.return_value = subprocess.CompletedProcess(

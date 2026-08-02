@@ -50,6 +50,7 @@ const state = {
   activeView: "today",
   selectedSlug: null,
   selectedKind: null,
+  detailReturnFocus: null,
   weekStart: null,
   calendarMode: "week",
   calendarMonth: null,
@@ -447,6 +448,8 @@ const elements = {
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
   proposalDetailMeta: document.querySelector("#proposal-detail-meta"),
+  proposalDecisionHistory: document.querySelector("#proposal-decision-history"),
+  proposalDecisionTimeline: document.querySelector("#proposal-decision-timeline"),
   detailPriority: document.querySelector("#detail-priority"),
   detailDue: document.querySelector("#detail-due"),
   detailGbrainLink: document.querySelector("#detail-gbrain-link"),
@@ -3115,6 +3118,16 @@ function proposalRelationLabel(proposal) {
     : `Tony task · ${proposal.linked_task}`;
 }
 
+function proposalStateLabel(proposal) {
+  if (proposal.status === "approved" || proposal.decision === "approve" || proposal.proposal_decision === "approve") {
+    return "Approved · Planned";
+  }
+  if (proposal.status === "rejected" || proposal.decision === "reject" || proposal.proposal_decision === "reject") {
+    return "Rejected · Cancelled";
+  }
+  return "Proposed";
+}
+
 function openProposalReview(proposal) {
   state.proposalAction = { proposal, action: "review" };
   elements.proposalReviewName.value = proposal.title;
@@ -3155,17 +3168,19 @@ function openProposalDecision(proposal, action) {
 function proposalCard(proposal) {
   const agent = proposalAgent(proposal);
   const card = node("article", "proposal-card");
+  card.dataset.slug = proposal.slug;
   card.classList.toggle("is-selected", state.selectedSlug === proposal.slug);
   card.tabIndex = 0;
   card.setAttribute("role", "button");
   card.setAttribute("aria-label", `Open proposed task ${proposal.title}`);
-  const open = () => selectTask(proposal.slug);
+  const open = () => selectTask(proposal.slug, null, card);
   card.addEventListener("click", open);
   card.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
   });
   card.append(
     node("h4", "", proposal.title),
+    node("span", "proposal-status", proposalStateLabel(proposal)),
   );
   if (proposal.source_kind === "task" && proposal.status === "proposed") {
     const actions = node("div", "proposal-actions");
@@ -3249,19 +3264,31 @@ function renderProposedWork() {
     "agents/timmy",
     "agents/tammy",
   ];
-  agentOrder.forEach((agentSlug) => {
-    const group = visible.filter(
-      (proposal) => proposal.proposing_agent === agentSlug,
-    );
-    if (!group.length) return;
-    const agent = state.agents.find((item) => item.slug === agentSlug);
-    const wrapper = node("section", "proposal-agent-group");
-    wrapper.append(
-      node("h3", "", agent?.name || agentSlug),
-      ...group.map(proposalCard),
-    );
-    section.append(wrapper);
-  });
+  const appendGroups = (items, headingText) => {
+    if (!items.length) return;
+    section.append(node("h3", "", headingText));
+    agentOrder.forEach((agentSlug) => {
+      const group = items.filter(
+        (proposal) => proposal.proposing_agent === agentSlug,
+      );
+      if (!group.length) return;
+      const agent = state.agents.find((item) => item.slug === agentSlug);
+      const wrapper = node("section", "proposal-agent-group");
+      wrapper.append(
+        node("h3", "", agent?.name || agentSlug),
+        ...group.map(proposalCard),
+      );
+      section.append(wrapper);
+    });
+  };
+  appendGroups(
+    visible.filter((proposal) => ["proposed", "review"].includes(proposal.status)),
+    "Pending review",
+  );
+  appendGroups(
+    visible.filter((proposal) => ["approved", "rejected"].includes(proposal.status)),
+    "Recent decisions",
+  );
   return section;
 }
 
@@ -3636,6 +3663,49 @@ function renderNextActionTimeline(task) {
   }
 }
 
+function renderProposalDecisionTimeline(task) {
+  elements.proposalDecisionTimeline.replaceChildren();
+  const submitted = task.proposal_submitted_at || task.submitted_at || task.created_at;
+  if (submitted) {
+    const item = node("li", "is-current");
+    item.append(
+      node("span", "next-action-state", "Submitted"),
+      node("strong", "", "Proposed for review"),
+      node("time", "", new Date(submitted).toLocaleString()),
+    );
+    elements.proposalDecisionTimeline.append(item);
+  }
+  let events = Array.isArray(task.proposal_decision_events)
+    ? task.proposal_decision_events
+    : Array.isArray(task.decision_events) ? task.decision_events : [];
+  const projectedDecision = task.proposal_decision || task.decision;
+  const projectedAt = task.proposal_decided_at || task.decision_at;
+  if (!events.length && ["approve", "reject"].includes(projectedDecision) && projectedAt) {
+    events = [{
+      decision: projectedDecision,
+      decision_note: task.proposal_decision_note || task.decision_note || "",
+      occurred_at: projectedAt,
+      resulting_status: task.resulting_status || (projectedDecision === "approve" ? "planned" : "cancelled"),
+      legacy_projection: true,
+    }];
+  }
+  events.forEach((event) => {
+    const item = node("li", "is-decision");
+    const label = event.decision === "approve" ? "Approved" : "Rejected";
+    item.append(
+      node("span", "next-action-state", `${label} · ${event.resulting_status}${event.legacy_projection ? " · Legacy projection" : ""}`),
+      node("strong", "", event.decision_note || `${label} without a note`),
+      node("time", "", event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "Decision time unavailable"),
+    );
+    elements.proposalDecisionTimeline.append(item);
+  });
+  if (!submitted && !events.length) {
+    elements.proposalDecisionTimeline.append(
+      node("li", "is-empty", "No canonical proposal timeline evidence is available."),
+    );
+  }
+}
+
 function keepSelectedCalendarTaskVisible(taskSlug) {
   if (state.activeView !== "week" || state.calendarMode !== "week") return;
   window.requestAnimationFrame(() => {
@@ -3655,9 +3725,12 @@ function keepSelectedCalendarTaskVisible(taskSlug) {
   });
 }
 
-function selectTask(slug, taskFallback = null) {
+function selectTask(slug, taskFallback = null, returnFocus = null) {
   const task = findTaskBySlug(slug) || taskFallback;
   if (!task) return;
+  state.detailReturnFocus = returnFocus
+    ? { element: returnFocus, slug }
+    : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
   elements.detailPanel.setAttribute("aria-hidden", "false");
@@ -3673,12 +3746,19 @@ function selectTask(slug, taskFallback = null) {
   elements.taskDuplicateButton.classList.toggle("is-hidden", isProposed);
   elements.detailTitle.textContent = task.title || task.summary;
   renderSafeMarkdown(elements.detailCopy, task.detail || "");
-  elements.proposalDetailMeta.classList.toggle("is-hidden", task.status !== "proposed");
-  if (task.status === "proposed") {
+  const isProposal = Boolean(
+    task.status === "proposed" || task.proposal_submitted_at || task.decision ||
+    (Array.isArray(task.proposal_decision_events) && task.proposal_decision_events.length),
+  );
+  elements.proposalDetailMeta.classList.toggle("is-hidden", !isProposal);
+  elements.proposalDecisionHistory.classList.toggle("is-hidden", !isProposal);
+  if (isProposal) {
     const ownerName = task.owner?.name || state.agents.find((agent) => agent.slug === task.owner_agent)?.name || task.owner_agent || "Unknown agent";
     const target = state.snapshot.goals.find((goal) => goal.slug === task.goal)?.title || task.goal || "No linked primary goal";
     const submitted = task.proposal_submitted_at || task.created_at;
-    elements.proposalDetailMeta.textContent = `Proposed by ${ownerName} · Goal: ${target}${submitted ? ` · Submitted ${new Date(submitted).toLocaleString()}` : ""}${task.updated_at ? ` · Updated ${new Date(task.updated_at).toLocaleString()}` : ""}`;
+    const proposalState = proposalStateLabel(task);
+    elements.proposalDetailMeta.textContent = `${proposalState} · Proposed by ${ownerName} · Goal: ${target}${submitted ? ` · Submitted ${new Date(submitted).toLocaleString()}` : ""}${task.updated_at ? ` · Updated ${new Date(task.updated_at).toLocaleString()}` : ""}`;
+    renderProposalDecisionTimeline(task);
   } else elements.proposalDetailMeta.textContent = "";
   const owner = task.owner || (
     task.owner_agent
@@ -3733,12 +3813,12 @@ function selectTask(slug, taskFallback = null) {
   }
   render();
   keepSelectedCalendarTaskVisible(task.slug);
-  if (window.matchMedia("(max-width: 760px)").matches) {
-    window.requestAnimationFrame(() => {
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) {
       elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
-      elements.detailTitle.focus({ preventScroll: true });
-    });
-  }
+    }
+    elements.detailTitle.focus({ preventScroll: true });
+  });
 }
 
 function goalTaskLinks(container, tasks, emptyCopy) {
@@ -3884,6 +3964,8 @@ function selectGoal(slug) {
 }
 
 function closeDetails() {
+  const returnFocus = state.detailReturnFocus;
+  state.detailReturnFocus = null;
   state.selectedSlug = null;
   state.selectedKind = null;
   elements.detailPanel.setAttribute("aria-hidden", "true");
@@ -3892,6 +3974,16 @@ function closeDetails() {
   elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.detailEmpty.classList.remove("is-hidden");
   render();
+  if (returnFocus) {
+    window.requestAnimationFrame(() => {
+      const target = returnFocus.element?.isConnected
+        ? returnFocus.element
+        : Array.from(document.querySelectorAll(".proposal-card")).find(
+          (candidate) => candidate.dataset.slug === returnFocus.slug,
+        );
+      target?.focus({ preventScroll: true });
+    });
+  }
 }
 
 async function saveTaskGoal() {

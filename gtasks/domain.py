@@ -286,6 +286,10 @@ class TaskProposal:
     reviewed_at: datetime | None = None
     decision_note: str = ""
     source_kind: str = "legacy"
+    decision: str | None = None
+    decision_at: datetime | None = None
+    resulting_status: str | None = None
+    decision_events: tuple[ProposalDecisionEvent, ...] = ()
 
     @classmethod
     def from_page(
@@ -416,6 +420,17 @@ class TaskProposal:
             approved_task=approved_task,
             reviewed_at=reviewed_at,
             decision_note=decision_note.strip(),
+            decision=(
+                "approve"
+                if status == "approved"
+                else "reject" if status == "rejected" else None
+            ),
+            decision_at=reviewed_at if status in {"approved", "rejected"} else None,
+            resulting_status=(
+                "planned"
+                if status == "approved"
+                else "cancelled" if status == "rejected" else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -436,6 +451,10 @@ class TaskProposal:
             "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "decision_note": self.decision_note,
             "source_kind": self.source_kind,
+            "decision": self.decision,
+            "decision_at": self.decision_at.isoformat() if self.decision_at else None,
+            "resulting_status": self.resulting_status,
+            "decision_events": [event.to_dict() for event in self.decision_events],
         }
 
 
@@ -687,6 +706,86 @@ class EventProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class ProposalDecisionEvent:
+    event_id: str
+    event_type: str
+    occurred_at: datetime
+    actor: str
+    source: str
+    decision: str
+    decision_note: str
+    previous_status: str
+    resulting_status: str
+    proposal_slug: str
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any]) -> "ProposalDecisionEvent":
+        if not isinstance(value, Mapping):
+            raise DomainValidationError("proposal decision event must be an object")
+        event_id = value.get("event_id")
+        if not isinstance(event_id, str) or not event_id.strip() or len(event_id) > 240:
+            raise DomainValidationError("proposal decision event_id is required")
+        if value.get("event_type") != "proposal_decision":
+            raise DomainValidationError("proposal decision event_type is invalid")
+        occurred_at = _optional_datetime(
+            value.get("occurred_at"), "proposal decision occurred_at"
+        )
+        if occurred_at is None or occurred_at.tzinfo is None:
+            raise DomainValidationError(
+                "proposal decision occurred_at must include a timezone"
+            )
+        actor = value.get("actor")
+        source = value.get("source")
+        if not isinstance(actor, str) or not actor.strip():
+            raise DomainValidationError("proposal decision actor is required")
+        if not isinstance(source, str) or not source.strip():
+            raise DomainValidationError("proposal decision source is required")
+        decision = value.get("decision")
+        if decision not in {"approve", "reject"}:
+            raise DomainValidationError("proposal decision must be approve or reject")
+        note = value.get("decision_note", "")
+        if not isinstance(note, str) or len(note) > 1000:
+            raise DomainValidationError(
+                "proposal decision_note must be text up to 1000 characters"
+            )
+        expected_result = "planned" if decision == "approve" else "cancelled"
+        if (
+            value.get("previous_status") != "proposed"
+            or value.get("resulting_status") != expected_result
+        ):
+            raise DomainValidationError("proposal decision status transition is invalid")
+        proposal_slug = value.get("proposal_slug")
+        if not isinstance(proposal_slug, str) or not proposal_slug.startswith("tasks/"):
+            raise DomainValidationError("proposal decision proposal_slug is invalid")
+        return cls(
+            event_id=event_id.strip(),
+            event_type="proposal_decision",
+            occurred_at=occurred_at,
+            actor=actor.strip(),
+            source=source.strip(),
+            decision=decision,
+            decision_note=note.strip(),
+            previous_status="proposed",
+            resulting_status=expected_result,
+            proposal_slug=proposal_slug,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "event_id": self.event_id,
+            "event_type": self.event_type,
+            "occurred_at": self.occurred_at.isoformat(),
+            "actor": self.actor,
+            "source": self.source,
+            "decision": self.decision,
+            "decision_note": self.decision_note,
+            "previous_status": self.previous_status,
+            "resulting_status": self.resulting_status,
+            "proposal_slug": self.proposal_slug,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Task:
     slug: str
     title: str
@@ -714,7 +813,10 @@ class Task:
     updated_at: datetime | None = None
     proposal_recipient: str | None = None
     proposal_submitted_at: datetime | None = None
+    proposal_decision: str | None = None
+    proposal_decided_at: datetime | None = None
     proposal_decision_note: str = ""
+    proposal_decision_events: tuple[ProposalDecisionEvent, ...] = ()
 
     @classmethod
     def from_page(
@@ -902,6 +1004,44 @@ class Task:
                 "manual progress metric cannot contain event progress"
             )
 
+        proposal_decision = frontmatter.get("proposal_decision")
+        if proposal_decision not in (None, "approve", "reject"):
+            raise DomainValidationError(
+                "proposal_decision must be approve, reject, or null"
+            )
+        proposal_decided_at = _optional_datetime(
+            frontmatter.get("proposal_decided_at"), "proposal_decided_at"
+        )
+        raw_decision_events = frontmatter.get("proposal_decision_events", [])
+        if raw_decision_events is None:
+            raw_decision_events = []
+        if not isinstance(raw_decision_events, list):
+            raise DomainValidationError("proposal_decision_events must be a list")
+        proposal_decision_events = tuple(
+            ProposalDecisionEvent.from_value(value)
+            for value in raw_decision_events
+        )
+        if len({event.event_id for event in proposal_decision_events}) != len(
+            proposal_decision_events
+        ):
+            raise DomainValidationError(
+                "proposal decision event identities must be unique"
+            )
+        if any(event.proposal_slug != slug for event in proposal_decision_events):
+            raise DomainValidationError(
+                "proposal decision event must reference its own task"
+            )
+        if proposal_decision_events:
+            latest = proposal_decision_events[-1]
+            if (
+                proposal_decision != latest.decision
+                or proposal_decided_at != latest.occurred_at
+                or status != latest.resulting_status
+            ):
+                raise DomainValidationError(
+                    "proposal decision projections must match the canonical event"
+                )
+
         return cls(
             slug=slug,
             title=title.strip(),
@@ -939,11 +1079,14 @@ class Task:
             proposal_submitted_at=_optional_datetime(
                 frontmatter.get("proposal_submitted_at"), "proposal_submitted_at"
             ),
+            proposal_decision=proposal_decision,
+            proposal_decided_at=proposal_decided_at,
             proposal_decision_note=(
                 frontmatter.get("proposal_decision_note", "").strip()
                 if isinstance(frontmatter.get("proposal_decision_note", ""), str)
                 else ""
             ),
+            proposal_decision_events=proposal_decision_events,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -982,7 +1125,12 @@ class Task:
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "proposal_recipient": self.proposal_recipient,
             "proposal_submitted_at": self.proposal_submitted_at.isoformat() if self.proposal_submitted_at else None,
+            "proposal_decision": self.proposal_decision,
+            "proposal_decided_at": self.proposal_decided_at.isoformat() if self.proposal_decided_at else None,
             "proposal_decision_note": self.proposal_decision_note,
+            "proposal_decision_events": [
+                event.to_dict() for event in self.proposal_decision_events
+            ],
         }
 
 

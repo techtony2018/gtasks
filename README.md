@@ -167,13 +167,18 @@ of `tony` or `agent`; a rationale and concrete next step; and at least one
 explicit `serves_goal` or `proposes_for_task` relationship. GTasks never
 guesses or fabricates proposals from goals.
 
-The Proposed Tasks section is grouped and filtered by proposing agent. The
-recipient is secondary and visible on every card as **Proposed for Tony** or
-**Proposed agent work**. Editing moves a proposal into `review` without
+The Proposed Tasks section is grouped and filtered by proposing agent. Pending
+review and recent decisions remain separately visible, and every decided row
+opens a task-detail timeline showing the canonical decision event, actor,
+timestamp, note, previous state, and resulting state. The recipient is
+secondary and visible on every card as **Proposed for Tony** or **Proposed
+agent work**. Editing moves a legacy proposal record into `review` without
 creating a task. Approval and rejection are confirmation-bound:
 
-- approval creates exactly one canonical task and adds typed `approved_as`
-  readback before reporting success;
+- a canonical proposed task is decided in place with one idempotent decision
+  event and exact lifecycle/readback verification;
+- a legacy `task_proposal` approval creates exactly one canonical task and adds
+  typed `approved_as` readback before reporting success;
 - rejection retains the proposal and all linked goal, task, and agent data;
 - `proposed`, `review`, `approved`, and `rejected` remain durable audit
   states.

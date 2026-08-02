@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.63">
-    <script src="/app.js?v=0.0.63" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.64">
+    <script src="/app.js?v=0.0.64" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -169,6 +169,10 @@
           <h2 id="detail-title" tabindex="-1"></h2>
           <p class="detail-copy" id="detail-copy"></p>
           <p class="proposal-detail-meta is-hidden" id="proposal-detail-meta"></p>
+          <section class="proposal-decision-history is-hidden" id="proposal-decision-history" aria-labelledby="proposal-decision-history-label">
+            <h3 id="proposal-decision-history-label">Proposal timeline</h3>
+            <ol class="next-action-timeline" id="proposal-decision-timeline"></ol>
+          </section>
           <section class="task-progress-detail is-hidden" id="task-progress-detail" aria-labelledby="task-progress-label">
             <div>
               <strong id="task-progress-label"></strong>

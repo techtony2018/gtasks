@@ -28,6 +28,7 @@ from .domain import (
     LIFECYCLE_ROOTS,
     NextActionHistoryEntry,
     PROJECTS_ROOT,
+    ProposalDecisionEvent,
     ProgressMetric,
     Project,
     PROPOSALS_ROOT,
@@ -96,7 +97,10 @@ class SubprocessCommandRunner:
     def __init__(self, executable: str = "gbrain", timeout_seconds: float = 30) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
-        self._concurrency = BoundedSemaphore(16)
+        # Every gbrain CLI subprocess negotiates OAuth independently. Keep a
+        # narrow shared lane so concurrent dashboard reads remain responsive
+        # without recreating the /token burst that caused partial snapshots.
+        self._concurrency = BoundedSemaphore(2)
 
     def run(self, tool: str, params: dict[str, Any]) -> object:
         payload = json.dumps(params, separators=(",", ":"))
@@ -547,7 +551,19 @@ def render_task_page(task: Task) -> str:
             "proposal_submitted_at: "
             + _yaml_scalar(task.proposal_submitted_at.isoformat() if task.proposal_submitted_at else None)
         ),
+        f"proposal_decision: {_yaml_scalar(task.proposal_decision)}",
+        (
+            "proposal_decided_at: "
+            + _yaml_scalar(task.proposal_decided_at.isoformat() if task.proposal_decided_at else None)
+        ),
         f"proposal_decision_note: {_yaml_scalar(task.proposal_decision_note)}",
+        (
+            "proposal_decision_events: "
+            + json.dumps(
+                [event.to_dict() for event in task.proposal_decision_events],
+                ensure_ascii=False,
+            )
+        ),
         (
             "progress_metric: "
             + json.dumps(
@@ -2309,12 +2325,10 @@ class GBrainAdapter:
             list(proposal_slugs),
         ):
             if proposal is not None:
-                # Historical task_proposal pages are read-only compatibility
-                # records. Only still-pending legacy records belong in the
-                # active Proposed Tasks review surface; approved/rejected
-                # pages must not masquerade as the agent's current task.
-                if proposal.status in {"proposed", "review"}:
-                    proposals.append(proposal)
+                # Historical task_proposal pages remain visible after a
+                # decision so Inbox can distinguish pending review from the
+                # durable approval/rejection history.
+                proposals.append(proposal)
             if issue is not None:
                 issues.append(issue)
         try:
@@ -2323,20 +2337,45 @@ class GBrainAdapter:
             agent_work = AgentWorkRead(tasks=(), issues=(), roots=())
         issues.extend(agent_work.issues)
         for item in agent_work.tasks:
-            if item.get("status") != "proposed":
+            decision = item.get("proposal_decision")
+            if item.get("status") != "proposed" and decision not in {
+                "approve", "reject"
+            }:
                 continue
             submitted = item.get("proposal_submitted_at") or item.get("created_at") or item.get("updated_at")
             updated = item.get("updated_at") or submitted
             try:
+                review_status = (
+                    "approved"
+                    if decision == "approve"
+                    else "rejected" if decision == "reject" else "proposed"
+                )
+                decision_events = tuple(
+                    ProposalDecisionEvent.from_value(value)
+                    for value in item.get("proposal_decision_events", [])
+                )
                 proposals.append(TaskProposal(
-                    slug=str(item["slug"]), title=str(item["title"]), status="proposed",
+                    slug=str(item["slug"]), title=str(item["title"]), status=review_status,
                     recipient=str(item.get("proposal_recipient") or "agent"), proposing_agent=str(item.get("owner_agent") or ""),
                     rationale=str(item.get("detail") or ""), proposed_next_step=str(item.get("next_action") or ""),
                     due_day=date.fromisoformat(str(item["due_day"])[:10]),
                     submitted_at=datetime.fromisoformat(str(submitted).replace("Z", "+00:00")),
                     updated_at=datetime.fromisoformat(str(updated).replace("Z", "+00:00")),
                     linked_goal=item.get("goal") if isinstance(item.get("goal"), str) else None,
-                    decision_note=str(item.get("proposal_decision_note") or ""), source_kind="task",
+                    reviewed_at=(
+                        datetime.fromisoformat(str(item["proposal_decided_at"]).replace("Z", "+00:00"))
+                        if item.get("proposal_decided_at") else None
+                    ),
+                    decision_note=str(item.get("proposal_decision_note") or ""),
+                    source_kind="task", decision=decision,
+                    decision_at=(
+                        datetime.fromisoformat(str(item["proposal_decided_at"]).replace("Z", "+00:00"))
+                        if item.get("proposal_decided_at") else None
+                    ),
+                    resulting_status=(
+                        str(item.get("status")) if decision in {"approve", "reject"} else None
+                    ),
+                    decision_events=decision_events,
                 ))
             except (KeyError, TypeError, ValueError):
                 issues.append(CollectionIssue(slug=str(item.get("slug", "agent task")), message="proposed agent task is missing required task timing data", impact="This proposed task remains in GBrain but cannot be reviewed until its core task fields are repaired."))
@@ -3490,6 +3529,32 @@ class GBrainAdapter:
             raise ValueError("proposal decision must be approve or reject")
         if proposal.source_kind == "task":
             task = self.get_task(proposal_slug)
+            review_status = "approved" if action == "approve" else "rejected"
+            target_status = "planned" if action == "approve" else "cancelled"
+            if task.proposal_decision is not None:
+                if (
+                    task.proposal_decision == action
+                    and task.status == target_status
+                    and task.proposal_decision_events
+                ):
+                    return ProposalMutationReceipt(
+                        proposal_slug=proposal_slug,
+                        status=review_status,
+                        proposal=replace(
+                            proposal,
+                            status=review_status,
+                            updated_at=task.updated_at or now,
+                            reviewed_at=task.proposal_decided_at,
+                            decision_note=task.proposal_decision_note,
+                            decision=action,
+                            decision_at=task.proposal_decided_at,
+                            resulting_status=task.status,
+                            decision_events=task.proposal_decision_events,
+                        ),
+                        created_task=task,
+                        verified=True,
+                    )
+                raise ValueError("proposal already has a final decision")
             if task.status != "proposed":
                 raise ValueError("proposal already has a final decision")
             raw_page = self.runner.run("get_page", {"slug": proposal_slug})
@@ -3506,9 +3571,37 @@ class GBrainAdapter:
             if not isinstance(frontmatter, Mapping):
                 raise GBrainProtocolError("proposed task page has no frontmatter")
             changed = deepcopy(dict(frontmatter))
+            event_id = "proposal-decision:" + hashlib.sha256(
+                f"{proposal_slug}:{action}".encode("utf-8")
+            ).hexdigest()[:24]
+            event = ProposalDecisionEvent.from_value(
+                {
+                    "event_id": event_id,
+                    "event_type": "proposal_decision",
+                    "occurred_at": now.isoformat(),
+                    "actor": TONY_PROFILE_SLUG,
+                    "source": "mission_control",
+                    "decision": action,
+                    "decision_note": decision_note.strip(),
+                    "previous_status": "proposed",
+                    "resulting_status": target_status,
+                    "proposal_slug": proposal_slug,
+                }
+            )
+            existing_events = changed.get("proposal_decision_events") or []
+            if not isinstance(existing_events, list):
+                raise GBrainProtocolError(
+                    "proposal decision event history is not a list"
+                )
             changed["proposal_decision_note"] = decision_note.strip()
             changed["proposal_decided_at"] = now.isoformat()
             changed["proposal_decision"] = action
+            changed["proposal_decision_events"] = [
+                *existing_events,
+                event.to_dict(),
+            ]
+            changed["status"] = target_status
+            changed["completed_at"] = None
             changed["updated_at"] = now.isoformat()
             self.runner.run(
                 "put_page",
@@ -3517,19 +3610,85 @@ class GBrainAdapter:
                     "content": _render_preserved_task_page(raw_page, changed),
                 },
             )
-            target_status = "planned" if action == "approve" else "cancelled"
             try:
-                status_receipt = self.set_task_status(proposal_slug, target_status, now)
-                stored = status_receipt.task
+                stored_page = self.runner.run("get_page", {"slug": proposal_slug})
+                stored_links = self.runner.run("get_links", {"slug": proposal_slug})
+                if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+                    raise GBrainProtocolError(
+                        "proposal decision readback was not structured"
+                    )
+                stored = Task.from_page(stored_page, edges=stored_links)
+                if (
+                    stored.status != target_status
+                    or stored.proposal_decision != action
+                    or stored.proposal_decided_at != now
+                    or stored.proposal_decision_note != decision_note.strip()
+                    or stored.proposal_decision_events[-1] != event
+                    or stored.lifecycle_root != task.lifecycle_root
+                ):
+                    raise GBrainProtocolError(
+                        "proposal decision page readback did not match the request"
+                    )
+                for expected in raw_links:
+                    if not isinstance(expected, Mapping):
+                        continue
+                    if not any(
+                        isinstance(actual, Mapping)
+                        and actual.get("from_slug") == expected.get("from_slug")
+                        and actual.get("to_slug") == expected.get("to_slug")
+                        and actual.get("link_type") == expected.get("link_type")
+                        for actual in stored_links
+                    ):
+                        raise GBrainProtocolError(
+                            "proposal decision lost an unrelated relationship"
+                        )
             except (DomainValidationError, GBrainError) as exc:
+                rollback_verified = False
+                try:
+                    self.runner.run(
+                        "put_page",
+                        {
+                            "slug": proposal_slug,
+                            "content": _render_preserved_task_page(
+                                raw_page, deepcopy(dict(frontmatter))
+                            ),
+                        },
+                    )
+                    rollback_page = self.runner.run(
+                        "get_page", {"slug": proposal_slug}
+                    )
+                    rollback_links = self.runner.run(
+                        "get_links", {"slug": proposal_slug}
+                    )
+                    rollback_verified = (
+                        isinstance(rollback_page, Mapping)
+                        and isinstance(rollback_links, list)
+                        and Task.from_page(
+                            rollback_page, edges=rollback_links
+                        ).status == "proposed"
+                    )
+                except (DomainValidationError, GBrainError):
+                    rollback_verified = False
                 raise PartialMutationError(
                     proposal_slug,
-                    "Proposal decision was not fully verified; inspect this same task before retrying. " + str(exc),
+                    "Proposal decision was not fully verified. "
+                    + ("Rollback verified. " if rollback_verified else "Rollback was not verified. ")
+                    + "Inspect this same task before retrying. "
+                    + str(exc),
                 ) from exc
             return ProposalMutationReceipt(
-                proposal_slug=proposal_slug, status=stored.status,
-                proposal=replace(proposal, status=stored.status, updated_at=stored.updated_at or now,
-                                 reviewed_at=now, decision_note=decision_note.strip()),
+                proposal_slug=proposal_slug, status=review_status,
+                proposal=replace(
+                    proposal,
+                    status=review_status,
+                    updated_at=stored.updated_at or now,
+                    reviewed_at=now,
+                    decision_note=decision_note.strip(),
+                    decision=action,
+                    decision_at=now,
+                    resulting_status=stored.status,
+                    decision_events=stored.proposal_decision_events,
+                ),
                 created_task=stored, verified=True,
             )
         raise ValueError(

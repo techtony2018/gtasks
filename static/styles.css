@@ -3483,6 +3483,18 @@ kbd {
 
 .proposal-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(62, 113, 76, .16); }
 
+.proposal-card .proposal-status {
+  width: fit-content;
+}
+
+.proposal-decision-history {
+  margin: 12px 0;
+}
+
+.proposal-decision-history h3 {
+  margin: 0;
+}
+
 .proposal-recipient,
 .proposal-status {
   padding: 4px 8px;
@@ -3913,6 +3925,11 @@ a:focus-visible {
   color: var(--muted);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
+}
+
+.next-action-timeline li.is-decision strong {
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .next-action-timeline time,
