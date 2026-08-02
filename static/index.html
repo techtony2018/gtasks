@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.67">
-    <script src="/app.js?v=0.0.67" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.69">
+    <script src="/app.js?v=0.0.69" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -202,11 +202,10 @@
               </div>
               <div class="task-todo-heading-controls">
                 <button class="action-icon-button has-tooltip" id="task-todo-add-toggle" type="button" aria-label="Add a To Do" data-tooltip="Add a To Do" aria-expanded="false" aria-controls="task-todo-add-form"><span aria-hidden="true">+</span></button>
-                <div class="task-todo-filter" id="task-todo-filter" role="group" aria-label="Filter To Dos">
-                  <button type="button" data-todo-filter="all">All</button>
-                  <button type="button" data-todo-filter="not_done">Not Done</button>
-                  <button type="button" data-todo-filter="done">Done</button>
-                </div>
+                <label class="task-todo-completed-toggle" for="task-todo-show-completed">
+                  <input id="task-todo-show-completed" type="checkbox">
+                  <span>Show completed ones</span>
+                </label>
               </div>
             </div>
             <form class="task-todo-add-form is-hidden" id="task-todo-add-form">
@@ -505,32 +504,36 @@
           <div class="agent-current-avatar" id="agent-current-avatar">
             <img class="agent-current-avatar-image is-hidden" id="agent-current-avatar-image" alt="">
             <span class="agent-current-avatar-initials is-hidden" id="agent-current-avatar-initials" aria-hidden="true"></span>
+            <button class="action-icon-button has-tooltip agent-avatar-toggle" id="agent-avatar-toggle" type="button" aria-label="Show avatar replacement controls" data-tooltip="Change avatar" aria-expanded="false" aria-controls="agent-avatar-controls"><span aria-hidden="true">…</span></button>
             <div>
               <strong>Current avatar</strong>
               <span id="agent-current-avatar-filename"></span>
             </div>
           </div>
-          <label for="agent-avatar-file">Choose a replacement image</label>
-          <input id="agent-avatar-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
-          <p>PNG, JPEG, GIF, or WebP up to 5 MB. The image is uploaded only through local Memory Stargraph storage and replaces this avatar only after its durable reference and GBrain node read back.</p>
-          <div class="agent-selected-avatar">
-            <img class="agent-avatar-preview is-hidden" id="agent-avatar-preview" alt="Selected avatar preview">
-            <output class="agent-avatar-filename is-hidden" id="agent-avatar-filename" aria-live="polite"></output>
-          </div>
-          <p class="form-error is-hidden" id="agent-avatar-error" role="alert"></p>
-          <div class="agent-avatar-actions">
-            <p id="agent-avatar-state">Initials remain in use until a verified replacement succeeds.</p>
-            <button class="submit-button" id="agent-avatar-submit" type="submit">Upload Avatar</button>
+          <div id="agent-avatar-controls" class="agent-progressive-controls is-hidden">
+            <label for="agent-avatar-file">Choose a replacement image</label>
+            <input id="agent-avatar-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
+            <p>PNG, JPEG, GIF, or WebP up to 5 MB. The image is uploaded only through local Memory Stargraph storage and replaces this avatar only after its durable reference and GBrain node read back.</p>
+            <div class="agent-selected-avatar">
+              <img class="agent-avatar-preview is-hidden" id="agent-avatar-preview" alt="Selected avatar preview">
+              <output class="agent-avatar-filename is-hidden" id="agent-avatar-filename" aria-live="polite"></output>
+            </div>
+            <p class="form-error is-hidden" id="agent-avatar-error" role="alert"></p>
+            <div class="agent-avatar-actions">
+              <p id="agent-avatar-state">Initials remain in use until a verified replacement succeeds.</p>
+              <button class="submit-button" id="agent-avatar-submit" type="submit">Upload Avatar</button>
+            </div>
           </div>
         </section>
         <section class="agent-goal-editor" aria-labelledby="agent-goal-editor-heading">
           <h3 id="agent-goal-editor-heading">Default goals</h3>
-          <p>These assignments use the same canonical GBrain relationship shown in Goal details.</p>
           <div id="agent-profile-goals"></div>
-          <label for="agent-goal-select">Add a goal</label>
-          <div class="inline-actions">
-            <select id="agent-goal-select"></select>
-            <button class="secondary-button" id="agent-goal-add" type="button">Assign goal</button>
+          <div id="agent-goal-controls" class="agent-progressive-controls is-hidden">
+            <label for="agent-goal-select">Add a goal</label>
+            <div class="inline-actions">
+              <select id="agent-goal-select"></select>
+              <button class="secondary-button" id="agent-goal-add" type="button">Assign goal</button>
+            </div>
           </div>
           <p class="form-error is-hidden" id="agent-goal-error" role="alert"></p>
         </section>

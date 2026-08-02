@@ -92,7 +92,7 @@ const state = {
   selectedSlug: null,
   selectedKind: null,
   detailReturnFocus: null,
-  todoFilter: "all",
+  showCompletedTodos: false,
   todoAddOpen: false,
   todoReturnFocus: null,
   todoLoadingTask: null,
@@ -108,6 +108,12 @@ const state = {
   selectedCalendarIds: [],
   availableCalendars: [],
   systemTickets: [],
+  completedSystemTickets: [],
+  showCompletedSystemTickets: false,
+  completedSystemTicketsLoading: false,
+  completedSystemTicketsError: "",
+  completedSystemTicketsOffset: 0,
+  completedSystemTicketsHasMore: false,
   systemTicketIssues: [],
   systemTicketsLoading: false,
   systemTicketsError: "",
@@ -163,6 +169,8 @@ const state = {
   proposalAgentFilter: "all",
   proposalAction: null,
   profileAgentSlug: null,
+  agentAvatarControlsOpen: false,
+  agentGoalControlsOpen: false,
   avatarPreviewUrl: null,
 };
 
@@ -420,6 +428,9 @@ const elements = {
   agentProfileSummary: document.querySelector("#agent-profile-summary"),
   agentProfileClose: document.querySelector("#agent-profile-close"),
   agentProfileGoals: document.querySelector("#agent-profile-goals"),
+  agentAvatarToggle: document.querySelector("#agent-avatar-toggle"),
+  agentAvatarControls: document.querySelector("#agent-avatar-controls"),
+  agentGoalControls: document.querySelector("#agent-goal-controls"),
   agentGoalSelect: document.querySelector("#agent-goal-select"),
   agentGoalAdd: document.querySelector("#agent-goal-add"),
   agentGoalError: document.querySelector("#agent-goal-error"),
@@ -516,7 +527,7 @@ const elements = {
   taskHandoffAnswer: document.querySelector("#task-handoff-answer"),
   taskHandoffSubmit: document.querySelector("#task-handoff-submit"),
   taskHandoffError: document.querySelector("#task-handoff-error"),
-  taskTodoFilter: document.querySelector("#task-todo-filter"),
+  taskTodoShowCompleted: document.querySelector("#task-todo-show-completed"),
   taskTodoAddToggle: document.querySelector("#task-todo-add-toggle"),
   taskTodoAddForm: document.querySelector("#task-todo-add-form"),
   taskTodoText: document.querySelector("#task-todo-text"),
@@ -1124,7 +1135,9 @@ function navCounts() {
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
     completed: state.snapshot.views.completed.length,
-    "system-tickets": state.systemTickets.length,
+    "system-tickets": state.systemTickets.length + (
+      state.showCompletedSystemTickets ? state.completedSystemTickets.length : 0
+    ),
   };
 }
 
@@ -1984,8 +1997,51 @@ function renderBoard() {
   return wrapper;
 }
 
+function setAgentAvatarControlsOpen(open, { focus = true } = {}) {
+  state.agentAvatarControlsOpen = Boolean(open);
+  elements.agentAvatarControls.classList.toggle(
+    "is-hidden",
+    !state.agentAvatarControlsOpen,
+  );
+  elements.agentAvatarToggle.setAttribute(
+    "aria-expanded",
+    state.agentAvatarControlsOpen ? "true" : "false",
+  );
+  const label = state.agentAvatarControlsOpen
+    ? "Hide avatar replacement controls"
+    : "Show avatar replacement controls";
+  elements.agentAvatarToggle.setAttribute("aria-label", label);
+  setHudTooltip(elements.agentAvatarToggle, label);
+  if (!state.agentAvatarControlsOpen) clearAgentAvatarPreview();
+  if (!focus) return;
+  window.setTimeout(() => {
+    if (state.agentAvatarControlsOpen) elements.agentAvatarFile.focus();
+    else elements.agentAvatarToggle.focus({ preventScroll: true });
+  }, 0);
+}
+
+function setAgentGoalControlsOpen(open, { focus = true } = {}) {
+  state.agentGoalControlsOpen = Boolean(open);
+  elements.agentGoalControls.classList.toggle(
+    "is-hidden",
+    !state.agentGoalControlsOpen,
+  );
+  const toggle = document.querySelector("#agent-goal-toggle");
+  toggle?.setAttribute(
+    "aria-expanded",
+    state.agentGoalControlsOpen ? "true" : "false",
+  );
+  if (!focus) return;
+  window.setTimeout(() => {
+    if (state.agentGoalControlsOpen) elements.agentGoalSelect.focus();
+    else toggle?.focus({ preventScroll: true });
+  }, 0);
+}
+
 function openAgentProfile(agent) {
   state.profileAgentSlug = agent.slug;
+  setAgentAvatarControlsOpen(false, { focus: false });
+  setAgentGoalControlsOpen(false, { focus: false });
   elements.agentProfileHeading.textContent = agent.name;
   renderAgentProfileSummary(agent);
   elements.agentAvatarForm.reset();
@@ -2143,8 +2199,8 @@ function renderAgentProfileGoals(agent) {
   current.forEach((goal) => {
     const row = node("div", "agent-profile-goal-row");
     row.append(node("span", "", goal.title));
-    const remove = node("button", "row-action-button", "Unassign");
-    remove.type = "button";
+    const remove = actionIcon("-", `Unassign ${goal.title}`);
+    remove.classList.add("agent-goal-minus");
     remove.addEventListener("click", () => {
       if (window.confirm(`Remove ${agent.name} as the default agent for “${goal.title}”? The goal and its tasks will not change.`)) {
         saveAgentGoalAssignment(goal.slug, "remove");
@@ -2153,7 +2209,20 @@ function renderAgentProfileGoals(agent) {
     row.append(remove);
     list.append(row);
   });
+  const add = actionIcon("+", "Add a goal");
+  add.id = "agent-goal-toggle";
+  add.classList.add("agent-goal-plus");
+  add.setAttribute("aria-controls", "agent-goal-controls");
+  add.setAttribute("aria-expanded", state.agentGoalControlsOpen ? "true" : "false");
+  add.addEventListener("click", () => {
+    setAgentGoalControlsOpen(!state.agentGoalControlsOpen);
+  });
+  list.append(add);
   elements.agentProfileGoals.replaceChildren(list);
+  elements.agentGoalControls.classList.toggle(
+    "is-hidden",
+    !state.agentGoalControlsOpen,
+  );
   elements.agentGoalSelect.replaceChildren();
   const placeholder = node("option", "", "Choose an eligible goal");
   placeholder.value = "";
@@ -3766,8 +3835,27 @@ function renderSystemTicketsView() {
   const heading = node("div", "projects-view-heading");
   const copy = node("div");
   copy.append(node("h2", "", "Mission Control System Tickets"), node("p", "", "Separate canonical change requests. Nightly work processes every Planned ticket; safe batching can sequence overlaps, and each ticket receives an execution or blocking outcome. Implementation and independent QA receipts remain with the ticket."));
+  const controls = node("div", "system-ticket-view-controls");
+  const completedLabel = node("label", "system-ticket-completed-toggle");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = state.showCompletedSystemTickets;
+  checkbox.setAttribute("aria-label", "Show Completed Tickets");
+  checkbox.addEventListener("change", () => {
+    state.showCompletedSystemTickets = checkbox.checked;
+    state.completedSystemTickets = [];
+    state.completedSystemTicketsOffset = 0;
+    state.completedSystemTicketsHasMore = false;
+    state.completedSystemTicketsError = "";
+    render();
+    if (state.showCompletedSystemTickets) {
+      void loadCompletedSystemTickets({ reset: true });
+    }
+  });
+  completedLabel.append(checkbox, node("span", "", "Show Completed Tickets"));
   const create = actionIcon("+", "New Ticket", { primary: true }); create.addEventListener("click", openSystemTicketDialog);
-  heading.append(copy, create); section.append(heading);
+  controls.append(completedLabel, create);
+  heading.append(copy, controls); section.append(heading);
   if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }
   if (state.systemTicketsError) { section.append(node("div", "section-empty", state.systemTicketsError)); return section; }
   if (state.systemTicketIssues.length) {
@@ -3788,9 +3876,14 @@ function renderSystemTicketsView() {
     });
     issues.append(issueList); section.append(issues);
   }
-  if (!state.systemTickets.length) { section.append(node("div", "section-empty", state.systemTicketIssues.length ? "No valid System Tickets are ready to display until the ticket data above is repaired." : "No System Tickets yet. Create a request when a change should be collected for nightly work.")); return section; }
+  const visibleTickets = state.showCompletedSystemTickets
+    ? [...state.systemTickets, ...state.completedSystemTickets]
+    : state.systemTickets;
+  if (!visibleTickets.length && !state.completedSystemTicketsLoading) {
+    section.append(node("div", "section-empty", state.systemTicketIssues.length ? "No valid System Tickets are ready to display until the ticket data above is repaired." : state.showCompletedSystemTickets ? "No completed System Tickets yet." : "No open System Tickets. Enable Show Completed Tickets to read completed work."));
+  }
   const list = node("div", "task-list");
-  state.systemTickets.forEach((ticket) => {
+  visibleTickets.forEach((ticket) => {
     const card = node("button", "system-ticket-card");
     card.type = "button";
     card.setAttribute("aria-label", `Open System Ticket ${ticket.title}`);
@@ -3803,7 +3896,24 @@ function renderSystemTicketsView() {
     card.addEventListener("click", () => selectSystemTicket(ticket.slug));
     list.append(card);
   });
-  section.append(list); return section;
+  if (list.children.length) section.append(list);
+  if (state.completedSystemTicketsLoading) {
+    section.append(node("div", "section-empty", "Reading five completed System Tickets…"));
+  }
+  if (state.completedSystemTicketsError) {
+    section.append(node("div", "section-empty", state.completedSystemTicketsError));
+  }
+  if (
+    state.showCompletedSystemTickets &&
+    state.completedSystemTicketsHasMore &&
+    !state.completedSystemTicketsLoading
+  ) {
+    const more = node("button", "secondary-button system-ticket-show-more", "Show 5 More");
+    more.type = "button";
+    more.addEventListener("click", () => void loadCompletedSystemTickets());
+    section.append(more);
+  }
+  return section;
 }
 
 function openSystemTicketDialog() {
@@ -3828,8 +3938,14 @@ function renderSystemTicketList(container, entries, emptyCopy) {
   entries.forEach((entry) => container.append(node("li", "", entry)));
 }
 
+function findSystemTicket(ticketSlug) {
+  return [...state.systemTickets, ...state.completedSystemTickets].find(
+    (item) => item.slug === ticketSlug,
+  );
+}
+
 function selectSystemTicket(ticketSlug) {
-  const ticket = state.systemTickets.find((item) => item.slug === ticketSlug);
+  const ticket = findSystemTicket(ticketSlug);
   if (!ticket) return;
   state.selectedSlug = ticket.slug;
   state.selectedKind = "system-ticket";
@@ -3864,7 +3980,7 @@ function selectSystemTicket(ticketSlug) {
 }
 
 function openEditSystemTicket() {
-  const ticket = state.systemTickets.find((item) => item.slug === state.selectedSlug);
+  const ticket = findSystemTicket(state.selectedSlug);
   if (state.selectedKind !== "system-ticket" || !ticket) return;
   state.systemTicketEditorSlug = ticket.slug;
   elements.systemTicketError.classList.add("is-hidden");
@@ -3893,9 +4009,45 @@ function loadSystemTickets({ force = false } = {}) {
 
 async function performSystemTicketLoad() {
   state.systemTicketsLoading = true;
-  try { const response = await fetch("/api/system-tickets", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : []; state.systemTicketsError = ""; }
+  try { const response = await fetch("/api/system-tickets?include_completed=0", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : []; state.systemTicketsError = ""; }
   catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
   finally { state.systemTicketsLoading = false; if (state.activeView === "system-tickets") render(); }
+}
+
+async function loadCompletedSystemTickets({ reset = false } = {}) {
+  if (state.completedSystemTicketsLoading || !state.showCompletedSystemTickets) return;
+  if (reset) {
+    state.completedSystemTickets = [];
+    state.completedSystemTicketsOffset = 0;
+    state.completedSystemTicketsHasMore = false;
+  }
+  state.completedSystemTicketsLoading = true;
+  state.completedSystemTicketsError = "";
+  if (state.activeView === "system-tickets") render();
+  const offset = state.completedSystemTicketsOffset;
+  try {
+    const response = await fetch(
+      `/api/system-tickets?completed_only=1&offset=${offset}&limit=5`,
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Completed System Tickets could not be read.");
+    }
+    const page = Array.isArray(payload.tickets) ? payload.tickets : [];
+    const bySlug = new Map(
+      [...state.completedSystemTickets, ...page].map((ticket) => [ticket.slug, ticket]),
+    );
+    state.completedSystemTickets = [...bySlug.values()];
+    state.completedSystemTicketsOffset = offset + page.length;
+    state.completedSystemTicketsHasMore = Boolean(payload.pagination?.has_more);
+  } catch (error) {
+    state.completedSystemTicketsError =
+      error.message || "Completed System Tickets could not be read.";
+  } finally {
+    state.completedSystemTicketsLoading = false;
+    if (state.activeView === "system-tickets") render();
+  }
 }
 
 async function submitSystemTicket(event) {
@@ -3917,6 +4069,9 @@ async function submitSystemTicket(event) {
     elements.systemTicketDialog.close();
     state.systemTicketEditorSlug = null;
     await loadSystemTickets({ force: true });
+    if (state.showCompletedSystemTickets) {
+      await loadCompletedSystemTickets({ reset: true });
+    }
     state.activeView="system-tickets";
     selectSystemTicket(savedSlug);
     showToast(editing ? "System Ticket updated and verified in GBrain." : "System Ticket created and verified in GBrain.");
@@ -4133,11 +4288,11 @@ function renderTaskHandoff(task) {
 function renderTaskTodos(task) {
   renderTaskHandoff(task);
   const todos = Array.isArray(task.todos) ? task.todos : [];
-  const filtered = state.todoFilter === "all"
+  const filtered = state.showCompletedTodos
     ? todos
-    : todos.filter((todo) => todo.status === state.todoFilter);
+    : todos.filter((todo) => todo.status === "not_done");
   elements.taskTodoList.replaceChildren(...filtered.map(todoCard));
-  elements.taskTodoEmpty.textContent = todos.length ? "No To Dos in this section." : "No To Do yet";
+  elements.taskTodoEmpty.textContent = todos.length ? "No open To Dos." : "No To Do yet";
   elements.taskTodoEmpty.classList.toggle("is-hidden", filtered.length > 0);
   elements.taskTodoAddForm.classList.toggle("is-hidden", !state.todoAddOpen);
   elements.taskTodoAddToggle.setAttribute(
@@ -4148,11 +4303,7 @@ function renderTaskTodos(task) {
     "is-hidden",
     state.todoLoadingTask !== task.slug,
   );
-  Array.from(elements.taskTodoFilter.querySelectorAll("button")).forEach((button) => {
-    const selected = button.dataset.todoFilter === state.todoFilter;
-    button.classList.toggle("is-active", selected);
-    button.setAttribute("aria-pressed", selected ? "true" : "false");
-  });
+  elements.taskTodoShowCompleted.checked = state.showCompletedTodos;
 }
 
 function todoErrorMessage(error) {
@@ -4180,9 +4331,11 @@ function restoreTodoFocus() {
     const candidate = Array.from(
       elements.taskTodoList.querySelectorAll(".task-todo-card"),
     ).find((candidate) => candidate.dataset.todoSlug === returnFocus.slug);
-    const target = returnFocus.control === "summary"
-      ? candidate?.querySelector("summary")
-      : candidate || elements.taskTodoFilter.querySelector("button.is-active");
+    const target = (
+      returnFocus.control === "summary"
+        ? candidate?.querySelector("summary")
+        : candidate
+    ) || elements.taskTodoShowCompleted;
     target?.focus({ preventScroll: true });
   });
 }
@@ -4329,7 +4482,6 @@ async function createTaskTodo(event) {
         idempotency_key: crypto.randomUUID(),
       },
     );
-    state.todoFilter = "all";
     setTodoAddOpen(false, { focus: false });
     applyVerifiedTodoMutation(taskSlug, todo, { slug: todo.slug, control: "summary" });
     showToast("To Do created and verified in GBrain.");
@@ -4398,7 +4550,6 @@ async function changeTodoStatus(todo, button) {
   elements.taskTodoError.classList.add("is-hidden");
   button.disabled = true;
   try {
-    state.todoFilter = "all";
     const updated = await todoMutation(
       `/api/todos/${encodeURIComponent(todo.slug)}/status`,
       "PATCH",
@@ -4493,6 +4644,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
+  state.showCompletedTodos = false;
   setTodoAddOpen(false, { focus: false });
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "Task details");
@@ -5412,10 +5564,8 @@ elements.taskTodoAddCancel.addEventListener("click", () => {
 });
 elements.taskTodoAddForm.addEventListener("submit", createTaskTodo);
 elements.taskHandoffAnswerForm.addEventListener("submit", answerAndHandBack);
-elements.taskTodoFilter.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-todo-filter]");
-  if (!button) return;
-  state.todoFilter = button.dataset.todoFilter;
+elements.taskTodoShowCompleted.addEventListener("change", () => {
+  state.showCompletedTodos = elements.taskTodoShowCompleted.checked;
   const task = findTaskBySlug(state.selectedSlug);
   if (task) renderTaskTodos(task);
 });
@@ -5423,7 +5573,13 @@ elements.taskEditorSaveApprove.addEventListener("click", saveAndApproveProposedT
 elements.agentProfileClose.addEventListener("click", () => {
   elements.agentProfileDialog.close();
 });
-elements.agentProfileDialog.addEventListener("close", clearAgentAvatarPreview);
+elements.agentProfileDialog.addEventListener("close", () => {
+  setAgentAvatarControlsOpen(false, { focus: false });
+  setAgentGoalControlsOpen(false, { focus: false });
+});
+elements.agentAvatarToggle.addEventListener("click", () => {
+  setAgentAvatarControlsOpen(!state.agentAvatarControlsOpen);
+});
 elements.agentAvatarFile.addEventListener("change", previewAgentAvatar);
 elements.agentAvatarForm.addEventListener("submit", submitAgentAvatar);
 elements.agentGoalAdd.addEventListener("click", () => {
@@ -5611,7 +5767,16 @@ elements.aboutDialog.addEventListener("close", () => {
   state.aboutReturnFocus = null;
 });
 elements.logsButton.addEventListener("click", openLogsDialog);
-elements.systemTicketsButton.addEventListener("click", () => { state.activeView = "system-tickets"; render(); loadSystemTickets(); });
+elements.systemTicketsButton.addEventListener("click", () => {
+  state.activeView = "system-tickets";
+  state.showCompletedSystemTickets = false;
+  state.completedSystemTickets = [];
+  state.completedSystemTicketsOffset = 0;
+  state.completedSystemTicketsHasMore = false;
+  state.completedSystemTicketsError = "";
+  render();
+  loadSystemTickets();
+});
 elements.systemTicketClose.addEventListener("click", () => {
   state.systemTicketEditorSlug = null;
   elements.systemTicketDialog.close();

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.68",
+  "current_version": "V0.0.69",
   "releases": [
     {
       "version": "V0.0.1",
@@ -408,6 +408,12 @@
       "date": "2026-08-02",
       "title": "Show blocked Agent work",
       "summary": "Today and Blocked now load and display canonical blocked Agent tasks alongside Tony tasks, with deduplicated counts and refresh behavior."
+    },
+    {
+      "version": "V0.0.69",
+      "date": "2026-08-02",
+      "title": "Focused controls and compact history",
+      "summary": "Makes Agent profile metadata readable and keeps avatar and goal-edit controls behind explicit compact actions, replaces To Do status buttons with an unchecked Show completed ones checkbox, and keeps completed System Tickets out of the initial read until requested in five-ticket pages."
     }
   ]
 }

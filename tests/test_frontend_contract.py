@@ -282,7 +282,8 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="task-todo-list"', html)
-        self.assertIn('id="task-todo-filter"', html)
+        self.assertIn('id="task-todo-show-completed"', html)
+        self.assertNotIn('id="task-todo-filter"', html)
         self.assertIn('id="task-todo-add-form"', html)
         self.assertIn('id="task-todo-text"', html)
         self.assertIn('id="task-todo-detail"', html)
@@ -534,8 +535,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.67"', html)
-        self.assertIn('src="/app.js?v=0.0.67"', html)
+        self.assertIn('href="/styles.css?v=0.0.69"', html)
+        self.assertIn('src="/app.js?v=0.0.69"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -582,9 +583,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("todo.events", javascript)
         self.assertIn('"Not Done"', javascript)
         self.assertIn('"Done"', javascript)
-        self.assertIn(">All<", html)
-        self.assertIn(">Not Done<", html)
-        self.assertIn(">Done<", html)
+        self.assertIn('id="task-todo-show-completed" type="checkbox"', html)
+        self.assertIn("Show completed ones", html)
+        self.assertNotIn('data-todo-filter="all"', html)
+        self.assertNotIn('data-todo-filter="not_done"', html)
+        self.assertNotIn('data-todo-filter="done"', html)
+        self.assertIn("showCompletedTodos: false", javascript)
+        self.assertIn('todo.status === "not_done"', javascript)
+        self.assertIn("elements.taskTodoShowCompleted.checked", javascript)
         self.assertIn(".task-todo-list", css)
         self.assertIn(".task-todo-card", css)
 
@@ -654,7 +660,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("elements.taskTodoAddToggle.setAttribute", javascript)
         self.assertIn("elements.taskTodoText.focus", javascript)
         self.assertIn("elements.taskTodoAddToggle.focus", javascript)
-        self.assertIn('todos.length ? "No To Dos in this section." : "No To Do yet"', javascript)
+        self.assertIn('todos.length ? "No open To Dos." : "No To Do yet"', javascript)
 
     def test_projects_open_edit_and_restore_focus_through_the_detail_sidebar(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -992,7 +998,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="view-count"', html)
         self.assertIn("function inContextCountLabel", javascript)
         self.assertIn("elements.viewCount.textContent", javascript)
-        self.assertIn('"system-tickets": state.systemTickets.length', javascript)
+        self.assertIn('"system-tickets": state.systemTickets.length + (', javascript)
 
     def test_first_view_cards_keep_long_detail_in_the_detail_panel(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1019,7 +1025,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="system-ticket-criteria"', html)
         self.assertIn('id="system-ticket-priority"', html)
         self.assertIn("function renderSystemTicketsView()", javascript)
-        self.assertIn('fetch("/api/system-tickets"', javascript)
+        self.assertIn('fetch("/api/system-tickets?include_completed=0"', javascript)
         self.assertIn("Nightly work processes every Planned ticket", javascript)
         self.assertIn("state.systemTicketIssues", javascript)
         self.assertIn("state.systemTicketsLoadPromise", javascript)
@@ -1043,6 +1049,29 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('method: state.systemTicketEditorSlug ? "PATCH" : "POST"', javascript)
         self.assertIn("implementation_receipts", javascript)
         self.assertIn("qa_receipts", javascript)
+
+    def test_completed_system_tickets_are_lazy_and_revealed_five_at_a_time(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        tickets = javascript[
+            javascript.index("function renderSystemTicketsView")
+            : javascript.index("function openSystemTicketDialog")
+        ]
+        loader = javascript[
+            javascript.index("function loadSystemTickets")
+            : javascript.index("async function submitSystemTicket")
+        ]
+        self.assertIn('"Show Completed Tickets"', tickets)
+        self.assertIn('checkbox.type = "checkbox"', tickets)
+        self.assertIn('"Show 5 More"', tickets)
+        self.assertIn("state.completedSystemTickets", tickets)
+        self.assertIn('fetch("/api/system-tickets?include_completed=0"', loader)
+        self.assertIn("completed_only=1", loader)
+        self.assertIn("limit=5", loader)
+        self.assertLess(
+            loader.index('fetch("/api/system-tickets?include_completed=0"'),
+            loader.index("completed_only=1"),
+        )
 
     def test_tooltips_use_one_fixed_hud_without_native_title_sources(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -1141,6 +1170,40 @@ class FrontendContractTests(unittest.TestCase):
             '<div class="dialog-footer"><p id="agent-avatar-state">',
             html,
         )
+
+    def test_agent_profile_progressive_controls_and_readable_metadata(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="agent-avatar-toggle"', html)
+        self.assertIn('aria-controls="agent-avatar-controls"', html)
+        self.assertIn(
+            'id="agent-avatar-controls" class="agent-progressive-controls is-hidden"',
+            html,
+        )
+        self.assertIn(
+            'id="agent-goal-controls" class="agent-progressive-controls is-hidden"',
+            html,
+        )
+        self.assertNotIn(
+            "These assignments use the same canonical GBrain relationship shown in Goal details.",
+            html,
+        )
+        self.assertIn("agentAvatarControlsOpen: false", javascript)
+        self.assertIn("agentGoalControlsOpen: false", javascript)
+        self.assertIn("function setAgentAvatarControlsOpen", javascript)
+        self.assertIn("function setAgentGoalControlsOpen", javascript)
+        self.assertIn('actionIcon("-", `Unassign ${goal.title}`)', javascript)
+        self.assertIn('actionIcon("+", "Add a goal")', javascript)
+        self.assertNotIn('node("button", "row-action-button", "Unassign")', javascript)
+        code_styles = css[
+            css.index(".agent-profile-summary code")
+            : css.index(".agent-current-avatar")
+        ]
+        self.assertIn("color: #07111f", code_styles)
+        goal_styles = css[css.index(".agent-profile-goal-row") :]
+        self.assertIn("min-width: 44px", goal_styles)
 
     def test_agent_profile_renders_markdown_as_safe_profile_content(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

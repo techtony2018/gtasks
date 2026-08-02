@@ -831,7 +831,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.68")
+        self.assertEqual(payload["version"], "V0.0.69")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -839,11 +839,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.68")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.68")
+        self.assertEqual(payload["current_version"], "V0.0.69")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.69")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.69",
                 "V0.0.68",
                 "V0.0.67",
                 "V0.0.66",
@@ -2427,6 +2428,51 @@ class SystemTicketApiTests(unittest.TestCase):
         self.assertEqual(payload["tickets"][0]["status"], "planned")
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.created_agent_tasks, [])
+
+    def test_completed_tickets_are_excluded_by_default_and_paginated_on_request(self) -> None:
+        active = SystemTicket(
+            slug="tasks/system-tickets/active",
+            title="Active ticket",
+            status="active",
+            verbatim_request="Keep this visible by default.",
+            target_subsystem="mission_control",
+            priority="normal",
+        )
+        completed = tuple(
+            SystemTicket(
+                slug=f"tasks/system-tickets/completed-{index}",
+                title=f"Completed ticket {index}",
+                status="completed",
+                verbatim_request="Reveal this only on request.",
+                target_subsystem="mission_control",
+                priority="normal",
+            )
+            for index in range(7)
+        )
+        harness = ServerHarness(
+            self,
+            FakeAdapter(system_tickets=(active, *completed)),
+        )
+
+        status, default_payload, _ = harness.request(
+            "GET", "/api/system-tickets?include_completed=0"
+        )
+        first_status, first_page, _ = harness.request(
+            "GET", "/api/system-tickets?completed_only=1&offset=0&limit=5"
+        )
+        second_status, second_page, _ = harness.request(
+            "GET", "/api/system-tickets?completed_only=1&offset=5&limit=5"
+        )
+
+        self.assertEqual((status, first_status, second_status), (200, 200, 200))
+        self.assertEqual(
+            [ticket["slug"] for ticket in default_payload["tickets"]],
+            [active.slug],
+        )
+        self.assertEqual(len(first_page["tickets"]), 5)
+        self.assertTrue(first_page["pagination"]["has_more"])
+        self.assertEqual(len(second_page["tickets"]), 2)
+        self.assertFalse(second_page["pagination"]["has_more"])
 
     def test_creates_a_normal_planned_task_with_verified_receipt(self) -> None:
         adapter = FakeAdapter()

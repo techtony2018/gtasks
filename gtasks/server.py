@@ -737,7 +737,40 @@ def _handler_class(
                 return
             if path == "/api/system-tickets":
                 try:
-                    self._json(HTTPStatus.OK, decorate_issues(adapter.list_system_tickets().to_dict()))
+                    query = parse_qs(urlsplit(self.path).query)
+                    completed_only = query.get("completed_only", ["0"])[0] == "1"
+                    include_completed = query.get("include_completed", ["0"])[0] == "1"
+                    offset = int(query.get("offset", ["0"])[0])
+                    limit = int(query.get("limit", ["5"])[0])
+                    if offset < 0 or limit < 1 or limit > 5:
+                        raise ValueError
+                    read = adapter.list_system_tickets()
+                    payload = read.to_dict()
+                    tickets = list(read.tickets)
+                    if completed_only:
+                        completed = [ticket for ticket in tickets if ticket.status == "completed"]
+                        page = completed[offset : offset + limit]
+                        payload["tickets"] = [ticket.to_dict() for ticket in page]
+                        payload["pagination"] = {
+                            "offset": offset,
+                            "limit": limit,
+                            "has_more": offset + len(page) < len(completed),
+                        }
+                    elif not include_completed:
+                        payload["tickets"] = [
+                            ticket.to_dict()
+                            for ticket in tickets
+                            if ticket.status != "completed"
+                        ]
+                    self._json(HTTPStatus.OK, decorate_issues(payload))
+                except ValueError:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "System Ticket pagination requires offset >= 0 and limit from 1 to 5.",
+                            "code": "invalid_system_ticket_page",
+                        },
+                    )
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                 return
