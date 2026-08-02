@@ -352,7 +352,14 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
                         "# Wellbeing plan",
                     ]
                 ),
-                "frontmatter": {"source_kind": "fixture"},
+                "frontmatter": {
+                    "status": "active",
+                    "summary": "Preserve this project body.",
+                    "links": [
+                        {"to": PROJECTS_ROOT, "type": "member_of"}
+                    ],
+                    "source_kind": "fixture",
+                },
                 "deleted_at": None,
             },
             task_slug: {
@@ -387,7 +394,29 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
                         "Keep original task detail.",
                     ]
                 ),
-                "frontmatter": {"source_kind": "fixture"},
+                "frontmatter": {
+                    "status": "planned",
+                    "summary": "Weekly walk",
+                    "detail": "Keep original task detail.",
+                    "priority": "normal",
+                    "next_action": "Put shoes by the door",
+                    "due_day": "2026-08-02",
+                    "scheduled_day": None,
+                    "inbox": False,
+                    "next_action_history": [
+                        {
+                            "action": "Old step",
+                            "completed_at": "2026-08-01T08:00:00-07:00",
+                        }
+                    ],
+                    "progress_metric": None,
+                    "event_progress": None,
+                    "links": [
+                        {"to": "collections/toddys-tasks", "type": "member_of"},
+                        {"to": "agents/toddy", "type": "assigned_to"},
+                    ],
+                    "source_kind": "fixture",
+                },
                 "deleted_at": None,
             },
             excluded_slug: {
@@ -434,6 +463,85 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
             {"put_page", "add_link", "remove_link"}
             & {tool for tool, _params in runner.calls}
         )
+
+    def test_matches_real_gbrain_normalized_task_and_project_readback(self) -> None:
+        runner, mapping = self._fixture()
+        adapter = GBrainAdapter(runner)
+
+        for old_slug in (
+            "projects/wellbeing-plan",
+            "collections/toddys-tasks/weekly-walk",
+        ):
+            source = runner.pages[old_slug]
+            # Model the live source contract where GBrain exposes structured
+            # frontmatter separately and only the Markdown body as compiled_truth.
+            compiled = source["compiled_truth"]
+            closing = compiled.find("\n---\n", 4)
+            source["compiled_truth"] = compiled[closing + len("\n---\n\n") :]
+            source["frontmatter"] = {
+                "status": "active" if old_slug.startswith("projects/") else "planned",
+                "summary": source["title"],
+                "links": [
+                    {
+                        "to": PROJECTS_ROOT
+                        if old_slug.startswith("projects/")
+                        else "collections/toddys-tasks",
+                        "type": "member_of",
+                    }
+                ],
+            }
+            expected = adapter._migration_page_content(source, mapping)
+            parsed = adapter._parse_migration_rendered_content(expected)
+            self.assertIsNotNone(parsed)
+            expected_frontmatter, expected_body = parsed  # type: ignore[misc]
+            normalized = {
+                "slug": mapping[old_slug],
+                "type": expected_frontmatter.pop("type"),
+                "title": expected_frontmatter.pop("title"),
+                "frontmatter": expected_frontmatter,
+                "compiled_truth": expected_body,
+                "deleted_at": None,
+            }
+
+            self.assertTrue(adapter._migration_destination_matches(normalized, expected))
+
+    def test_normalized_destination_mismatch_fails_closed(self) -> None:
+        runner, mapping = self._fixture()
+        adapter = GBrainAdapter(runner)
+        source = runner.pages["collections/toddys-tasks/weekly-walk"]
+        compiled = source["compiled_truth"]
+        closing = compiled.find("\n---\n", 4)
+        source["compiled_truth"] = compiled[closing + len("\n---\n\n") :]
+        source["frontmatter"] = {
+            "status": "planned",
+            "summary": "Weekly walk",
+            "links": [
+                {"to": "collections/toddys-tasks", "type": "member_of"}
+            ],
+        }
+        expected = adapter._migration_page_content(source, mapping)
+        parsed = adapter._parse_migration_rendered_content(expected)
+        self.assertIsNotNone(parsed)
+        expected_frontmatter, expected_body = parsed  # type: ignore[misc]
+        destination = {
+            "slug": mapping["collections/toddys-tasks/weekly-walk"],
+            "type": expected_frontmatter.pop("type"),
+            "title": expected_frontmatter.pop("title"),
+            "frontmatter": expected_frontmatter,
+            "compiled_truth": expected_body,
+            "deleted_at": None,
+        }
+
+        wrong_nested = deepcopy(destination)
+        wrong_nested["frontmatter"]["links"][0]["to"] = "collections/timmys-tasks"
+        wrong_body = deepcopy(destination)
+        wrong_body["compiled_truth"] += "\nchanged"
+        wrong_title = deepcopy(destination)
+        wrong_title["title"] = "Changed label"
+
+        self.assertFalse(adapter._migration_destination_matches(wrong_nested, expected))
+        self.assertFalse(adapter._migration_destination_matches(wrong_body, expected))
+        self.assertFalse(adapter._migration_destination_matches(wrong_title, expected))
 
     def test_copies_relinks_aliases_and_repairs_goal_membership(self) -> None:
         runner, mapping = self._fixture()
@@ -586,7 +694,7 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
         self.assertTrue(receipt.verified)
         self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
 
-    def test_repairs_only_recognized_body_only_partial_destination(self) -> None:
+    def test_rejects_body_only_partial_destination(self) -> None:
         runner, mapping = self._fixture()
         adapter = GBrainAdapter(runner)
         old_slug = "projects/wellbeing-plan"
@@ -602,21 +710,10 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
             "deleted_at": None,
         }
 
-        with self.assertRaisesRegex(PartialMutationError, "does not exactly match"):
+        with self.assertRaisesRegex(PartialMutationError, "does not semantically match"):
             adapter.migrate_canonical_identities(mapping)
 
-        runner.calls.clear()
-        receipt = adapter.migrate_canonical_identities(
-            mapping,
-            repairable_partial_destinations=True,
-        )
-
-        self.assertTrue(receipt.verified)
-        self.assertIn("put_page", [tool for tool, _params in runner.calls])
-        self.assertEqual(
-            runner.pages[new_slug]["compiled_truth"],
-            adapter._migration_page_content(runner.pages[old_slug], mapping),
-        )
+        self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
 
 
 class CollectionReadTests(unittest.TestCase):

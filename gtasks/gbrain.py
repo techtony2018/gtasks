@@ -1159,7 +1159,8 @@ class GBrainAdapter:
         compiled = page.get("compiled_truth")
         if not isinstance(compiled, str):
             raise GBrainProtocolError("migration source page has no compiled content")
-        if compiled.startswith("---\n"):
+        kind = GBrainAdapter._identity_entity_kind(str(page.get("slug", "")))
+        if kind == "goals" and compiled.startswith("---\n"):
             end = compiled.find("\n---", 4)
             if end < 0:
                 raise GBrainProtocolError("migration source has malformed compiled frontmatter")
@@ -1174,19 +1175,144 @@ class GBrainAdapter:
         frontmatter = page.get("frontmatter")
         if not isinstance(frontmatter, Mapping):
             raise GBrainProtocolError("migration source page has no canonical frontmatter")
+        body = compiled
+        if body.startswith("---\n"):
+            body = GBrainAdapter._migration_body_from_rendered_content(body)
+        return _render_preserved_page(
+            {**page, "compiled_truth": body},
+            GBrainAdapter._migration_rewrite_references(frontmatter, mapping),
+        )
 
-        def rewrite_reference(value: Any) -> Any:
-            if isinstance(value, Mapping):
-                return {key: rewrite_reference(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [rewrite_reference(item) for item in value]
-            if isinstance(value, tuple):
-                return [rewrite_reference(item) for item in value]
-            if isinstance(value, str) and value in mapping:
-                return mapping[value]
-            return value
+    @staticmethod
+    def _migration_rewrite_references(value: Any, mapping: Mapping[str, str]) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: GBrainAdapter._migration_rewrite_references(item, mapping)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                GBrainAdapter._migration_rewrite_references(item, mapping)
+                for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                GBrainAdapter._migration_rewrite_references(item, mapping)
+                for item in value
+            )
+        if isinstance(value, str) and value in mapping:
+            return mapping[value]
+        return value
 
-        return _render_preserved_page(page, rewrite_reference(frontmatter))
+    @staticmethod
+    def _migration_body_from_rendered_content(content: str) -> str:
+        if not content.startswith("---\n"):
+            raise GBrainProtocolError("migration content has no approved frontmatter")
+        boundary = content.find("\n---\n", 4)
+        if boundary < 0:
+            raise GBrainProtocolError("migration content has malformed approved frontmatter")
+        # GBrain exposes only body text in compiled_truth for raw task/project
+        # pages. Remove exactly the structural blank line and the one terminal
+        # formatting newline emitted by _render_preserved_page; preserve every
+        # other body byte, including intentional leading blank lines.
+        remainder = content[boundary + len("\n---\n") :]
+        if not remainder.startswith("\n"):
+            raise GBrainProtocolError("migration content has no structural body gap")
+        body = remainder[1:]
+        return body[:-1] if body.endswith("\n") else body
+
+    @staticmethod
+    def _parse_migration_rendered_content(
+        content: str,
+    ) -> tuple[dict[str, Any], str] | None:
+        """Parse only the flat, JSON-valued frontmatter emitted by this migration.
+
+        Existing canonical Goal Markdown can use a broader YAML shape; those
+        pages are accepted only by the exact-content branch in
+        ``_migration_destination_matches``. This parser intentionally does not
+        become a general YAML reader for arbitrary pre-existing destinations.
+        """
+        if not content.startswith("---\n"):
+            return None
+        closing = content.find("\n---\n", 4)
+        if closing < 0:
+            return None
+        header = content[4:closing]
+        remainder = content[closing + len("\n---\n") :]
+        if not remainder.startswith("\n"):
+            return None
+        body = remainder[1:]
+        # _render_preserved_page emits one formatting newline after the exact
+        # rstripped source body; GBrain exposes only that body in compiled_truth.
+        if body.endswith("\n"):
+            body = body[:-1]
+
+        frontmatter: dict[str, Any] = {}
+        for line in header.splitlines():
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*): (.+)", line)
+            if match is None:
+                return None
+            key, raw_value = match.groups()
+            if key in frontmatter:
+                return None
+            try:
+                frontmatter[key] = json.loads(raw_value)
+            except json.JSONDecodeError:
+                return None
+        if not frontmatter:
+            return None
+        return frontmatter, body
+
+    @classmethod
+    def _migration_destination_matches(
+        cls,
+        destination: Mapping[str, Any],
+        expected_content: str,
+    ) -> bool:
+        """Strictly match exact or documented GBrain-normalized page storage."""
+        compiled = destination.get("compiled_truth")
+        if not isinstance(compiled, str):
+            return False
+        if compiled == expected_content:
+            return True
+
+        parsed = cls._parse_migration_rendered_content(expected_content)
+        if parsed is None:
+            return False
+        expected_frontmatter, expected_body = parsed
+        expected_type = expected_frontmatter.pop("type", None)
+        expected_title = expected_frontmatter.pop("title", None)
+        if not isinstance(expected_type, str) or not isinstance(expected_title, str):
+            return False
+        if destination.get("type") != expected_type or destination.get("title") != expected_title:
+            return False
+        if compiled != expected_body:
+            return False
+
+        stored_frontmatter = destination.get("frontmatter")
+        if not isinstance(stored_frontmatter, Mapping):
+            return False
+        actual_frontmatter = dict(stored_frontmatter)
+        if "type" in actual_frontmatter or "title" in actual_frontmatter:
+            return False
+
+        # GBrain may expose source metadata at the page row instead of inside
+        # frontmatter. Accept that documented placement only when the value is
+        # byte-for-byte/value-for-value identical; all content fields remain an
+        # exact nested mapping comparison.
+        provenance_fields = {
+            "source_kind",
+            "source_uri",
+            "ingested_via",
+            "ingested_at",
+            "source_id",
+        }
+        for key in provenance_fields:
+            if key in expected_frontmatter and key not in actual_frontmatter:
+                if destination.get(key) != expected_frontmatter[key]:
+                    return False
+                expected_frontmatter.pop(key)
+        return actual_frontmatter == expected_frontmatter
 
     @staticmethod
     def _migration_edge_key(edge: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -1251,7 +1377,6 @@ class GBrainAdapter:
         *,
         excluded: tuple[str, ...] = (),
         allow_matching_destinations: bool = False,
-        allow_repairable_partial_destinations: bool = False,
     ) -> dict[str, Any]:
         """Build a mutation-free source/destination and relationship audit."""
         normalized = self._validate_identity_mapping(mapping)
@@ -1313,29 +1438,15 @@ class GBrainAdapter:
             else:
                 if not isinstance(existing, Mapping):
                     raise GBrainProtocolError("migration destination readback was not structured")
-                source_compiled = page.get("compiled_truth")
-                partial_body = (
-                    source_compiled.split("\n---\n", 1)[1]
-                    if isinstance(source_compiled, str)
-                    and source_compiled.startswith("---\n")
-                    and "\n---\n" in source_compiled
-                    else source_compiled
-                )
-                repairable_partial = (
-                    not existing.get("deleted_at")
-                    and existing.get("compiled_truth") == partial_body
-                )
-                if existing.get("deleted_at") or existing.get("compiled_truth") != content:
-                    if allow_repairable_partial_destinations and repairable_partial:
-                        destination_state = "repairable_partial_body_only"
-                    else:
-                        raise ValueError(
-                            f"migration destination does not match the approved plan: {new_slug}"
-                        )
+                destination_matches = self._migration_destination_matches(existing, content)
+                if existing.get("deleted_at") or not destination_matches:
+                    raise ValueError(
+                        f"migration destination does not match the approved plan: {new_slug}"
+                    )
                 elif not allow_matching_destinations:
                     raise ValueError(f"migration destination already exists: {new_slug}")
                 elif destination_state == "missing":
-                    destination_state = "resumable_exact"
+                    destination_state = "resumable_verified"
             entities.append(
                 {
                     "old_slug": old_slug,
@@ -1366,7 +1477,6 @@ class GBrainAdapter:
         mapping: Mapping[str, str],
         *,
         excluded: tuple[str, ...] = (),
-        repairable_partial_destinations: bool = False,
     ) -> IdentityMigrationReceipt:
         """Copy and relink canonical entities to opaque IDs without deleting history.
 
@@ -1416,25 +1526,12 @@ class GBrainAdapter:
             else:
                 if not isinstance(existing, Mapping):
                     raise GBrainProtocolError("migration destination readback was not structured")
-                if existing.get("deleted_at") or existing.get("compiled_truth") != content:
-                    source_compiled = page.get("compiled_truth")
-                    partial_body = (
-                        source_compiled.split("\n---\n", 1)[1]
-                        if isinstance(source_compiled, str)
-                        and source_compiled.startswith("---\n")
-                        and "\n---\n" in source_compiled
-                        else source_compiled
+                destination_matches = self._migration_destination_matches(existing, content)
+                if existing.get("deleted_at") or not destination_matches:
+                    raise PartialMutationError(
+                        old_slug,
+                        "Existing migration destination does not semantically match the approved plan.",
                     )
-                    repairable_partial = (
-                        not existing.get("deleted_at")
-                        and existing.get("compiled_truth") == partial_body
-                    )
-                    if not repairable_partial_destinations or not repairable_partial:
-                        raise PartialMutationError(
-                            old_slug,
-                            "Existing migration destination does not exactly match the approved plan.",
-                        )
-                    destinations_to_write.add(old_slug)
             source_edge_keys_by_slug[old_slug] = {
                 self._migration_edge_key(raw_edge)
                 for raw_edge in [*outgoing, *incoming]
@@ -1460,7 +1557,9 @@ class GBrainAdapter:
                 },
             )
             readback = self.runner.run("get_page", {"slug": normalized[old_slug]})
-            if not isinstance(readback, Mapping) or readback.get("compiled_truth") != destination_content[old_slug]:
+            if not isinstance(readback, Mapping) or not self._migration_destination_matches(
+                readback, destination_content[old_slug]
+            ):
                 raise PartialMutationError(
                     old_slug,
                     "Migrated page content did not read back exactly after write.",
