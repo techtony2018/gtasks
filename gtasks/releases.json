@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.66",
+  "current_version": "V0.0.67",
   "releases": [
     {
       "version": "V0.0.1",
@@ -396,6 +396,12 @@
       "date": "2026-08-01",
       "title": "Focused To Do entry and Project details",
       "summary": "Keeps Task To Dos read-only until an explicit accessible Plus action opens the Add form, and makes every Project card open a focus-managed right sidebar with canonical description, status, relationships, timestamps, identity-preserving Edit, and verified readback."
+    },
+    {
+      "version": "V0.0.67",
+      "date": "2026-08-02",
+      "title": "Verified Agent handoffs and Calendar selection",
+      "summary": "Makes every Agent information request a canonical Blocked task with a precise question and resume action. Answer and Hand Back records Tony's answer, completes the question, returns the same task to its assigned Agent with exact readback, and supports acknowledgement plus bounded follow-up questions without creating a new task. Calendar selection is compact, reports verified save feedback, and correctly reads selected EventKit events through the branded read-only helper."
     }
   ]
 }

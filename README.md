@@ -105,6 +105,11 @@ Mission Control explains this before it asks macOS, then lets Tony choose which
 calendar identifiers are included. It never calls an EventKit write or delete
 API. The selection is stored only in
 `~/Library/Application Support/Mission Control/calendar-preferences.json`.
+The picker keeps its compact dialog open while saving, reads the selected
+identifiers back before reporting success, and leaves an in-context Calendar
+confirmation after the dialog closes. A failed save/readback remains in the
+dialog with an actionable error and does not claim that the event filter
+changed.
 
 The dashboard service invokes the branded `Mission Control Calendar.app`
 helper. Build or refresh that local helper after source deployment:
@@ -168,9 +173,35 @@ preserving the agent collection and exact assignment. Malformed typed members
 become Inbox-only Needs Attention warnings and never hide Tony's tasks.
 
 The Agent Work view is a coordination surface, not another Today list. It
-shows profile-to-goal ownership and reserves the future work states Queued,
-Working, Waiting for Tony, Blocked, Completed, and Failed. It does not imply
+shows profile-to-goal ownership and keeps work in the standard task states
+Planned, Active, Blocked, Completed, and Cancelled. Waiting for Tony is a
+specific Blocked condition, never a separate status. It does not imply
 that unapproved work is permitted to execute.
+
+### Agent question and answer handoff
+
+When an Agent needs information, Mission Control keeps the same canonical task
+and changes its task status to `blocked`. The Agent creates one canonical
+question To Do, adds the typed `blocked_by: people/tony-guan` relationship, and
+records a structured `handoff` projection containing the exact question,
+assigned Agent, resume action, timestamps, and question round. Mission Control
+never uses `waiting` as a task status.
+
+Tony answers with the single **Answer and Hand Back** action. That verified
+operation appends the immutable answer comment, completes the question To Do,
+removes only Tony's matching blocker, and returns the same task to `active`
+with its explicit Agent resume action. If another blocker remains, the task
+stays `blocked`. The assigned Agent acknowledges the handoff before resuming;
+an insufficient answer produces one precise follow-up question on the same
+task and increments the handoff round.
+
+A verified answer is eligible immediately. During the daytime schedule, each
+assigned Agent checks for the oldest unacknowledged handoff before selecting
+other work at its next hourly heartbeat, so review occurs within at most 60
+minutes. Answers outside the 09:00–19:00 America/Los_Angeles schedule are
+reviewed at the next daytime heartbeat unless Tony separately authorizes an
+urgent wake. The heartbeat always continues in the Agent's existing fixed
+Codex task; it never creates a new task for a question or handoff.
 
 ## Agent proposal review
 
@@ -364,9 +395,10 @@ Saving the current goal selection is an idempotent repair action for legacy
 one-way links; deployment never performs a bulk relationship migration.
 
 Changing status is explicit and verified too. The detail editor supports
-`planned`, `active`, `blocked`, `completed`, and `cancelled`. Existing
-`waiting` pages remain readable and display as Blocked, but `waiting` is not
-offered as a new workflow status and no bulk normalization occurs.
+`planned`, `active`, `blocked`, `completed`, and `cancelled`. Legacy
+`waiting` pages remain readable only through compatibility parsing and display
+as Blocked, but Mission Control never writes or offers `waiting` as a task
+status and no bulk normalization occurs.
 Board cards provide the same five-status selector as a keyboard and touch
 alternative to drag and drop. Dropping or selecting the task's current
 canonical status is a silent no-op: it performs no GBrain call, loading state,

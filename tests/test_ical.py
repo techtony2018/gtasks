@@ -29,11 +29,20 @@ class CalendarHelperContractTests(unittest.TestCase):
             Path(command[-1]).write_text('{"status":"authorized","events":[]}')
             return completed
         with patch.object(Path, "is_file", return_value=True), patch("gtasks.ical.subprocess.run", side_effect=complete) as run:
-            reader.read(__import__("datetime").date(2026, 7, 30), __import__("datetime").date(2026, 8, 1), calendar_ids=("home",))
+            result = reader.read(__import__("datetime").date(2026, 7, 30), __import__("datetime").date(2026, 8, 1), calendar_ids=("home",))
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["/usr/bin/open", "-W", str(helper.parents[2]), "--args"])
         self.assertEqual(command[4], "events")
         self.assertEqual(json.loads(command[7]), ["home"])
+        self.assertEqual(command[8], "--output")
+        self.assertEqual(result, {"status": "authorized", "events": []})
+
+    def test_helper_parses_launchservices_output_option_separately_from_event_arguments(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "gtasks/mission_control_calendar_helper.swift").read_text()
+        self.assertIn("var positionalArguments", source)
+        self.assertIn("positionalArguments.removeSubrange", source)
+        self.assertIn("positionalArguments.count == 4", source)
+        self.assertNotIn("guard arguments.count == 5", source)
 
     def test_helper_source_has_no_eventkit_write_symbols(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "gtasks/mission_control_calendar_helper.swift").read_text()

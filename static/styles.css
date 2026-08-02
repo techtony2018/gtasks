@@ -1146,6 +1146,82 @@ kbd {
   margin: 10px 0 0;
 }
 
+.task-handoff-panel {
+  display: grid;
+  gap: 9px;
+  margin: 18px 0 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.task-handoff-panel:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.task-handoff-panel h3,
+.task-handoff-panel p {
+  margin: 0;
+}
+
+.task-handoff-panel h3 {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.task-handoff-panel p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.task-handoff-panel .task-handoff-question {
+  padding: 10px 11px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  color: var(--ink);
+  background: var(--surface);
+  font-weight: 650;
+}
+
+.task-handoff-answer-form {
+  display: grid;
+  gap: 7px;
+}
+
+.task-handoff-answer-form label {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.task-handoff-answer-form textarea {
+  width: 100%;
+  min-height: 86px;
+  box-sizing: border-box;
+  padding: 10px 11px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.task-handoff-answer-form textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+}
+
+.task-handoff-answer-form .primary-button {
+  justify-self: start;
+}
+
 .task-todos {
   margin: 22px 0 14px;
   padding: 15px;
@@ -1671,10 +1747,14 @@ kbd {
 .calendar-events-toggle input { width: 18px; height: 18px; }
 .calendar-events-status { color: var(--faint); font-size: 9px; }
 .ical-event { margin: 5px 0 0; padding: 4px 5px; border-left: 3px solid #5a7fb8; border-radius: 4px; background: #e9f0fb; color: #294c7e; font-size: 9px; line-height: 1.3; overflow-wrap: anywhere; }
-.calendar-picker-list { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; }
+.calendar-picker-list { display: grid; gap: 3px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; }
 .calendar-picker-list legend { padding: 0 4px; color: var(--muted); font-size: 10px; font-weight: 720; }
-.calendar-picker-option { display: flex; align-items: center; gap: 9px; min-height: 32px; color: var(--ink); font-size: 13px; }
-.calendar-picker-option input { width: 18px; height: 18px; accent-color: var(--accent); }
+.calendar-picker-option { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; justify-content: start; gap: 6px; min-height: 28px; padding: 2px 0; color: var(--ink); font-size: 12px; line-height: 1.3; text-align: left; cursor: pointer; }
+.calendar-picker-option input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.calendar-picker-option span { min-width: 0; overflow-wrap: anywhere; }
+.calendar-picker-saving,
+.calendar-preferences-notice { margin: 4px 0 0; color: var(--accent-dark); font-size: 11px; line-height: 1.4; }
+.calendar-preferences-notice { flex: 1 0 100%; width: 100%; }
 
 .week-range {
   flex: 1 1 260px;
@@ -5046,6 +5126,15 @@ button:active {
 
   .task-todos {
     padding: 12px;
+  }
+
+  .task-handoff-panel {
+    padding: 12px;
+  }
+
+  .task-handoff-answer-form .primary-button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .task-todo-heading-row,

@@ -769,6 +769,171 @@ def _handler_class(
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
             task_todo_prefix = "/api/tasks/"
+            question_suffix = "/questions"
+            if path.startswith(task_todo_prefix) and path.endswith(question_suffix):
+                task_slug = unquote(
+                    path[len(task_todo_prefix) : -len(question_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "question",
+                    "question_detail",
+                    "resume_action",
+                    "agent_slug",
+                    "idempotency_key",
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Blocking question requires exact handoff context.",
+                            "code": "invalid_handoff",
+                        },
+                    )
+                    return
+                try:
+                    with foreground_operation():
+                        receipt = adapter.request_agent_input(
+                            task_slug,
+                            question=payload["question"],
+                            question_detail=payload["question_detail"],
+                            resume_action=payload["resume_action"],
+                            agent_slug=payload["agent_slug"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_handoff"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.CREATED, receipt.to_dict())
+                return
+            acknowledge_suffix = "/handoff/acknowledge"
+            if path.startswith(task_todo_prefix) and path.endswith(acknowledge_suffix):
+                task_slug = unquote(
+                    path[len(task_todo_prefix) : -len(acknowledge_suffix)]
+                )
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {"actor"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Agent acknowledgement requires the exact actor.",
+                            "code": "invalid_handoff",
+                        },
+                    )
+                    return
+                try:
+                    with foreground_operation():
+                        receipt = adapter.acknowledge_agent_handoff(
+                            task_slug,
+                            actor=payload["actor"],
+                            now=clock(),
+                        )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_handoff"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, receipt.to_dict())
+                return
+            answer_prefix = "/api/todos/"
+            answer_suffix = "/answer"
+            if path.startswith(answer_prefix) and path.endswith(answer_suffix):
+                todo_slug = unquote(path[len(answer_prefix) : -len(answer_suffix)])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "answer",
+                    "expected_updated_at",
+                    "actor",
+                    "source",
+                    "idempotency_key",
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Answer and handoff requires exact mutation context.",
+                            "code": "invalid_handoff",
+                        },
+                    )
+                    return
+                try:
+                    expected = datetime.fromisoformat(
+                        str(payload["expected_updated_at"]).replace("Z", "+00:00")
+                    )
+                    with foreground_operation():
+                        receipt = adapter.answer_agent_question(
+                            todo_slug,
+                            answer=payload["answer"],
+                            expected_updated_at=expected,
+                            actor=payload["actor"],
+                            source=payload["source"],
+                            idempotency_key=payload["idempotency_key"],
+                            now=clock(),
+                        )
+                except ConcurrentTodoUpdateError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "todo_changed", "slug": exc.todo_slug},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_handoff"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                invalidate_snapshot()
+                self._json(HTTPStatus.OK, receipt.to_dict())
+                return
             migration_suffix = "/todos/migrate"
             if path.startswith(task_todo_prefix) and path.endswith(migration_suffix):
                 task_slug = unquote(
@@ -1657,6 +1822,23 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if (
+                            payload["status"] == "done"
+                            and adapter.is_active_handoff_question(todo_slug)
+                        ):
+                            self._json(
+                                HTTPStatus.CONFLICT,
+                                {
+                                    "error": (
+                                        "This To Do is the task's active blocking question. "
+                                        "Use Answer and Hand Back so the answer and task lifecycle "
+                                        "change are verified together."
+                                    ),
+                                    "code": "handoff_answer_required",
+                                    "slug": todo_slug,
+                                },
+                            )
+                            return
                         receipt = adapter.set_todo_status(
                             todo_slug,
                             status=payload["status"],

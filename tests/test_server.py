@@ -82,6 +82,34 @@ class FakeTodoReceipt:
         }
 
 
+class FakeHandoffReceipt:
+    def __init__(self, *, task_slug: str, todo: dict, state: str, next_owner: str) -> None:
+        self.task_slug = task_slug
+        self.todo = todo
+        self.state = state
+        self.next_owner = next_owner
+
+    def to_dict(self) -> dict:
+        return {
+            "task": {
+                "slug": self.task_slug,
+                "status": "blocked" if self.state == "waiting_for_input" else "active",
+                "next_action": "Draft the complete seven-day plan.",
+                "handoff": {
+                    "state": self.state,
+                    "question_todo": self.todo["slug"],
+                    "resume_owner": "agents/tammy",
+                    "resume_action": "Draft the complete seven-day plan.",
+                },
+            },
+            "todo": self.todo,
+            "event": None,
+            "next_owner": self.next_owner,
+            "verified": True,
+            "idempotent": False,
+        }
+
+
 class FakeAdapter:
     def __init__(
         self,
@@ -116,6 +144,10 @@ class FakeAdapter:
         self.todo_comments: list[dict] = []
         self.todo_status_updates: list[dict] = []
         self.todo_migrations: list[tuple[str, datetime]] = []
+        self.handoff_requests: list[dict] = []
+        self.handoff_answers: list[dict] = []
+        self.handoff_acknowledgements: list[dict] = []
+        self.handoff_questions: set[str] = set()
         self.todos: dict[str, dict] = {}
         self.membership_repairs: list[str] = []
         self.created_projects: list[Project] = []
@@ -474,6 +506,59 @@ class FakeAdapter:
         self.todo_migrations.append((task_slug, now))
         return self.list_task_todos(task_slug, limit=100)
 
+    def request_agent_input(self, task_slug: str, **payload) -> FakeHandoffReceipt:
+        self.handoff_requests.append({"task_slug": task_slug, **payload})
+        todo = self.create_todo(
+            task_slug,
+            text=payload["question"],
+            detail=payload["question_detail"],
+            kind="question",
+            actor=payload["agent_slug"],
+            source="agent",
+            idempotency_key=payload["idempotency_key"],
+            now=payload["now"],
+        ).todo
+        self.handoff_questions.add(todo["slug"])
+        return FakeHandoffReceipt(
+            task_slug=task_slug,
+            todo=todo,
+            state="waiting_for_input",
+            next_owner="people/tony-guan",
+        )
+
+    def answer_agent_question(self, todo_slug: str, **payload) -> FakeHandoffReceipt:
+        self.handoff_answers.append({"todo_slug": todo_slug, **payload})
+        todo = self.todos[todo_slug]
+        todo["status"] = "done"
+        todo["status_label"] = "Done"
+        todo["updated_at"] = payload["now"].isoformat()
+        todo["comments"] = [
+            *todo["comments"],
+            {"body": payload["answer"], "author": payload["actor"]},
+        ]
+        self.handoff_questions.discard(todo_slug)
+        return FakeHandoffReceipt(
+            task_slug=todo["parent_task"],
+            todo=todo,
+            state="ready_for_agent",
+            next_owner="agents/tammy",
+        )
+
+    def acknowledge_agent_handoff(self, task_slug: str, **payload) -> FakeHandoffReceipt:
+        self.handoff_acknowledgements.append({"task_slug": task_slug, **payload})
+        todo = next(
+            todo for todo in self.todos.values() if todo["parent_task"] == task_slug
+        )
+        return FakeHandoffReceipt(
+            task_slug=task_slug,
+            todo=todo,
+            state="agent_working",
+            next_owner=payload["actor"],
+        )
+
+    def is_active_handoff_question(self, todo_slug: str) -> bool:
+        return todo_slug in self.handoff_questions
+
     def repair_active_membership(self, task_slug: str) -> MembershipRepairReceipt:
         self.membership_repairs.append(task_slug)
         return MembershipRepairReceipt(task_slug=task_slug, verified=True)
@@ -746,7 +831,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.66")
+        self.assertEqual(payload["version"], "V0.0.67")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -754,11 +839,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.66")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.66")
+        self.assertEqual(payload["current_version"], "V0.0.67")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.67")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.67",
                 "V0.0.66",
                 "V0.0.65",
                 "V0.0.64",
@@ -1796,6 +1882,119 @@ class TaskStatusApiTests(unittest.TestCase):
 
 
 class TaskTodoApiTests(unittest.TestCase):
+    def test_handoff_question_answer_and_acknowledgement_use_strict_endpoints(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, blocked, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fagent-work/questions",
+            {
+                "question": "Which Bible translation should I use?",
+                "question_detail": "Name the exact translation.",
+                "resume_action": "Draft the complete seven-day plan.",
+                "agent_slug": "agents/tammy",
+                "idempotency_key": "question-round-1",
+            },
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(blocked["task"]["handoff"]["state"], "waiting_for_input")
+        question = blocked["todo"]
+
+        status, answered, _ = harness.request(
+            "POST",
+            f"/api/todos/{question['slug'].replace('/', '%2F')}/answer",
+            {
+                "answer": "Chinese Union Version; 30 minutes; independent readings.",
+                "expected_updated_at": question["updated_at"],
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "answer-round-1",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(answered["task"]["handoff"]["state"], "ready_for_agent")
+        self.assertEqual(answered["todo"]["status"], "done")
+        self.assertEqual(answered["next_owner"], "agents/tammy")
+
+        status, working, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fagent-work/handoff/acknowledge",
+            {"actor": "agents/tammy"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(working["task"]["handoff"]["state"], "agent_working")
+
+    def test_handoff_endpoints_reject_extra_fields_and_stale_answers(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fagent-work/questions",
+            {
+                "question": "Question?",
+                "question_detail": "Detail",
+                "resume_action": "Resume.",
+                "agent_slug": "agents/tammy",
+                "idempotency_key": "question-round-1",
+                "unexpected": True,
+            },
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_handoff")
+        self.assertEqual(adapter.handoff_requests, [])
+
+        class StaleAdapter(FakeAdapter):
+            def answer_agent_question(self, todo_slug: str, **payload) -> FakeHandoffReceipt:
+                raise gbrain.ConcurrentTodoUpdateError(todo_slug)
+
+        harness = ServerHarness(self, StaleAdapter())
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/todos/todos%2Fquestion/answer",
+            {
+                "answer": "Answer",
+                "expected_updated_at": "2026-08-02T10:00:00-07:00",
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "answer-round-1",
+            },
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "todo_changed")
+
+    def test_generic_done_rejects_the_current_handoff_question(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        _, blocked, _ = harness.request(
+            "POST",
+            "/api/tasks/tasks%2Fagent-work/questions",
+            {
+                "question": "Which translation?",
+                "question_detail": "Name it.",
+                "resume_action": "Draft the plan.",
+                "agent_slug": "agents/tammy",
+                "idempotency_key": "question-round-1",
+            },
+        )
+        question = blocked["todo"]
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/todos/{question['slug'].replace('/', '%2F')}/status",
+            {
+                "status": "done",
+                "expected_updated_at": question["updated_at"],
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "unsafe-done",
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "handoff_answer_required")
+        self.assertEqual(adapter.todo_status_updates, [])
+
     def test_lists_bounded_filtered_todos_for_one_parent(self) -> None:
         adapter = FakeAdapter()
         adapter.todos = {

@@ -3695,6 +3695,333 @@ class TodoAdapterTests(unittest.TestCase):
         for edge in original_links:
             self.assertIn(edge, runner.links)
 
+    def test_request_agent_input_blocks_task_and_records_resume_contract(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        now = datetime.fromisoformat("2026-08-02T10:00:00-07:00")
+
+        receipt = GBrainAdapter(runner).request_agent_input(
+            task.slug,
+            question="Which Bible translation should I use?",
+            question_detail="Name the exact translation or authorize Tammy to choose.",
+            resume_action="Draft the complete seven-day plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=now,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "blocked")
+        self.assertEqual(receipt.task.blockers, ("people/tony-guan",))
+        self.assertEqual(receipt.task.handoff.state, "waiting_for_input")
+        self.assertEqual(receipt.task.handoff.question_todo, receipt.todo.slug)
+        self.assertEqual(receipt.task.handoff.resume_owner, "agents/tammy")
+        self.assertEqual(receipt.task.handoff.resume_action, "Draft the complete seven-day plan.")
+        self.assertEqual(receipt.todo.kind, "question")
+        self.assertEqual(receipt.next_owner, "people/tony-guan")
+        self.assertTrue(any(
+            edge.get("from_slug") == task.slug
+            and edge.get("to_slug") == "people/tony-guan"
+            and edge.get("link_type") == "blocked_by"
+            for edge in runner.links
+        ))
+
+    def test_answer_question_atomically_returns_work_to_agent(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which Bible translation, time budget, and reading alignment?",
+            question_detail="Answer all three parts.",
+            resume_action="Draft and return the complete seven-day Bible-study plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+        answered_at = datetime.fromisoformat("2026-08-02T10:29:22-07:00")
+
+        receipt = adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version (Shen Edition); 30 minutes; independent readings.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=answered_at,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.todo.status, "done")
+        self.assertEqual(receipt.todo.comments[-1].body, "Chinese Union Version (Shen Edition); 30 minutes; independent readings.")
+        self.assertEqual(receipt.task.status, "active")
+        self.assertEqual(receipt.task.blockers, ())
+        self.assertEqual(receipt.task.next_action, "Draft and return the complete seven-day Bible-study plan.")
+        self.assertEqual(receipt.task.handoff.state, "ready_for_agent")
+        self.assertEqual(receipt.task.handoff.answered_at, answered_at)
+        self.assertEqual(receipt.task.updated_at, answered_at)
+        self.assertEqual(receipt.next_owner, "agents/tammy")
+        self.assertFalse(any(
+            edge.get("from_slug") == task.slug
+            and edge.get("to_slug") == "people/tony-guan"
+            and edge.get("link_type") == "blocked_by"
+            for edge in runner.links
+        ))
+
+        duplicate = adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version (Shen Edition); 30 minutes; independent readings.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=answered_at,
+        )
+        self.assertTrue(duplicate.idempotent)
+        self.assertEqual(len(duplicate.todo.comments), 1)
+
+    def test_acknowledge_and_follow_up_reuse_the_same_task(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+        answered = adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+        )
+
+        acknowledged = adapter.acknowledge_agent_handoff(
+            task.slug,
+            actor="agents/tammy",
+            now=datetime.fromisoformat("2026-08-02T11:00:00-07:00"),
+        )
+        self.assertEqual(acknowledged.task.slug, task.slug)
+        self.assertEqual(acknowledged.task.handoff.state, "agent_working")
+        self.assertEqual(acknowledged.task.status, "active")
+        self.assertEqual(acknowledged.task.owner_agent, "agents/tammy")
+
+        follow_up = adapter.request_agent_input(
+            task.slug,
+            question="Should each day use an independent reading?",
+            question_detail="Answer yes or no.",
+            resume_action=answered.task.handoff.resume_action,
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-2",
+            now=datetime.fromisoformat("2026-08-02T11:10:00-07:00"),
+        )
+        self.assertEqual(follow_up.task.slug, task.slug)
+        self.assertEqual(follow_up.task.status, "blocked")
+        self.assertEqual(follow_up.task.handoff.state, "waiting_for_input")
+        self.assertEqual(follow_up.task.handoff.round, 2)
+        self.assertNotEqual(follow_up.todo.slug, question.slug)
+
+    def test_repairs_answered_legacy_question_into_verified_ready_handoff(self) -> None:
+        runner, task = self._fixture(
+            agent_slug="agents/tammy",
+            next_action="Tony confirms translation, time budget, and reading alignment.",
+        )
+        adapter = GBrainAdapter(runner)
+        migrated = adapter.migrate_legacy_next_actions(
+            task.slug,
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todos[0]
+        answered = adapter.edit_todo(
+            migrated.slug,
+            text=migrated.text,
+            detail=(
+                "Bible translation: Chinese Union Version (Shen Edition)\n"
+                "daily time budget: 30 minutes\n"
+                "Readings should be independent."
+            ),
+            expected_updated_at=migrated.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="legacy-answer-edit",
+            now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+        ).todo
+        completed = adapter.set_todo_status(
+            answered.slug,
+            status="done",
+            expected_updated_at=answered.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="legacy-answer-done",
+            now=datetime.fromisoformat("2026-08-02T10:29:22-07:00"),
+        ).todo
+        prior_events = completed.event_slugs
+
+        receipt = adapter.repair_answered_agent_handoff(
+            task.slug,
+            question_todo_slug=completed.slug,
+            expected_answer=completed.detail,
+            resume_action="Draft and return the complete seven-day Bible-study plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="repair-tammy-seven-day-plan",
+            now=datetime.fromisoformat("2026-08-02T15:00:00-07:00"),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "active")
+        self.assertEqual(receipt.task.next_action, "Draft and return the complete seven-day Bible-study plan.")
+        self.assertEqual(receipt.task.handoff.state, "ready_for_agent")
+        self.assertEqual(receipt.task.handoff.answered_at.isoformat(), "2026-08-02T10:29:22-07:00")
+        self.assertEqual(receipt.task.owner_agent, "agents/tammy")
+        self.assertEqual(receipt.todo.kind, "question")
+        self.assertEqual(receipt.todo.status, "done")
+        self.assertEqual(receipt.todo.comments[-1].body, completed.detail)
+        self.assertEqual(receipt.todo.event_slugs[: len(prior_events)], prior_events)
+        self.assertEqual(receipt.next_owner, "agents/tammy")
+
+        duplicate = adapter.repair_answered_agent_handoff(
+            task.slug,
+            question_todo_slug=completed.slug,
+            expected_answer=completed.detail,
+            resume_action="Draft and return the complete seven-day Bible-study plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="repair-tammy-seven-day-plan",
+            now=datetime.fromisoformat("2026-08-02T15:00:00-07:00"),
+        )
+        self.assertTrue(duplicate.idempotent)
+        self.assertEqual(len(duplicate.todo.comments), 1)
+
+    def test_handoff_rejects_empty_answer_stale_question_and_wrong_agent(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+
+        with self.assertRaisesRegex(ValueError, "answer"):
+            adapter.answer_agent_question(
+                question.slug,
+                answer=" ",
+                expected_updated_at=question.updated_at,
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key="empty-answer",
+                now=datetime.fromisoformat("2026-08-02T10:10:00-07:00"),
+            )
+        with self.assertRaisesRegex(Exception, "changed since it was read"):
+            adapter.answer_agent_question(
+                question.slug,
+                answer="Chinese Union Version.",
+                expected_updated_at=datetime.fromisoformat("2026-08-02T09:59:00-07:00"),
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key="stale-answer",
+                now=datetime.fromisoformat("2026-08-02T10:10:00-07:00"),
+            )
+        with self.assertRaisesRegex(ValueError, "assigned Agent"):
+            adapter.acknowledge_agent_handoff(
+                task.slug,
+                actor="agents/timmy",
+                now=datetime.fromisoformat("2026-08-02T10:15:00-07:00"),
+            )
+
+    def test_answer_keeps_task_blocked_when_an_unrelated_blocker_remains(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        runner.pages[task.slug]["frontmatter"]["links"].append(
+            {"to": "systems/calendar-permission", "type": "blocked_by"}
+        )
+        runner.links.append(
+            {
+                "from_slug": task.slug,
+                "to_slug": "systems/calendar-permission",
+                "link_type": "blocked_by",
+                "context": "Independent blocker",
+                "link_source": "gtasks",
+            }
+        )
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+
+        receipt = adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+        )
+
+        self.assertEqual(receipt.todo.status, "done")
+        self.assertEqual(receipt.task.status, "blocked")
+        self.assertEqual(receipt.task.blockers, ("systems/calendar-permission",))
+        self.assertIsNone(receipt.task.handoff)
+        self.assertIsNone(receipt.next_owner)
+
+    def test_failed_answer_link_removal_rolls_back_question_and_parent(self) -> None:
+        class FailingBlockerRemovalRunner(StatefulIdentityMigrationRunner):
+            fail_once = True
+
+            def run(self, tool: str, params: dict) -> object:
+                if (
+                    self.fail_once
+                    and tool == "remove_link"
+                    and params.get("link_type") == "blocked_by"
+                    and params.get("to") == "people/tony-guan"
+                ):
+                    self.fail_once = False
+                    raise GBrainCommandError("forced blocker removal failure")
+                return super().run(tool, params)
+
+        base, task = self._fixture(agent_slug="agents/tammy")
+        runner = FailingBlockerRemovalRunner(base.pages, base.links)
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            adapter.answer_agent_question(
+                question.slug,
+                answer="Chinese Union Version.",
+                expected_updated_at=question.updated_at,
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key="answer-round-1",
+                now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+            )
+
+        restored_task = adapter.get_task(task.slug)
+        restored_question = adapter.list_task_todos(task.slug, limit=100).todos[0]
+        self.assertEqual(restored_task.status, "blocked")
+        self.assertEqual(restored_task.handoff.state, "waiting_for_input")
+        self.assertEqual(restored_question.status, "not_done")
+        self.assertEqual(restored_question.comments, ())
+        self.assertIn("people/tony-guan", restored_task.blockers)
+
 
 class TaskNextActionMutationTests(unittest.TestCase):
     def test_full_task_edit_uses_same_history_preserving_write(self) -> None:

@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.66">
-    <script src="/app.js?v=0.0.66" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.67">
+    <script src="/app.js?v=0.0.67" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -182,6 +182,17 @@
               <span id="task-progress-bar"></span>
             </div>
             <p id="task-progress-binding"></p>
+          </section>
+          <section class="task-handoff-panel is-hidden" id="task-handoff-panel" aria-labelledby="task-handoff-heading" tabindex="-1">
+            <h3 id="task-handoff-heading"></h3>
+            <p id="task-handoff-copy"></p>
+            <p class="task-handoff-question" id="task-handoff-question"></p>
+            <form class="task-handoff-answer-form is-hidden" id="task-handoff-answer-form">
+              <label for="task-handoff-answer">Your answer</label>
+              <textarea id="task-handoff-answer" rows="4" maxlength="4000" required placeholder="Give the precise information the Agent needs to resume"></textarea>
+              <button class="primary-button" id="task-handoff-submit" type="submit">Answer and Hand Back</button>
+            </form>
+            <p class="form-error is-hidden" role="alert" id="task-handoff-error"></p>
           </section>
           <section class="task-todos" aria-labelledby="task-todo-heading">
             <div class="task-todo-heading-row">
@@ -742,8 +753,9 @@
         </div>
         <p>Only selected calendar identifiers are saved locally. Event details are read only for this Calendar overlay and are never copied to GBrain.</p>
         <fieldset class="calendar-picker-list" id="calendar-picker-list"><legend>Available calendars</legend></fieldset>
+        <p class="calendar-picker-saving is-hidden" id="calendar-picker-saving" role="status">Saving calendar selection…</p>
         <p class="form-error is-hidden" id="calendar-picker-error" role="alert"></p>
-        <div class="dialog-footer"><button class="secondary-button" id="calendar-picker-cancel" type="button">Cancel</button><button class="submit-button" type="submit">Save selected calendars</button></div>
+        <div class="dialog-footer"><button class="secondary-button" id="calendar-picker-cancel" type="button">Cancel</button><button class="submit-button" id="calendar-picker-submit" type="submit">Save selected calendars</button></div>
       </form>
     </dialog>
 

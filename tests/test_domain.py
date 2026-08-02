@@ -280,6 +280,105 @@ class TodoDomainTests(unittest.TestCase):
 
 
 class TaskParsingTests(unittest.TestCase):
+    def test_waiting_for_input_requires_blocked_status_and_matching_blocker(self) -> None:
+        page = task_page(
+            "tasks/agent-question",
+            status="active",
+            links=[
+                {"to": "collections/tammys-tasks", "type": "member_of"},
+                {"to": "agents/tammy", "type": "assigned_to"},
+                {"to": "people/tony-guan", "type": "blocked_by"},
+            ],
+        )
+        page["frontmatter"]["handoff"] = {
+            "state": "waiting_for_input",
+            "question_todo": "todos/question-1",
+            "waiting_on": "people/tony-guan",
+            "resume_owner": "agents/tammy",
+            "resume_action": "Draft the seven-day plan.",
+            "requested_at": "2026-08-02T10:00:00-07:00",
+            "answered_at": None,
+            "acknowledged_at": None,
+            "round": 1,
+        }
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "waiting_for_input requires blocked",
+        ):
+            Task.from_page(
+                page,
+                edges=[
+                    {
+                        "from_slug": page["slug"],
+                        "to_slug": "agents/tammy",
+                        "link_type": "assigned_to",
+                    }
+                ],
+            )
+
+    def test_ready_for_agent_requires_active_status_and_resume_next_action(self) -> None:
+        page = task_page(
+            "tasks/agent-ready",
+            status="active",
+            links=[
+                {"to": "collections/tammys-tasks", "type": "member_of"},
+                {"to": "agents/tammy", "type": "assigned_to"},
+            ],
+        )
+        page["frontmatter"]["next_action"] = "Draft the seven-day plan."
+        page["frontmatter"]["handoff"] = {
+            "state": "ready_for_agent",
+            "question_todo": "todos/question-1",
+            "waiting_on": None,
+            "resume_owner": "agents/tammy",
+            "resume_action": "Draft the seven-day plan.",
+            "requested_at": "2026-08-02T10:00:00-07:00",
+            "answered_at": "2026-08-02T10:29:22-07:00",
+            "acknowledged_at": None,
+            "round": 1,
+        }
+
+        task = Task.from_page(
+            page,
+            edges=[
+                {
+                    "from_slug": page["slug"],
+                    "to_slug": "agents/tammy",
+                    "link_type": "assigned_to",
+                }
+            ],
+        )
+
+        self.assertIsInstance(task.handoff, domain.TaskHandoff)
+        self.assertEqual(task.next_action, task.handoff.resume_action)
+        self.assertEqual(task.to_dict()["handoff"]["state"], "ready_for_agent")
+
+    def test_handoff_rejects_invalid_identities_timestamps_and_round(self) -> None:
+        valid = {
+            "state": "waiting_for_input",
+            "question_todo": "todos/question-1",
+            "waiting_on": "people/tony-guan",
+            "resume_owner": "agents/tammy",
+            "resume_action": "Draft the seven-day plan.",
+            "requested_at": "2026-08-02T10:00:00-07:00",
+            "answered_at": None,
+            "acknowledged_at": None,
+            "round": 1,
+        }
+        invalid_cases = (
+            ({"question_todo": "tasks/not-a-todo"}, "question_todo"),
+            ({"resume_owner": "people/tammy"}, "resume_owner"),
+            ({"requested_at": "2026-08-02T10:00:00"}, "timezone"),
+            ({"round": 0}, "round"),
+            ({"resume_action": "line one\nline two"}, "one concise line"),
+        )
+
+        for changes, expected in invalid_cases:
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(DomainValidationError, expected):
+                    domain.TaskHandoff.from_value({**valid, **changes})
+
     def test_parses_canonical_proposal_decision_timeline_events(self) -> None:
         page = task_page(
             "tasks/decision-history",

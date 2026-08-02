@@ -5,14 +5,17 @@ import Foundation
 // It is bundled as “Mission Control Calendar.app” so macOS TCC attributes the
 // Full Access request to Mission Control rather than the Python web process.
 let arguments = CommandLine.arguments
-guard arguments.count >= 2 else { exit(2) }
-
-let action = arguments[1]
-let store = EKEventStore()
-let outputIndex = arguments.firstIndex(of: "--output")
+var positionalArguments = Array(arguments.dropFirst())
+let outputIndex = positionalArguments.firstIndex(of: "--output")
 let outputPath = outputIndex.flatMap { index in
-    index + 1 < arguments.count ? arguments[index + 1] : nil
+    index + 1 < positionalArguments.count ? positionalArguments[index + 1] : nil
 }
+if let index = outputIndex {
+    guard index + 1 < positionalArguments.count else { exit(2) }
+    positionalArguments.removeSubrange(index ... index + 1)
+}
+guard let action = positionalArguments.first else { exit(2) }
+let store = EKEventStore()
 
 func statusName() -> String {
     let access = EKEventStore.authorizationStatus(for: .event)
@@ -66,10 +69,10 @@ case "calendars":
     }
     printJSON(["status": statusName(), "calendars": calendars])
 case "events":
-    guard arguments.count == 5,
-          let start = ISO8601DateFormatter().date(from: arguments[2] + "T00:00:00Z"),
-          let end = ISO8601DateFormatter().date(from: arguments[3] + "T00:00:00Z"),
-          let rawIDs = arguments[4].data(using: .utf8),
+    guard positionalArguments.count == 4,
+          let start = ISO8601DateFormatter().date(from: positionalArguments[1] + "T00:00:00Z"),
+          let end = ISO8601DateFormatter().date(from: positionalArguments[2] + "T00:00:00Z"),
+          let rawIDs = positionalArguments[3].data(using: .utf8),
           let selectedIDs = try? JSONSerialization.jsonObject(with: rawIDs) as? [String] else { exit(2) }
     guard statusName() == "authorized" else {
         printJSON(["status": statusName(), "events": []])

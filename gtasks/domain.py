@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
+from .handoff import DomainValidationError, TaskHandoff, validate_task_handoff
+
 
 ACTIVE_ROOT = "collections/tonys-tasks"
 COMPLETED_ROOT = "collections/tonys-completed-tasks"
@@ -53,10 +55,6 @@ TODO_KINDS = frozenset({"action", "question", "blocker"})
 TODO_EVENT_TYPES = frozenset(
     {"created", "edited", "status_changed", "comment_added", "legacy_migrated"}
 )
-
-
-class DomainValidationError(ValueError):
-    """Raised when a GBrain page cannot safely be treated as a GTasks task."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1178,6 +1176,7 @@ class Task:
     completed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    handoff: TaskHandoff | None = None
     proposal_recipient: str | None = None
     proposal_submitted_at: datetime | None = None
     proposal_decision: str | None = None
@@ -1436,7 +1435,12 @@ class Task:
                     "proposal decision projections must match the canonical event"
                 )
 
-        return cls(
+        raw_handoff = frontmatter.get("handoff")
+        handoff = (
+            None if raw_handoff is None else TaskHandoff.from_value(raw_handoff)
+        )
+
+        task = cls(
             slug=slug,
             title=title.strip(),
             summary=summary,
@@ -1468,6 +1472,7 @@ class Task:
             ),
             created_at=_optional_datetime(frontmatter.get("created_at"), "created_at"),
             updated_at=_optional_datetime(frontmatter.get("updated_at"), "updated_at"),
+            handoff=handoff,
             proposal_recipient=(
                 frontmatter.get("proposal_recipient")
                 if frontmatter.get("proposal_recipient") in {"tony", "agent"}
@@ -1485,6 +1490,8 @@ class Task:
             ),
             proposal_decision_events=proposal_decision_events,
         )
+        validate_task_handoff(task)
+        return task
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1524,6 +1531,7 @@ class Task:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "handoff": self.handoff.to_dict() if self.handoff else None,
             "proposal_recipient": self.proposal_recipient,
             "proposal_submitted_at": self.proposal_submitted_at.isoformat() if self.proposal_submitted_at else None,
             "proposal_decision": self.proposal_decision,

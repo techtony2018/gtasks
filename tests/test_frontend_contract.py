@@ -487,8 +487,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.66"', html)
-        self.assertIn('src="/app.js?v=0.0.66"', html)
+        self.assertIn('href="/styles.css?v=0.0.67"', html)
+        self.assertIn('src="/app.js?v=0.0.67"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -558,6 +558,35 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.todoReturnFocus", javascript)
         self.assertIn("candidate.dataset.todoSlug", javascript)
         self.assertIn("target?.focus({ preventScroll: true })", javascript)
+
+    def test_agent_handoff_is_clear_atomic_and_keeps_question_history_read_only(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-handoff-panel"', html)
+        self.assertIn('id="task-handoff-answer"', html)
+        self.assertIn('id="task-handoff-submit"', html)
+        self.assertIn(">Answer and Hand Back<", html)
+        self.assertIn("Waiting for your answer", javascript)
+        self.assertIn("Answer recorded — waiting for", javascript)
+        self.assertIn("is working.", javascript)
+        self.assertIn("function agentDisplayName(slug, task = null)", javascript)
+        self.assertIn("taskOwner?.slug === slug && taskOwner?.name", javascript)
+        self.assertIn("agentDisplayName(handoff.resume_owner, task)", javascript)
+        self.assertIn("agentDisplayName(receipt.next_owner, receipt.task)", javascript)
+        self.assertIn("async function answerAndHandBack", javascript)
+        self.assertIn(
+            "`/api/todos/${encodeURIComponent(todo.slug)}/answer`",
+            javascript,
+        )
+        self.assertIn("function isActiveHandoffQuestion", javascript)
+        self.assertIn("elements.taskHandoffPanel.focus", javascript)
+        self.assertIn("Blocked by ${blocker}: ${task.next_action", javascript)
+        self.assertIn("elements.taskHandoffError.textContent = message", javascript)
+        self.assertIn(".task-handoff-panel", css)
+        self.assertNotIn('status: "waiting"', javascript)
+        self.assertNotIn("waiting for Tony", javascript)
 
     def test_task_todo_add_form_is_read_only_until_explicit_plus_action(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -715,6 +744,23 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Local Calendar is unavailable", javascript)
         self.assertIn("icalEventsForDay", javascript)
         self.assertIn("Full Access to Calendar", html)
+
+    def test_calendar_picker_is_compact_and_saves_with_verified_feedback(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="calendar-picker-saving"', html)
+        self.assertIn('id="calendar-picker-submit"', html)
+        self.assertIn("Saving calendar selection…", html)
+        self.assertIn("Calendar selection saved and verified.", javascript)
+        self.assertIn("await loadCalendarPicker()", javascript)
+        self.assertIn("Calendar selection readback did not match", javascript)
+        self.assertIn("calendarPreferencesNotice", javascript)
+        self.assertIn(".calendar-picker-option input", css)
+        self.assertIn("width: 14px", css)
+        self.assertIn("grid-template-columns: 14px minmax(0, 1fr)", css)
+        self.assertIn("flex: 1 0 100%", css)
 
     def test_calendar_failure_stops_retry_loop_and_always_offers_reauthorization(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

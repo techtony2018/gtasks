@@ -61,6 +61,7 @@ const state = {
   showIcalEvents: true,
   icalEvents: [],
   icalStatus: "not_determined",
+  calendarPreferencesNotice: "",
   icalRange: "",
   icalLoading: false,
   selectedCalendarIds: [],
@@ -421,6 +422,8 @@ const elements = {
   calendarPickerClose: document.querySelector("#calendar-picker-close"),
   calendarPickerCancel: document.querySelector("#calendar-picker-cancel"),
   calendarPickerList: document.querySelector("#calendar-picker-list"),
+  calendarPickerSaving: document.querySelector("#calendar-picker-saving"),
+  calendarPickerSubmit: document.querySelector("#calendar-picker-submit"),
   calendarPickerError: document.querySelector("#calendar-picker-error"),
   detailPanel: document.querySelector("#detail-panel"),
   detailEmpty: document.querySelector("#detail-empty"),
@@ -464,6 +467,14 @@ const elements = {
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
+  taskHandoffPanel: document.querySelector("#task-handoff-panel"),
+  taskHandoffHeading: document.querySelector("#task-handoff-heading"),
+  taskHandoffCopy: document.querySelector("#task-handoff-copy"),
+  taskHandoffQuestion: document.querySelector("#task-handoff-question"),
+  taskHandoffAnswerForm: document.querySelector("#task-handoff-answer-form"),
+  taskHandoffAnswer: document.querySelector("#task-handoff-answer"),
+  taskHandoffSubmit: document.querySelector("#task-handoff-submit"),
+  taskHandoffError: document.querySelector("#task-handoff-error"),
   taskTodoFilter: document.querySelector("#task-todo-filter"),
   taskTodoAddToggle: document.querySelector("#task-todo-add-toggle"),
   taskTodoAddForm: document.querySelector("#task-todo-add-form"),
@@ -1472,6 +1483,11 @@ function calendarEventsFilter() {
   wrapper.append(checkboxLabel);
   const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Choose calendars to show events") : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
   wrapper.append(node("small", "calendar-events-status", calendarStatus));
+  if (state.calendarPreferencesNotice) {
+    const notice = node("p", "calendar-preferences-notice", state.calendarPreferencesNotice);
+    notice.setAttribute("role", "status");
+    wrapper.append(notice);
+  }
   if (state.icalStatus !== "authorized") {
     const connect = node("button", "secondary-button", state.icalStatus === "not_determined" ? "Connect Calendar" : "Reauthorize Calendar");
     connect.type = "button";
@@ -1518,6 +1534,7 @@ function renderCalendarPicker() {
 
 async function openCalendarPicker() {
   elements.calendarPickerError.classList.add("is-hidden");
+  elements.calendarPickerSaving.classList.add("is-hidden");
   try {
     await loadCalendarPicker();
     renderCalendarPicker();
@@ -2189,7 +2206,7 @@ function renderAgentWorkView() {
     node(
       "p",
       "",
-      "Goal ownership is read from typed default_agent_for edges. Work states reserved for later are Queued, Working, Waiting for Tony, Blocked, Completed, and Failed. No proposal or task is auto-approved here.",
+      "Goal ownership is read from typed default_agent_for edges. Canonical work uses Planned, Active, Blocked, Completed, and Cancelled; Proposed is reserved for work awaiting Tony's approval. No proposal or task is auto-approved here.",
     ),
   );
   wrapper.append(intro);
@@ -2289,15 +2306,16 @@ function renderCoordinatorSummary() {
     };
     const card = node("article", "coordinator-agent-card");
     card.append(ownerBadge({ name: agent.name, avatar: agent.avatar }));
-    card.append(node("p", "", `${counts.active} active · ${counts.proposed} waiting for Tony · ${counts.blocked} blocked · ${counts.completed} completed`));
+    card.append(node("p", "", `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed`));
     const latest = work.filter((task) => task.status === "completed").sort((a,b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
     card.append(node("small", "", latest ? `Recent verified completion: ${latest.title || latest.summary}` : "No verified completion yet."));
     list.append(card);
   });
   section.append(list);
-  const blockers = state.agentTasks.filter((task) => ["blocked", "proposed"].includes(task.status));
+  const blockers = state.agentTasks.filter((task) => task.status === "blocked");
+  const proposals = state.agentTasks.filter((task) => task.status === "proposed");
   const issueCount = state.agentIssues.length;
-  section.append(node("p", "coordinator-notice", blockers.length || issueCount ? `${blockers.length} material blocker or waiting-for-Tony item${blockers.length === 1 ? "" : "s"}; ${issueCount} malformed or missing-state issue${issueCount === 1 ? "" : "s"}. Details stay in Inbox Needs Attention.` : "No material blockers, waiting-for-Tony items, or malformed agent-work issues."));
+  section.append(node("p", "coordinator-notice", blockers.length || proposals.length || issueCount ? `${blockers.length} blocked item${blockers.length === 1 ? "" : "s"}; ${proposals.length} proposal${proposals.length === 1 ? "" : "s"}; ${issueCount} malformed or missing-state issue${issueCount === 1 ? "" : "s"}. Details stay in Inbox Needs Attention.` : "No blocked items, proposals, or malformed agent-work issues."));
   return section;
 }
 
@@ -3873,6 +3891,30 @@ function todoStatusLabel(todo) {
   return todo.status === "done" ? "Done" : "Not Done";
 }
 
+function isActiveHandoffQuestion(todo, task = findTaskBySlug(todo?.parent_task)) {
+  return Boolean(
+    todo && task?.handoff?.state === "waiting_for_input" &&
+    task.handoff.question_todo === todo.slug && todo.status === "not_done",
+  );
+}
+
+function agentDisplayName(slug, task = null) {
+  const taskOwner = task?.owner;
+  if (taskOwner?.slug === slug && taskOwner?.name) return taskOwner.name;
+  const directoryName = state.agents.find((agent) => agent.slug === slug)?.name;
+  if (directoryName) return directoryName;
+  if (!slug) return "the assigned Agent";
+  return slug.split("/").pop().replaceAll("-", " ").replace(
+    /(^|\s)\S/g,
+    (letter) => letter.toUpperCase(),
+  );
+}
+
+function blockerDisplayName(slug) {
+  if (slug === "people/tony-guan") return "Tony";
+  return agentDisplayName(slug);
+}
+
 function todoCard(todo) {
   const card = node("article", "task-todo-card");
   card.dataset.todoSlug = todo.slug;
@@ -3884,18 +3926,22 @@ function todoCard(todo) {
     node("h4", "", todo.text),
     node("span", `task-todo-status ${todo.status}`, todoStatusLabel(todo)),
   );
-  const changeStatus = node(
-    "button",
-    "secondary-button",
-    todo.status === "done" ? "Reopen" : "Mark Done",
-  );
-  changeStatus.type = "button";
-  changeStatus.setAttribute(
-    "aria-label",
-    `${todo.status === "done" ? "Reopen" : "Mark Done"} To Do: ${todo.text}`,
-  );
-  changeStatus.addEventListener("click", () => changeTodoStatus(todo, changeStatus));
-  heading.append(title, changeStatus);
+  const isHandoffQuestion = isActiveHandoffQuestion(todo);
+  heading.append(title);
+  if (!isHandoffQuestion) {
+    const changeStatus = node(
+      "button",
+      "secondary-button",
+      todo.status === "done" ? "Reopen" : "Mark Done",
+    );
+    changeStatus.type = "button";
+    changeStatus.setAttribute(
+      "aria-label",
+      `${todo.status === "done" ? "Reopen" : "Mark Done"} To Do: ${todo.text}`,
+    );
+    changeStatus.addEventListener("click", () => changeTodoStatus(todo, changeStatus));
+    heading.append(changeStatus);
+  }
 
   const details = node("details", "task-todo-details");
   const summary = node("summary", "", `Open ${todo.kind || "action"} details, comments, and history`);
@@ -3979,22 +4025,60 @@ function todoCard(todo) {
   if (!history.children.length) {
     history.append(node("li", "is-empty", "No canonical history available."));
   }
-  details.append(
-    summary,
-    provenance,
-    detailCopy,
-    editForm,
-    commentsHeading,
-    comments,
-    commentForm,
-    historyHeading,
-    history,
-  );
+  details.append(summary, provenance, detailCopy);
+  if (!isHandoffQuestion) details.append(editForm);
+  details.append(commentsHeading, comments);
+  if (!isHandoffQuestion) details.append(commentForm);
+  details.append(historyHeading, history);
   card.append(heading, details);
   return card;
 }
 
+function renderTaskHandoff(task) {
+  const handoff = task?.handoff;
+  const blockers = Array.isArray(task?.blockers) ? task.blockers : [];
+  const show = Boolean(handoff || task?.status === "blocked");
+  elements.taskHandoffPanel.classList.toggle("is-hidden", !show);
+  elements.taskHandoffAnswerForm.classList.add("is-hidden");
+  elements.taskHandoffQuestion.classList.add("is-hidden");
+  elements.taskHandoffError.classList.add("is-hidden");
+  if (!show) return;
+
+  if (!handoff) {
+    const blocker = blockers.length
+      ? blockers.map(blockerDisplayName).join(", ")
+      : "a recorded blocker";
+    elements.taskHandoffHeading.textContent = `Blocked by ${blocker}: ${task.next_action || "No next action is recorded yet."}`;
+    elements.taskHandoffCopy.textContent = "Resolve this blocker to continue.";
+    elements.taskHandoffQuestion.textContent = "";
+    return;
+  }
+
+  const question = (Array.isArray(task.todos) ? task.todos : []).find(
+    (todo) => todo.slug === handoff.question_todo,
+  );
+  const agentName = agentDisplayName(handoff.resume_owner, task);
+  if (handoff.state === "waiting_for_input") {
+    elements.taskHandoffHeading.textContent = "Waiting for your answer";
+    elements.taskHandoffCopy.textContent = `${agentName} will resume with: ${handoff.resume_action}`;
+    elements.taskHandoffQuestion.textContent = question?.detail || question?.text || "The canonical question is loading.";
+    elements.taskHandoffQuestion.classList.remove("is-hidden");
+    elements.taskHandoffAnswerForm.classList.remove("is-hidden");
+    return;
+  }
+  if (handoff.state === "ready_for_agent") {
+    elements.taskHandoffHeading.textContent = `Answer recorded — waiting for ${agentName}'s next hourly scan.`;
+    elements.taskHandoffCopy.textContent = `Verified next action: ${handoff.resume_action}`;
+    elements.taskHandoffQuestion.textContent = "";
+    return;
+  }
+  elements.taskHandoffHeading.textContent = `${agentName} is working.`;
+  elements.taskHandoffCopy.textContent = `Acknowledged next action: ${handoff.resume_action}`;
+  elements.taskHandoffQuestion.textContent = "";
+}
+
 function renderTaskTodos(task) {
+  renderTaskHandoff(task);
   const todos = Array.isArray(task.todos) ? task.todos : [];
   const filtered = state.todoFilter === "all"
     ? todos
@@ -4115,6 +4199,62 @@ async function todoMutation(endpoint, method, body) {
     throw error;
   }
   return result.receipt.todo;
+}
+
+async function answerAndHandBack(event) {
+  event.preventDefault();
+  const task = findTaskBySlug(state.selectedSlug);
+  const todo = (Array.isArray(task?.todos) ? task.todos : []).find(
+    (candidate) => isActiveHandoffQuestion(candidate, task),
+  );
+  if (!task || !todo) return;
+  elements.taskHandoffError.classList.add("is-hidden");
+  elements.taskHandoffSubmit.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/todos/${encodeURIComponent(todo.slug)}/answer`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          answer: elements.taskHandoffAnswer.value,
+          expected_updated_at: todo.updated_at,
+          actor: "people/tony-guan",
+          source: "mission_control",
+          idempotency_key: crypto.randomUUID(),
+        }),
+      },
+    );
+    const receipt = await response.json();
+    if (!response.ok || !receipt.verified || !receipt.task || !receipt.todo) {
+      const error = new Error(receipt.error || "Answer readback was not verified in GBrain.");
+      error.code = receipt.code || "ambiguous_readback";
+      throw error;
+    }
+    const current = findTaskBySlug(task.slug);
+    const todos = Array.isArray(current?.todos) ? [...current.todos] : [];
+    const todoIndex = todos.findIndex((candidate) => candidate.slug === receipt.todo.slug);
+    if (todoIndex === -1) todos.push(receipt.todo);
+    else todos[todoIndex] = receipt.todo;
+    reconcileVerifiedTask({ ...receipt.task, todos });
+    state.selectedSlug = receipt.task.slug;
+    state.selectedKind = "task";
+    elements.taskHandoffAnswer.value = "";
+    selectTask(receipt.task.slug);
+    window.requestAnimationFrame(() => elements.taskHandoffPanel.focus({ preventScroll: true }));
+    showToast(`Answer verified. ${agentDisplayName(receipt.next_owner, receipt.task)} can resume this task.`);
+  } catch (error) {
+    const message = todoErrorMessage(error);
+    elements.taskHandoffError.textContent = message;
+    elements.taskHandoffError.classList.remove("is-hidden");
+    if (error.code === "todo_changed") {
+      await refreshTaskTodos(task.slug, { slug: todo.slug, control: "summary" });
+      elements.taskHandoffError.textContent = message;
+      elements.taskHandoffError.classList.remove("is-hidden");
+    }
+  } finally {
+    elements.taskHandoffSubmit.disabled = false;
+  }
 }
 
 async function createTaskTodo(event) {
@@ -5214,6 +5354,7 @@ elements.taskTodoAddCancel.addEventListener("click", () => {
   setTodoAddOpen(false);
 });
 elements.taskTodoAddForm.addEventListener("submit", createTaskTodo);
+elements.taskHandoffAnswerForm.addEventListener("submit", answerAndHandBack);
 elements.taskTodoFilter.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-todo-filter]");
   if (!button) return;
@@ -5365,17 +5506,34 @@ elements.calendarPickerForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const selected = Array.from(elements.calendarPickerList.querySelectorAll("input:checked"), (input) => input.value);
   elements.calendarPickerError.classList.add("is-hidden");
+  elements.calendarPickerSaving.classList.remove("is-hidden");
+  elements.calendarPickerSubmit.disabled = true;
+  elements.calendarPickerSubmit.textContent = "Saving…";
+  elements.calendarPickerClose.disabled = true;
+  elements.calendarPickerCancel.disabled = true;
   try {
     const response = await fetch("/api/ical-preferences", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ selected_calendar_ids: selected }) });
     const payload = await response.json();
     if (!response.ok || !payload.verified) throw new Error(payload.error || "Calendar selections could not be saved.");
-    state.selectedCalendarIds = payload.selected_calendar_ids || [];
+    const saved = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : [];
+    await loadCalendarPicker();
+    const expected = [...new Set(selected)];
+    if (JSON.stringify(state.selectedCalendarIds) !== JSON.stringify(expected) || JSON.stringify(saved) !== JSON.stringify(expected)) {
+      throw new Error("Calendar selection readback did not match the saved preference. Review the selection and try again.");
+    }
     state.icalRange = "";
+    state.calendarPreferencesNotice = `Calendar selection saved and verified. ${saved.length} read-only calendar${saved.length === 1 ? "" : "s"} selected.`;
     elements.calendarPickerDialog.close();
     render();
   } catch (error) {
     elements.calendarPickerError.textContent = error.message || "Calendar selections could not be saved.";
     elements.calendarPickerError.classList.remove("is-hidden");
+  } finally {
+    elements.calendarPickerSaving.classList.add("is-hidden");
+    elements.calendarPickerSubmit.disabled = false;
+    elements.calendarPickerSubmit.textContent = "Save selected calendars";
+    elements.calendarPickerClose.disabled = false;
+    elements.calendarPickerCancel.disabled = false;
   }
 });
 elements.boardStatusRetry.addEventListener("click", () => {
