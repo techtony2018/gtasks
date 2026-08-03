@@ -48,11 +48,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-V0.0.71 keeps verified Mission Control content usable while canonical reads
-refresh in the background. System Tickets gain a bounded last-verified read,
-All Tasks and search share one reversible rolling-month date scope, Inbox shows
-only pending proposals, Calendar restores its verified local selection, and
-update feedback plus TODO wording are consistent across the UI.
+V0.0.72 adds canonical Artifact hierarchy browsing with a Recent alternative,
+read-only Calendar event time and detail inspection, an authorized Calendar
+state without a redundant Reconnect action, and remembered desktop detail-panel
+resizing while preserving the full-sheet mobile reader.
 
 ### Independent UI/UX release gate
 

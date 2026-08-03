@@ -4,6 +4,14 @@ set -euo pipefail
 bundle_root="${MISSION_CONTROL_CALENDAR_BUNDLE_ROOT:-$HOME/Library/Application Support/Mission Control/Mission Control Calendar.app}"
 executable="$bundle_root/Contents/MacOS/MissionControlCalendar"
 plist="$bundle_root/Contents/Info.plist"
+codesign_identity="${MISSION_CONTROL_CALENDAR_CODESIGN_IDENTITY:-}"
+if [[ -z "$codesign_identity" ]]; then
+  codesign_identity="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^[[:space:]]*[0-9][0-9]*) \([A-F0-9][A-F0-9]*\) "Apple Development:[^"]*"$/\1/p' | head -n 1)"
+fi
+if [[ -z "$codesign_identity" ]]; then
+  print -u2 'A stable Apple Development signing identity is required for the Mission Control Calendar helper.'
+  exit 1
+fi
 mkdir -p "$bundle_root/Contents/MacOS"
 swiftc "$(cd "$(dirname "$0")/.." && pwd)/gtasks/mission_control_calendar_helper.swift" -o "$executable"
 cat > "$plist" <<'PLIST'
@@ -17,5 +25,5 @@ cat > "$plist" <<'PLIST'
   <key>NSCalendarsFullAccessUsageDescription</key><string>Mission Control needs Full Access only to read events from the calendars you choose. It never writes or deletes calendar events.</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$bundle_root" >/dev/null
+codesign --force --sign "$codesign_identity" "$bundle_root" >/dev/null
 printf 'Built %s\n' "$bundle_root"

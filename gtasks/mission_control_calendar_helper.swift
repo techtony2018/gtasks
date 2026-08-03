@@ -54,6 +54,17 @@ func requestFullAccess() {
     printJSON(["status": statusName()])
 }
 
+func availabilityName(_ availability: EKEventAvailability) -> String {
+    switch availability {
+    case .busy: return "Busy"
+    case .free: return "Free"
+    case .tentative: return "Tentative"
+    case .unavailable: return "Unavailable"
+    case .notSupported: return ""
+    @unknown default: return ""
+    }
+}
+
 switch action {
 case "status":
     printJSON(["status": statusName()])
@@ -84,8 +95,30 @@ case "events":
     formatter.calendar = Calendar.current
     formatter.timeZone = TimeZone.current
     formatter.dateFormat = "yyyy-MM-dd"
-    let events = store.events(matching: predicate).map { event in
-        ["id": event.eventIdentifier ?? "", "title": event.title ?? "Untitled event", "day": formatter.string(from: event.startDate), "all_day": event.isAllDay] as [String: Any]
+    let instantFormatter = ISO8601DateFormatter()
+    let events = store.events(matching: predicate).compactMap { event -> [String: Any]? in
+        guard let effectiveStart = event.startDate else { return nil }
+        let effectiveEnd = event.endDate ?? effectiveStart
+        let inclusiveEnd = event.isAllDay
+            ? effectiveEnd.addingTimeInterval(-1)
+            : effectiveEnd
+        return [
+            "id": event.eventIdentifier ?? "",
+            "title": event.title ?? "Untitled event",
+            "day": formatter.string(from: effectiveStart),
+            "start_day": formatter.string(from: effectiveStart),
+            "end_day": formatter.string(from: inclusiveEnd),
+            "start": instantFormatter.string(from: effectiveStart),
+            "end": instantFormatter.string(from: effectiveEnd),
+            "all_day": event.isAllDay,
+            "calendar_title": event.calendar.title,
+            "location": event.location ?? "",
+            "notes": event.notes ?? "",
+            "url": event.url?.absoluteString ?? "",
+            "recurrence": event.hasRecurrenceRules ? "Recurring" : "",
+            "availability": availabilityName(event.availability),
+            "timezone": event.timeZone?.identifier ?? TimeZone.current.identifier,
+        ] as [String: Any]
     }
     printJSON(["status": statusName(), "events": events])
 default:

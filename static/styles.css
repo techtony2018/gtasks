@@ -16,6 +16,7 @@
   --warning: #facc15;
   --shadow: 0 22px 64px rgba(0, 3, 14, 0.46);
   --radius: 12px;
+  --detail-panel-width: 344px;
   font-family: "Rajdhani", Inter, "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--canvas);
@@ -75,6 +76,7 @@ a:focus-visible {
 
 .app-shell:has(.detail-panel[aria-hidden="false"]) {
   grid-template-columns: 92px minmax(500px, 1fr) 360px;
+  grid-template-columns: 92px minmax(320px, 1fr) var(--detail-panel-width);
 }
 
 .sidebar {
@@ -1066,6 +1068,37 @@ kbd {
   overflow: hidden auto;
 }
 
+.detail-resize-handle {
+  position: absolute;
+  inset: 0 auto 0 -6px;
+  z-index: 5;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.detail-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  width: 3px;
+  height: 48px;
+  border-radius: 3px;
+  background: var(--line-strong);
+  transform: translateY(-50%);
+}
+
+.detail-resize-handle:hover::after,
+.detail-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+
+body.is-resizing-detail {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .detail-panel[aria-hidden="true"] {
   width: 0;
   min-width: 0;
@@ -1742,7 +1775,14 @@ kbd {
 .calendar-events-toggle { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .calendar-events-toggle input { width: 18px; height: 18px; }
 .calendar-events-status { color: var(--faint); font-size: 9px; }
-.ical-event { margin: 5px 0 0; padding: 4px 5px; border-left: 3px solid #5a7fb8; border-radius: 4px; background: #e9f0fb; color: #294c7e; font-size: 9px; line-height: 1.3; overflow-wrap: anywhere; }
+.ical-event { width: 100%; margin: 5px 0 0; padding: 4px 5px; display: grid; gap: 1px; border: 0; border-left: 3px solid #5a7fb8; border-radius: 4px; background: #e9f0fb; color: #294c7e; font: inherit; font-size: 9px; line-height: 1.3; overflow-wrap: anywhere; text-align: left; cursor: pointer; }
+.ical-event:hover,
+.ical-event:focus-visible,
+.ical-event[aria-current="true"] { background: #dce8f8; outline: 2px solid #5a7fb8; outline-offset: 1px; }
+.ical-event-time { color: #41658f; font-size: 8px; font-weight: 760; }
+.ical-event-title { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.calendar-event-detail { padding: 34px 28px; }
+.calendar-event-detail-copy { margin: 28px 0 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.55; }
 .calendar-picker-list { display: grid; gap: 3px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px; }
 .calendar-picker-list legend { padding: 0 4px; color: var(--muted); font-size: 10px; font-weight: 720; }
 .calendar-picker-option { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; justify-content: start; gap: 6px; min-height: 28px; padding: 2px 0; color: var(--ink); font-size: 12px; line-height: 1.3; text-align: left; cursor: pointer; }
@@ -4765,11 +4805,13 @@ a {
 }
 
 .app-shell:has(.detail-panel[aria-hidden="false"]) {
-  grid-template-columns: 92px minmax(500px, 1fr) 344px;
+  grid-template-columns: 92px minmax(500px, 1fr) 360px;
+  grid-template-columns: 92px minmax(320px, 1fr) var(--detail-panel-width);
 }
 
 .app-shell:has(.artifact-detail-content:not(.is-hidden)) {
-  grid-template-columns: 92px minmax(280px, 1fr) minmax(0, 68vw);
+  --artifact-reader-default: minmax(0, 68vw);
+  grid-template-columns: 92px minmax(320px, 1fr) var(--detail-panel-width, var(--artifact-reader-default));
 }
 
 .nav-label,
@@ -5181,6 +5223,101 @@ button:active {
   min-width: 0;
 }
 
+.artifact-view-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.artifact-view-mode[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.artifact-view-summary {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.artifact-hierarchy {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  overflow-x: hidden;
+}
+
+.artifact-hierarchy-node {
+  min-width: 0;
+  border-left: 1px solid rgba(125, 211, 252, 0.18);
+}
+
+.artifact-hierarchy-node.level-1 {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(7, 17, 31, 0.72);
+}
+
+.artifact-hierarchy-toggle {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.artifact-hierarchy-toggle:hover,
+.artifact-hierarchy-toggle:focus-visible {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.artifact-hierarchy-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.artifact-hierarchy-chevron,
+.artifact-hierarchy-count,
+.artifact-hierarchy-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.artifact-hierarchy-chevron {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  text-align: center;
+}
+
+.artifact-hierarchy-count {
+  white-space: nowrap;
+}
+
+.artifact-hierarchy-children {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 0 8px 8px 18px;
+}
+
+.artifact-hierarchy-children[hidden] {
+  display: none;
+}
+
+.artifact-hierarchy-empty {
+  margin: 0;
+  padding: 6px 8px;
+}
+
 .artifact-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
@@ -5351,7 +5488,7 @@ button:active {
 
 @media (max-width: 1080px) {
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
-    grid-template-columns: 92px minmax(0, 1fr) minmax(292px, 334px);
+    grid-template-columns: 92px minmax(0, 1fr) var(--detail-panel-width);
   }
 }
 
@@ -5359,6 +5496,10 @@ button:active {
   .app-shell,
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     display: block;
+  }
+
+  .detail-resize-handle {
+    display: none;
   }
 
   .sidebar {
@@ -5456,6 +5597,31 @@ button:active {
 
   .artifact-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .artifact-hierarchy {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .artifact-hierarchy-toggle {
+    grid-template-columns: 18px minmax(0, 1fr);
+    min-height: 44px;
+  }
+
+  .artifact-hierarchy-count {
+    grid-column: 2;
+    white-space: normal;
+  }
+
+  .artifact-hierarchy-children {
+    padding-left: 9px;
+    padding-right: 4px;
+  }
+
+  .artifact-view-summary {
+    width: 100%;
+    margin-left: 0;
   }
 
   .artifact-detail-content {

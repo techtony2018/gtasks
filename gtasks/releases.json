@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.71",
+  "current_version": "V0.0.72",
   "releases": [
     {
       "version": "V0.0.1",
@@ -426,6 +426,12 @@
       "date": "2026-08-03",
       "title": "Responsive verified workflow surfaces",
       "summary": "Keeps Mission Control usable during slow canonical reads with a bounded, clearly labelled last-verified System Ticket view and non-blocking refreshes. All Tasks and search share one reversible rolling-month date scope, Inbox shows only pending proposed work, Calendar restores its verified connection and selection without permission prompts, Artifact detail uses a wider reader, Task/Project/Goal writes share accessible HUD feedback, and TODO wording is consistent throughout."
+    },
+    {
+      "version": "V0.0.72",
+      "date": "2026-08-03",
+      "title": "Navigable artifacts and adaptive details",
+      "summary": "Adds canonical Agent-to-Goal-to-Project-to-producing-Task Artifact browsing with a Recent alternative, read-only Calendar event time/details, a verified Manage-calendars connection state without redundant reconnect controls, and a desktop detail panel that can be resized and remembered while mobile keeps its full-sheet view."
     }
   ]
 }

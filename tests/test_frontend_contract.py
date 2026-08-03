@@ -60,6 +60,29 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("inset: 0", mobile)
         self.assertIn("overflow-x: hidden", mobile)
 
+    def test_artifacts_support_canonical_hierarchy_and_recent_modes(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('artifactViewMode: "hierarchy"', javascript)
+        self.assertIn("artifactExpanded: new Set()", javascript)
+        self.assertIn("function buildArtifactHierarchy", javascript)
+        self.assertIn("function artifactHierarchyNode", javascript)
+        self.assertIn('"Hierarchy"', javascript)
+        self.assertIn('"Recent"', javascript)
+        self.assertIn('"No Goal"', javascript)
+        self.assertIn('"No Project"', javascript)
+        self.assertIn('"No producing Task"', javascript)
+        self.assertIn('setAttribute("aria-expanded"', javascript)
+        self.assertIn('setAttribute("aria-controls"', javascript)
+        self.assertIn("loaded Artifact", javascript)
+        self.assertIn(".artifact-hierarchy", stylesheet)
+        self.assertIn(".artifact-hierarchy-toggle", stylesheet)
+        self.assertIn(".artifact-hierarchy-children[hidden]", stylesheet)
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        self.assertIn(".artifact-hierarchy", mobile)
+        self.assertIn("overflow-x: hidden", mobile)
+
     def test_artifact_reader_uses_two_thirds_of_desktop_and_full_mobile_sheet(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
@@ -295,6 +318,29 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".week-view { min-width: 0; max-width: 100%; overflow-x: hidden; }", mobile)
         self.assertIn(".week-grid", mobile)
         self.assertIn("overflow-x: auto", mobile)
+
+    def test_desktop_detail_panel_is_resizable_persistent_and_mobile_safe(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="detail-resize-handle"', html)
+        self.assertIn('role="separator"', html)
+        self.assertIn('aria-orientation="vertical"', html)
+        self.assertIn('aria-label="Resize details panel"', html)
+        self.assertIn('const DETAIL_WIDTH_PREFERENCE_KEY', javascript)
+        self.assertIn("function setDetailPanelWidth", javascript)
+        self.assertIn("function initializeDetailPanelResize", javascript)
+        self.assertIn("if (stored === null) return DETAIL_WIDTH_DEFAULT", javascript)
+        self.assertIn('addEventListener("pointerdown"', javascript)
+        self.assertIn('addEventListener("keydown"', javascript)
+        self.assertIn('addEventListener("dblclick"', javascript)
+        self.assertIn("window.localStorage.setItem", javascript)
+        self.assertIn("--detail-panel-width", stylesheet)
+        self.assertIn("cursor: col-resize", stylesheet)
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        self.assertIn(".detail-resize-handle", mobile)
+        self.assertIn("display: none", mobile)
     def test_board_and_status_editor_are_first_class_navigation(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -400,6 +446,27 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("/relationships`", javascript)
         self.assertIn("advanced_by", readme)
         self.assertIn("Saving the current goal selection", readme)
+
+    def test_goal_detail_keyboard_focus_and_exact_origin_restoration(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="goal-detail-title" tabindex="-1"', html)
+        self.assertIn("button.dataset.slug = goal.slug", javascript)
+        self.assertIn("selectGoal(goal.slug, button)", javascript)
+        self.assertIn('...document.querySelectorAll(".goal-card")', javascript)
+        self.assertIn("elements.goalDetailTitle.focus({ preventScroll: true })", javascript)
+
+    def test_mobile_detail_sheet_is_modal_and_traps_keyboard_focus(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function syncMobileDetailModalState()", javascript)
+        self.assertIn("surface.inert = isModal", javascript)
+        self.assertIn('elements.detailPanel.setAttribute("aria-modal", "true")', javascript)
+        self.assertIn("function trapMobileDetailFocus(event)", javascript)
+        self.assertIn('event.key !== "Tab"', javascript)
+        self.assertIn("elements.detailPanel.addEventListener(\"keydown\", trapMobileDetailFocus)", javascript)
+        self.assertIn('window.addEventListener("resize", syncMobileDetailModalState)', javascript)
 
     def test_goals_have_verified_create_pause_and_delete_confirmations(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -758,8 +825,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.71"', html)
-        self.assertIn('src="/app.js?v=0.0.71"', html)
+        self.assertIn('href="/styles.css?v=0.0.72"', html)
+        self.assertIn('src="/app.js?v=0.0.72"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1073,6 +1140,39 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn('"Reauthorize Calendar"', calendar_filter)
         self.assertIn("Checking Calendar access…", calendar_filter)
         self.assertIn("loadCalendarConnectionState();", javascript[-1200:])
+
+    def test_connected_calendar_uses_manage_without_redundant_reconnect(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        calendar_filter = javascript[
+            javascript.index("function calendarEventsFilter") : javascript.index("async function reconnectCalendar")
+        ]
+        authorized_branch = calendar_filter[
+            calendar_filter.index("} else {") :
+        ]
+
+        self.assertIn('node("button", "secondary-button", "Manage calendars")', authorized_branch)
+        self.assertNotIn('node("button", "secondary-button", "Reconnect")', authorized_branch)
+        self.assertIn('state.icalStatus !== "authorized"', calendar_filter)
+        self.assertIn('"Reconnect"', calendar_filter)
+
+    def test_calendar_events_show_time_and_open_read_only_details(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function calendarEventItem(event, day)", javascript)
+        self.assertIn("function calendarEventTimeLabel(event, day)", javascript)
+        self.assertIn('"All day"', javascript)
+        self.assertIn('selectCalendarEvent(event, origin)', javascript)
+        self.assertIn('state.selectedKind = "ical-event"', javascript)
+        self.assertIn('id="calendar-event-detail"', html)
+        self.assertIn('id="calendar-event-detail-title"', html)
+        self.assertIn(
+            "This is a read-only view. To make changes, open the Calendar app.",
+            html,
+        )
+        self.assertIn(".ical-event-time", css)
+        self.assertIn(".calendar-event-detail-copy", css)
 
     def test_background_task_refresh_keeps_verified_ui_and_connection_stable(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

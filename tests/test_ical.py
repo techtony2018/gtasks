@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,25 @@ class CalendarPreferencesTests(unittest.TestCase):
 
 
 class CalendarHelperContractTests(unittest.TestCase):
+    def test_helper_build_uses_a_stable_signing_identity(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "scripts" / "build-mission-control-calendar-helper.sh").read_text()
+
+        self.assertIn("MISSION_CONTROL_CALENDAR_CODESIGN_IDENTITY", script)
+        self.assertIn("Apple Development", script)
+        self.assertNotIn("codesign --force --sign - ", script)
+
+    @unittest.skipUnless(shutil.which("swiftc"), "Swift compiler is unavailable")
+    def test_helper_source_typechecks(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "gtasks" / "mission_control_calendar_helper.swift"
+        result = subprocess.run(
+            ["swiftc", "-typecheck", str(source)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_events_helper_receives_only_selected_identifiers(self) -> None:
         helper = Path("/tmp/Mission Control Calendar.app/Contents/MacOS/MissionControlCalendar")
         reader = ICalendarReader(helper)
@@ -50,3 +71,21 @@ class CalendarHelperContractTests(unittest.TestCase):
         self.assertNotIn("saveEvent", source)
         self.assertNotIn("removeEvent", source)
         self.assertNotIn("EKEvent(", source)
+
+    def test_helper_serializes_read_only_event_time_and_detail_fields(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "gtasks/mission_control_calendar_helper.swift").read_text()
+
+        for field in (
+            '"start"',
+            '"end"',
+            '"calendar_title"',
+            '"location"',
+            '"notes"',
+            '"url"',
+            '"recurrence"',
+            '"availability"',
+            '"timezone"',
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, source)
+        self.assertIn("ISO8601DateFormatter", source)

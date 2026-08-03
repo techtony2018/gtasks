@@ -158,6 +158,10 @@ function renderSafeMarkdown(container, value) {
 
 const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
 const AGENT_TASKS_PREFERENCE_COOKIE = "mission-control-show-agent-tasks";
+const DETAIL_WIDTH_PREFERENCE_KEY = "mission-control.detail-panel-width";
+const DETAIL_WIDTH_DEFAULT = 344;
+const DETAIL_WIDTH_MIN = 292;
+const DETAIL_WIDTH_MAX = 720;
 
 const state = {
   snapshot: null,
@@ -184,6 +188,7 @@ const state = {
   calendarPreferencesNotice: "",
   icalRange: "",
   icalLoading: false,
+  icalEventsError: "",
   selectedCalendarIds: [],
   availableCalendars: [],
   systemTickets: [],
@@ -260,6 +265,9 @@ const state = {
   artifactsError: "",
   artifactsNextCursor: null,
   artifactAgentFilter: "all",
+  artifactViewMode: "hierarchy",
+  artifactExpanded: new Set(),
+  artifactHierarchyInitialized: false,
   artifactTaskFilter: null,
   artifactRequestToken: 0,
   taskArtifacts: new Map(),
@@ -276,6 +284,163 @@ function setHudTooltip(element, text) {
   }
   element.dataset.tooltip = value;
   element.classList.add("has-tooltip");
+}
+
+function detailPanelWidthBounds() {
+  const maximum = Math.max(
+    DETAIL_WIDTH_MIN,
+    Math.min(DETAIL_WIDTH_MAX, window.innerWidth - 92 - 320),
+  );
+  return { minimum: DETAIL_WIDTH_MIN, maximum };
+}
+
+function storedDetailPanelWidth() {
+  try {
+    const stored = window.localStorage.getItem(DETAIL_WIDTH_PREFERENCE_KEY);
+    if (stored === null) return null;
+    const saved = Number(stored);
+    return Number.isFinite(saved) ? saved : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readDetailPanelWidth() {
+  const stored = storedDetailPanelWidth();
+  if (stored === null) return DETAIL_WIDTH_DEFAULT;
+  return stored;
+}
+
+function prepareDetailPanelWidth(kind) {
+  const stored = storedDetailPanelWidth();
+  if (stored !== null) {
+    setDetailPanelWidth(stored, { persist: false });
+    return;
+  }
+  setDetailPanelWidth(
+    kind === "artifact" ? Math.round(window.innerWidth * 0.68) : DETAIL_WIDTH_DEFAULT,
+    { persist: false },
+  );
+}
+
+function setDetailPanelWidth(value, { persist = true } = {}) {
+  const { minimum, maximum } = detailPanelWidthBounds();
+  const numeric = Number(value);
+  const width = Math.round(Math.min(
+    maximum,
+    Math.max(minimum, Number.isFinite(numeric) ? numeric : DETAIL_WIDTH_DEFAULT),
+  ));
+  document.documentElement.style.setProperty("--detail-panel-width", `${width}px`);
+  elements.detailResizeHandle.setAttribute("aria-valuemin", String(minimum));
+  elements.detailResizeHandle.setAttribute("aria-valuemax", String(maximum));
+  elements.detailResizeHandle.setAttribute("aria-valuenow", String(width));
+  if (persist) {
+    try {
+      window.localStorage.setItem(DETAIL_WIDTH_PREFERENCE_KEY, String(width));
+    } catch (_) {
+      // A local layout preference must never affect canonical data or details.
+    }
+  }
+  return width;
+}
+
+function initializeDetailPanelResize() {
+  const handle = elements.detailResizeHandle;
+  setDetailPanelWidth(readDetailPanelWidth());
+  handle.addEventListener("pointerdown", (event) => {
+    if (window.matchMedia("(max-width: 760px)").matches) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = Number(handle.getAttribute("aria-valuenow")) || DETAIL_WIDTH_DEFAULT;
+    handle.setPointerCapture?.(event.pointerId);
+    document.body.classList.add("is-resizing-detail");
+    const move = (moveEvent) => setDetailPanelWidth(
+      startWidth + startX - moveEvent.clientX,
+      { persist: false },
+    );
+    const stop = (upEvent) => {
+      handle.releasePointerCapture?.(upEvent.pointerId);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", stop);
+      handle.removeEventListener("pointercancel", stop);
+      document.body.classList.remove("is-resizing-detail");
+      setDetailPanelWidth(handle.getAttribute("aria-valuenow"));
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", stop);
+    handle.addEventListener("pointercancel", stop);
+  });
+  handle.addEventListener("keydown", (event) => {
+    const current = Number(handle.getAttribute("aria-valuenow")) || DETAIL_WIDTH_DEFAULT;
+    const step = event.shiftKey ? 48 : 16;
+    let next = null;
+    if (event.key === "ArrowLeft") next = current + step;
+    if (event.key === "ArrowRight") next = current - step;
+    if (event.key === "Home") next = DETAIL_WIDTH_MIN;
+    if (event.key === "End") next = detailPanelWidthBounds().maximum;
+    if (event.key === "0") next = DETAIL_WIDTH_DEFAULT;
+    if (next === null) return;
+    event.preventDefault();
+    setDetailPanelWidth(next);
+  });
+  handle.addEventListener("dblclick", () => setDetailPanelWidth(DETAIL_WIDTH_DEFAULT));
+  window.addEventListener("resize", () => setDetailPanelWidth(readDetailPanelWidth()));
+}
+
+function syncMobileDetailModalState() {
+  const isModal =
+    elements.detailPanel.getAttribute("aria-hidden") === "false" &&
+    window.matchMedia("(max-width: 760px)").matches;
+  [document.querySelector(".sidebar"), document.querySelector(".main-content")]
+    .filter(Boolean)
+    .forEach((surface) => {
+      surface.inert = isModal;
+    });
+  if (isModal) {
+    elements.detailPanel.setAttribute("role", "dialog");
+    elements.detailPanel.setAttribute("aria-modal", "true");
+  } else {
+    elements.detailPanel.removeAttribute("role");
+    elements.detailPanel.removeAttribute("aria-modal");
+  }
+}
+
+function mobileDetailFocusableElements() {
+  return Array.from(elements.detailPanel.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => (
+    !element.hidden &&
+    !element.closest(".is-hidden") &&
+    element.getClientRects().length > 0
+  ));
+}
+
+function trapMobileDetailFocus(event) {
+  if (
+    event.key !== "Tab" ||
+    elements.detailPanel.getAttribute("aria-modal") !== "true"
+  ) return;
+  const focusable = mobileDetailFocusableElements();
+  if (!focusable.length) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (event.shiftKey && (active === first || !elements.detailPanel.contains(active))) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && (active === last || !elements.detailPanel.contains(active))) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
+}
+
+function initializeMobileDetailSheet() {
+  elements.detailPanel.addEventListener("keydown", trapMobileDetailFocus);
+  window.addEventListener("resize", syncMobileDetailModalState);
+  syncMobileDetailModalState();
 }
 
 function ensureHudTooltipElement() {
@@ -581,6 +746,7 @@ const elements = {
   calendarPickerSubmit: document.querySelector("#calendar-picker-submit"),
   calendarPickerError: document.querySelector("#calendar-picker-error"),
   detailPanel: document.querySelector("#detail-panel"),
+  detailResizeHandle: document.querySelector("#detail-resize-handle"),
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
   artifactDetailContent: document.querySelector("#artifact-detail-content"),
@@ -627,6 +793,13 @@ const elements = {
   systemTicketDetailError: document.querySelector("#system-ticket-detail-error"),
   systemTicketDetailGbrainLink: document.querySelector("#system-ticket-detail-gbrain-link"),
   systemTicketDetailSlug: document.querySelector("#system-ticket-detail-slug"),
+  calendarEventDetail: document.querySelector("#calendar-event-detail"),
+  calendarEventDetailClose: document.querySelector("#calendar-event-detail-close"),
+  calendarEventDetailTitle: document.querySelector("#calendar-event-detail-title"),
+  calendarEventDetailList: document.querySelector("#calendar-event-detail-list"),
+  calendarEventDetailNotesSection: document.querySelector("#calendar-event-detail-notes-section"),
+  calendarEventDetailNotes: document.querySelector("#calendar-event-detail-notes"),
+  calendarEventDetailUrl: document.querySelector("#calendar-event-detail-url"),
   detailClose: document.querySelector("#detail-close"),
   taskDetailStatus: document.querySelector("#task-detail-status"),
   taskEditButton: document.querySelector("#task-edit-button"),
@@ -1832,7 +2005,7 @@ function renderWeekView() {
       due.forEach((task) => list.append(taskRow(task, { calendarWeek: true })));
       column.append(list);
     }
-    icalEventsForDay(key).forEach((event) => column.append(node("p", "ical-event", event.title || "Calendar event")));
+    icalEventsForDay(key).forEach((event) => column.append(calendarEventItem(event, key)));
     grid.append(column);
   }
   wrapper.append(grid);
@@ -1857,7 +2030,7 @@ function calendarEventsFilter() {
     : state.icalLoading
       ? "Reading local Calendar…"
       : state.icalStatus === "authorized"
-        ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Connected · choose calendars to show events")
+        ? (state.icalEventsError || (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Connected · choose calendars to show events"))
         : state.icalStatus === "denied" || state.icalStatus === "restricted"
           ? "Calendar permission was not granted"
           : state.icalStatus === "unavailable"
@@ -1881,10 +2054,7 @@ function calendarEventsFilter() {
     const manage = node("button", "secondary-button", "Manage calendars");
     manage.type = "button";
     manage.addEventListener("click", openCalendarPicker);
-    const reconnect = node("button", "secondary-button", "Reconnect");
-    reconnect.type = "button";
-    reconnect.addEventListener("click", reconnectCalendar);
-    wrapper.append(manage, reconnect);
+    wrapper.append(manage);
   }
   return wrapper;
 }
@@ -1972,18 +2142,128 @@ async function ensureIcalEvents(start, end) {
     state.icalRange = range;
     state.icalStatus = payload.status || "unavailable";
     state.icalEvents = Array.isArray(payload.events) ? payload.events : [];
+    state.icalEventsError = "";
     state.selectedCalendarIds = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : state.selectedCalendarIds;
-  } catch (_) {
+  } catch (error) {
     state.icalRange = range;
     state.icalStatus = "unavailable";
-    state.icalEvents = [];
+    state.icalEventsError = `${error.message || "Calendar events could not be refreshed."} Previously verified events remain visible.`;
   }
   finally { state.icalLoading = false; render(); }
 }
 
 function icalEventsForDay(day) {
-  if (!state.showIcalEvents || state.icalStatus !== "authorized") return [];
-  return state.icalEvents.filter((event) => event.day === day);
+  const hasVerifiedStaleEvents = Boolean(state.icalEventsError && state.icalEvents.length);
+  if (!state.showIcalEvents || (state.icalStatus !== "authorized" && !hasVerifiedStaleEvents)) return [];
+  return state.icalEvents.filter((event) => {
+    const startDay = event.start_day || event.day;
+    const endDay = event.end_day || startDay;
+    return startDay && startDay <= day && day <= endDay;
+  });
+}
+
+function localEventDate(value) {
+  if (typeof value !== "string" || !value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function calendarEventTimeLabel(event, day) {
+  if (event.all_day) return "All day";
+  const start = localEventDate(event.start);
+  const end = localEventDate(event.end);
+  if (!start) return "Time unavailable";
+  const time = (value) => new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(value);
+  const startDay = event.start_day || event.day;
+  const endDay = event.end_day || startDay;
+  if (startDay !== endDay) {
+    if (day === startDay) return `${time(start)} →`;
+    if (day === endDay && end) return `→ ${time(end)}`;
+    return "Continues";
+  }
+  return end ? `${time(start)}–${time(end)}` : time(start);
+}
+
+function calendarEventItem(event, day) {
+  const button = node("button", "ical-event");
+  button.type = "button";
+  button.dataset.slug = event.id || `${event.title || "event"}-${event.start || day}`;
+  button.setAttribute("aria-label", `${event.title || "Calendar event"}, ${calendarEventTimeLabel(event, day)}`);
+  button.append(
+    node("span", "ical-event-time", calendarEventTimeLabel(event, day)),
+    node("span", "ical-event-title", event.title || "Calendar event"),
+  );
+  button.addEventListener("click", () => selectCalendarEvent(event, button));
+  return button;
+}
+
+function safeCalendarEventUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "https:") return parsed.href;
+    if (parsed.protocol === "http:" && ["127.0.0.1", "localhost"].includes(parsed.hostname)) return parsed.href;
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+function appendCalendarDetailRow(label, value) {
+  if (value === null || value === undefined || String(value).trim() === "") return;
+  const row = document.createElement("div");
+  row.append(node("dt", "", label), node("dd", "", String(value)));
+  elements.calendarEventDetailList.append(row);
+}
+
+function eventDateTimeLabel(event) {
+  if (event.all_day) {
+    const start = event.start_day || event.day;
+    const end = event.end_day || start;
+    return start === end ? `${formatDay(start, "long")} · All day` : `${formatDay(start, "long")} – ${formatDay(end, "long")} · All day`;
+  }
+  const start = localEventDate(event.start);
+  const end = localEventDate(event.end);
+  if (!start) return "Time unavailable";
+  const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return end ? `${formatter.format(start)} – ${formatter.format(end)}` : formatter.format(start);
+}
+
+function selectCalendarEvent(event, origin) {
+  const identity = event.id || `${event.title || "event"}-${event.start || event.day || ""}`;
+  state.selectedSlug = identity;
+  state.selectedKind = "ical-event";
+  prepareDetailPanelWidth("calendar-event");
+  state.detailReturnFocus = { element: origin, slug: identity };
+  elements.detailPanel.setAttribute("aria-hidden", "false");
+  elements.detailPanel.setAttribute("aria-label", "Calendar event details");
+  elements.detailEmpty.classList.add("is-hidden");
+  elements.detailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
+  elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.remove("is-hidden");
+  elements.calendarEventDetailTitle.textContent = event.title || "Calendar event";
+  elements.calendarEventDetailList.replaceChildren();
+  appendCalendarDetailRow("Calendar", event.calendar_title);
+  appendCalendarDetailRow("When", eventDateTimeLabel(event));
+  appendCalendarDetailRow("Timezone", event.timezone);
+  appendCalendarDetailRow("Location", event.location);
+  appendCalendarDetailRow("Recurrence", event.recurrence);
+  appendCalendarDetailRow("Availability", event.availability);
+  const notes = typeof event.notes === "string" ? event.notes.trim() : "";
+  elements.calendarEventDetailNotesSection.classList.toggle("is-hidden", !notes);
+  elements.calendarEventDetailNotes.textContent = notes;
+  const safeUrl = safeCalendarEventUrl(event.url);
+  elements.calendarEventDetailUrl.classList.toggle("is-hidden", !safeUrl);
+  if (safeUrl) elements.calendarEventDetailUrl.href = safeUrl;
+  else elements.calendarEventDetailUrl.removeAttribute("href");
+  render();
+  window.requestAnimationFrame(() => elements.calendarEventDetailTitle.focus({ preventScroll: true }));
 }
 
 function renderMonthCalendar() {
@@ -2016,7 +2296,7 @@ function renderMonthCalendar() {
       taskButton.setAttribute("aria-description", todoSummary(task));
       taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
     });
-    icalEventsForDay(key).forEach((event) => cell.append(node("p", "ical-event", event.title || "Calendar event")));
+    icalEventsForDay(key).forEach((event) => cell.append(calendarEventItem(event, key)));
     grid.append(cell);
   }
   wrapper.append(grid); return wrapper;
@@ -2791,6 +3071,7 @@ function renderCoordinatorSummary() {
 function goalCard(goal) {
   const button = node("button", "goal-card");
   button.type = "button";
+  button.dataset.slug = goal.slug;
   button.append(
     node("h2", "", goal.title),
     node("p", "", goal.outcome),
@@ -2805,7 +3086,7 @@ function goalCard(goal) {
     node("span", "", `${goal.review_cadence} · ${formatDay(goal.target_day)}`),
   );
   button.append(progress, meta);
-  button.addEventListener("click", () => selectGoal(goal.slug));
+  button.addEventListener("click", () => selectGoal(goal.slug, button));
   return button;
 }
 
@@ -2949,6 +3230,7 @@ function selectProject(slug, returnFocus = undefined) {
   }
   state.selectedSlug = slug;
   state.selectedKind = "project";
+  prepareDetailPanelWidth("project");
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "Project details");
   elements.detailEmpty.classList.add("is-hidden");
@@ -2957,6 +3239,7 @@ function selectProject(slug, returnFocus = undefined) {
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.remove("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.projectDetailStatus.textContent = project.status;
   elements.projectDetailTitle.textContent = project.title;
   renderSafeMarkdown(elements.projectDetailSummary, project.summary);
@@ -4208,6 +4491,7 @@ function render() {
   } else {
     elements.dateLabel.textContent = "Waiting for verified task data";
   }
+  syncMobileDetailModalState();
 }
 
 function renderSystemTicketsView() {
@@ -4354,6 +4638,7 @@ function selectSystemTicket(ticketSlug, originControl = null) {
   }
   state.selectedSlug = ticket.slug;
   state.selectedKind = "system-ticket";
+  prepareDetailPanelWidth("system-ticket");
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "System Ticket details");
   elements.detailEmpty.classList.add("is-hidden");
@@ -4361,6 +4646,7 @@ function selectSystemTicket(ticketSlug, originControl = null) {
   elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.remove("is-hidden");
   elements.systemTicketDetailStatus.textContent = ticket.status;
   elements.systemTicketDetailTitle.textContent = ticket.title;
@@ -5077,6 +5363,141 @@ function artifactCard(artifact) {
   return button;
 }
 
+function artifactLoadedCountLabel(count) {
+  return `${count} loaded Artifact${count === 1 ? "" : "s"}`;
+}
+
+function artifactHierarchyLabel(kind, slug) {
+  if (kind === "agent") return artifactAgent({ created_by: slug }).name;
+  if (kind === "goal") {
+    if (!slug) return "No Goal";
+    return state.snapshot?.goals?.find((goal) => goal.slug === slug)?.title || slug;
+  }
+  if (kind === "project") {
+    if (!slug) return "No Project";
+    return state.projects.find((project) => project.slug === slug)?.title || slug;
+  }
+  if (!slug) return "No producing Task";
+  return findTaskBySlug(slug)?.title || slug;
+}
+
+function artifactHierarchyKey(kind, slug, parentKey = "") {
+  return `${parentKey}${parentKey ? "/" : ""}${kind}:${slug || "none"}`;
+}
+
+function buildArtifactHierarchy() {
+  const loadedArtifacts = [...state.artifacts];
+  const agentSlugs = new Set(loadedArtifacts.map((artifact) => artifact.created_by));
+  state.agents
+    .filter((agent) => state.artifactAgentFilter === "all" || agent.slug === state.artifactAgentFilter)
+    .forEach((agent) => agentSlugs.add(agent.slug));
+  if (state.artifactAgentFilter !== "all") agentSlugs.add(state.artifactAgentFilter);
+
+  const buildLevel = (kind, artifacts, parentKey) => {
+    const field = { goal: "goal", project: "project", task: "produced_for" }[kind];
+    const groups = new Map();
+    artifacts.forEach((artifact) => {
+      const slug = artifact[field] || "";
+      if (!groups.has(slug)) groups.set(slug, []);
+      groups.get(slug).push(artifact);
+    });
+    if (!groups.size) groups.set("", []);
+    return [...groups.entries()]
+      .sort(([left], [right]) => artifactHierarchyLabel(kind, left).localeCompare(artifactHierarchyLabel(kind, right)))
+      .map(([slug, groupedArtifacts]) => {
+        const key = artifactHierarchyKey(kind, slug, parentKey);
+        const children = kind === "task"
+          ? groupedArtifacts
+          : buildLevel(kind === "goal" ? "project" : "task", groupedArtifacts, key);
+        return {
+          kind,
+          slug,
+          key,
+          label: artifactHierarchyLabel(kind, slug),
+          count: new Set(groupedArtifacts.map((artifact) => artifact.slug)).size,
+          children,
+        };
+      });
+  };
+
+  const roots = [...agentSlugs]
+    .filter(Boolean)
+    .sort((left, right) => artifactHierarchyLabel("agent", left).localeCompare(artifactHierarchyLabel("agent", right)))
+    .map((agentSlug) => {
+      const artifacts = loadedArtifacts.filter((artifact) => artifact.created_by === agentSlug);
+      const key = artifactHierarchyKey("agent", agentSlug);
+      return {
+        kind: "agent",
+        slug: agentSlug,
+        key,
+        label: artifactHierarchyLabel("agent", agentSlug),
+        count: new Set(artifacts.map((artifact) => artifact.slug)).size,
+        children: buildLevel("goal", artifacts, key),
+      };
+    });
+  const validKeys = new Set();
+  const collectKeys = (nodes) => nodes.forEach((entry) => {
+    validKeys.add(entry.key);
+    if (entry.kind !== "task") collectKeys(entry.children);
+  });
+  collectKeys(roots);
+  [...state.artifactExpanded].forEach((key) => {
+    if (!validKeys.has(key)) state.artifactExpanded.delete(key);
+  });
+  if (!state.artifactHierarchyInitialized) {
+    roots.forEach((entry) => state.artifactExpanded.add(entry.key));
+    state.artifactHierarchyInitialized = true;
+  }
+  return roots;
+}
+
+function artifactHierarchyNode(entry, level = 1) {
+  const section = node("section", `artifact-hierarchy-node level-${level}`);
+  const contentId = `artifact-hierarchy-${entry.key.replace(/[^a-z0-9_-]+/gi, "-")}`;
+  const expanded = state.artifactExpanded.has(entry.key);
+  const toggle = node("button", "artifact-hierarchy-toggle");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-controls", contentId);
+  toggle.append(
+    node("span", "artifact-hierarchy-chevron", expanded ? "−" : "+"),
+    node("strong", "artifact-hierarchy-label", entry.label),
+    node("span", "artifact-hierarchy-count", artifactLoadedCountLabel(entry.count)),
+  );
+  const content = node("div", "artifact-hierarchy-children");
+  content.id = contentId;
+  content.hidden = !expanded;
+  if (entry.kind === "task") {
+    if (!entry.children.length) {
+      content.append(node("p", "artifact-hierarchy-empty", "No canonical Artifacts in this branch."));
+    } else {
+      const grid = node("div", "artifact-grid");
+      entry.children.forEach((artifact) => grid.append(artifactCard(artifact)));
+      content.append(grid);
+    }
+  } else {
+    entry.children.forEach((child) => content.append(artifactHierarchyNode(child, level + 1)));
+  }
+  toggle.addEventListener("click", () => {
+    if (state.artifactExpanded.has(entry.key)) state.artifactExpanded.delete(entry.key);
+    else state.artifactExpanded.add(entry.key);
+    render();
+  });
+  section.append(toggle, content);
+  return section;
+}
+
+function artifactViewModeButton(label, mode) {
+  const button = node("button", "secondary-button artifact-view-mode", label);
+  button.type = "button";
+  button.setAttribute("aria-pressed", String(state.artifactViewMode === mode));
+  button.addEventListener("click", () => {
+    state.artifactViewMode = mode;
+    render();
+  });
+  return button;
+}
+
 function renderArtifactsView() {
   const section = node("section", "artifacts-view");
   if (state.artifactsLoading && !state.artifacts.length) {
@@ -5114,9 +5535,24 @@ function renderArtifactsView() {
     section.append(empty);
     return section;
   }
-  const grid = node("div", "artifact-grid");
-  state.artifacts.forEach((artifact) => grid.append(artifactCard(artifact)));
-  section.append(grid);
+  const viewControls = node("div", "artifact-view-controls");
+  viewControls.append(
+    artifactViewModeButton("Hierarchy", "hierarchy"),
+    artifactViewModeButton("Recent", "recent"),
+    node("span", "artifact-view-summary", artifactLoadedCountLabel(new Set(state.artifacts.map((artifact) => artifact.slug)).size)),
+  );
+  section.append(viewControls);
+  if (state.artifactViewMode === "hierarchy") {
+    const hierarchy = node("div", "artifact-hierarchy");
+    buildArtifactHierarchy().forEach((entry) => hierarchy.append(artifactHierarchyNode(entry)));
+    section.append(hierarchy);
+  } else {
+    const grid = node("div", "artifact-grid");
+    [...state.artifacts]
+      .sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")))
+      .forEach((artifact) => grid.append(artifactCard(artifact)));
+    section.append(grid);
+  }
   if (state.artifactsLoading) section.append(node("p", "artifact-load-state", "Reading newer canonical results…"));
   if (state.artifactsNextCursor !== null && !state.artifactsLoading) {
     const more = node("button", "secondary-button artifact-load-more", "Load more");
@@ -5283,6 +5719,7 @@ function selectArtifact(artifactSlug, originControl = null) {
   }
   state.selectedSlug = artifactSlug;
   state.selectedKind = "artifact";
+  prepareDetailPanelWidth("artifact");
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "Artifact details");
   elements.detailEmpty.classList.add("is-hidden");
@@ -5290,6 +5727,7 @@ function selectArtifact(artifactSlug, originControl = null) {
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.artifactDetailContent.classList.remove("is-hidden");
   const owner = artifactAgent(artifact);
   const task = artifactTask(artifact);
@@ -5382,6 +5820,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
+  prepareDetailPanelWidth("task");
   state.showCompletedTodos = false;
   setTodoAddOpen(false, { focus: false });
   elements.detailPanel.setAttribute("aria-hidden", "false");
@@ -5392,6 +5831,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.taskDetailStatus.textContent = taskUiStatus(task) === "active" ? "In Progress" : taskUiStatus(task);
   const isProposed = task.status === "proposed";
   elements.taskApproveButton.classList.toggle("is-hidden", !isProposed);
@@ -5568,11 +6008,17 @@ async function hydrateGoalRelationships(goal) {
   }
 }
 
-function selectGoal(slug) {
+function selectGoal(slug, returnFocus = undefined) {
   const goal = state.snapshot?.goals.find((item) => item.slug === slug);
   if (!goal) return;
+  if (returnFocus !== undefined) {
+    state.detailReturnFocus = returnFocus
+      ? { element: returnFocus, slug }
+      : null;
+  }
   state.selectedSlug = slug;
   state.selectedKind = "goal";
+  prepareDetailPanelWidth("goal");
   elements.detailPanel.setAttribute("aria-hidden", "false");
   elements.detailPanel.setAttribute("aria-label", "Goal details");
   elements.detailEmpty.classList.add("is-hidden");
@@ -5581,6 +6027,7 @@ function selectGoal(slug) {
   elements.goalDetailContent.classList.remove("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.goalDetailStatus.textContent = goal.status;
   elements.goalPauseButton.disabled = goal.status === "paused";
   elements.goalPauseButton.textContent =
@@ -5620,6 +6067,12 @@ function selectGoal(slug) {
   elements.goalDetailSlug.textContent = goal.slug;
   render();
   hydrateGoalRelationships(goal);
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+    elements.goalDetailTitle.focus({ preventScroll: true });
+  });
 }
 
 function closeDetails() {
@@ -5651,6 +6104,7 @@ function closeDetails() {
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
   elements.detailEmpty.classList.remove("is-hidden");
   render();
   if (returnFocus) {
@@ -5661,8 +6115,10 @@ function closeDetails() {
           ...document.querySelectorAll(".proposal-card"),
           ...document.querySelectorAll(".task-row-open"),
           ...document.querySelectorAll(".project-card-open"),
+          ...document.querySelectorAll(".goal-card"),
           ...document.querySelectorAll(".artifact-card"),
           ...document.querySelectorAll(".system-ticket-card"),
+          ...document.querySelectorAll(".ical-event"),
         ].find(
           (candidate) => candidate.dataset.slug === returnFocus.slug,
         );
@@ -6418,6 +6874,7 @@ elements.artifactDetailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.projectDetailClose.addEventListener("click", closeDetails);
 elements.systemTicketDetailClose.addEventListener("click", closeDetails);
+elements.calendarEventDetailClose.addEventListener("click", closeDetails);
 elements.projectEditButton.addEventListener("click", () => {
   const project = state.projects.find((item) => item.slug === state.selectedSlug);
   if (state.selectedKind === "project" && project) openEditProject(project);
@@ -6648,6 +7105,8 @@ document.addEventListener("keydown", (event) => {
 });
 
 bindHudTooltipEvents();
+initializeDetailPanelResize();
+initializeMobileDetailSheet();
 loadReleases();
 loadAgentWork();
 loadCalendarConnectionState();
