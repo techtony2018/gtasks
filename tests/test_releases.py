@@ -11,13 +11,13 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.70")
+        self.assertEqual(__version__, "V0.0.71")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
 
         self.assertEqual(release["version"], "V0.0.65")
-        self.assertIn("stable per-task To Do records", release["summary"])
+        self.assertIn("stable per-task TODO records", release["summary"])
         self.assertIn("append-only comments", release["summary"])
         self.assertIn("idempotent audit history", release["summary"])
 
@@ -54,13 +54,23 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("five-ticket pages", release["summary"])
 
     def test_v0_0_70_records_canonical_read_only_agent_artifacts(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.70")
 
         self.assertEqual(release["version"], "V0.0.70")
         self.assertIn("GBrain is the only Artifact source of truth", release["summary"])
         self.assertIn("one producing-Agent collection membership", release["summary"])
         self.assertIn("typed Task and Agent provenance", release["summary"])
         self.assertIn("read-only", release["summary"])
+
+    def test_v0_0_71_records_responsive_verified_workflow_surfaces(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.71")
+        self.assertIn("last-verified System Ticket view", release["summary"])
+        self.assertIn("only pending proposed work", release["summary"])
+        self.assertIn("rolling-month date scope", release["summary"])
+        self.assertIn("Calendar restores", release["summary"])
+        self.assertIn("TODO wording", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -163,6 +173,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.68",
                 "V0.0.69",
                 "V0.0.70",
+                "V0.0.71",
             ],
         )
 

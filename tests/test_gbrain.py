@@ -3303,7 +3303,7 @@ class ProposalReadTests(unittest.TestCase):
 
         self.assertEqual(calls, [False])
 
-    def test_keeps_decided_task_proposal_in_history_with_resulting_status(self) -> None:
+    def test_excludes_decided_task_even_when_stale_projection_still_marks_it_proposed(self) -> None:
         decided_at = datetime(
             2026, 8, 1, 10, tzinfo=timezone(timedelta(hours=-7))
         )
@@ -3323,7 +3323,7 @@ class ProposalReadTests(unittest.TestCase):
         task = {
             "slug": slug,
             "title": "Prepare the launch",
-            "status": "planned",
+            "status": "proposed",
             "owner_agent": "agents/toddy",
             "proposal_recipient": "agent",
             "proposal_submitted_at": "2026-08-01T09:00:00-07:00",
@@ -3346,11 +3346,55 @@ class ProposalReadTests(unittest.TestCase):
 
         result = Adapter(runner).list_proposals()
 
-        self.assertEqual(len(result.proposals), 1)
-        proposal = result.proposals[0]
-        self.assertEqual(proposal.status, "approved")
-        self.assertEqual(proposal.resulting_status, "planned")
-        self.assertEqual(proposal.decision_events[0].event_id, event["event_id"])
+        self.assertEqual(result.proposals, ())
+
+    def test_only_pending_proposed_agent_tasks_are_returned_to_inbox(self) -> None:
+        base = {
+            "title": "Agent proposal",
+            "owner_agent": "agents/toddy",
+            "proposal_recipient": "agent",
+            "proposal_submitted_at": "2026-08-01T09:00:00-07:00",
+            "created_at": "2026-08-01T09:00:00-07:00",
+            "updated_at": "2026-08-01T09:00:00-07:00",
+            "detail": "Prepare bounded work.",
+            "next_action": "Draft the checklist.",
+            "due_day": "2026-08-02",
+            "goal": "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+        }
+        tasks = tuple(
+            {
+                **base,
+                "slug": f"tasks/{status}",
+                "status": status,
+                "proposal_decision": None,
+            }
+            for status in (
+                "proposed",
+                "planned",
+                "active",
+                "blocked",
+                "completed",
+                "cancelled",
+            )
+        )
+        rejected_stale = {
+            **base,
+            "slug": "tasks/rejected-stale-proposed",
+            "status": "proposed",
+            "proposal_decision": "reject",
+        }
+        runner = FakeRunner({"get_backlinks": [[]]})
+
+        class Adapter(GBrainAdapter):
+            def list_agent_work(self, *, include_todos: bool = True):
+                return AgentWorkRead(tasks=(*tasks, rejected_stale))
+
+        result = Adapter(runner).list_proposals()
+
+        self.assertEqual(
+            [proposal.slug for proposal in result.proposals],
+            ["tasks/proposed"],
+        )
 
     def test_excludes_decided_legacy_proposals_from_active_review(self) -> None:
         slug = "proposals/tammy-decided-legacy"
@@ -3368,6 +3412,40 @@ class ProposalReadTests(unittest.TestCase):
                 "due_day": "2026-07-31",
                 "submitted_at": "2026-07-30T14:00:00-07:00",
                 "updated_at": "2026-07-30T15:00:00-07:00",
+            },
+        }
+        edges = [
+            {"from_slug": slug, "to_slug": PROPOSALS_ROOT, "link_type": "member_of"},
+            {"from_slug": slug, "to_slug": "agents/tammy", "link_type": "proposed_by"},
+        ]
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[edges[0]]],
+                "get_page": [page],
+                "get_links": [edges],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_proposals()
+
+        self.assertEqual(result.proposals, ())
+
+    def test_excludes_legacy_review_projection_until_it_is_canonical_proposed(self) -> None:
+        slug = "proposals/tammy-review-legacy"
+        page = {
+            "slug": slug,
+            "type": "task_proposal",
+            "title": "Historical review projection",
+            "compiled_truth": "# Historical review projection",
+            "frontmatter": {
+                "status": "review",
+                "recipient": "agent",
+                "proposing_agent": "agents/tammy",
+                "rationale": "This projection is not canonical proposed work.",
+                "proposed_next_step": "Keep it out of the actionable Inbox.",
+                "due_day": "2026-08-03",
+                "submitted_at": "2026-08-03T09:00:00-07:00",
+                "updated_at": "2026-08-03T09:00:00-07:00",
             },
         }
         edges = [

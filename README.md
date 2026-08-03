@@ -48,9 +48,11 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-V0.0.70 makes durable Agent deliverables directly browsable from Mission
-Control and their producing Tasks. GBrain remains the only Artifact source of
-truth, with exact Agent collection membership and typed Task/Agent provenance.
+V0.0.71 keeps verified Mission Control content usable while canonical reads
+refresh in the background. System Tickets gain a bounded last-verified read,
+All Tasks and search share one reversible rolling-month date scope, Inbox shows
+only pending proposals, Calendar restores its verified local selection, and
+update feedback plus TODO wording are consistent across the UI.
 
 ### Independent UI/UX release gate
 
@@ -192,13 +194,13 @@ that unapproved work is permitted to execute.
 
 When an Agent needs information, Mission Control keeps the same canonical task
 and changes its task status to `blocked`. The Agent creates one canonical
-question To Do, adds the typed `blocked_by: people/tony-guan` relationship, and
+question TODO, adds the typed `blocked_by: people/tony-guan` relationship, and
 records a structured `handoff` projection containing the exact question,
 assigned Agent, resume action, timestamps, and question round. Mission Control
 never uses `waiting` as a task status.
 
 Tony answers with the single **Answer and Hand Back** action. That verified
-operation appends the immutable answer comment, completes the question To Do,
+operation appends the immutable answer comment, completes the question TODO,
 removes only Tony's matching blocker, and returns the same task to `active`
 with its explicit Agent resume action. If another blocker remains, the task
 stays `blocked`. The assigned Agent acknowledges the handoff before resuming;
@@ -284,8 +286,8 @@ due date:
 - If the user chooses a date, GTasks preserves it.
 - If the user leaves the date blank, GTasks uses the task creation day in the server's local timezone (Tony's local date).
 
-The full Create Task form adds detail, priority, an optional initial To Do,
-project, goal, and optional progress tracking. The To Do is created as its own
+The full Create Task form adds detail, priority, an optional initial TODO,
+project, goal, and optional progress tracking. The TODO is created as its own
 canonical child record after the parent task is verified. A count metric has a
 user-facing label, positive target, and current value from zero through the
 target. Unmetered tasks are unchanged. A manual metric does not complete a task
@@ -337,19 +339,19 @@ day. Every distinct accepted `job_applied` event increments `current` by one;
 reaching `target` completes the task using the same verified canonical status
 mutation as the UI. Older task pages without `baseline_count` read it as zero.
 
-Task detail exposes a read-only per-task To Do list with All, Not Done, and
+Task detail exposes a read-only per-task TODO list with All, Not Done, and
 Done filters. The Add form remains hidden until the accessible Plus action is
 activated; cancelling returns to the unchanged list and an empty task says
-`No To Do yet`. Each item can be opened for its detail, append-only comments,
+`No TODO yet`. Each item can be opened for its detail, append-only comments,
 and audit history; text/detail edits and status changes use the item's
 last-read timestamp to reject lost updates. Marking an item Done never
 completes its parent task.
 
 Select Edit to change the parent task's title, status, priority, due date,
-project, associated goal, optional metric, or assignee in one form. To Do
+project, associated goal, optional metric, or assignee in one form. TODO
 changes stay on the individual item so task edits cannot bypass item history.
 Duplicate is a reviewable action in the canonical task workflow. It copies task
-intent, priority, the first open To Do as a new initial item, project, goal, and
+intent, priority, the first open TODO as a new initial item, project, goal, and
 metric configuration, while resetting
 status to Planned, current progress to zero, event evidence and receipts to
 empty, and completion time to none. The user reviews and chooses the new due
@@ -375,7 +377,7 @@ links:
 ```
 
 `next_action` and `next_action_history` are a bounded read-only compatibility
-projection during migration: they are recomputed from canonical To Do records
+projection during migration: they are recomputed from canonical TODO records
 and have no Mission Control write endpoint. Once initialized, the parent also
 records `todo_projection_version: 1`. New data uses three stable Markdown
 record types:
@@ -468,7 +470,7 @@ configuration, or relationship repair mutates GBrain.
 - Goals
 - Completed
 
-Task rows show title, project, priority, open To Do summary, due date, and configured
+Task rows show title, project, priority, open TODO summary, due date, and configured
 metric progress such as `Job applications: 3 / 5`. Board cards show the same
 canonical tasks by status and progress. Selecting either opens the shared
 detail panel, where status and progress context remain visible without leaving

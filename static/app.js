@@ -167,6 +167,8 @@ const state = {
   detailReturnFocus: null,
   artifactTaskReturn: null,
   showCompletedTodos: false,
+  allTaskSearch: "",
+  showAllTaskDates: false,
   todoAddOpen: false,
   todoReturnFocus: null,
   todoLoadingTask: null,
@@ -176,6 +178,9 @@ const state = {
   showIcalEvents: true,
   icalEvents: [],
   icalStatus: "not_determined",
+  icalConnectionLoaded: false,
+  icalConnectionLoading: false,
+  icalConnectionError: "",
   calendarPreferencesNotice: "",
   icalRange: "",
   icalLoading: false,
@@ -192,6 +197,8 @@ const state = {
   systemTicketsLoading: false,
   systemTicketsError: "",
   systemTicketsLoadPromise: null,
+  systemTicketsReadState: null,
+  systemTicketSurfacePollTimer: null,
   systemTicketEditorSlug: null,
   hudTooltip: null,
   hudTooltipTarget: null,
@@ -409,6 +416,11 @@ const viewMeta = {
   },
   today: {
     title: "Today’s Action List",
+  },
+  all: {
+    title: "All Tasks",
+    emptyTitle: "No tasks match this view",
+    emptyCopy: "Adjust the search or show tasks outside the default date range.",
   },
   week: {
     title: "Calendar",
@@ -843,12 +855,31 @@ function taskUiStatus(task) {
 }
 
 function showToast(message) {
+  elements.toast.classList.remove(
+    "mutation-status", "is-pending", "is-success", "is-error",
+  );
+  elements.toast.setAttribute("role", "status");
+  elements.toast.setAttribute("aria-live", "polite");
   elements.toast.textContent = message;
   elements.toast.classList.remove("is-hidden");
   window.clearTimeout(showToast.timeout);
   showToast.timeout = window.setTimeout(() => {
     elements.toast.classList.add("is-hidden");
   }, 3400);
+}
+
+function showMutationStatus(message, phase, { persistent = false } = {}) {
+  window.clearTimeout(showToast.timeout);
+  elements.toast.classList.remove("is-hidden", "is-pending", "is-success", "is-error");
+  elements.toast.classList.add("mutation-status", `is-${phase}`);
+  elements.toast.setAttribute("role", phase === "error" ? "alert" : "status");
+  elements.toast.setAttribute("aria-live", phase === "error" ? "assertive" : "polite");
+  elements.toast.textContent = message;
+  if (!persistent) {
+    showToast.timeout = window.setTimeout(() => {
+      elements.toast.classList.add("is-hidden");
+    }, 4200);
+  }
 }
 
 function renderReleaseHistory() {
@@ -1239,6 +1270,7 @@ function navCounts() {
   return {
     inbox: state.snapshot.views.inbox.length,
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
+    all: filteredAllTasks().length,
     week: currentWeekTasks().length,
     board: state.snapshot.tasks.length,
     "agent-work": state.agentTasks.length,
@@ -1251,6 +1283,19 @@ function navCounts() {
       state.showCompletedSystemTickets ? state.completedSystemTickets.length : 0
     ),
   };
+}
+
+function systemTicketsColdLoading() {
+  const readState = state.systemTicketsReadState;
+  return (
+    !state.systemTickets.length &&
+    !state.systemTicketIssues.length &&
+    (
+      state.systemTicketsLoading ||
+      readState?.status === "loading" ||
+      readState?.refreshing === true
+    )
+  );
 }
 
 function currentWeekStart() {
@@ -1278,10 +1323,14 @@ function renderNavigation() {
 }
 
 function inContextCountLabel(view) {
+  if (view === "system-tickets" && systemTicketsColdLoading()) {
+    return "Reading System Tickets…";
+  }
   const count = navCounts()[view] || 0;
   const noun = {
     inbox: "in Inbox",
     today: "tasks today",
+    all: count === 1 ? "task shown" : "tasks shown",
     week: "tasks this week",
     board: "tasks on Board",
     "agent-work": "agent work items",
@@ -1315,11 +1364,15 @@ function todoSummary(task) {
     : (Array.isArray(task.todos) ? task.todos : []).filter(
       (todo) => todo.status === "not_done",
     );
-  if (!todos.length) return "No open To Dos";
-  return `To Do: ${todos[0].text}${todos.length > 1 ? ` · +${todos.length - 1} more` : ""}`;
+  if (!todos.length) return "No open TODOs";
+  return `TODO: ${todos[0].text}${todos.length > 1 ? ` · +${todos.length - 1} more` : ""}`;
 }
 
-function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
+function taskRow(task, {
+  todayActions = false,
+  calendarWeek = false,
+  displayRelevantDate = false,
+} = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
   row.classList.toggle("is-selected", state.selectedSlug === task.slug);
@@ -1354,7 +1407,9 @@ function taskRow(task, { todayActions = false, calendarWeek = false } = {}) {
   appendTaskProgress(nextAction, task);
   const end = node("span", "task-end");
   end.append(node("span", `priority-badge ${task.priority}`, task.priority));
-  const due = relativeDue(task);
+  const due = displayRelevantDate
+    ? relativeTaskDisplayDate(task)
+    : relativeDue(task);
   end.append(node("span", `due-badge ${due.className}`, due.label));
 
   button.append(titleWrap, nextAction, end);
@@ -1567,6 +1622,143 @@ function renderListView(view) {
   return fragment;
 }
 
+function relativeTaskDisplayDate(task) {
+  const relevantDay = task.scheduled_day || task.due_day;
+  if (!relevantDay || !state.snapshot) {
+    return { label: "Date unavailable", className: "" };
+  }
+  if (task.scheduled_day) {
+    return {
+      label: `Scheduled ${formatDay(task.scheduled_day)}`,
+      className: task.scheduled_day < state.snapshot.as_of ? "is-overdue" : "",
+    };
+  }
+  return relativeDue(task);
+}
+
+function taskInDefaultDisplayWindow(task) {
+  if (typeof task.in_default_display_window === "boolean") {
+    return task.in_default_display_window;
+  }
+  if (["active", "blocked"].includes(task.status)) return true;
+  const relevantDay = task.scheduled_day || task.due_day;
+  if (!relevantDay) return true;
+  const scope = state.snapshot?.task_display_scope;
+  if (!scope?.start_day || !scope?.end_day) return true;
+  return relevantDay >= scope.start_day && relevantDay <= scope.end_day;
+}
+
+function taskMatchesSearch(task) {
+  const query = state.allTaskSearch.trim().toLocaleLowerCase();
+  if (!query) return true;
+  const goal = state.snapshot?.goals.find((item) => item.slug === task.goal);
+  const project = state.projects.find((item) => item.slug === task.project);
+  const todoText = (Array.isArray(task.todos) ? task.todos : [])
+    .map((todo) => `${todo.text || ""} ${todo.detail || ""}`)
+    .join(" ");
+  return [
+    task.title,
+    task.summary,
+    task.detail,
+    task.status,
+    task.priority,
+    task.project,
+    project?.title,
+    task.goal,
+    goal?.title,
+    todoText,
+  ].some((value) => String(value || "").toLocaleLowerCase().includes(query));
+}
+
+function allTasksMatchingSearch() {
+  if (!state.snapshot) return [];
+  return state.snapshot.tasks
+    .filter(taskMatchesSearch)
+    .slice()
+    .sort((left, right) => {
+      const leftDay = left.scheduled_day || left.due_day || "9999-12-31";
+      const rightDay = right.scheduled_day || right.due_day || "9999-12-31";
+      return leftDay.localeCompare(rightDay) || left.title.localeCompare(right.title);
+    });
+}
+
+function filteredAllTasks() {
+  return allTasksMatchingSearch().filter(
+    (task) => state.showAllTaskDates || taskInDefaultDisplayWindow(task),
+  );
+}
+
+function renderAllTaskResults(container) {
+  const matching = allTasksMatchingSearch();
+  const visible = filteredAllTasks();
+  const outsideCount = matching.filter(
+    (task) => !taskInDefaultDisplayWindow(task),
+  ).length;
+  container.replaceChildren();
+  if (!state.showAllTaskDates && outsideCount) {
+    const notice = node(
+      "p",
+      "all-tasks-filter-notice",
+      `${outsideCount} matching tasks outside the default range are hidden. Enable Show all dates to include them.`,
+    );
+    notice.setAttribute("role", "status");
+    container.append(notice);
+  }
+  if (!visible.length) {
+    container.append(node(
+      "div",
+      "section-empty",
+      outsideCount && !state.showAllTaskDates
+        ? "Matching tasks exist outside the default range. Enable Show all dates to include them."
+        : "No tasks match the current search and date scope.",
+    ));
+  } else {
+    const list = node("div", "task-list all-tasks-list");
+    list.setAttribute("role", "list");
+    visible.forEach((task) => list.append(taskRow(task, { displayRelevantDate: true })));
+    container.append(list);
+  }
+  elements.viewCount.textContent = inContextCountLabel("all");
+}
+
+function renderAllTasksView() {
+  const wrapper = node("section", "all-tasks-view");
+  const toolbar = node("div", "all-tasks-toolbar");
+  const searchLabel = document.createElement("label");
+  searchLabel.htmlFor = "all-task-search";
+  searchLabel.textContent = "Search tasks";
+  const input = document.createElement("input");
+  input.id = "all-task-search";
+  input.type = "search";
+  input.value = state.allTaskSearch;
+  input.placeholder = "Title, detail, status, project, goal, or TODO";
+  input.setAttribute("aria-label", "Search tasks");
+  searchLabel.append(input);
+  const dateLabel = node("label", "all-tasks-date-toggle");
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.checked = state.showAllTaskDates;
+  toggle.setAttribute("aria-label", "Show tasks outside the default date range");
+  dateLabel.append(toggle, node("span", "", "Show all dates"));
+  const scope = state.snapshot?.task_display_scope;
+  const rangeCopy = scope?.start_day && scope?.end_day
+    ? `Default: ${formatDay(scope.start_day)} through ${formatDay(scope.end_day)} · ${scope.timezone}`
+    : "Default rolling date range is unavailable; no task is hidden by date.";
+  toolbar.append(searchLabel, dateLabel, node("p", "all-tasks-range", rangeCopy));
+  const results = node("div", "all-tasks-results");
+  input.addEventListener("input", () => {
+    state.allTaskSearch = input.value;
+    renderAllTaskResults(results);
+  });
+  toggle.addEventListener("change", () => {
+    state.showAllTaskDates = toggle.checked;
+    renderAllTaskResults(results);
+  });
+  wrapper.append(toolbar, results);
+  renderAllTaskResults(results);
+  return wrapper;
+}
+
 function renderWeekView() {
   const start = currentWeekStart();
   if (!start) return simpleEmpty({
@@ -1660,25 +1852,48 @@ function calendarEventsFilter() {
   });
   checkboxLabel.append(input, node("span", "", "Show iCal Events"));
   wrapper.append(checkboxLabel);
-  const calendarStatus = state.icalLoading ? "Reading local Calendar…" : state.icalStatus === "authorized" ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Choose calendars to show events") : state.icalStatus === "denied" || state.icalStatus === "restricted" ? "Calendar permission was not granted" : state.icalStatus === "unavailable" ? "Local Calendar is unavailable" : "Calendar permission needed";
+  const calendarStatus = state.icalConnectionLoading
+    ? "Checking Calendar access…"
+    : state.icalLoading
+      ? "Reading local Calendar…"
+      : state.icalStatus === "authorized"
+        ? (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Connected · choose calendars to show events")
+        : state.icalStatus === "denied" || state.icalStatus === "restricted"
+          ? "Calendar permission was not granted"
+          : state.icalStatus === "unavailable"
+            ? (state.icalConnectionError || "Local Calendar is unavailable")
+            : "Calendar is not connected";
   wrapper.append(node("small", "calendar-events-status", calendarStatus));
   if (state.calendarPreferencesNotice) {
     const notice = node("p", "calendar-preferences-notice", state.calendarPreferencesNotice);
     notice.setAttribute("role", "status");
     wrapper.append(notice);
   }
+  if (state.icalConnectionLoading) {
+    return wrapper;
+  }
   if (state.icalStatus !== "authorized") {
-    const connect = node("button", "secondary-button", state.icalStatus === "not_determined" ? "Connect Calendar" : "Reauthorize Calendar");
+    const connect = node("button", "secondary-button", state.icalStatus === "not_determined" ? "Connect Calendar" : "Reconnect");
     connect.type = "button";
-    connect.addEventListener("click", openCalendarAccessDialog);
+    connect.addEventListener("click", state.icalStatus === "not_determined" ? openCalendarAccessDialog : reconnectCalendar);
     wrapper.append(connect);
   } else {
     const manage = node("button", "secondary-button", "Manage calendars");
     manage.type = "button";
     manage.addEventListener("click", openCalendarPicker);
-    wrapper.append(manage);
+    const reconnect = node("button", "secondary-button", "Reconnect");
+    reconnect.type = "button";
+    reconnect.addEventListener("click", reconnectCalendar);
+    wrapper.append(manage, reconnect);
   }
   return wrapper;
+}
+
+async function reconnectCalendar() {
+  state.icalConnectionLoaded = false;
+  await loadCalendarConnectionState();
+  if (state.icalStatus === "authorized") await openCalendarPicker();
+  else openCalendarAccessDialog();
 }
 
 function openCalendarAccessDialog() {
@@ -1695,6 +1910,25 @@ async function loadCalendarPicker() {
   state.icalStatus = payload.status || "unavailable";
   state.availableCalendars = Array.isArray(payload.calendars) ? payload.calendars : [];
   state.selectedCalendarIds = Array.isArray(payload.selected_calendar_ids) ? payload.selected_calendar_ids : [];
+  state.icalConnectionLoaded = true;
+  state.icalConnectionError = "";
+}
+
+async function loadCalendarConnectionState() {
+  if (state.icalConnectionLoading) return;
+  state.icalConnectionLoading = true;
+  if (state.snapshot) render();
+  try {
+    await loadCalendarPicker();
+    if (state.icalStatus === "authorized") state.icalRange = "";
+  } catch (error) {
+    state.icalStatus = "unavailable";
+    state.icalConnectionLoaded = true;
+    state.icalConnectionError = error.message || "Local Calendar status could not be read.";
+  } finally {
+    state.icalConnectionLoading = false;
+    if (state.snapshot) render();
+  }
 }
 
 function renderCalendarPicker() {
@@ -2497,7 +2731,7 @@ function renderAgentWorkView() {
       (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
       0,
     );
-    workSummary.append(node("span", "", latest ? `${todoSummary(latest)} · ${openTodoCount} open To Do${openTodoCount === 1 ? "" : "s"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or open To Do recorded."));
+    workSummary.append(node("span", "", latest ? `${todoSummary(latest)} · ${openTodoCount} open TODO${openTodoCount === 1 ? "" : "s"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or open TODO recorded."));
     card.append(
       heading,
       node(
@@ -2809,13 +3043,16 @@ async function loadAgentWork() {
 function scheduleSurfacePoll(surface) {
   const timerKey = surface === "tasks"
     ? "taskSurfacePollTimer"
-    : "proposalSurfacePollTimer";
+    : surface === "proposals"
+      ? "proposalSurfacePollTimer"
+      : "systemTicketSurfacePollTimer";
   if (state[timerKey] !== null) return;
   state[timerKey] = window.setTimeout(() => {
     state[timerKey] = null;
     if (document.hidden) return;
     if (surface === "tasks") void loadTasks({ reason: "poll" });
-    else void loadProposals({ poll: true });
+    else if (surface === "proposals") void loadProposals({ poll: true });
+    else void loadSystemTickets({ poll: true });
   }, 1000);
 }
 
@@ -2838,7 +3075,7 @@ async function performProposalLoad({ refresh = false } = {}) {
     state.proposalsReadState = payload.read_state || null;
     if (response.status === 200) {
       state.proposals = Array.isArray(payload.proposals)
-        ? payload.proposals
+        ? payload.proposals.filter(isActionableProposal)
         : [];
       state.proposalIssues = Array.isArray(payload.issues)
         ? payload.issues
@@ -2942,6 +3179,8 @@ async function submitNewProject(event) {
   elements.newProjectSubmit.disabled = true;
   const editing = Boolean(state.projectEditorSlug);
   elements.newProjectSubmit.textContent = editing ? "Saving in GBrain…" : "Creating in GBrain…";
+  const projectStatus = editing ? "Saving Project changes in GBrain…" : "Creating Project in GBrain…";
+  showMutationStatus(projectStatus, "pending", { persistent: true });
   try {
     const projectPayload = {
       title: elements.newProjectTitle.value,
@@ -2985,7 +3224,10 @@ async function submitNewProject(event) {
     elements.newProjectDialog.close();
     state.activeView = "projects";
     if (editing) selectProject(result.project.slug);
-    showToast(editing ? "Project changes verified in GBrain." : "Project created, linked, and verified in GBrain.");
+    showMutationStatus(
+      editing ? "Project changes verified in GBrain." : "Project created, linked, and verified in GBrain.",
+      "success",
+    );
     if (!editing) render();
   } catch (error) {
     elements.newProjectError.textContent =
@@ -2993,6 +3235,7 @@ async function submitNewProject(event) {
         ? `${error.message} Inspect ${error.slug}; do not retry yet.`
         : error.message;
     elements.newProjectError.classList.remove("is-hidden");
+    showMutationStatus(elements.newProjectError.textContent, "error");
   } finally {
     elements.newProjectSubmit.disabled = false;
     elements.newProjectSubmit.textContent = editing ? "Save changes" : "Create project";
@@ -3053,6 +3296,8 @@ async function submitNewGoal(event) {
     elements.newGoalSubmit.textContent = "Save changes";
     return;
   }
+  const goalStatus = editing ? "Saving Goal changes in GBrain…" : "Creating Goal in GBrain…";
+  showMutationStatus(goalStatus, "pending", { persistent: true });
   try {
     const response = await fetch(editing ? `/api/goals/${encodeURIComponent(state.goalEditorSlug)}` : "/api/goals", {
       method: editing ? "PATCH" : "POST",
@@ -3078,7 +3323,10 @@ async function submitNewGoal(event) {
     }
     elements.newGoalDialog.close();
     state.activeView = "goals";
-    showToast(editing ? "Goal changes verified in GBrain." : "Goal created, linked, and verified in GBrain.");
+    showMutationStatus(
+      editing ? "Goal changes verified in GBrain." : "Goal created, linked, and verified in GBrain.",
+      "success",
+    );
     selectGoal(result.goal.slug);
   } catch (error) {
     elements.newGoalError.textContent =
@@ -3086,6 +3334,7 @@ async function submitNewGoal(event) {
         ? `${error.message} Inspect ${error.slug}; do not retry yet.`
         : error.message;
     elements.newGoalError.classList.remove("is-hidden");
+    showMutationStatus(elements.newGoalError.textContent, "error");
   } finally {
     elements.newGoalSubmit.disabled = false;
     elements.newGoalSubmit.textContent = editing ? "Save changes" : "Create goal";
@@ -3575,6 +3824,12 @@ function proposalStateLabel(proposal) {
   return "Proposed";
 }
 
+function isActionableProposal(proposal) {
+  if (!proposal || proposal.status !== "proposed") return false;
+  const decision = proposal.proposal_decision ?? proposal.decision;
+  return decision === undefined || decision === null || decision === "" || decision === "pending";
+}
+
 function openProposalReview(proposal) {
   state.proposalAction = { proposal, action: "review" };
   elements.proposalReviewName.value = proposal.title;
@@ -3702,7 +3957,7 @@ function renderProposedWork() {
     );
     section.append(status);
   }
-  const visible = state.proposals.filter(
+  const visible = state.proposals.filter(isActionableProposal).filter(
     (proposal) =>
       state.proposalAgentFilter === "all" ||
       proposal.proposing_agent === state.proposalAgentFilter,
@@ -3741,14 +3996,7 @@ function renderProposedWork() {
       section.append(wrapper);
     });
   };
-  appendGroups(
-    visible.filter((proposal) => ["proposed", "review"].includes(proposal.status)),
-    "Pending review",
-  );
-  appendGroups(
-    visible.filter((proposal) => ["approved", "rejected"].includes(proposal.status)),
-    "Recent decisions",
-  );
+  appendGroups(visible, "Pending review");
   return section;
 }
 
@@ -3786,7 +4034,7 @@ async function submitProposalReview(event) {
     state.proposals = state.proposals.map((proposal) =>
       proposal.slug === result.receipt.proposal.slug
         ? result.receipt.proposal
-        : proposal);
+        : proposal).filter(isActionableProposal);
     elements.proposalReviewDialog.close();
     state.proposalAction = null;
     render();
@@ -3836,9 +4084,10 @@ async function submitProposalDecision() {
     state.proposals = state.proposals.map((proposal) =>
       proposal.slug === result.receipt.proposal.slug
         ? result.receipt.proposal
-        : proposal);
+        : proposal).filter(isActionableProposal);
     elements.proposalDecisionDialog.close();
     state.proposalAction = null;
+    if (state.selectedSlug === pending.proposal.slug) closeDetails();
     if (pending.action === "approve") {
       await Promise.all([loadTasks(), loadAgentWork()]);
     } else {
@@ -3882,8 +4131,14 @@ function renderTaskSurfaceLoading(view) {
 
 function render() {
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
+  const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
   hideHudTooltip();
   window.requestAnimationFrame(() => {
+    if (focusedSystemTicketSlug && document.activeElement === document.body) {
+      document.querySelector(
+        `.system-ticket-card[data-slug="${CSS.escape(focusedSystemTicketSlug)}"]`,
+      )?.focus({ preventScroll: true });
+    }
     if (
       focusedTooltipTarget?.isConnected &&
       document.activeElement === focusedTooltipTarget
@@ -3917,6 +4172,8 @@ function render() {
       : renderTaskSurfaceLoading(view)
     : view === "today"
       ? renderToday()
+      : view === "all"
+        ? renderAllTasksView()
       : view === "week"
         ? renderCalendarView()
       : view === "board"
@@ -3979,8 +4236,29 @@ function renderSystemTicketsView() {
   const create = actionIcon("+", "New Ticket", { primary: true }); create.addEventListener("click", openSystemTicketDialog);
   controls.append(completedLabel, create);
   heading.append(copy, controls); section.append(heading);
-  if (state.systemTicketsLoading) { section.append(node("div", "section-empty", "Reading System Tickets…")); return section; }
-  if (state.systemTicketsError) { section.append(node("div", "section-empty", state.systemTicketsError)); return section; }
+  if (systemTicketsColdLoading()) {
+    section.setAttribute("aria-busy", "true");
+    section.append(node("div", "section-empty", "Reading System Tickets…"));
+    return section;
+  }
+  if (
+    state.systemTicketsError &&
+    !state.systemTickets.length &&
+    !state.systemTicketIssues.length
+  ) {
+    section.append(node("div", "section-empty", state.systemTicketsError));
+    return section;
+  }
+  if (state.systemTicketsError && state.systemTickets.length) {
+    section.append(node(
+      "p",
+      "surface-read-state is-error",
+      `Last verified System Tickets remain visible because the canonical refresh is delayed: ${state.systemTicketsError}`,
+    ));
+  }
+  if (state.systemTicketsReadState?.refreshing && state.systemTickets.length) {
+    section.append(node("p", "surface-read-state", "Last verified System Tickets remain visible while GBrain refreshes."));
+  }
   if (state.systemTicketIssues.length) {
     const issues = node("section", "needs-attention system-ticket-issues");
     issues.append(node("h3", "", "Ticket data needs attention"), node("p", "attention-intro", "These tickets remain separate from Tony and agent work. Inspect the canonical page before any repair; Mission Control will not rewrite it automatically."));
@@ -4009,6 +4287,7 @@ function renderSystemTicketsView() {
   visibleTickets.forEach((ticket) => {
     const card = node("button", "system-ticket-card");
     card.type = "button";
+    card.dataset.slug = ticket.slug;
     card.setAttribute("aria-label", `Open System Ticket ${ticket.title}`);
     card.setAttribute("aria-current", state.selectedSlug === ticket.slug ? "true" : "false");
     card.classList.toggle("is-selected", state.selectedSlug === ticket.slug);
@@ -4016,7 +4295,7 @@ function renderSystemTicketsView() {
     header.append(node("strong", "", ticket.title), node("span", `priority-badge ${ticket.priority}`, ticket.status));
     const meta = node("p", "system-ticket-card-meta", `${ticket.target_subsystem.replace(/_/g, " ")} · ${ticket.priority} priority · ${ticket.implementation_receipts.length} implementation / ${ticket.qa_receipts.length} QA receipts`);
     card.append(header, meta);
-    card.addEventListener("click", () => selectSystemTicket(ticket.slug));
+    card.addEventListener("click", () => selectSystemTicket(ticket.slug, card));
     list.append(card);
   });
   if (list.children.length) section.append(list);
@@ -4067,9 +4346,12 @@ function findSystemTicket(ticketSlug) {
   );
 }
 
-function selectSystemTicket(ticketSlug) {
+function selectSystemTicket(ticketSlug, originControl = null) {
   const ticket = findSystemTicket(ticketSlug);
   if (!ticket) return;
+  if (originControl instanceof HTMLElement) {
+    state.detailReturnFocus = { element: originControl, slug: ticket.slug };
+  }
   state.selectedSlug = ticket.slug;
   state.selectedKind = "system-ticket";
   elements.detailPanel.setAttribute("aria-hidden", "false");
@@ -4095,12 +4377,12 @@ function selectSystemTicket(ticketSlug) {
   elements.systemTicketDetailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(ticket.slug)}`;
   elements.systemTicketDetailSlug.textContent = ticket.slug;
   render();
-  if (window.matchMedia("(max-width: 760px)").matches) {
-    window.requestAnimationFrame(() => {
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) {
       elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
-      elements.systemTicketDetailTitle.focus({ preventScroll: true });
-    });
-  }
+    }
+    elements.systemTicketDetailTitle.focus({ preventScroll: true });
+  });
 }
 
 function openEditSystemTicket() {
@@ -4123,17 +4405,31 @@ function openEditSystemTicket() {
   window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
 }
 
-function loadSystemTickets({ force = false } = {}) {
-  if (state.systemTicketsLoadPromise && !force) return state.systemTicketsLoadPromise;
-  state.systemTicketsLoadPromise = performSystemTicketLoad().finally(() => {
+function loadSystemTickets({ force = false, poll = false } = {}) {
+  if (state.systemTicketsLoadPromise) return state.systemTicketsLoadPromise;
+  state.systemTicketsLoadPromise = performSystemTicketLoad({ force, poll }).finally(() => {
     state.systemTicketsLoadPromise = null;
   });
   return state.systemTicketsLoadPromise;
 }
 
-async function performSystemTicketLoad() {
-  state.systemTicketsLoading = true;
-  try { const response = await fetch("/api/system-tickets?include_completed=0", { headers: { Accept: "application/json" }, cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error || "System Tickets could not be read."); state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : []; state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : []; state.systemTicketsError = ""; }
+async function performSystemTicketLoad({ force = false } = {}) {
+  state.systemTicketsLoading = !state.systemTickets.length;
+  try {
+    const options = { headers: { Accept: "application/json" }, cache: "no-store" };
+    const response = force
+      ? await fetch("/api/system-tickets?include_completed=0&refresh=1", options)
+      : await fetch("/api/system-tickets?include_completed=0", options);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "System Tickets could not be read.");
+    state.systemTicketsReadState = payload.read_state || null;
+    if (response.status === 200) {
+      state.systemTickets = Array.isArray(payload.tickets) ? payload.tickets : [];
+      state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : [];
+    }
+    state.systemTicketsError = payload.read_state?.error || "";
+    if (payload.read_state?.refreshing) scheduleSurfacePoll("system_tickets");
+  }
   catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
   finally { state.systemTicketsLoading = false; if (state.activeView === "system-tickets") render(); }
 }
@@ -4269,7 +4565,7 @@ function todoCard(todo) {
     changeStatus.type = "button";
     changeStatus.setAttribute(
       "aria-label",
-      `${todo.status === "done" ? "Reopen" : "Mark Done"} To Do: ${todo.text}`,
+      `${todo.status === "done" ? "Reopen" : "Mark Done"} TODO: ${todo.text}`,
     );
     changeStatus.addEventListener("click", () => changeTodoStatus(todo, changeStatus));
     heading.append(changeStatus);
@@ -4294,13 +4590,13 @@ function todoCard(todo) {
   editText.maxLength = 240;
   editText.required = true;
   editText.value = todo.text;
-  editText.setAttribute("aria-label", `Edit To Do text: ${todo.text}`);
+  editText.setAttribute("aria-label", `Edit TODO text: ${todo.text}`);
   const editDetail = document.createElement("textarea");
   editDetail.rows = 2;
   editDetail.maxLength = 5000;
   editDetail.value = todo.detail || "";
-  editDetail.setAttribute("aria-label", `Edit To Do detail: ${todo.text}`);
-  const editSubmit = node("button", "secondary-button", "Save To Do");
+  editDetail.setAttribute("aria-label", `Edit TODO detail: ${todo.text}`);
+  const editSubmit = node("button", "secondary-button", "Save TODO");
   editSubmit.type = "submit";
   editForm.append(editText, editDetail, editSubmit);
   editForm.addEventListener("submit", (event) => {
@@ -4330,8 +4626,8 @@ function todoCard(todo) {
   commentInput.rows = 2;
   commentInput.maxLength = 4000;
   commentInput.required = true;
-  commentInput.placeholder = "Reply to this To Do";
-  commentInput.setAttribute("aria-label", `Comment on To Do: ${todo.text}`);
+  commentInput.placeholder = "Reply to this TODO";
+  commentInput.setAttribute("aria-label", `Comment on TODO: ${todo.text}`);
   const commentSubmit = node("button", "secondary-button", "Add Comment");
   commentSubmit.type = "submit";
   commentForm.append(commentInput, commentSubmit);
@@ -4416,7 +4712,7 @@ function renderTaskTodos(task) {
     ? todos
     : todos.filter((todo) => todo.status === "not_done");
   elements.taskTodoList.replaceChildren(...filtered.map(todoCard));
-  elements.taskTodoEmpty.textContent = todos.length ? "No open To Dos." : "No To Do yet";
+  elements.taskTodoEmpty.textContent = todos.length ? "No open TODOs." : "No TODO yet";
   elements.taskTodoEmpty.classList.toggle("is-hidden", filtered.length > 0);
   elements.taskTodoAddForm.classList.toggle("is-hidden", !state.todoAddOpen);
   elements.taskTodoAddToggle.setAttribute(
@@ -4432,12 +4728,12 @@ function renderTaskTodos(task) {
 
 function todoErrorMessage(error) {
   if (error.code === "todo_changed") {
-    return "This To Do changed in GBrain. Its latest canonical version has been reloaded; review it before retrying.";
+    return "This TODO changed in GBrain. Its latest canonical version has been reloaded; review it before retrying.";
   }
   if (error.code === "partial_write" && error.slug) {
     return `${error.message} Inspect ${error.slug} before retrying.`;
   }
-  return error.message || "The To Do change could not be verified.";
+  return error.message || "The TODO change could not be verified.";
 }
 
 function replaceTaskTodos(taskSlug, todos) {
@@ -4496,7 +4792,7 @@ async function refreshTaskTodos(taskSlug, returnFocus = null) {
     );
     const result = await response.json();
     if (!response.ok) {
-      const error = new Error(result.error || "Canonical To Dos could not be read.");
+      const error = new Error(result.error || "Canonical TODOs could not be read.");
       error.code = result.code;
       throw error;
     }
@@ -4523,7 +4819,7 @@ async function todoMutation(endpoint, method, body) {
   });
   const result = await response.json();
   if (!response.ok || !result.receipt?.verified || !result.receipt?.todo) {
-    const error = new Error(result.error || "Canonical To Do readback was missing.");
+    const error = new Error(result.error || "Canonical TODO readback was missing.");
     error.code = result.code || "ambiguous_readback";
     error.slug = result.slug;
     throw error;
@@ -4608,7 +4904,7 @@ async function createTaskTodo(event) {
     );
     setTodoAddOpen(false, { focus: false });
     applyVerifiedTodoMutation(taskSlug, todo, { slug: todo.slug, control: "summary" });
-    showToast("To Do created and verified in GBrain.");
+    showToast("TODO created and verified in GBrain.");
   } catch (error) {
     elements.taskTodoError.textContent = todoErrorMessage(error);
     elements.taskTodoError.classList.remove("is-hidden");
@@ -4630,7 +4926,7 @@ async function editTaskTodo(todo, text, detail, submit) {
       idempotency_key: crypto.randomUUID(),
     });
     applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
-    showToast("To Do edit verified in GBrain.");
+    showToast("TODO edit verified in GBrain.");
   } catch (error) {
     elements.taskTodoError.textContent = todoErrorMessage(error);
     elements.taskTodoError.classList.remove("is-hidden");
@@ -4686,7 +4982,7 @@ async function changeTodoStatus(todo, button) {
       },
     );
     applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
-    showToast(`To Do marked ${todo.status === "done" ? "Not Done" : "Done"}.`);
+    showToast(`TODO marked ${todo.status === "done" ? "Not Done" : "Done"}.`);
   } catch (error) {
     elements.taskTodoError.textContent = todoErrorMessage(error);
     elements.taskTodoError.classList.remove("is-hidden");
@@ -5366,6 +5662,7 @@ function closeDetails() {
           ...document.querySelectorAll(".task-row-open"),
           ...document.querySelectorAll(".project-card-open"),
           ...document.querySelectorAll(".artifact-card"),
+          ...document.querySelectorAll(".system-ticket-card"),
         ].find(
           (candidate) => candidate.dataset.slug === returnFocus.slug,
         );
@@ -5522,6 +5819,9 @@ function setView(view) {
   if (view === "projects" && !state.projectsLoaded && !state.projectsLoading) {
     void loadProjects();
   }
+  if (view === "all" && !state.projectsLoaded && !state.projectsLoading) {
+    void loadProjects();
+  }
   if (view === "inbox" && !state.proposalsLoaded && !state.proposalsLoading) {
     void loadProposals();
   }
@@ -5536,6 +5836,9 @@ function setView(view) {
   }
   if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
     void loadAgents();
+  }
+  if (view === "week" && !state.icalConnectionLoaded && !state.icalConnectionLoading) {
+    void loadCalendarConnectionState();
   }
 }
 
@@ -5619,12 +5922,17 @@ function scheduleAutoRefresh({ reset = false } = {}) {
 
 async function performTaskLoad(reason) {
   const previousSnapshot = state.snapshot;
-  state.loading = true;
-  elements.syncLabel.textContent =
-    reason === "automatic" ? "Refreshing from GBrain…" : "Reading GBrain…";
-  elements.refreshButton.disabled = true;
-  setConnection("loading", "Connecting");
-  render();
+  const hasVerifiedSnapshot = Boolean(previousSnapshot);
+  state.loading = !hasVerifiedSnapshot;
+  if (!hasVerifiedSnapshot) {
+    elements.syncLabel.textContent = "Reading GBrain…";
+    elements.refreshButton.disabled = true;
+    setConnection("loading", "Connecting");
+    render();
+  } else if (reason === "manual") {
+    elements.syncLabel.textContent = "Refreshing verified data…";
+    elements.refreshButton.disabled = true;
+  }
   try {
     const response = await fetch(
       ["initial", "poll"].includes(reason) ? "/api/tasks" : "/api/tasks?refresh=1",
@@ -5907,6 +6215,11 @@ async function submitTaskEditor(event) {
   elements.taskEditorSubmit.disabled = true;
   const originalLabel = state.taskEditorMode === "duplicate" ? "Create Duplicate" : state.taskEditorMode === "edit" ? "Save changes" : "Create Task";
   elements.taskEditorSubmit.textContent = "Saving in GBrain…";
+  const taskStatus = state.taskEditorMode === "edit"
+    ? "Saving Task changes in GBrain…"
+    : state.taskEditorMode === "duplicate"
+      ? "Creating duplicate Task in GBrain…"
+      : "Creating Task in GBrain…";
   try {
     const payload = {
       title: elements.taskEditorTitle.value,
@@ -5944,6 +6257,7 @@ async function submitTaskEditor(event) {
       : state.taskEditorMode === "duplicate"
         ? `/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}/duplicate`
         : "/api/tasks";
+    showMutationStatus(taskStatus, "pending", { persistent: true });
     const response = await fetch(endpoint, {
       method: state.taskEditorMode === "edit" ? "PATCH" : "POST",
       headers: {
@@ -5975,18 +6289,20 @@ async function submitTaskEditor(event) {
       const agent = state.agents.find(
         (candidate) => candidate.slug === savedTask.owner_agent,
       );
-      showToast(
+      showMutationStatus(
         state.taskEditorMode === "edit"
           ? `Saved “${savedTask.title}” and verified its assignment in GBrain.`
           : `Created queued work for ${agent?.name || "the selected agent"} and verified its assignment in GBrain.`,
+        "success",
       );
     } else {
-      showToast(
+      showMutationStatus(
         state.taskEditorMode === "duplicate"
           ? `Created a clean copy of “${savedTask.title}” in GBrain.`
           : state.taskEditorMode === "edit"
             ? `Saved “${savedTask.title}” and verified it in GBrain.`
             : `Created “${savedTask.title}” in GBrain.`,
+        "success",
       );
       await Promise.all([
         loadTasks(),
@@ -6000,6 +6316,7 @@ async function submitTaskEditor(event) {
         ? `${error.message} Do not retry yet; inspect ${error.slug} first.`
         : error.message;
     elements.taskEditorError.classList.remove("is-hidden");
+    showMutationStatus(elements.taskEditorError.textContent, "error");
   } finally {
     elements.taskEditorSubmit.disabled = false;
     elements.taskEditorSubmit.textContent = originalLabel;
@@ -6088,6 +6405,9 @@ elements.refreshButton.addEventListener("click", () => {
   loadProposals({ refresh: true });
   if (state.activeView === "artifacts" || state.artifactsLoaded) {
     void loadArtifacts({ reset: true });
+  }
+  if (state.activeView === "system-tickets" || state.systemTickets.length) {
+    void loadSystemTickets({ force: true });
   }
 });
 elements.showAgentTasks.addEventListener("change", () => {
@@ -6330,4 +6650,5 @@ document.addEventListener("keydown", (event) => {
 bindHudTooltipEvents();
 loadReleases();
 loadAgentWork();
+loadCalendarConnectionState();
 loadTasks({ reason: "initial" });

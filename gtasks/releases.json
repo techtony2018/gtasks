@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.70",
+  "current_version": "V0.0.71",
   "releases": [
     {
       "version": "V0.0.1",
@@ -388,14 +388,14 @@
     {
       "version": "V0.0.65",
       "date": "2026-08-01",
-      "title": "Canonical To Dos and responsive reads",
-      "summary": "Replaces single Next Action editing with stable per-task To Do records, append-only comments, idempotent audit history, and verified item-level APIs. Task and proposal reads now coalesce in the background, retain clearly labelled last-verified data during slow GBrain refreshes, and define an explicit isolated QA-fixture scope so test work cannot become Tony work."
+      "title": "Canonical TODOs and responsive reads",
+      "summary": "Replaces single Next Action editing with stable per-task TODO records, append-only comments, idempotent audit history, and verified item-level APIs. Task and proposal reads now coalesce in the background, retain clearly labelled last-verified data during slow GBrain refreshes, and define an explicit isolated QA-fixture scope so test work cannot become Tony work."
     },
     {
       "version": "V0.0.66",
       "date": "2026-08-01",
-      "title": "Focused To Do entry and Project details",
-      "summary": "Keeps Task To Dos read-only until an explicit accessible Plus action opens the Add form, and makes every Project card open a focus-managed right sidebar with canonical description, status, relationships, timestamps, identity-preserving Edit, and verified readback."
+      "title": "Focused TODO entry and Project details",
+      "summary": "Keeps Task TODOs read-only until an explicit accessible Plus action opens the Add form, and makes every Project card open a focus-managed right sidebar with canonical description, status, relationships, timestamps, identity-preserving Edit, and verified readback."
     },
     {
       "version": "V0.0.67",
@@ -413,13 +413,19 @@
       "version": "V0.0.69",
       "date": "2026-08-02",
       "title": "Focused controls and compact history",
-      "summary": "Makes Agent profile metadata readable and keeps avatar and goal-edit controls behind explicit compact actions, replaces To Do status buttons with an unchecked Show completed ones checkbox, and keeps completed System Tickets out of the initial read until requested in five-ticket pages."
+      "summary": "Makes Agent profile metadata readable and keeps avatar and goal-edit controls behind explicit compact actions, replaces TODO status buttons with an unchecked Show completed ones checkbox, and keeps completed System Tickets out of the initial read until requested in five-ticket pages."
     },
     {
       "version": "V0.0.70",
       "date": "2026-08-02",
       "title": "Canonical Agent Artifacts",
       "summary": "GBrain is the only Artifact source of truth. Each durable Agent deliverable has one producing-Agent collection membership with typed Task and Agent provenance, while Mission Control adds safe read-only browsing and task discovery."
+    },
+    {
+      "version": "V0.0.71",
+      "date": "2026-08-03",
+      "title": "Responsive verified workflow surfaces",
+      "summary": "Keeps Mission Control usable during slow canonical reads with a bounded, clearly labelled last-verified System Ticket view and non-blocking refreshes. All Tasks and search share one reversible rolling-month date scope, Inbox shows only pending proposed work, Calendar restores its verified connection and selection without permission prompts, Artifact detail uses a wider reader, Task/Project/Goal writes share accessible HUD feedback, and TODO wording is consistent throughout."
     }
   ]
 }

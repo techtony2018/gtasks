@@ -7,6 +7,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class FrontendContractTests(unittest.TestCase):
 
+    def test_user_facing_todo_labels_use_compact_todo_spelling(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(">TODOs<", html)
+        self.assertIn("Add a TODO", html)
+        self.assertIn("Initial TODO", html)
+        self.assertNotIn("Each item, comment, and change is durable in GBrain.", html)
+        self.assertNotIn("To Do", html)
+        for old_copy in (
+            "No open To Dos",
+            "To Do:",
+            "open To Do",
+            "No To Do yet",
+            "Edit To Do",
+            "Save To Do",
+            "Comment on To Do",
+            "To Do created",
+            "To Do edit",
+            "To Do marked",
+        ):
+            self.assertNotIn(old_copy, javascript)
+
     def test_agent_artifacts_have_safe_browsing_and_task_discovery(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -36,6 +59,21 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("position: fixed", mobile)
         self.assertIn("inset: 0", mobile)
         self.assertIn("overflow-x: hidden", mobile)
+
+    def test_artifact_reader_uses_two_thirds_of_desktop_and_full_mobile_sheet(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="artifact-detail-gbrain-link"', html)
+        self.assertIn('id="artifact-detail-slug"', html)
+        self.assertIn(
+            ".app-shell:has(.artifact-detail-content:not(.is-hidden))",
+            css,
+        )
+        self.assertIn("minmax(0, 68vw)", css)
+        mobile = css[css.index("@media (max-width: 760px)") :]
+        self.assertIn(".artifact-detail-content", mobile)
+        self.assertIn("max-width: 100%", mobile)
 
     def test_artifact_git_links_use_the_same_explicit_commit_allowlist(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -216,7 +254,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("visibleBlockedTasks()", render_today)
         self.assertIn('view === "blocked" ? visibleBlockedTasks()', render_list)
         self.assertIn('view === "today" || view === "blocked"', set_view)
-        self.assertIn("loadAgentWork();\nloadTasks", javascript)
+        bootstrap = javascript[-1500:]
+        self.assertIn("loadAgentWork();", bootstrap)
+        self.assertIn('loadTasks({ reason: "initial" });', bootstrap)
         self.assertIn("blocked: visibleBlockedTasks().length", javascript)
 
     def test_slow_reads_keep_surfaces_independent_and_last_valid_content_visible(self) -> None:
@@ -634,16 +674,16 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", css)
         self.assertIn(".proposal-agent-group { grid-template-columns: 1fr; }", css)
 
-    def test_proposal_decisions_remain_visible_with_status_and_timeline(self) -> None:
+    def test_inbox_proposals_only_render_actionable_pending_records(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="proposal-decision-timeline"', html)
-        self.assertIn("function proposalStateLabel(proposal)", javascript)
-        self.assertIn('"Approved · Planned"', javascript)
-        self.assertIn('"Rejected · Cancelled"', javascript)
-        self.assertIn('"Pending review"', javascript)
-        self.assertIn('"Recent decisions"', javascript)
+        self.assertIn("function isActionableProposal(proposal)", javascript)
+        self.assertIn('proposal.status === "proposed"', javascript)
+        self.assertIn("proposal.proposal_decision", javascript)
+        self.assertIn("state.proposals.filter(isActionableProposal)", javascript)
+        self.assertNotIn('"Recent decisions"', javascript)
         self.assertIn("task.decision_events", javascript)
         self.assertIn("task.proposal_decision", javascript)
         self.assertIn("task.proposal_decided_at", javascript)
@@ -718,8 +758,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.70"', html)
-        self.assertIn('src="/app.js?v=0.0.70"', html)
+        self.assertIn('href="/styles.css?v=0.0.71"', html)
+        self.assertIn('src="/app.js?v=0.0.71"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -829,10 +869,10 @@ class FrontendContractTests(unittest.TestCase):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn(
-            'id="task-todo-add-toggle" type="button" aria-label="Add a To Do"',
+            'id="task-todo-add-toggle" type="button" aria-label="Add a TODO"',
             html,
         )
-        self.assertIn('data-tooltip="Add a To Do"', html)
+        self.assertIn('data-tooltip="Add a TODO"', html)
         self.assertIn(
             'class="task-todo-add-form is-hidden" id="task-todo-add-form"',
             html,
@@ -843,7 +883,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("elements.taskTodoAddToggle.setAttribute", javascript)
         self.assertIn("elements.taskTodoText.focus", javascript)
         self.assertIn("elements.taskTodoAddToggle.focus", javascript)
-        self.assertIn('todos.length ? "No open To Dos." : "No To Do yet"', javascript)
+        self.assertIn('todos.length ? "No open TODOs." : "No TODO yet"', javascript)
 
     def test_projects_open_edit_and_restore_focus_through_the_detail_sidebar(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -962,7 +1002,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("todoSummary(task)", board)
         self.assertIn("todoSummary(task)", calendar)
         self.assertIn("open_todos", agent_work)
-        self.assertIn("To Do", agent_work)
+        self.assertIn("TODO", agent_work)
 
     def test_calendar_has_default_on_ical_events_filter(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -1010,10 +1050,96 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('const wrapper = node("div", "calendar-events-filter")', calendar_filter)
         self.assertIn('const checkboxLabel = node("label", "calendar-events-toggle")', calendar_filter)
         self.assertIn('state.icalStatus !== "authorized"', calendar_filter)
-        self.assertIn('"Reauthorize Calendar"', calendar_filter)
+        self.assertIn('"Reconnect"', calendar_filter)
         self.assertIn("state.icalRange = range", event_loader)
         self.assertIn('if (state.icalStatus !== "authorized") return', event_loader)
         self.assertLess(event_loader.index("state.icalRange = range"), event_loader.index('state.icalStatus = "unavailable"'))
+
+    def test_calendar_connection_and_selection_restore_from_local_readback(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        calendar_filter = javascript[
+            javascript.index("function calendarEventsFilter") : javascript.index("function openCalendarAccessDialog")
+        ]
+        set_view = javascript[
+            javascript.index("function setView(view)") : javascript.index("function setConnection")
+        ]
+
+        self.assertIn("icalConnectionLoaded: false", javascript)
+        self.assertIn("function loadCalendarConnectionState()", javascript)
+        self.assertIn('fetch("/api/ical-calendars"', javascript)
+        self.assertIn('view === "week"', set_view)
+        self.assertIn("loadCalendarConnectionState()", set_view)
+        self.assertIn('"Reconnect"', calendar_filter)
+        self.assertNotIn('"Reauthorize Calendar"', calendar_filter)
+        self.assertIn("Checking Calendar access…", calendar_filter)
+        self.assertIn("loadCalendarConnectionState();", javascript[-1200:])
+
+    def test_background_task_refresh_keeps_verified_ui_and_connection_stable(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        loader = javascript[
+            javascript.index("async function performTaskLoad(reason)") : javascript.index("function loadTasks(")
+        ]
+
+        self.assertIn("const hasVerifiedSnapshot = Boolean(previousSnapshot)", loader)
+        self.assertIn("state.loading = !hasVerifiedSnapshot", loader)
+        self.assertIn('if (!hasVerifiedSnapshot)', loader)
+        self.assertIn('reason === "manual"', loader)
+        self.assertIn("state.tasksLoadPromise", javascript)
+
+    def test_task_project_and_goal_updates_share_accessible_hud_feedback(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="toast" role="status" aria-live="polite"', html)
+        self.assertIn("function showMutationStatus(message, phase", javascript)
+        self.assertIn('showMutationStatus(projectStatus, "pending"', javascript)
+        self.assertIn('showMutationStatus(goalStatus, "pending"', javascript)
+        self.assertIn('showMutationStatus(taskStatus, "pending"', javascript)
+        self.assertIn(".toast.mutation-status.is-pending", css)
+        self.assertIn(".toast.mutation-status.is-success", css)
+        self.assertIn(".toast.mutation-status.is-error", css)
+        self.assertNotIn("background: white", css[css.index(".toast {") :])
+
+    def test_all_tasks_and_search_share_one_rolling_date_scope(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="all"', html)
+        self.assertIn('<span class="nav-label">All Tasks</span>', html)
+        self.assertIn("allTaskSearch: \"\"", javascript)
+        self.assertIn("showAllTaskDates: false", javascript)
+        self.assertIn("function filteredAllTasks()", javascript)
+        self.assertIn("task.in_default_display_window", javascript)
+        self.assertIn("task.scheduled_day || task.due_day", javascript)
+        self.assertIn("function renderAllTasksView()", javascript)
+        self.assertIn('input.type = "search"', javascript)
+        self.assertIn('input.setAttribute("aria-label", "Search tasks")', javascript)
+        self.assertIn('toggle.setAttribute("aria-label", "Show tasks outside the default date range")', javascript)
+        self.assertIn("matching tasks outside the default range", javascript)
+        self.assertIn("renderAllTaskResults", javascript)
+        self.assertIn(".all-tasks-toolbar", css)
+        self.assertIn(".all-tasks-filter-notice", css)
+
+    def test_all_tasks_filter_is_read_only_and_count_uses_the_filtered_set(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        filter_body = javascript[
+            javascript.index("function filteredAllTasks()")
+            : javascript.index("function renderAllTasksView()")
+        ]
+        renderer = javascript[
+            javascript.index("function renderAllTasksView()")
+            : javascript.index("function renderWeekView()")
+        ]
+
+        self.assertNotIn("fetch(", filter_body)
+        self.assertNotIn("fetch(", renderer)
+        self.assertNotIn("method:", filter_body)
+        self.assertIn("all: filteredAllTasks().length", javascript)
+        self.assertIn('all: count === 1 ? "task shown" : "tasks shown"', javascript)
+        self.assertIn("state.allTaskSearch = input.value", renderer)
+        self.assertIn("state.showAllTaskDates = toggle.checked", renderer)
 
     def test_inbox_task_rows_and_proposals_open_read_only_details_without_edit(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1085,7 +1211,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("Open Agent Profile", agent_work)
         self.assertIn('node("h3", "", "Current work")', agent_work)
         self.assertIn("No authorized work yet", agent_work)
-        self.assertIn("No current task or open To Do recorded.", agent_work)
+        self.assertIn("No current task or open TODO recorded.", agent_work)
 
     def test_task_write_paths_use_fail_closed_type_preservation(self) -> None:
         adapter = (PROJECT_ROOT / "gtasks" / "gbrain.py").read_text(encoding="utf-8")
@@ -1189,7 +1315,7 @@ class FrontendContractTests(unittest.TestCase):
 
         tickets = javascript[javascript.index("function renderSystemTicketsView") : javascript.index("function openSystemTicketDialog")]
         self.assertIn('node("button", "system-ticket-card")', tickets)
-        self.assertIn("selectSystemTicket(ticket.slug)", tickets)
+        self.assertIn("selectSystemTicket(ticket.slug, card)", tickets)
         self.assertNotIn("ticket.verbatim_request", tickets)
         self.assertIn(".system-ticket-card", css)
         self.assertIn(".system-ticket-detail-content", css)
@@ -1218,6 +1344,46 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("No valid System Tickets are ready to display", javascript)
         self.assertNotIn('value="proposed"', html[html.index('id="system-ticket-dialog"'):html.index('id="task-editor-dialog"')])
 
+    def test_system_ticket_refresh_keeps_last_verified_cards_and_coalesces_reads(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderSystemTicketsView()")
+            : javascript.index("function openSystemTicketDialog()")
+        ]
+        loader = javascript[
+            javascript.index("function loadSystemTickets")
+            : javascript.index("async function loadCompletedSystemTickets")
+        ]
+
+        self.assertIn("state.systemTicketsError &&", renderer)
+        self.assertIn("!state.systemTickets.length &&", renderer)
+        self.assertIn("Last verified System Tickets remain visible", renderer)
+        self.assertIn("refresh is delayed", renderer)
+        self.assertIn("if (state.systemTicketsLoadPromise) return", loader)
+
+    def test_system_ticket_cold_202_is_loading_not_an_authoritative_empty_state(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderSystemTicketsView()")
+            : javascript.index("function openSystemTicketDialog()")
+        ]
+        count_label = javascript[
+            javascript.index("function inContextCountLabel(view)")
+            : javascript.index("function setView(view)")
+        ]
+        loader = javascript[
+            javascript.index("async function performSystemTicketLoad")
+            : javascript.index("async function loadCompletedSystemTickets")
+        ]
+
+        self.assertIn("function systemTicketsColdLoading()", javascript)
+        self.assertIn('readState?.status === "loading"', javascript)
+        self.assertIn("systemTicketsColdLoading()", renderer)
+        self.assertIn('"Reading System Tickets…"', renderer)
+        self.assertIn("systemTicketsColdLoading()", count_label)
+        self.assertIn('return "Reading System Tickets…"', count_label)
+        self.assertIn("if (response.status === 200)", loader)
+
     def test_system_ticket_selection_uses_detail_panel_and_ticket_safe_editor(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1225,8 +1391,18 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="system-ticket-detail-content"', html)
         self.assertIn('id="system-ticket-edit-button"', html)
         self.assertIn('id="system-ticket-editor-status"', html)
-        self.assertIn("function selectSystemTicket(ticketSlug)", javascript)
+        self.assertIn("function selectSystemTicket(ticketSlug, originControl = null)", javascript)
         self.assertIn('state.selectedKind = "system-ticket"', javascript)
+        self.assertIn("selectSystemTicket(ticket.slug, card)", javascript)
+        self.assertIn('card.dataset.slug = ticket.slug', javascript)
+        self.assertIn("elements.systemTicketDetailTitle.focus({ preventScroll: true })", javascript)
+        self.assertIn('...document.querySelectorAll(".system-ticket-card")', javascript)
+        self.assertIn(
+            'const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;',
+            javascript,
+        )
+        self.assertIn('.system-ticket-card[data-slug=', javascript)
+        self.assertIn('CSS.escape(focusedSystemTicketSlug)', javascript)
         self.assertIn('card.setAttribute("aria-current", state.selectedSlug === ticket.slug ? "true" : "false")', javascript)
         self.assertIn("function openEditSystemTicket()", javascript)
         self.assertIn('method: state.systemTicketEditorSlug ? "PATCH" : "POST"', javascript)

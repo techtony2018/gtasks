@@ -109,12 +109,12 @@ class LifecycleIntegrityError(ValueError):
 
 
 class ConcurrentTodoUpdateError(ValueError):
-    """The canonical To Do changed after the caller rendered it."""
+    """The canonical TODO changed after the caller rendered it."""
 
     def __init__(self, todo_slug: str) -> None:
         self.todo_slug = todo_slug
         super().__init__(
-            f"To Do {todo_slug} changed since it was read. Refresh the task and retry the same item."
+            f"TODO {todo_slug} changed since it was read. Refresh the task and retry the same item."
         )
 
 
@@ -1070,7 +1070,7 @@ def render_todo_page(todo: TodoItem) -> str:
         "links:",
         f"  - to: {_yaml_scalar(todo.parent_task)}",
         "    type: todo_for",
-        "    context: Canonical parent task for this To Do.",
+        "    context: Canonical parent task for this TODO.",
         "---",
         "",
         f"# {todo.text}",
@@ -1096,7 +1096,7 @@ def render_todo_comment_page(comment: TodoComment) -> str:
             "links:",
             f"  - to: {_yaml_scalar(comment.todo_slug)}",
             "    type: comment_on",
-            "    context: Append-only comment on this To Do.",
+            "    context: Append-only comment on this TODO.",
             "---",
             "",
             comment.body,
@@ -1125,7 +1125,7 @@ def render_todo_event_page(event: TodoEvent) -> str:
             "links:",
             f"  - to: {_yaml_scalar(event.todo_slug)}",
             "    type: event_for",
-            "    context: Durable audit history for this To Do.",
+            "    context: Durable audit history for this TODO.",
             "---",
             "",
             f"# {event.event_type}",
@@ -3590,10 +3590,11 @@ class GBrainAdapter:
             read_proposal,
             list(proposal_slugs),
         ):
-            if proposal is not None:
-                # Historical task_proposal pages remain visible after a
-                # decision so Inbox can distinguish pending review from the
-                # durable approval/rejection history.
+            if (
+                proposal is not None
+                and proposal.status == "proposed"
+                and proposal.decision is None
+            ):
                 proposals.append(proposal)
             if issue is not None:
                 issues.append(issue)
@@ -3607,18 +3608,12 @@ class GBrainAdapter:
         issues.extend(agent_work.issues)
         for item in agent_work.tasks:
             decision = item.get("proposal_decision")
-            if item.get("status") != "proposed" and decision not in {
-                "approve", "reject"
-            }:
+            if item.get("status") != "proposed" or decision is not None:
                 continue
             submitted = item.get("proposal_submitted_at") or item.get("created_at") or item.get("updated_at")
             updated = item.get("updated_at") or submitted
             try:
-                review_status = (
-                    "approved"
-                    if decision == "approve"
-                    else "rejected" if decision == "reject" else "proposed"
-                )
+                review_status = "proposed"
                 decision_events = tuple(
                     ProposalDecisionEvent.from_value(value)
                     for value in item.get("proposal_decision_events", [])
@@ -6465,10 +6460,10 @@ class GBrainAdapter:
         if source not in {"mission_control", "agent", "legacy_next_action"}:
             raise ValueError("todo source is invalid")
         if source == "mission_control" and actor != TONY_PROFILE_SLUG:
-            raise ValueError("Mission Control To Do mutations require Tony as actor")
+            raise ValueError("Mission Control TODO mutations require Tony as actor")
         if source == "agent":
             if not isinstance(actor, str) or not actor.startswith("agents/"):
-                raise ValueError("agent To Do mutations require a canonical agent actor")
+                raise ValueError("agent TODO mutations require a canonical agent actor")
             if task is not None and task.owner_agent != actor:
                 raise ValueError("agent question actor must match the parent task owner")
         if source == "legacy_next_action" and actor is not None:
@@ -6688,7 +6683,7 @@ class GBrainAdapter:
                         slug=slug,
                         message=str(exc),
                         category="todo_data",
-                        impact="This malformed To Do remains canonical but is omitted until repaired.",
+                        impact="This malformed TODO remains canonical but is omitted until repaired.",
                 )
             return None, None
         todos: list[TodoItem] = []
@@ -6724,7 +6719,7 @@ class GBrainAdapter:
                         message=str(exc),
                         category="todo_data",
                         impact=(
-                            "The task remains visible, but its canonical To Do list "
+                            "The task remains visible, but its canonical TODO list "
                             "is unavailable."
                         ),
                     ),
@@ -6747,7 +6742,7 @@ class GBrainAdapter:
                 "from": event.slug,
                 "to": event.todo_slug,
                 "link_type": "event_for",
-                "context": "Durable audit history for this To Do.",
+                "context": "Durable audit history for this TODO.",
                 "link_source": "gtasks",
             },
         )
@@ -6765,7 +6760,7 @@ class GBrainAdapter:
                 "from": comment.slug,
                 "to": comment.todo_slug,
                 "link_type": "comment_on",
-                "context": "Append-only comment on this To Do.",
+                "context": "Append-only comment on this TODO.",
                 "link_source": "gtasks",
             },
         )
@@ -6922,7 +6917,7 @@ class GBrainAdapter:
                 or existing.source != source
                 or existing.creator != actor
             ):
-                raise ValueError("idempotency_key already identifies a different To Do request")
+                raise ValueError("idempotency_key already identifies a different TODO request")
             return TodoMutationReceipt(existing, True, idempotent=True)
         parent_page = self.runner.run("get_page", {"slug": task.slug})
         if not isinstance(parent_page, Mapping):
@@ -6971,7 +6966,7 @@ class GBrainAdapter:
                     "from": todo.slug,
                     "to": task.slug,
                     "link_type": "todo_for",
-                    "context": "Canonical parent task for this To Do.",
+                    "context": "Canonical parent task for this TODO.",
                     "link_source": "gtasks",
                 },
             )
@@ -6991,7 +6986,7 @@ class GBrainAdapter:
             rollback_ok = self._restore_page(parent_page) and rollback_ok
             raise PartialMutationError(
                 slug,
-                "To Do creation failed. "
+                "TODO creation failed. "
                 + ("Rollback verified." if rollback_ok else "Rollback could not be verified."),
             ) from exc
 
@@ -7271,7 +7266,7 @@ class GBrainAdapter:
             raise GBrainProtocolError("answer handoff task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
         if task.handoff is None or task.handoff.question_todo != todo.slug:
-            raise ValueError("To Do is not the task's current blocking question")
+            raise ValueError("TODO is not the task's current blocking question")
         comment_slug = self._todo_identity("todo-comments", todo.slug, key)
         status_event_slug = self._todo_identity(
             "todo-events", todo.slug, f"answer_status:{key}"
@@ -7294,7 +7289,7 @@ class GBrainAdapter:
         if todo.updated_at != expected_updated_at:
             raise ConcurrentTodoUpdateError(todo.slug)
         if todo.kind != "question" or todo.status != "not_done":
-            raise ValueError("current blocking To Do must be an open question")
+            raise ValueError("current blocking TODO must be an open question")
         if task.handoff.state != "waiting_for_input":
             raise ValueError("task is not waiting for an answer")
         if now < todo.updated_at:
@@ -7368,7 +7363,7 @@ class GBrainAdapter:
             )
             todo_readback = self._read_todo(todo.slug)
             if todo_readback.to_dict() != updated_todo.to_dict():
-                raise GBrainProtocolError("answered To Do readback did not match")
+                raise GBrainProtocolError("answered TODO readback did not match")
             task_frontmatter = self._handoff_frontmatter(
                 raw_task,
                 status=desired_status,
@@ -7528,10 +7523,10 @@ class GBrainAdapter:
         idempotency_key: str,
         now: datetime,
     ) -> HandoffMutationReceipt:
-        """Promote one verified legacy answered To Do into the handoff contract.
+        """Promote one verified legacy answered TODO into the handoff contract.
 
         This deliberately narrow migration path is for a task whose answer was
-        captured through the old editable To Do detail before atomic handoffs
+        captured through the old editable TODO detail before atomic handoffs
         existed.  It refuses to infer an answer or owner, preserves every prior
         event, and appends an immutable answer comment plus repair evidence.
         """
@@ -7548,13 +7543,13 @@ class GBrainAdapter:
             raise GBrainProtocolError("handoff repair task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
         if todo.parent_task != task.slug:
-            raise ValueError("legacy question To Do does not belong to the task")
+            raise ValueError("legacy question TODO does not belong to the task")
         if task.owner_agent != agent_slug:
             raise ValueError("repair Agent must match the task's assigned Agent")
         if task.status in {"proposed", "completed", "cancelled"}:
             raise ValueError("only authorized unfinished Agent work can be repaired")
         if todo.status != "done":
-            raise ValueError("legacy question To Do must already be Done")
+            raise ValueError("legacy question TODO must already be Done")
         if todo.detail.strip() != normalized_answer:
             raise ValueError("legacy answer does not exactly match expected_answer")
         if any(blocker != TONY_PROFILE_SLUG for blocker in task.blockers):
@@ -7846,7 +7841,7 @@ class GBrainAdapter:
             )
             raise PartialMutationError(
                 todo.slug,
-                "To Do edit failed. "
+                "TODO edit failed. "
                 + ("Rollback verified." if rollback else "Rollback could not be verified."),
             ) from exc
 
@@ -7959,7 +7954,7 @@ class GBrainAdapter:
             )
             raise PartialMutationError(
                 todo.slug,
-                "To Do comment append failed. "
+                "TODO comment append failed. "
                 + ("Rollback verified." if rollback else "Rollback could not be verified."),
             ) from exc
 
@@ -8032,7 +8027,7 @@ class GBrainAdapter:
             )
             raise PartialMutationError(
                 todo.slug,
-                "To Do status change failed. "
+                "TODO status change failed. "
                 + ("Rollback verified." if rollback else "Rollback could not be verified."),
             ) from exc
 

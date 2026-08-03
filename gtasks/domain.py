@@ -1980,6 +1980,34 @@ class TodayGroups:
         }
 
 
+def _shift_calendar_month(day: date, months: int) -> date:
+    month_index = day.year * 12 + day.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    return date(year, month, min(day.day, monthrange(year, month)[1]))
+
+
+def task_display_window(as_of: date) -> tuple[date, date]:
+    """Return the inclusive one-calendar-month Mission Control task scope."""
+    if not isinstance(as_of, date):
+        raise DomainValidationError("task display as_of must be a local date")
+    return (
+        _shift_calendar_month(as_of, -1),
+        _shift_calendar_month(as_of, 1),
+    )
+
+
+def task_is_in_default_display_window(task: Task, as_of: date) -> bool:
+    """Keep urgent and undated work visible; otherwise scope by its task date."""
+    if task.status in {"active", "blocked"}:
+        return True
+    relevant_day = task.scheduled_day or task.due_day
+    if relevant_day is None:
+        return True
+    start_day, end_day = task_display_window(as_of)
+    return start_day <= relevant_day <= end_day
+
+
 def group_today(tasks: Iterable[Task], today: date) -> TodayGroups:
     in_progress: list[Task] = []
     todays_actions: list[Task] = []

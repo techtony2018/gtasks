@@ -47,6 +47,8 @@ from .domain import (
     new_project,
     new_task,
     new_system_ticket,
+    task_display_window,
+    task_is_in_default_display_window,
 )
 from .gbrain import (
     ArtifactIdempotencyConflict,
@@ -79,6 +81,7 @@ ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
 PROPOSAL_CACHE_SECONDS = 5 * 60
+SYSTEM_TICKET_CACHE_SECONDS = 5 * 60
 DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     Path.home()
     / ".codex"
@@ -300,6 +303,17 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         archived = list(archived)
         todo_issues = active_todo_issues + archived_todo_issues
     all_tasks = _dedupe_tasks(active + archived)
+    display_start, display_end = task_display_window(today)
+    all_task_payloads = [
+        {
+            **task.to_dict(),
+            "in_default_display_window": task_is_in_default_display_window(
+                task,
+                today,
+            ),
+        }
+        for task in all_tasks
+    ]
     completed = [
         task
         for task in all_tasks
@@ -343,13 +357,18 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         "as_of": today.isoformat(),
         "default_due_day": "task_creation_day",
         "default_goal_target_day": "end_of_creation_quarter",
+        "task_display_scope": {
+            "start_day": display_start.isoformat(),
+            "end_day": display_end.isoformat(),
+            "timezone": "America/Los_Angeles",
+        },
         "roots": {
             "active": ACTIVE_ROOT,
             "completed": COMPLETED_ROOT,
             "goals": GOALS_ROOT,
         },
         "owner": owner,
-        "tasks": [task.to_dict() for task in all_tasks],
+        "tasks": all_task_payloads,
         "goals": goal_progress,
         "today": group_today(active, today).to_dict(),
         "views": {
@@ -431,6 +450,9 @@ def _handler_class(
         # because an agent proposal decision changes the same canonical task.
         active_read_cache.invalidate("tasks", "proposals")
 
+    def invalidate_system_tickets() -> None:
+        active_read_cache.invalidate("system_tickets")
+
     def read_snapshot(force: bool = False):
         return active_read_cache.read(
             "tasks",
@@ -454,6 +476,14 @@ def _handler_class(
             "proposals",
             load,
             ttl_seconds=PROPOSAL_CACHE_SECONDS,
+            force=force,
+        )
+
+    def read_system_tickets(force: bool = False):
+        return active_read_cache.read(
+            "system_tickets",
+            lambda: adapter.list_system_tickets().to_dict(),
+            ttl_seconds=SYSTEM_TICKET_CACHE_SECONDS,
             force=force,
         )
 
@@ -637,7 +667,7 @@ def _handler_class(
                 ):
                     self._json(
                         HTTPStatus.BAD_REQUEST,
-                        {"error": "Unsupported or repeated To Do filter."},
+                        {"error": "Unsupported or repeated TODO filter."},
                     )
                     return
                 status_filter = query.get("status", [None])[0] or None
@@ -981,13 +1011,39 @@ def _handler_class(
                     limit = int(query.get("limit", ["5"])[0])
                     if offset < 0 or limit < 1 or limit > 5:
                         raise ValueError
-                    read = adapter.list_system_tickets()
-                    payload = read.to_dict()
-                    tickets = list(read.tickets)
+                    force = query.get("refresh", ["0"])[0] == "1"
+                    result = read_system_tickets(force=force)
+                    if result.payload is None:
+                        if result.state.get("status") == "error":
+                            self._json(
+                                HTTPStatus.SERVICE_UNAVAILABLE,
+                                {
+                                    "error": result.state.get("error")
+                                    or "The canonical System Ticket refresh failed.",
+                                    "code": "gbrain_refresh_delayed",
+                                    "read_state": result.state,
+                                },
+                            )
+                            return
+                        self._json(
+                            HTTPStatus.ACCEPTED,
+                            {
+                                "tickets": [],
+                                "issues": [],
+                                "read_state": result.state,
+                            },
+                        )
+                        return
+                    payload = {**result.payload, "read_state": result.state}
+                    tickets = list(payload.get("tickets", []))
                     if completed_only:
-                        completed = [ticket for ticket in tickets if ticket.status == "completed"]
+                        completed = [
+                            ticket
+                            for ticket in tickets
+                            if ticket.get("status") == "completed"
+                        ]
                         page = completed[offset : offset + limit]
-                        payload["tickets"] = [ticket.to_dict() for ticket in page]
+                        payload["tickets"] = page
                         payload["pagination"] = {
                             "offset": offset,
                             "limit": limit,
@@ -995,9 +1051,9 @@ def _handler_class(
                         }
                     elif not include_completed:
                         payload["tickets"] = [
-                            ticket.to_dict()
+                            ticket
                             for ticket in tickets
-                            if ticket.status != "completed"
+                            if ticket.get("status") != "completed"
                         ]
                     self._json(HTTPStatus.OK, decorate_issues(payload))
                 except ValueError:
@@ -1336,7 +1392,7 @@ def _handler_class(
                 if payload:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do migration takes no options.", "code": "invalid_todo"},
+                        {"error": "TODO migration takes no options.", "code": "invalid_todo"},
                     )
                     return
                 try:
@@ -1380,7 +1436,7 @@ def _handler_class(
                 if set(payload) != required:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do comment requires exact mutation context.", "code": "invalid_todo"},
+                        {"error": "TODO comment requires exact mutation context.", "code": "invalid_todo"},
                     )
                     return
                 try:
@@ -1438,7 +1494,7 @@ def _handler_class(
                 if set(payload) != required:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do creation requires exact identity and actor context.", "code": "invalid_todo"},
+                        {"error": "TODO creation requires exact identity and actor context.", "code": "invalid_todo"},
                     )
                     return
                 try:
@@ -1843,6 +1899,7 @@ def _handler_class(
                     self._json(HTTPStatus.BAD_GATEWAY, {"error":str(exc), "code":"partial_write", "slug":exc.slug}); return
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error":str(exc), "code":"gbrain_unavailable"}); return
+                invalidate_system_tickets()
                 self._json(HTTPStatus.CREATED, {"ticket": ticket.to_dict(), "receipt": receipt.to_dict()}); return
             duplicate_prefix = "/api/tasks/"
             duplicate_suffix = "/duplicate"
@@ -2199,13 +2256,13 @@ def _handler_class(
                 if set(payload) != required:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do status change requires exact mutation context.", "code": "invalid_todo"},
+                        {"error": "TODO status change requires exact mutation context.", "code": "invalid_todo"},
                     )
                     return
                 if payload.get("status") not in {"not_done", "done"}:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do status must be not_done or done.", "code": "invalid_todo"},
+                        {"error": "TODO status must be not_done or done.", "code": "invalid_todo"},
                     )
                     return
                 try:
@@ -2221,7 +2278,7 @@ def _handler_class(
                                 HTTPStatus.CONFLICT,
                                 {
                                     "error": (
-                                        "This To Do is the task's active blocking question. "
+                                        "This TODO is the task's active blocking question. "
                                         "Use Answer and Hand Back so the answer and task lifecycle "
                                         "change are verified together."
                                     ),
@@ -2277,7 +2334,7 @@ def _handler_class(
                 if set(payload) != required:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": "To Do edit requires exact mutation context.", "code": "invalid_todo"},
+                        {"error": "TODO edit requires exact mutation context.", "code": "invalid_todo"},
                     )
                     return
                 try:
@@ -2374,6 +2431,7 @@ def _handler_class(
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
+                invalidate_system_tickets()
                 self._json(HTTPStatus.OK, {"ticket": ticket.to_dict(), "receipt": receipt.to_dict()})
                 return
             project_prefix = "/api/projects/"
@@ -2719,7 +2777,7 @@ def _handler_class(
                     {
                         "error": (
                             "The single Next Action write endpoint is retired. "
-                            "Create or update a canonical per-item To Do instead."
+                            "Create or update a canonical per-item TODO instead."
                         ),
                         "code": "next_action_retired",
                     },

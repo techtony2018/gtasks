@@ -16,6 +16,8 @@ from gtasks.domain import (
     QA_FIXTURES_ROOT,
     default_goal_target_day,
     group_today,
+    task_display_window,
+    task_is_in_default_display_window,
     new_inbox_task,
 )
 
@@ -980,6 +982,60 @@ class TodayProjectionTests(unittest.TestCase):
 
         self.assertEqual(len(result.in_progress), 3)
         self.assertEqual(result.in_progress_overflow, 2)
+
+
+class RollingTaskDisplayWindowTests(unittest.TestCase):
+    def test_calendar_month_window_clamps_month_end_and_leap_year(self) -> None:
+        self.assertEqual(
+            task_display_window(date(2026, 3, 31)),
+            (date(2026, 2, 28), date(2026, 4, 30)),
+        )
+        self.assertEqual(
+            task_display_window(date(2024, 3, 31)),
+            (date(2024, 2, 29), date(2024, 4, 30)),
+        )
+
+    def test_uses_scheduled_day_before_due_day_and_includes_boundaries(self) -> None:
+        as_of = date(2026, 8, 3)
+        due_outside_but_scheduled_inside = Task.from_page(
+            task_page(
+                "tasks/scheduled-precedence",
+                due_day="2026-10-03",
+                scheduled_day="2026-07-03",
+            )
+        )
+        start_boundary = Task.from_page(
+            task_page("tasks/start-boundary", due_day="2026-07-03")
+        )
+        end_boundary = Task.from_page(
+            task_page("tasks/end-boundary", due_day="2026-09-03")
+        )
+
+        self.assertTrue(
+            task_is_in_default_display_window(due_outside_but_scheduled_inside, as_of)
+        )
+        self.assertTrue(task_is_in_default_display_window(start_boundary, as_of))
+        self.assertTrue(task_is_in_default_display_window(end_boundary, as_of))
+
+    def test_keeps_active_blocked_and_undated_tasks_but_scopes_other_outliers(self) -> None:
+        as_of = date(2026, 8, 3)
+        outside = Task.from_page(
+            task_page("tasks/outside", due_day="2027-01-01")
+        )
+
+        self.assertFalse(task_is_in_default_display_window(outside, as_of))
+        self.assertTrue(
+            task_is_in_default_display_window(replace(outside, status="active"), as_of)
+        )
+        self.assertTrue(
+            task_is_in_default_display_window(replace(outside, status="blocked"), as_of)
+        )
+        self.assertTrue(
+            task_is_in_default_display_window(
+                replace(outside, due_day=None, scheduled_day=None),
+                as_of,
+            )
+        )
 
 
 class NewInboxTaskTests(unittest.TestCase):

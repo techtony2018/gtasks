@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.70">
-    <script src="/app.js?v=0.0.70" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.71">
+    <script src="/app.js?v=0.0.71" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -33,6 +33,9 @@
           </button>
           <button class="nav-item is-active has-tooltip" data-view="today" type="button" aria-label="Today" data-tooltip="Today">
             <span class="nav-icon" aria-hidden="true">●</span><span class="nav-label">Today</span>
+          </button>
+          <button class="nav-item has-tooltip" data-view="all" type="button" aria-label="All Tasks" data-tooltip="All Tasks">
+            <span class="nav-icon" aria-hidden="true">☷</span><span class="nav-label">All Tasks</span>
           </button>
           <button class="nav-item has-tooltip" data-view="week" type="button" aria-label="Calendar" data-tooltip="Calendar">
             <span class="nav-icon" aria-hidden="true">□</span><span class="nav-label">Calendar</span>
@@ -160,7 +163,7 @@
       <aside class="detail-panel" id="detail-panel" aria-label="Task details" aria-hidden="true">
         <div class="detail-empty" id="detail-empty">
           <h2>Task details</h2>
-          <p>Select a task to review its To Dos, project, due date, and GBrain identity.</p>
+          <p>Select a task to review its TODOs, project, due date, and GBrain identity.</p>
         </div>
         <div class="detail-content is-hidden" id="detail-content">
           <div class="detail-toolbar">
@@ -209,11 +212,10 @@
           <section class="task-todos" aria-labelledby="task-todo-heading">
             <div class="task-todo-heading-row">
               <div>
-                <h3 id="task-todo-heading">To Dos</h3>
-                <p>Each item, comment, and change is durable in GBrain.</p>
+                <h3 id="task-todo-heading">TODOs</h3>
               </div>
               <div class="task-todo-heading-controls">
-                <button class="action-icon-button has-tooltip" id="task-todo-add-toggle" type="button" aria-label="Add a To Do" data-tooltip="Add a To Do" aria-expanded="false" aria-controls="task-todo-add-form"><span aria-hidden="true">+</span></button>
+                <button class="action-icon-button has-tooltip" id="task-todo-add-toggle" type="button" aria-label="Add a TODO" data-tooltip="Add a TODO" aria-expanded="false" aria-controls="task-todo-add-form"><span aria-hidden="true">+</span></button>
                 <label class="task-todo-completed-toggle" for="task-todo-show-completed">
                   <input id="task-todo-show-completed" type="checkbox">
                   <span>Show completed ones</span>
@@ -221,24 +223,24 @@
               </div>
             </div>
             <form class="task-todo-add-form is-hidden" id="task-todo-add-form">
-              <label for="task-todo-text">Add a To Do</label>
+              <label for="task-todo-text">Add a TODO</label>
               <input id="task-todo-text" type="text" maxlength="240" required placeholder="One concrete action, question, or blocker">
               <label for="task-todo-detail">Detail <span>optional</span></label>
               <textarea id="task-todo-detail" rows="2" maxlength="5000" placeholder="Context or the response needed from Tony"></textarea>
               <div class="task-todo-add-row">
-                <select id="task-todo-kind" aria-label="To Do kind">
+                <select id="task-todo-kind" aria-label="TODO kind">
                   <option value="action">Action</option>
                   <option value="question">Question</option>
                   <option value="blocker">Blocker</option>
                 </select>
                 <div class="task-todo-add-actions">
                   <button class="secondary-button" id="task-todo-add-cancel" type="button">Cancel</button>
-                  <button class="secondary-button" id="task-todo-add" type="submit">Add To Do</button>
+                  <button class="secondary-button" id="task-todo-add" type="submit">Add TODO</button>
                 </div>
               </div>
             </form>
-            <p class="is-hidden" role="status" id="task-todo-loading">Loading canonical To Dos…</p>
-            <p class="is-hidden" id="task-todo-empty">No To Do yet</p>
+            <p class="is-hidden" role="status" id="task-todo-loading">Loading canonical TODOs…</p>
+            <p class="is-hidden" id="task-todo-empty">No TODO yet</p>
             <p class="form-error is-hidden" role="alert" id="task-todo-error"></p>
             <div class="task-todo-list" id="task-todo-list" role="list"></div>
           </section>
@@ -458,7 +460,7 @@
             <input id="task-editor-due" type="date" required>
           </label>
         </div>
-        <label id="task-editor-initial-todo-field" for="task-editor-initial-todo">Initial To Do <span>optional</span></label>
+        <label id="task-editor-initial-todo-field" for="task-editor-initial-todo">Initial TODO <span>optional</span></label>
         <input id="task-editor-initial-todo" type="text" maxlength="240" placeholder="One concrete action to add after task creation">
         <div id="task-editor-assignee-field">
           <label for="task-editor-assignee">Who should do this work?</label>
@@ -881,6 +883,6 @@
       </div>
     </dialog>
 
-    <div class="toast is-hidden" id="toast" role="status"></div>
+    <div class="toast is-hidden" id="toast" role="status" aria-live="polite"></div>
   </body>
 </html>

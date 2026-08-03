@@ -56,6 +56,7 @@ from gtasks.gbrain import (
 )
 from gtasks.server import (
     ArtifactPublisherAuth,
+    build_task_snapshot,
     build_server,
     load_artifact_publisher_auth,
 )
@@ -874,6 +875,37 @@ class CalendarApiTests(unittest.TestCase):
 
 
 class HealthApiTests(unittest.TestCase):
+    def test_task_snapshot_exposes_one_la_rolling_window_scope_for_all_tasks(self) -> None:
+        inside = new_task(
+            title="Inside rolling window",
+            now=datetime(2026, 8, 3, 9, 0).astimezone(),
+            identity="inside-window",
+            due_day=date(2026, 8, 4),
+        )
+        outside = new_task(
+            title="Outside rolling window",
+            now=datetime(2026, 8, 3, 9, 0).astimezone(),
+            identity="outside-window",
+            due_day=date(2026, 10, 4),
+        )
+
+        snapshot = build_task_snapshot(
+            FakeAdapter(active=(inside, outside)),
+            date(2026, 8, 3),
+        )
+
+        self.assertEqual(
+            snapshot["task_display_scope"],
+            {
+                "start_day": "2026-07-03",
+                "end_day": "2026-09-03",
+                "timezone": "America/Los_Angeles",
+            },
+        )
+        by_slug = {task["slug"]: task for task in snapshot["tasks"]}
+        self.assertTrue(by_slug[inside.slug]["in_default_display_window"])
+        self.assertFalse(by_slug[outside.slug]["in_default_display_window"])
+
     def test_health_declares_read_cache_and_isolated_qa_scope(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
 
@@ -927,7 +959,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.70")
+        self.assertEqual(payload["version"], "V0.0.71")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -935,11 +967,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.70")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.70")
+        self.assertEqual(payload["current_version"], "V0.0.71")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.71")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.71",
                 "V0.0.70",
                 "V0.0.69",
                 "V0.0.68",
@@ -2970,6 +3003,162 @@ class TaskRelationshipRepairApiTests(unittest.TestCase):
 
 
 class SystemTicketApiTests(unittest.TestCase):
+    def test_cold_system_ticket_read_is_bounded_and_then_serves_labeled_last_verified_data(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowSystemTicketAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_system_tickets(self) -> SystemTicketRead:
+                self.read_count += 1
+                entered.set()
+                release.wait(timeout=2)
+                return super().list_system_tickets()
+
+        ticket = SystemTicket(
+            slug="tasks/system-tickets/cache-read-a1b2c3",
+            title="Use the verified System Ticket snapshot",
+            status="planned",
+            verbatim_request="Keep the System Tickets surface responsive.",
+            target_subsystem="mission_control",
+            priority="high",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(
+                ReadSnapshotStore(Path(temporary) / "reads.json"),
+                background=True,
+            )
+            adapter = SlowSystemTicketAdapter(system_tickets=(ticket,))
+            harness = ServerHarness(
+                self,
+                adapter,
+                read_cache=cache,
+            )
+
+            cold_status, cold_payload, _ = harness.request(
+                "GET", "/api/system-tickets?include_completed=0"
+            )
+
+            self.assertEqual(cold_status, 202)
+            self.assertEqual(cold_payload["read_state"]["surface"], "system_tickets")
+            self.assertEqual(cold_payload["read_state"]["status"], "loading")
+            self.assertTrue(entered.wait(timeout=1))
+
+            release.set()
+            self.assertTrue(cache.wait_for_idle("system_tickets"))
+            warm_status, warm_payload, _ = harness.request(
+                "GET", "/api/system-tickets?include_completed=0"
+            )
+
+            self.assertEqual(warm_status, 200)
+            self.assertEqual(
+                [item["slug"] for item in warm_payload["tickets"]],
+                [ticket.slug],
+            )
+            self.assertEqual(warm_payload["read_state"]["surface"], "system_tickets")
+            self.assertEqual(warm_payload["read_state"]["status"], "fresh")
+            second_status, second_payload, _ = harness.request(
+                "GET", "/api/system-tickets?include_completed=0"
+            )
+            self.assertEqual(second_status, 200)
+            self.assertEqual(second_payload["read_state"]["status"], "fresh")
+            self.assertEqual(adapter.read_count, 1)
+
+    def test_verified_system_ticket_mutation_invalidates_only_its_cached_surface(self) -> None:
+        class CountingAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_system_tickets(self) -> SystemTicketRead:
+                self.read_count += 1
+                return super().list_system_tickets()
+
+        adapter = CountingAdapter()
+        harness = ServerHarness(self, adapter)
+
+        first_status, first_payload, _ = harness.request(
+            "GET", "/api/system-tickets?include_completed=0"
+        )
+        created_status, created_payload, _ = harness.request(
+            "POST",
+            "/api/system-tickets",
+            {
+                "title": "Invalidate the verified System Ticket read",
+                "verbatim_request": "Refresh only after the mutation is verified.",
+                "target_subsystem": "mission_control",
+                "priority": "normal",
+                "acceptance_criteria": "The new ticket is present after readback.",
+            },
+        )
+        second_status, second_payload, _ = harness.request(
+            "GET", "/api/system-tickets?include_completed=0"
+        )
+
+        self.assertEqual((first_status, created_status, second_status), (200, 201, 200))
+        self.assertEqual(first_payload["tickets"], [])
+        self.assertTrue(created_payload["receipt"]["verified"])
+        self.assertEqual(
+            [ticket["slug"] for ticket in second_payload["tickets"]],
+            [created_payload["ticket"]["slug"]],
+        )
+        self.assertEqual(adapter.read_count, 2)
+
+    def test_six_of_twenty_noncompleted_tickets_use_zero_additional_remote_projection_reads_when_warm(self) -> None:
+        class InstrumentedAdapter(FakeAdapter):
+            projection_reads = 0
+
+            def list_system_tickets(self) -> SystemTicketRead:
+                self.projection_reads += 1
+                return super().list_system_tickets()
+
+        open_tickets = tuple(
+            SystemTicket(
+                slug=f"tasks/open-{index}",
+                title=f"Open ticket {index}",
+                status="active" if index == 0 else "planned",
+                verbatim_request=f"Keep open ticket {index} visible.",
+                target_subsystem="mission_control",
+                priority="normal",
+            )
+            for index in range(6)
+        )
+        completed = tuple(
+            SystemTicket(
+                slug=f"tasks/completed-{index}",
+                title=f"Completed ticket {index}",
+                status="completed",
+                verbatim_request=f"Keep completed ticket {index} canonical.",
+                target_subsystem="mission_control",
+                priority="normal",
+            )
+            for index in range(14)
+        )
+        adapter = InstrumentedAdapter(system_tickets=(*open_tickets, *completed))
+        harness = ServerHarness(self, adapter)
+
+        first_status, first_payload, _ = harness.request(
+            "GET", "/api/system-tickets?include_completed=0"
+        )
+        reads_after_first = adapter.projection_reads
+        second_status, second_payload, _ = harness.request(
+            "GET", "/api/system-tickets?include_completed=0"
+        )
+
+        expected = [ticket.slug for ticket in open_tickets]
+        self.assertEqual((first_status, second_status), (200, 200))
+        self.assertEqual(first_payload["issues"], [])
+        self.assertEqual(second_payload["issues"], [])
+        self.assertCountEqual(
+            [ticket["slug"] for ticket in first_payload["tickets"]],
+            expected,
+        )
+        self.assertCountEqual(
+            [ticket["slug"] for ticket in second_payload["tickets"]],
+            expected,
+        )
+        self.assertEqual(reads_after_first, 1)
+        self.assertEqual(adapter.projection_reads, reads_after_first)
+
     def test_lists_separate_canonical_system_tickets(self) -> None:
         ticket = SystemTicket(
             slug="tasks/system-tickets/calendar-highlight-a1b2c3",

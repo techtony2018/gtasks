@@ -3556,6 +3556,90 @@ kbd {
   line-height: 1.45;
 }
 
+.toast.mutation-status {
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: rgba(2, 8, 22, 0.97);
+  box-shadow: 0 16px 40px rgba(0, 3, 14, 0.5), 0 0 20px rgba(56, 189, 248, 0.14);
+}
+
+.toast.mutation-status.is-pending {
+  border-color: rgba(56, 189, 248, 0.62);
+  color: #bff8ff;
+}
+
+.toast.mutation-status.is-success {
+  border-color: rgba(111, 232, 168, 0.58);
+  color: #c9ffe0;
+}
+
+.toast.mutation-status.is-error {
+  border-color: rgba(255, 154, 169, 0.66);
+  color: #ffd8de;
+}
+
+.all-tasks-view {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.all-tasks-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 10px 16px;
+  padding: 14px;
+  border: 1px solid rgba(106, 232, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(3, 16, 31, 0.82);
+}
+
+.all-tasks-toolbar > label:first-child {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.all-tasks-toolbar input[type="search"] {
+  width: 100%;
+  min-width: 0;
+}
+
+.all-tasks-date-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.all-tasks-range {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.all-tasks-results,
+.all-tasks-list {
+  min-width: 0;
+}
+
+.all-tasks-filter-notice {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(6, 30, 50, 0.8);
+  color: var(--muted);
+}
+
 @media (max-width: 1080px) {
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     /* Keep the detail drawer in the layout flow at narrow desktop widths.
@@ -3574,6 +3658,20 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  .all-tasks-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .all-tasks-range {
+    grid-column: 1;
+    overflow-wrap: anywhere;
+  }
+
+  .all-tasks-date-toggle {
+    white-space: normal;
+  }
+
   .app-shell,
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     display: block;
@@ -4668,6 +4766,10 @@ a {
 
 .app-shell:has(.detail-panel[aria-hidden="false"]) {
   grid-template-columns: 92px minmax(500px, 1fr) 344px;
+}
+
+.app-shell:has(.artifact-detail-content:not(.is-hidden)) {
+  grid-template-columns: 92px minmax(280px, 1fr) minmax(0, 68vw);
 }
 
 .nav-label,
