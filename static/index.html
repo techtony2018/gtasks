@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.69">
-    <script src="/app.js?v=0.0.69" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.70">
+    <script src="/app.js?v=0.0.70" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -43,6 +43,9 @@
           <button class="nav-item has-tooltip" data-view="agent-work" type="button" aria-label="Agents" data-tooltip="Agents">
             <span class="nav-icon" aria-hidden="true">◌</span><span class="nav-label">Agents</span>
           </button>
+          <button class="nav-item has-tooltip" data-view="artifacts" type="button" aria-label="Artifacts" data-tooltip="Artifacts">
+            <span class="nav-icon" aria-hidden="true">◆</span><span class="nav-label">Artifacts</span>
+          </button>
           <button class="nav-item has-tooltip" data-view="blocked" type="button" aria-label="Blocked" data-tooltip="Blocked">
             <span class="nav-icon" aria-hidden="true">!</span><span class="nav-label">Blocked</span>
           </button>
@@ -72,6 +75,15 @@
             <label class="board-agent-filter is-hidden" id="board-agent-filter">
               <input id="show-agent-tasks" type="checkbox">
               <span>Show agent tasks</span>
+            </label>
+            <label class="artifact-agent-filter is-hidden" id="artifact-agent-filter">
+              <span>Agent</span>
+              <select id="artifact-agent-select" aria-label="Filter Artifacts by Agent">
+                <option value="all">All Agents</option>
+                <option value="agents/tammy">Tammy</option>
+                <option value="agents/timmy">Timmy</option>
+                <option value="agents/toddy">Toddy</option>
+              </select>
             </label>
             <div class="sync-stack">
               <span class="sync-label" id="sync-label" role="status">Loading tasks…</span>
@@ -230,6 +242,14 @@
             <p class="form-error is-hidden" role="alert" id="task-todo-error"></p>
             <div class="task-todo-list" id="task-todo-list" role="list"></div>
           </section>
+          <section class="task-artifacts" id="task-artifacts" aria-labelledby="task-artifacts-heading">
+            <div class="task-artifacts-heading">
+              <h3 id="task-artifacts-heading">Artifacts</h3>
+              <span>Read-only canonical deliverables</span>
+            </div>
+            <p class="task-artifacts-state" id="task-artifacts-state">No artifacts yet</p>
+            <div class="task-artifact-list" id="task-artifact-list" role="list"></div>
+          </section>
           <dl class="detail-list">
             <div>
               <dt>Priority</dt>
@@ -246,6 +266,27 @@
             Open in Memory Stargraph
           </a>
           <code class="slug-label" id="detail-slug"></code>
+        </div>
+        <div class="artifact-detail-content is-hidden" id="artifact-detail-content">
+          <div class="detail-toolbar">
+            <span class="detail-status" id="artifact-detail-kind"></span>
+            <button class="icon-button" id="artifact-detail-close" type="button" aria-label="Close Artifact details">×</button>
+          </div>
+          <h2 id="artifact-detail-title" tabindex="-1"></h2>
+          <p class="artifact-detail-meta" id="artifact-detail-meta"></p>
+          <div class="detail-copy" id="artifact-detail-markdown"></div>
+          <div class="artifact-attachments" id="artifact-detail-attachments"></div>
+          <dl class="detail-list">
+            <div><dt>Producing Agent</dt><dd id="artifact-detail-agent"></dd></div>
+            <div><dt>Task</dt><dd id="artifact-detail-task"></dd></div>
+            <div><dt>Project</dt><dd id="artifact-detail-project"></dd></div>
+            <div><dt>Goal</dt><dd id="artifact-detail-goal"></dd></div>
+            <div><dt>Created</dt><dd id="artifact-detail-created"></dd></div>
+          </dl>
+          <a class="gbrain-link" id="artifact-detail-gbrain-link" target="_blank" rel="noreferrer">
+            Open in Memory Stargraph
+          </a>
+          <code class="slug-label" id="artifact-detail-slug"></code>
         </div>
         <div class="goal-detail-content is-hidden" id="goal-detail-content">
           <div class="detail-toolbar">

@@ -37,6 +37,8 @@ class DashboardIntegrationTests(unittest.TestCase):
                 "127.0.0.1",
                 "--port",
                 "4179",
+                "--artifact-publisher-credentials-file",
+                "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/artifact-publisher-credentials.json",
             ],
         )
         self.assertEqual(contract["canonical_store"], "gbrain")

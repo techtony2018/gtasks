@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.69")
+        self.assertEqual(__version__, "V0.0.70")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -46,12 +46,21 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("deduplicated counts", release["summary"])
 
     def test_v0_0_69_records_progressive_controls_and_completed_history(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.69")
 
         self.assertEqual(release["version"], "V0.0.69")
         self.assertIn("Agent profile metadata readable", release["summary"])
         self.assertIn("Show completed ones", release["summary"])
         self.assertIn("five-ticket pages", release["summary"])
+
+    def test_v0_0_70_records_canonical_read_only_agent_artifacts(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.70")
+        self.assertIn("GBrain is the only Artifact source of truth", release["summary"])
+        self.assertIn("one producing-Agent collection membership", release["summary"])
+        self.assertIn("typed Task and Agent provenance", release["summary"])
+        self.assertIn("read-only", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -153,6 +162,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.67",
                 "V0.0.68",
                 "V0.0.69",
+                "V0.0.70",
             ],
         )
 

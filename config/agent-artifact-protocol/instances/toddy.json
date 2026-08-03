@@ -1,0 +1,9 @@
+{
+  "key": "toddy",
+  "name": "Toddy",
+  "agent_slug": "agents/toddy",
+  "task_collection": "collections/toddys-tasks",
+  "artifact_collection": "collections/toddys-artifacts",
+  "daytime_automation_id": "toddy-daytime-authorized-work-loop",
+  "nighttime_automation_id": "toddy-nightly-long-term-planning-review"
+}

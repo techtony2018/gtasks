@@ -11,23 +11,29 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import gtasks.domain as domain
 from gtasks.domain import (
     ACTIVE_ROOT,
+    ARTIFACTS_ROOT,
+    ARTIFACT_BY_AGENT,
     COMPLETED_ROOT,
     EventProgress,
     GOALS_ROOT,
     PROJECTS_ROOT,
     PROPOSALS_ROOT,
+    QA_FIXTURES_ROOT,
     TaskProposal,
     SYSTEM_TICKETS_ROOT,
     SystemTicket,
     Task,
     ProgressMetric,
+    new_agent_artifact,
     new_goal,
     new_inbox_task,
     new_project,
     new_task,
 )
+import gtasks.gbrain as gbrain_module
 from gtasks.gbrain import (
     GBrainAdapter,
     AgentWorkRead,
@@ -318,6 +324,100 @@ class StatefulIdentityMigrationRunner:
             ]
             return {"slug": slug, "deleted": True}
         raise AssertionError(f"unexpected tool: {tool}")
+
+
+def stored_artifact(artifact) -> dict:
+    links = [
+        {"to": artifact.agent_collection, "type": "member_of"},
+        {"to": artifact.created_by, "type": "created_by"},
+        {"to": artifact.produced_for, "type": "produced_for"},
+    ]
+    if artifact.project:
+        links.append({"to": artifact.project, "type": "supports_project"})
+    if artifact.goal:
+        links.append({"to": artifact.goal, "type": "supports_goal"})
+    if artifact.supersedes:
+        links.append({"to": artifact.supersedes, "type": "supersedes"})
+    return {
+        "slug": artifact.slug,
+        "type": "concept",
+        "title": artifact.title,
+        "compiled_markdown": artifact.markdown,
+        "frontmatter": {
+            "type": "artifact",
+            "title": artifact.title,
+            "artifact_kind": artifact.artifact_kind,
+            "created_by": artifact.created_by,
+            "produced_for": artifact.produced_for,
+            "attachments": list(artifact.attachments),
+            "git_url": artifact.git_url,
+            "created_at": artifact.created_at.isoformat(),
+            "links": links,
+        },
+    }
+
+
+def artifact_edges(artifact) -> list[dict]:
+    edges = [
+        {"from_slug": artifact.slug, "to_slug": artifact.agent_collection, "link_type": "member_of"},
+        {"from_slug": artifact.slug, "to_slug": artifact.created_by, "link_type": "created_by"},
+        {"from_slug": artifact.slug, "to_slug": artifact.produced_for, "link_type": "produced_for"},
+    ]
+    if artifact.project:
+        edges.append({"from_slug": artifact.slug, "to_slug": artifact.project, "link_type": "supports_project"})
+    if artifact.goal:
+        edges.append({"from_slug": artifact.slug, "to_slug": artifact.goal, "link_type": "supports_goal"})
+    return edges
+
+
+def authorized_artifact_task(artifact) -> tuple[dict, list[dict]]:
+    work_root = dict(domain.AGENT_SCOPES)[artifact.created_by]
+    page = {
+        "slug": artifact.produced_for,
+        "type": "task",
+        "title": "Authorized Artifact task",
+        "compiled_truth": "# Authorized Artifact task",
+        "frontmatter": {
+            "type": "task",
+            "title": "Authorized Artifact task",
+            "summary": "Authorized Artifact task",
+            "detail": "Produce the durable deliverable.",
+            "status": "active",
+            "priority": "normal",
+            "next_action": "Publish the verified Artifact.",
+            "due_day": "2026-08-02",
+            "scheduled_day": "none",
+            "inbox": False,
+            "links": [{"to": work_root, "type": "member_of"}],
+        },
+    }
+    edges = [
+        {
+            "from_slug": artifact.produced_for,
+            "to_slug": work_root,
+            "link_type": "member_of",
+        },
+        {
+            "from_slug": artifact.produced_for,
+            "to_slug": artifact.created_by,
+            "link_type": "assigned_to",
+        },
+    ]
+    return page, edges
+
+
+class StatefulArtifactRunner(StatefulIdentityMigrationRunner):
+    def run(self, tool: str, params: dict) -> object:
+        result = super().run(tool, params)
+        if tool == "put_page" and params["slug"].startswith("artifacts/"):
+            content = params["content"]
+            lines = content.splitlines()
+            end = lines.index("---", 1)
+            self.pages[params["slug"]]["type"] = "concept"
+            self.pages[params["slug"]]["compiled_markdown"] = "\n".join(
+                lines[end + 1 :]
+            ).strip()
+        return result
 
 
 class CanonicalIdentityMigrationTests(unittest.TestCase):
@@ -1041,6 +1141,760 @@ class ProjectPersistenceTests(unittest.TestCase):
         self.assertIn("title: Tony's Projects", runner.calls[1][1]["content"])
         self.assertIn("type: member_of", runner.calls[3][1]["content"])
 
+
+class AgentArtifactAdapterTests(unittest.TestCase):
+    def artifact(self, *, created_at: datetime | None = None):
+        return new_agent_artifact(
+            title="Family care weekly review brief",
+            artifact_kind="markdown",
+            created_by="agents/toddy",
+            produced_for="tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+            markdown="# Weekly review\n\nCanonical content.",
+            project="projects/11111111-1111-4111-8111-111111111111",
+            goal="goals/22222222-2222-4222-8222-222222222222",
+            now=created_at or datetime(2026, 8, 2, 14, tzinfo=timezone.utc),
+        )
+
+    def qa_fixture_task(self, artifact):
+        now = datetime(2026, 8, 3, 9, tzinfo=timezone(timedelta(hours=-7)))
+        return replace(
+            new_task(
+                title="Agent Artifact release canary fixture",
+                detail="Non-sensitive isolated fixture for V0.0.70 canary verification.",
+                due_day=now.date(),
+                now=now,
+                identity="artifactqa70",
+            ),
+            slug=artifact.produced_for,
+            status="completed",
+            lifecycle_root=QA_FIXTURES_ROOT,
+            qa_fixture=True,
+            qa_owner="mission_control_release_canary",
+            qa_release="V0.0.70",
+            owner_agent=artifact.created_by,
+            inbox=False,
+            completed_at=now,
+        )
+
+    def test_create_completed_agent_qa_fixture_and_artifact_end_to_end(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        runner = StatefulArtifactRunner({}, [])
+        adapter = GBrainAdapter(runner)
+
+        fixture_receipt = adapter.create_agent_qa_fixture_task(
+            fixture, artifact.created_by
+        )
+        artifact_receipt = adapter.create_agent_artifact(
+            artifact,
+            executing_agent=artifact.created_by,
+            idempotency_key="v0.0.70:agent-artifact-live-canary:v1",
+        )
+
+        self.assertTrue(fixture_receipt.verified)
+        self.assertTrue(artifact_receipt.verified)
+        stored_fixture = Task.from_page(
+            runner.pages[fixture.slug],
+            edges=[edge for edge in runner.links if edge["from_slug"] == fixture.slug],
+        )
+        self.assertEqual(stored_fixture.status, "completed")
+        self.assertEqual(stored_fixture.lifecycle_root, QA_FIXTURES_ROOT)
+        self.assertEqual(stored_fixture.owner_agent, artifact.created_by)
+        actual = {
+            (edge["from_slug"], edge["to_slug"], edge["link_type"])
+            for edge in runner.links
+        }
+        self.assertIn((fixture.slug, QA_FIXTURES_ROOT, "member_of"), actual)
+        self.assertIn((fixture.slug, artifact.created_by, "assigned_to"), actual)
+        self.assertIn((artifact.slug, fixture.slug, "produced_for"), actual)
+        self.assertTrue(
+            all(edge.get("link_source") == "gtasks" for edge in runner.links),
+            runner.links,
+        )
+
+    def test_qa_fixture_artifact_preflight_rejects_incomplete_fixture_contract(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        page = stored_page(fixture)
+        page["frontmatter"].update(
+            {
+                "status": "completed",
+                "completed_at": fixture.completed_at.isoformat(),
+                "qa_fixture": True,
+                "qa_owner": fixture.qa_owner,
+                "qa_release": fixture.qa_release,
+                "links": [{"to": QA_FIXTURES_ROOT, "type": "member_of"}],
+            }
+        )
+        edges = [
+            {
+                "from_slug": fixture.slug,
+                "to_slug": QA_FIXTURES_ROOT,
+                "link_type": "member_of",
+            }
+        ]
+        runner = StatefulArtifactRunner({fixture.slug: page}, edges)
+
+        with self.assertRaisesRegex(
+            domain.DomainValidationError,
+            "approved canonical Agent task or completed Agent QA fixture",
+        ):
+            GBrainAdapter(runner).create_agent_artifact(
+                artifact,
+                executing_agent=artifact.created_by,
+                idempotency_key="v0.0.70:invalid-fixture:v1",
+            )
+        self.assertFalse(
+            any(
+                call[0] == "put_page"
+                and call[1]["slug"].startswith("artifacts/")
+                for call in runner.calls
+            )
+        )
+
+    def test_qa_fixture_creator_requires_canonical_task_uuid_before_write(self) -> None:
+        artifact = self.artifact()
+        fixture = replace(
+            self.qa_fixture_task(artifact),
+            slug="projects/66666666-6666-4666-8666-666666666666",
+        )
+        runner = StatefulArtifactRunner({}, [])
+
+        with self.assertRaisesRegex(ValueError, "canonical tasks UUID slug"):
+            GBrainAdapter(runner).create_agent_qa_fixture_task(
+                fixture, artifact.created_by
+            )
+        self.assertEqual(runner.calls, [])
+
+    def test_qa_fixture_creator_reports_ambiguous_page_write_as_partial(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+
+        class AmbiguousPutRunner(StatefulArtifactRunner):
+            def run(self, tool, params):
+                result = super().run(tool, params)
+                if tool == "put_page" and params.get("slug") == fixture.slug:
+                    raise GBrainCommandError("connection closed after page write")
+                return result
+
+        runner = AmbiguousPutRunner({}, [])
+
+        with self.assertRaisesRegex(PartialMutationError, fixture.slug):
+            GBrainAdapter(runner).create_agent_qa_fixture_task(
+                fixture, artifact.created_by
+            )
+
+    def test_qa_fixture_creator_resumes_exact_page_with_missing_edges(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        runner = StatefulArtifactRunner({}, [])
+        runner.run(
+            "put_page",
+            {
+                "slug": fixture.slug,
+                "content": gbrain_module.render_task_page(fixture),
+            },
+        )
+        runner.calls.clear()
+
+        receipt = GBrainAdapter(runner).create_agent_qa_fixture_task(
+            fixture, artifact.created_by
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertFalse(
+            any(
+                tool == "put_page" and params.get("slug") == fixture.slug
+                for tool, params in runner.calls
+            )
+        )
+        self.assertEqual(
+            {
+                (edge["to_slug"], edge["link_type"], edge["link_source"])
+                for edge in runner.links
+                if edge["from_slug"] == fixture.slug
+            },
+            {
+                (QA_FIXTURES_ROOT, "member_of", "gtasks"),
+                (artifact.created_by, "assigned_to", "gtasks"),
+            },
+        )
+
+    def test_qa_fixture_creator_rejects_mismatched_existing_page_without_write(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        runner = StatefulArtifactRunner({}, [])
+        runner.run(
+            "put_page",
+            {
+                "slug": fixture.slug,
+                "content": gbrain_module.render_task_page(fixture),
+            },
+        )
+        mismatched = runner.pages[fixture.slug]
+        mismatched["title"] = "Different fixture"
+        mismatched["frontmatter"]["title"] = "Different fixture"
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            GBrainAdapter(runner).create_agent_qa_fixture_task(
+                fixture, artifact.created_by
+            )
+
+        self.assertFalse(
+            any(
+                tool in {"put_page", "add_link"}
+                and params.get("slug", params.get("from")) == fixture.slug
+                for tool, params in runner.calls
+            )
+        )
+
+    def test_qa_fixture_creator_rejects_duplicate_frontmatter_relationship(self) -> None:
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        runner = StatefulArtifactRunner({}, [])
+        runner.run(
+            "put_page",
+            {
+                "slug": fixture.slug,
+                "content": gbrain_module.render_task_page(fixture),
+            },
+        )
+        runner.pages[fixture.slug]["frontmatter"]["links"].append(
+            {
+                "to": artifact.created_by,
+                "type": "assigned_to",
+                "context": "Duplicate relationship.",
+            }
+        )
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            GBrainAdapter(runner).create_agent_qa_fixture_task(
+                fixture, artifact.created_by
+            )
+
+        self.assertFalse(
+            any(
+                tool in {"put_page", "add_link"}
+                and params.get("slug", params.get("from")) == fixture.slug
+                for tool, params in runner.calls
+            )
+        )
+
+    def test_artifact_creation_rejects_non_gtasks_relationship_sources(self) -> None:
+        class ManualSourceRunner(StatefulArtifactRunner):
+            def run(self, tool, params):
+                if tool == "add_link" and str(params.get("from", "")).startswith(
+                    "artifacts/"
+                ):
+                    params = {**params, "link_source": "manual"}
+                return super().run(tool, params)
+
+        artifact = self.artifact()
+        fixture = self.qa_fixture_task(artifact)
+        seed = StatefulArtifactRunner({}, [])
+        adapter = GBrainAdapter(seed)
+        adapter.create_agent_qa_fixture_task(fixture, artifact.created_by)
+        adapter.ensure_artifact_collections()
+        runner = ManualSourceRunner(deepcopy(seed.pages), deepcopy(seed.links))
+
+        with self.assertRaisesRegex(PartialMutationError, "not fully verified"):
+            GBrainAdapter(runner).create_agent_artifact(
+                artifact,
+                executing_agent=artifact.created_by,
+                idempotency_key="manual-source-must-fail",
+            )
+        self.assertIn(fixture.slug, runner.pages)
+
+    def test_qa_fixture_creator_rejects_optional_business_relationships(self) -> None:
+        artifact = self.artifact()
+        fixture = replace(
+            self.qa_fixture_task(artifact),
+            project="projects/11111111-1111-4111-8111-111111111111",
+        )
+        runner = StatefulArtifactRunner({}, [])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "QA fixture cannot contain project, goal, parent, dependency, or blocker relationships",
+        ):
+            GBrainAdapter(runner).create_agent_qa_fixture_task(
+                fixture, artifact.created_by
+            )
+        self.assertEqual(runner.calls, [])
+
+    def test_timmy_execution_cannot_publish_as_toddy(self) -> None:
+        artifact = self.artifact()
+        runner = StatefulArtifactRunner({}, [])
+
+        with self.assertRaisesRegex(
+            domain.DomainValidationError,
+            "Artifact publisher identity does not match its installed execution contract",
+        ):
+            GBrainAdapter(runner).create_agent_artifact(
+                artifact,
+                executing_agent="agents/timmy",
+                idempotency_key="timmy-cannot-impersonate-toddy:v1",
+            )
+        self.assertEqual(runner.calls, [])
+
+    def test_create_artifact_verifies_page_and_all_typed_links(self) -> None:
+        artifact = self.artifact()
+        task_page, task_edges = authorized_artifact_task(artifact)
+        pages = {
+            ARTIFACTS_ROOT: {
+                "slug": ARTIFACTS_ROOT,
+                "type": "collection",
+                "title": "Mission Control Artifacts",
+                "frontmatter": {"collection_kind": "mission_control_artifacts"},
+                "compiled_truth": "Mission Control Agent artifacts.",
+            },
+            artifact.produced_for: task_page,
+        }
+        for agent, collection in domain.ARTIFACT_AGENT_SCOPES:
+            pages[collection] = {
+                "slug": collection,
+                "type": "collection",
+                "title": collection,
+                "frontmatter": {
+                    "collection_kind": "mission_control_artifacts",
+                    "agent": agent,
+                },
+                "compiled_truth": "Mission Control Agent artifacts.",
+            }
+        collection_edges = [
+            {"from_slug": collection, "to_slug": ARTIFACTS_ROOT, "link_type": "part_of"}
+            for _agent, collection in domain.ARTIFACT_AGENT_SCOPES
+        ] + [
+            {"from_slug": collection, "to_slug": agent, "link_type": "for_agent"}
+            for agent, collection in domain.ARTIFACT_AGENT_SCOPES
+        ]
+        runner = StatefulArtifactRunner(pages, [*collection_edges, *task_edges])
+
+        receipt = GBrainAdapter(runner).create_agent_artifact(
+            artifact, executing_agent=artifact.created_by
+        )
+
+        self.assertTrue(receipt.verified)
+        actual = {
+            (edge["from_slug"], edge["to_slug"], edge["link_type"])
+            for edge in runner.links
+        }
+        self.assertIn((artifact.slug, artifact.agent_collection, "member_of"), actual)
+        self.assertIn((artifact.slug, "agents/toddy", "created_by"), actual)
+        self.assertIn((artifact.slug, artifact.produced_for, "produced_for"), actual)
+        self.assertIn((artifact.slug, artifact.project, "supports_project"), actual)
+        self.assertIn((artifact.slug, artifact.goal, "supports_goal"), actual)
+
+    def test_get_artifact_accepts_exact_gbrain_normalized_page_shape(self) -> None:
+        artifact = self.artifact()
+        page = stored_artifact(artifact)
+        page["type"] = "artifact"
+        page["frontmatter"].pop("type")
+        page["frontmatter"].pop("title")
+        page["compiled_truth"] = page.pop("compiled_markdown")
+        runner = StatefulArtifactRunner(
+            {artifact.slug: page}, artifact_edges(artifact)
+        )
+        adapter = GBrainAdapter(runner)
+
+        readback = adapter.get_agent_artifact(artifact.slug)
+        listed = adapter.list_agent_artifacts(agent=artifact.created_by)
+
+        self.assertEqual(readback.to_dict(), artifact.to_dict())
+        self.assertEqual([item.to_dict() for item in listed.artifacts], [artifact.to_dict()])
+        self.assertEqual(listed.issues, ())
+
+    def test_get_artifact_rejects_top_level_and_frontmatter_type_conflicts(self) -> None:
+        artifact = self.artifact()
+        pages = []
+        for top_level_type, frontmatter_type in (
+            ("task", "artifact"),
+            ("artifact", "task"),
+        ):
+            page = stored_artifact(artifact)
+            page["type"] = top_level_type
+            page["frontmatter"]["type"] = frontmatter_type
+            pages.append(page)
+
+        for page in pages:
+            with self.subTest(
+                top_level=page["type"], frontmatter=page["frontmatter"]["type"]
+            ):
+                runner = StatefulArtifactRunner(
+                    {artifact.slug: page}, artifact_edges(artifact)
+                )
+                with self.assertRaisesRegex(
+                    domain.DomainValidationError, "canonical artifact"
+                ):
+                    GBrainAdapter(runner).get_agent_artifact(artifact.slug)
+
+    def test_collection_bootstrap_is_idempotent_and_verifies_child_edges(self) -> None:
+        runner = StatefulArtifactRunner({}, [])
+        adapter = GBrainAdapter(runner)
+
+        adapter.ensure_artifact_collections()
+        first_puts = [call for call in runner.calls if call[0] == "put_page"]
+        adapter.ensure_artifact_collections()
+
+        self.assertEqual(len(first_puts), 4)
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "put_page"]),
+            4,
+        )
+        actual = {
+            (edge["from_slug"], edge["to_slug"], edge["link_type"])
+            for edge in runner.links
+        }
+        for agent, collection in domain.ARTIFACT_AGENT_SCOPES:
+            self.assertIn((collection, ARTIFACTS_ROOT, "part_of"), actual)
+            self.assertIn((collection, agent, "for_agent"), actual)
+
+    def test_collection_bootstrap_rejects_extra_child_scope_edges(self) -> None:
+        runner = StatefulArtifactRunner({}, [])
+        adapter = GBrainAdapter(runner)
+        adapter.ensure_artifact_collections()
+        child = "collections/toddys-artifacts"
+        runner.links.append(
+            {
+                "from_slug": child,
+                "to_slug": "collections/not-the-artifact-root",
+                "link_type": "part_of",
+            }
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "exactly one part_of"):
+            adapter.ensure_artifact_collections()
+
+    def test_collection_bootstrap_refuses_reserved_non_collection_page(self) -> None:
+        runner = StatefulArtifactRunner(
+            {
+                ARTIFACTS_ROOT: {
+                    "slug": ARTIFACTS_ROOT,
+                    "type": "concept",
+                    "frontmatter": {"type": "note"},
+                }
+            },
+            [],
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "not a collection"):
+            GBrainAdapter(runner).ensure_artifact_collections()
+        self.assertFalse(any(call[0] == "put_page" for call in runner.calls))
+
+    def test_create_artifact_partial_link_write_fails_closed(self) -> None:
+        artifact = self.artifact()
+        task_page, task_edges = authorized_artifact_task(artifact)
+
+        class MissingTaskLinkRunner(StatefulArtifactRunner):
+            def run(self, tool: str, params: dict) -> object:
+                if tool == "add_link" and params.get("link_type") == "produced_for":
+                    self.calls.append((tool, deepcopy(params)))
+                    return {}
+                return super().run(tool, params)
+
+        runner = MissingTaskLinkRunner({artifact.produced_for: task_page}, task_edges)
+        with self.assertRaisesRegex(PartialMutationError, artifact.slug):
+            GBrainAdapter(runner).create_agent_artifact(
+                artifact, executing_agent=artifact.created_by
+            )
+
+    def test_create_artifact_idempotency_returns_existing_and_rejects_mismatch(self) -> None:
+        original = self.artifact()
+        task_page, task_edges = authorized_artifact_task(original)
+        runner = StatefulArtifactRunner({original.produced_for: task_page}, task_edges)
+        adapter = GBrainAdapter(runner)
+        key = "toddy:weekly-review:v1"
+
+        first = adapter.create_agent_artifact(
+            original,
+            executing_agent=original.created_by,
+            idempotency_key=key,
+        )
+        retry_candidate = self.artifact()
+        retry = adapter.create_agent_artifact(
+            retry_candidate,
+            executing_agent=retry_candidate.created_by,
+            idempotency_key=key,
+        )
+
+        self.assertFalse(first.idempotent)
+        self.assertTrue(retry.idempotent)
+        self.assertEqual(retry.artifact.slug, original.slug)
+        put_count = len(
+            [
+                call
+                for call in runner.calls
+                if call[0] == "put_page" and call[1]["slug"].startswith("artifacts/")
+            ]
+        )
+        with self.assertRaises(gbrain_module.ArtifactIdempotencyConflict):
+            adapter.create_agent_artifact(
+                replace(self.artifact(), title="Different content"),
+                executing_agent=original.created_by,
+                idempotency_key=key,
+            )
+        self.assertEqual(
+            len(
+                [
+                    call
+                    for call in runner.calls
+                    if call[0] == "put_page"
+                    and call[1]["slug"].startswith("artifacts/")
+                ]
+            ),
+            put_count,
+        )
+
+    def test_concurrent_same_key_publication_serializes_scan_and_write(self) -> None:
+        original = self.artifact()
+        task_page, task_edges = authorized_artifact_task(original)
+
+        class SlowFirstScanRunner(StatefulArtifactRunner):
+            def __init__(self):
+                super().__init__({original.produced_for: task_page}, task_edges)
+                self.block_scans = False
+                self.first_scan_started = threading.Event()
+                self.release_first_scan = threading.Event()
+                self._blocked_once = False
+
+            def run(self, tool, params):
+                if (
+                    self.block_scans
+                    and tool == "get_backlinks"
+                    and params.get("slug") == original.agent_collection
+                    and not self._blocked_once
+                ):
+                    self._blocked_once = True
+                    self.first_scan_started.set()
+                    self.release_first_scan.wait(timeout=2)
+                return super().run(tool, params)
+
+        runner = SlowFirstScanRunner()
+        adapter = GBrainAdapter(runner)
+        adapter.ensure_artifact_collections()
+        runner.block_scans = True
+        key = "toddy:weekly-review:concurrent:v1"
+        retry_candidate = self.artifact()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(
+                adapter.create_agent_artifact,
+                original,
+                executing_agent=original.created_by,
+                idempotency_key=key,
+            )
+            self.assertTrue(runner.first_scan_started.wait(timeout=2))
+            second = pool.submit(
+                adapter.create_agent_artifact,
+                retry_candidate,
+                executing_agent=retry_candidate.created_by,
+                idempotency_key=key,
+            )
+            time.sleep(0.05)
+            runner.release_first_scan.set()
+            receipts = (first.result(timeout=2), second.result(timeout=2))
+
+        artifact_puts = [
+            call
+            for call in runner.calls
+            if call[0] == "put_page" and call[1]["slug"].startswith("artifacts/")
+        ]
+        self.assertEqual(len(artifact_puts), 1)
+        self.assertEqual({receipt.artifact.slug for receipt in receipts}, {original.slug})
+        self.assertEqual(sorted(receipt.idempotent for receipt in receipts), [False, True])
+
+    def test_create_artifact_preflights_missing_malformed_and_unauthorized_task(self) -> None:
+        artifact = self.artifact()
+        authorized_page, authorized_edges = authorized_artifact_task(artifact)
+        malformed_page = {**authorized_page, "type": "concept"}
+        unauthorized_page = deepcopy(authorized_page)
+        unauthorized_page["frontmatter"] = deepcopy(authorized_page["frontmatter"])
+        unauthorized_page["frontmatter"]["links"] = [
+            {"to": "collections/tammys-tasks", "type": "member_of"}
+        ]
+        unauthorized_edges = [
+            {
+                "from_slug": artifact.produced_for,
+                "to_slug": "collections/tammys-tasks",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": artifact.produced_for,
+                "to_slug": "agents/tammy",
+                "link_type": "assigned_to",
+            },
+        ]
+
+        cases = (
+            ("missing", {}, []),
+            ("malformed", {artifact.produced_for: malformed_page}, authorized_edges),
+            ("unauthorized", {artifact.produced_for: unauthorized_page}, unauthorized_edges),
+        )
+        for label, pages, links in cases:
+            with self.subTest(label=label):
+                runner = StatefulArtifactRunner(pages, links)
+                with self.assertRaises((domain.DomainValidationError, GBrainCommandError)):
+                    GBrainAdapter(runner).create_agent_artifact(
+                        artifact,
+                        executing_agent=artifact.created_by,
+                        idempotency_key=f"{label}:v1",
+                    )
+                self.assertFalse(
+                    any(
+                        call[0] == "put_page"
+                        and call[1]["slug"].startswith("artifacts/")
+                        for call in runner.calls
+                    )
+                )
+
+    def test_prewrite_gbrain_outage_stays_gbrain_error(self) -> None:
+        artifact = self.artifact()
+
+        class OfflineRunner(StatefulArtifactRunner):
+            def run(self, tool, params):
+                if tool == "get_page" and params.get("slug") == artifact.produced_for:
+                    raise GBrainCommandError("GBrain offline")
+                return super().run(tool, params)
+
+        runner = OfflineRunner({}, [])
+        with self.assertRaises(GBrainCommandError):
+            GBrainAdapter(runner).create_agent_artifact(
+                artifact,
+                executing_agent=artifact.created_by,
+                idempotency_key="offline:v1",
+            )
+        self.assertFalse(any(call[0] == "put_page" for call in runner.calls))
+
+    def test_artifact_filters_require_canonical_uuid_before_backlink_reads(self) -> None:
+        invalid_filters = (
+            {"task": "tasks/title-derived"},
+            {"project": "projects/title-derived"},
+            {"goal": "goals/title-derived"},
+            {"task": "tasks/6ba7b810-9dad-11d1-80b4-00c04fd430c8"},
+            {"project": "projects/3d813cbb-47fb-32ba-91df-831e1593ac29"},
+            {"goal": "goals/6ba7b810-9dad-11d1-80b4-00c04fd430c8"},
+        )
+        for filters in invalid_filters:
+            with self.subTest(filters=filters):
+                runner = StatefulArtifactRunner({}, [])
+                with self.assertRaisesRegex(ValueError, "canonical UUID"):
+                    GBrainAdapter(runner).list_agent_artifacts(**filters)
+                self.assertEqual(runner.calls, [])
+
+    def test_artifact_filters_accept_canonical_uuid5_identities(self) -> None:
+        valid_filters = (
+            {"task": "tasks/f07660c8-f6cf-5226-a602-4f12e4587104"},
+            {"project": "projects/65c2f720-fb49-5403-9a9e-76228e285277"},
+            {"goal": "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"},
+        )
+        for filters in valid_filters:
+            with self.subTest(filters=filters):
+                runner = StatefulArtifactRunner({}, [])
+                GBrainAdapter(runner).list_agent_artifacts(**filters)
+                self.assertTrue(
+                    any(
+                        tool == "get_backlinks" and params.get("slug") in filters.values()
+                        for tool, params in runner.calls
+                    )
+                )
+
+    def test_list_artifacts_reports_malformed_member_without_hiding_valid_item(self) -> None:
+        valid = self.artifact()
+        malformed_slug = "artifacts/33333333-3333-4333-8333-333333333333"
+        runner = StatefulArtifactRunner(
+            {
+                valid.slug: stored_artifact(valid),
+                malformed_slug: {
+                    **stored_artifact(valid),
+                    "slug": malformed_slug,
+                    "frontmatter": {**stored_artifact(valid)["frontmatter"], "type": "note"},
+                },
+            },
+            [
+                *artifact_edges(valid),
+                {"from_slug": malformed_slug, "to_slug": valid.agent_collection, "link_type": "member_of"},
+            ],
+        )
+
+        read = GBrainAdapter(runner).list_agent_artifacts(agent="agents/toddy")
+
+        self.assertEqual([item.slug for item in read.artifacts], [valid.slug])
+        self.assertEqual([issue.slug for issue in read.issues], [malformed_slug])
+
+    def test_list_artifacts_uses_typed_filters_and_stable_newest_first_pagination(self) -> None:
+        older = self.artifact(created_at=datetime(2026, 8, 1, 14, tzinfo=timezone.utc))
+        newer = self.artifact(created_at=datetime(2026, 8, 2, 14, tzinfo=timezone.utc))
+        unrelated = new_agent_artifact(
+            title="Other task output",
+            artifact_kind="markdown",
+            created_by="agents/tammy",
+            produced_for="tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            markdown="# Other",
+            now=datetime(2026, 8, 3, 14, tzinfo=timezone.utc),
+        )
+        runner = StatefulArtifactRunner(
+            {item.slug: stored_artifact(item) for item in (older, newer, unrelated)},
+            [edge for item in (older, newer, unrelated) for edge in artifact_edges(item)],
+        )
+
+        first = GBrainAdapter(runner).list_agent_artifacts(
+            agent="agents/toddy", task=older.produced_for, limit=1, cursor=0
+        )
+        second = GBrainAdapter(runner).list_agent_artifacts(
+            agent="agents/toddy", task=older.produced_for, limit=1, cursor=1
+        )
+
+        self.assertEqual([item.slug for item in first.artifacts], [newer.slug])
+        self.assertEqual(first.next_cursor, 1)
+        self.assertEqual([item.slug for item in second.artifacts], [older.slug])
+        self.assertIsNone(second.next_cursor)
+        task_backlink_calls = [
+            params for tool, params in runner.calls
+            if tool == "get_backlinks" and params.get("slug") == older.produced_for
+        ]
+        self.assertTrue(task_backlink_calls)
+
+    def test_renderers_emit_canonical_collection_and_artifact_contracts(self) -> None:
+        artifact = self.artifact()
+        child = gbrain_module.render_artifact_collection_page(
+            slug=artifact.agent_collection,
+            title="Toddy Artifacts",
+            agent="agents/toddy",
+        )
+        page = gbrain_module.render_agent_artifact_page(artifact)
+
+        self.assertIn("type: collection", child)
+        self.assertIn("type: part_of", child)
+        self.assertIn("type: artifact", page)
+        self.assertIn("type: produced_for", page)
+        self.assertIn("# Weekly review", page)
+
+    def test_adapter_does_not_expose_publisher_readback_claims(self) -> None:
+        artifact = self.artifact()
+        page = stored_artifact(artifact)
+        page["frontmatter"].update(
+            {
+                "sha": "publisher-asserted-sha",
+                "hash": "publisher-asserted-hash",
+                "verified": True,
+            }
+        )
+        runner = StatefulArtifactRunner(
+            {artifact.slug: page}, artifact_edges(artifact)
+        )
+
+        readback = GBrainAdapter(runner).get_agent_artifact(artifact.slug)
+        rendered = gbrain_module.render_agent_artifact_page(readback)
+
+        self.assertNotIn("sha", readback.to_dict())
+        self.assertNotIn("hash", readback.to_dict())
+        self.assertNotIn("verified", readback.to_dict())
+        self.assertNotIn("publisher-asserted", rendered)
+
+
+class ProjectPersistenceContinuationTests(unittest.TestCase):
     def test_reports_invalid_linked_pages_without_hiding_valid_tasks(self) -> None:
         valid = new_inbox_task(
             "Valid task",
@@ -4560,6 +5414,59 @@ class TaskProgressMetricMutationTests(unittest.TestCase):
             completed.task.event_progress.receipt_ids,
             ("evt-1", "evt-2", "evt-3", "evt-4", "evt-5"),
         )
+
+    def test_seeded_progress_increments_once_and_completes_at_custom_target(self) -> None:
+        now = datetime(
+            2026,
+            7,
+            30,
+            14,
+            15,
+            tzinfo=timezone(timedelta(hours=-7)),
+        )
+        metric = ProgressMetric.from_value(
+            {
+                "kind": "count",
+                "label": "Job applications",
+                "unit": "job_application",
+                "target": 3,
+                "current": 2,
+                "event_binding": "job_applied",
+                "auto_complete": True,
+                "task_day": "2026-07-30",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+        progress = EventProgress(baseline_count=2)
+        task = new_task(
+            title="Apply for more companies",
+            progress_metric=metric,
+            event_progress=progress,
+            now=now,
+            identity="a1b2c4",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["progress_metric"] = metric.to_dict()
+        page["frontmatter"]["event_progress"] = progress.to_dict()
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = StatefulTaskRunner(page, [edge])
+
+        completed = GBrainAdapter(runner).apply_task_progress_event(
+            task.slug,
+            event_binding="job_applied",
+            evidence_slug="applications/new",
+            receipt_id="evt-new",
+            now=now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(completed.task.progress_metric.current, 3)
+        self.assertEqual(completed.task.status, "completed")
+        self.assertEqual(completed.task.event_progress.baseline_count, 2)
+        self.assertEqual(completed.task.event_progress.receipt_ids, ("evt-new",))
 
 
 class SubprocessRunnerTests(unittest.TestCase):

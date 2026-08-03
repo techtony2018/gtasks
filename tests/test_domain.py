@@ -134,6 +134,79 @@ class QaFixtureTaskContractTests(unittest.TestCase):
         ):
             Task.from_page(page)
 
+    def test_completed_qa_fixture_may_record_one_executing_agent(self) -> None:
+        slug = "tasks/44444444-4444-4444-8444-444444444444"
+        page = task_page(
+            slug,
+            status="completed",
+            links=[{"to": QA_FIXTURES_ROOT, "type": "member_of"}],
+        )
+        page["frontmatter"].update(
+            {
+                "qa_fixture": True,
+                "qa_owner": "mission_control_release_canary",
+                "qa_release": "V0.0.70",
+                "completed_at": "2026-08-03T09:00:00-07:00",
+            }
+        )
+        edges = [
+            {
+                "from_slug": slug,
+                "to_slug": QA_FIXTURES_ROOT,
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": slug,
+                "to_slug": "agents/tammy",
+                "link_type": "assigned_to",
+            },
+        ]
+
+        task = Task.from_page(page, edges=edges)
+
+        self.assertEqual(task.owner_agent, "agents/tammy")
+        self.assertTrue(task.qa_fixture)
+        self.assertEqual(task.lifecycle_root, QA_FIXTURES_ROOT)
+
+    def test_qa_fixture_rejects_multiple_executing_agents(self) -> None:
+        slug = "tasks/55555555-5555-4555-8555-555555555555"
+        page = task_page(
+            slug,
+            status="completed",
+            links=[{"to": QA_FIXTURES_ROOT, "type": "member_of"}],
+        )
+        page["frontmatter"].update(
+            {
+                "qa_fixture": True,
+                "qa_owner": "mission_control_release_canary",
+                "qa_release": "V0.0.70",
+                "completed_at": "2026-08-03T09:00:00-07:00",
+            }
+        )
+        edges = [
+            {
+                "from_slug": slug,
+                "to_slug": QA_FIXTURES_ROOT,
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": slug,
+                "to_slug": "agents/tammy",
+                "link_type": "assigned_to",
+            },
+            {
+                "from_slug": slug,
+                "to_slug": "agents/toddy",
+                "link_type": "assigned_to",
+            },
+        ]
+
+        with self.assertRaisesRegex(
+            DomainValidationError,
+            "QA fixture permits at most one executing Agent",
+        ):
+            Task.from_page(page, edges=edges)
+
 
 class TodoDomainTests(unittest.TestCase):
     def test_stable_todo_comment_and_event_records_validate_typed_parents(self) -> None:
@@ -740,26 +813,30 @@ class TaskParsingTests(unittest.TestCase):
                 with self.assertRaisesRegex(DomainValidationError, expected):
                     Task.from_page(page)
 
-    def test_job_applied_binding_requires_the_exact_daily_quota_contract(self) -> None:
-        page = task_page("tasks/wrong-job-quota")
+    def test_job_applied_binding_accepts_any_positive_target_and_seeded_current(self) -> None:
+        page = task_page("tasks/custom-job-quota")
         page["frontmatter"]["progress_metric"] = {
             "kind": "count",
             "label": "Job applications",
             "unit": "job_application",
             "target": 4,
-            "current": 0,
+            "current": 2,
             "event_binding": "job_applied",
             "auto_complete": True,
             "task_day": "2026-07-30",
             "timezone": "America/Los_Angeles",
         }
         page["frontmatter"]["event_progress"] = {
+            "baseline_count": 2,
             "receipt_ids": [],
             "evidence_slugs": [],
         }
 
-        with self.assertRaisesRegex(DomainValidationError, "job_applied"):
-            Task.from_page(page)
+        task = Task.from_page(page)
+
+        self.assertEqual(task.progress_metric.target, 4)
+        self.assertEqual(task.progress_metric.current, 2)
+        self.assertEqual(task.event_progress.baseline_count, 2)
 
     def test_parses_supported_fields_and_relationships(self) -> None:
         page = task_page(
@@ -1150,6 +1227,336 @@ class GoalTests(unittest.TestCase):
         self.assertRegex(project.slug, r"^projects/[0-9a-f-]{36}$")
         self.assertRegex(ticket.slug, r"^tasks/[0-9a-f-]{36}$")
         self.assertNotIn("mutable", " ".join((goal.slug, project.slug, ticket.slug)))
+
+
+class AgentArtifactContractTests(unittest.TestCase):
+    def artifact_page(self, **overrides: object) -> dict:
+        slug = str(
+            overrides.pop(
+                "slug", "artifacts/72a4d170-978f-4a37-bd92-b9d3bdde9339"
+            )
+        )
+        frontmatter = {
+            "type": "artifact",
+            "title": "Family care weekly review brief",
+            "artifact_kind": "markdown",
+            "created_by": "agents/toddy",
+            "produced_for": "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+            "created_at": "2026-08-02T14:00:00-07:00",
+            "attachments": [],
+            "links": [
+                {"to": "collections/toddys-artifacts", "type": "member_of"},
+                {"to": "agents/toddy", "type": "created_by"},
+                {
+                    "to": "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+                    "type": "produced_for",
+                },
+            ],
+        }
+        frontmatter.update(overrides.pop("frontmatter", {}))
+        page = {
+            "slug": slug,
+            "type": "concept",
+            "frontmatter": frontmatter,
+            "compiled_markdown": "# Weekly review\n\nCanonical content.",
+        }
+        page.update(overrides)
+        return page
+
+    def test_agent_artifact_requires_one_agent_collection_and_task_link(self) -> None:
+        artifact = domain.AgentArtifact.from_page(self.artifact_page(), edges=[])
+
+        self.assertEqual(artifact.agent_collection, "collections/toddys-artifacts")
+        self.assertEqual(artifact.created_by, "agents/toddy")
+        self.assertEqual(artifact.artifact_kind, "markdown")
+        self.assertEqual(artifact.markdown, "# Weekly review\n\nCanonical content.")
+
+    def test_agent_artifact_accepts_gbrain_normalized_top_level_shape(self) -> None:
+        page = self.artifact_page()
+        page["type"] = "artifact"
+        page["title"] = page["frontmatter"].pop("title")
+        page["frontmatter"].pop("type")
+        page["compiled_truth"] = page.pop("compiled_markdown")
+
+        artifact = domain.AgentArtifact.from_page(page, edges=[])
+
+        self.assertEqual(artifact.title, "Family care weekly review brief")
+        self.assertEqual(artifact.markdown, "# Weekly review\n\nCanonical content.")
+
+    def test_agent_artifact_rejects_normalized_type_and_title_conflicts(self) -> None:
+        raw_type_conflict = self.artifact_page(type="task")
+        normalized_type_conflict = self.artifact_page(type="artifact")
+        normalized_type_conflict["frontmatter"]["type"] = "task"
+        title_conflict = self.artifact_page(
+            type="artifact", title="Different top-level title"
+        )
+
+        for label, page in (
+            ("raw_type_conflict", raw_type_conflict),
+            ("normalized_type_conflict", normalized_type_conflict),
+            ("title_conflict", title_conflict),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    DomainValidationError, "canonical artifact|title"
+                ):
+                    domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_accepts_canonical_uuid5_task_identity(self) -> None:
+        page = self.artifact_page()
+        task_slug = "tasks/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
+        page["frontmatter"]["produced_for"] = task_slug
+        page["frontmatter"]["links"][2]["to"] = task_slug
+
+        artifact = domain.AgentArtifact.from_page(page, edges=[])
+
+        self.assertEqual(artifact.produced_for, task_slug)
+
+    def test_agent_artifact_rejects_non_v4_v5_canonical_references(self) -> None:
+        invalid_task_slugs = (
+            "tasks/6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "tasks/3d813cbb-47fb-32ba-91df-831e1593ac29",
+        )
+        for task_slug in invalid_task_slugs:
+            with self.subTest(task_slug=task_slug):
+                page = self.artifact_page()
+                page["frontmatter"]["produced_for"] = task_slug
+                page["frontmatter"]["links"][2]["to"] = task_slug
+                with self.assertRaisesRegex(DomainValidationError, "UUIDv4 or UUIDv5"):
+                    domain.AgentArtifact.from_page(page, edges=[])
+
+        for link_type, target in (
+            ("supports_project", "projects/6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+            ("supports_goal", "goals/3d813cbb-47fb-32ba-91df-831e1593ac29"),
+        ):
+            with self.subTest(link_type=link_type):
+                page = self.artifact_page()
+                page["frontmatter"]["links"].append(
+                    {"to": target, "type": link_type}
+                )
+                with self.assertRaisesRegex(DomainValidationError, "UUIDv4 or UUIDv5"):
+                    domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_artifact_and_supersedes_identities_remain_uuid4_only(self) -> None:
+        with self.assertRaisesRegex(DomainValidationError, "opaque UUID"):
+            domain.AgentArtifact.from_page(
+                self.artifact_page(
+                    slug="artifacts/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
+                ),
+                edges=[],
+            )
+
+        page = self.artifact_page()
+        page["frontmatter"]["links"].append(
+            {
+                "to": "artifacts/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+                "type": "supersedes",
+            }
+        )
+        with self.assertRaisesRegex(DomainValidationError, "opaque UUID"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_rejects_title_derived_slug(self) -> None:
+        with self.assertRaisesRegex(DomainValidationError, "opaque UUID"):
+            domain.AgentArtifact.from_page(
+                self.artifact_page(slug="artifacts/family-care-weekly-review"),
+                edges=[],
+            )
+
+    def test_agent_artifact_rejects_two_collection_memberships(self) -> None:
+        page = self.artifact_page()
+        page["frontmatter"]["links"].append(
+            {"to": "collections/tammys-artifacts", "type": "member_of"}
+        )
+        with self.assertRaisesRegex(DomainValidationError, "exactly one.*member_of"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_rejects_agent_collection_mismatch(self) -> None:
+        page = self.artifact_page()
+        page["frontmatter"]["created_by"] = "agents/tammy"
+        page["frontmatter"]["links"][1] = {
+            "to": "agents/tammy",
+            "type": "created_by",
+        }
+        with self.assertRaisesRegex(DomainValidationError, "Agent collection"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_requires_produced_for_relationship(self) -> None:
+        page = self.artifact_page()
+        page["frontmatter"]["links"] = page["frontmatter"]["links"][:2]
+        with self.assertRaisesRegex(DomainValidationError, "produced_for"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_requires_each_frontmatter_link_even_with_graph_edges(self) -> None:
+        page = self.artifact_page()
+        page["frontmatter"]["links"] = page["frontmatter"]["links"][:2]
+        edges = [
+            {
+                "from_slug": page["slug"],
+                "to_slug": "collections/toddys-artifacts",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": page["slug"],
+                "to_slug": "agents/toddy",
+                "link_type": "created_by",
+            },
+            {
+                "from_slug": page["slug"],
+                "to_slug": "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+                "link_type": "produced_for",
+            },
+        ]
+
+        with self.assertRaisesRegex(DomainValidationError, "frontmatter.*produced_for"):
+            domain.AgentArtifact.from_page(page, edges=edges)
+
+    def test_agent_artifact_requires_exact_graph_links_when_graph_edges_are_supplied(self) -> None:
+        page = self.artifact_page()
+        edges = [
+            {
+                "from_slug": page["slug"],
+                "to_slug": "collections/toddys-artifacts",
+                "link_type": "member_of",
+            },
+            {
+                "from_slug": page["slug"],
+                "to_slug": "agents/toddy",
+                "link_type": "created_by",
+            },
+        ]
+
+        with self.assertRaisesRegex(DomainValidationError, "graph.*produced_for"):
+            domain.AgentArtifact.from_page(page, edges=edges)
+
+    def test_agent_artifact_rejects_optional_graph_link_missing_from_frontmatter(self) -> None:
+        page = self.artifact_page()
+        edges = [
+            {
+                "from_slug": page["slug"],
+                "to_slug": link["to"],
+                "link_type": link["type"],
+            }
+            for link in page["frontmatter"]["links"]
+        ]
+        edges.append(
+            {
+                "from_slug": page["slug"],
+                "to_slug": "projects/11111111-1111-4111-8111-111111111111",
+                "link_type": "supports_project",
+            }
+        )
+
+        with self.assertRaisesRegex(DomainValidationError, "graph.*supports_project"):
+            domain.AgentArtifact.from_page(page, edges=edges)
+
+    def test_agent_artifact_requires_canonical_uuid_optional_targets(self) -> None:
+        for link_type, target in (
+            ("supports_project", "projects/title-derived"),
+            ("supports_goal", "goals/title-derived"),
+        ):
+            with self.subTest(link_type=link_type):
+                page = self.artifact_page()
+                page["frontmatter"]["links"].append(
+                    {"to": target, "type": link_type}
+                )
+                with self.assertRaisesRegex(DomainValidationError, "canonical UUID"):
+                    domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_rejects_unsafe_attachment_references(self) -> None:
+        for reference in (
+            "javascript:alert(1)",
+            "file:///Users/tony/private.png",
+            "https://example.com/unverified.png",
+            "/media/%2e%2e/api/health.png",
+            "/media/artifacts%2Fsecret.png",
+            "/media/artifacts%5Csecret.png",
+            "/media/artifacts/brief.png?download=1",
+            "/media/artifacts/brief.png#preview",
+        ):
+            with self.subTest(reference=reference):
+                page = self.artifact_page(
+                    frontmatter={"attachments": [reference]}
+                )
+                with self.assertRaisesRegex(
+                    DomainValidationError, "attachments.*verified /media"
+                ):
+                    domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_accepts_safe_url_encoded_media_filename(self) -> None:
+        reference = "/media/artifacts/family%20brief.png"
+        artifact = domain.AgentArtifact.from_page(
+            self.artifact_page(frontmatter={"attachments": [reference]}),
+            edges=[],
+        )
+
+        self.assertEqual(artifact.attachments, (reference,))
+
+    def test_agent_artifact_rejects_non_https_git_reference(self) -> None:
+        page = self.artifact_page(
+            frontmatter={"artifact_kind": "git", "git_url": "file:///tmp/repo"}
+        )
+        with self.assertRaisesRegex(DomainValidationError, "HTTPS commit URL"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_allows_only_known_host_commit_urls(self) -> None:
+        allowed = (
+            "https://github.com/openai/codex/commit/0123456789abcdef0123456789abcdef01234567",
+            "https://gitlab.com/example/group/repo/-/commit/0123456789abcdef0123456789abcdef01234567",
+            "https://bitbucket.org/example/repo/commits/0123456789abcdef0123456789abcdef01234567",
+        )
+        for git_url in allowed:
+            with self.subTest(git_url=git_url):
+                artifact = domain.AgentArtifact.from_page(
+                    self.artifact_page(
+                        frontmatter={"artifact_kind": "git", "git_url": git_url}
+                    ),
+                    edges=[],
+                )
+                self.assertEqual(artifact.git_url, git_url)
+
+        page = self.artifact_page(
+            frontmatter={
+                "artifact_kind": "git",
+                "git_url": "https://example.com/repo/commit/0123456789abcdef0123456789abcdef01234567",
+            }
+        )
+        with self.assertRaisesRegex(DomainValidationError, "allowlisted HTTPS commit URL"):
+            domain.AgentArtifact.from_page(page, edges=[])
+
+    def test_agent_artifact_does_not_trust_publisher_readback_claims(self) -> None:
+        artifact = domain.AgentArtifact.from_page(
+            self.artifact_page(
+                frontmatter={
+                    "sha": "0123456789abcdef0123456789abcdef01234567",
+                    "hash": "sha256:0123456789abcdef",
+                    "verified": True,
+                }
+            ),
+            edges=[],
+        )
+
+        self.assertFalse(hasattr(artifact, "sha"))
+        self.assertFalse(hasattr(artifact, "hash"))
+        self.assertFalse(hasattr(artifact, "verified"))
+        self.assertNotIn("sha", artifact.to_dict())
+        self.assertNotIn("hash", artifact.to_dict())
+        self.assertNotIn("verified", artifact.to_dict())
+
+    def test_new_agent_artifact_uses_opaque_identity_and_dedupes_attachments(self) -> None:
+        artifact = domain.new_agent_artifact(
+            title="Family care weekly review brief",
+            artifact_kind="markdown",
+            created_by="agents/toddy",
+            produced_for="tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+            markdown="# Weekly review\n\nCanonical content.",
+            attachments=("/media/artifacts/brief.png", "/media/artifacts/brief.png"),
+            now=datetime(2026, 8, 2, 14, tzinfo=timezone.utc),
+        )
+
+        self.assertRegex(artifact.slug, r"^artifacts/[0-9a-f-]{36}$")
+        self.assertEqual(artifact.agent_collection, "collections/toddys-artifacts")
+        self.assertEqual(artifact.attachments, ("/media/artifacts/brief.png",))
 
 
 if __name__ == "__main__":

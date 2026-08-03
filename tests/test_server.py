@@ -11,6 +11,7 @@ import gtasks.gbrain as gbrain
 
 from gtasks.domain import (
     ACTIVE_ROOT,
+    AgentArtifact,
     AgentProfile,
     COMPLETED_ROOT,
     EventProgress,
@@ -23,10 +24,14 @@ from gtasks.domain import (
     Task,
     TaskProposal,
     SystemTicket,
+    DomainValidationError,
     new_inbox_task,
+    new_agent_artifact,
     new_task,
 )
 from gtasks.gbrain import (
+    ArtifactMutationReceipt,
+    ArtifactRead,
     AgentRead,
     AgentWorkRead,
     CollectionRead,
@@ -49,7 +54,11 @@ from gtasks.gbrain import (
     SystemTicketRead,
     LifecycleIntegrityError,
 )
-from gtasks.server import build_server
+from gtasks.server import (
+    ArtifactPublisherAuth,
+    build_server,
+    load_artifact_publisher_auth,
+)
 from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 from gtasks.ical import CalendarPreferences
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
@@ -121,6 +130,7 @@ class FakeAdapter:
         agent_work: tuple[dict, ...] = (),
         proposals: tuple[TaskProposal, ...] = (),
         system_tickets: tuple[SystemTicket, ...] = (),
+        artifacts: tuple[AgentArtifact, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
@@ -130,6 +140,9 @@ class FakeAdapter:
         self.agent_work = agent_work
         self.proposals = proposals
         self.system_tickets = system_tickets
+        self.artifacts = artifacts
+        self.created_artifacts: list[tuple[AgentArtifact, str]] = []
+        self.artifact_reads: list[dict[str, object]] = []
         self.created_system_tickets: list[SystemTicket] = []
         self.updated_system_tickets: list[SystemTicket] = []
         self.created: list[Task] = []
@@ -269,6 +282,62 @@ class FakeAdapter:
 
     def list_system_tickets(self) -> SystemTicketRead:
         return SystemTicketRead(tickets=self.system_tickets)
+
+    def list_agent_artifacts(self, **filters) -> ArtifactRead:
+        self.artifact_reads.append(filters)
+        artifacts = self.artifacts
+        for field, attribute in (
+            ("agent", "created_by"),
+            ("task", "produced_for"),
+            ("project", "project"),
+            ("goal", "goal"),
+            ("kind", "artifact_kind"),
+        ):
+            value = filters.get(field)
+            if value:
+                artifacts = tuple(
+                    artifact
+                    for artifact in artifacts
+                    if getattr(artifact, attribute) == value
+                )
+        cursor = filters.get("cursor", 0)
+        limit = filters.get("limit", 25)
+        page = artifacts[cursor : cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < len(artifacts) else None
+        return ArtifactRead(artifacts=page, next_cursor=next_cursor)
+
+    def get_agent_artifact(self, slug: str) -> AgentArtifact:
+        return next(artifact for artifact in self.artifacts if artifact.slug == slug)
+
+    def create_agent_artifact(
+        self,
+        artifact: AgentArtifact,
+        *,
+        executing_agent: str,
+        idempotency_key: str,
+    ) -> ArtifactMutationReceipt:
+        if executing_agent != artifact.created_by:
+            raise DomainValidationError(
+                "Artifact publisher identity does not match its installed execution contract"
+            )
+        for existing, existing_key in self.created_artifacts:
+            if existing_key == idempotency_key:
+                existing_fields = existing.to_dict()
+                incoming_fields = artifact.to_dict()
+                existing_fields.pop("slug")
+                incoming_fields.pop("slug")
+                if existing_fields != incoming_fields:
+                    raise gbrain.ArtifactIdempotencyConflict(
+                        "artifact idempotency key already has different content"
+                    )
+                return ArtifactMutationReceipt(
+                    artifact=existing,
+                    verified=True,
+                    idempotent=True,
+                )
+        self.created_artifacts.append((artifact, idempotency_key))
+        self.artifacts = (*self.artifacts, artifact)
+        return ArtifactMutationReceipt(artifact=artifact, verified=True)
 
     def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
         self.created_system_tickets.append(ticket)
@@ -647,6 +716,24 @@ def sample_proposal() -> TaskProposal:
     )
 
 
+def sample_artifact() -> AgentArtifact:
+    return AgentArtifact(
+        slug="artifacts/72a4d170-978f-4a37-bd92-b9d3bdde9339",
+        title="Family care weekly review brief",
+        artifact_kind="markdown",
+        created_by="agents/toddy",
+        agent_collection="collections/toddys-artifacts",
+        produced_for="tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+        markdown="# Weekly review\n\nCanonical content.",
+        attachments=(),
+        project="projects/65c2f720-fb49-5403-9a9e-76228e285277",
+        goal="goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+        git_url=None,
+        supersedes=None,
+        created_at=datetime.fromisoformat("2026-08-02T14:00:00-07:00"),
+    )
+
+
 class ServerHarness:
     def __init__(
         self,
@@ -697,6 +784,13 @@ class ServerHarness:
                 ReadSnapshotStore(runtime_path / "read-snapshots.json"),
                 background=False,
             ),
+            artifact_publisher_auth=ArtifactPublisherAuth.from_plaintext_tokens_for_tests(
+                {
+                    "agents/tammy": "tammy-test-publisher-token",
+                    "agents/timmy": "timmy-test-publisher-token",
+                    "agents/toddy": "toddy-test-publisher-token",
+                }
+            ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -715,6 +809,7 @@ class ServerHarness:
         method: str,
         path: str,
         body: dict | str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> tuple[int, dict, dict[str, str]]:
         connection = http.client.HTTPConnection(
             "127.0.0.1", self.server.server_address[1], timeout=3
@@ -727,6 +822,7 @@ class ServerHarness:
         elif isinstance(body, str):
             payload = body
             headers["Content-Type"] = "application/json"
+        headers.update(extra_headers or {})
         connection.request(method, path, body=payload, headers=headers)
         response = connection.getresponse()
         raw = response.read()
@@ -831,7 +927,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.69")
+        self.assertEqual(payload["version"], "V0.0.70")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -839,11 +935,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.69")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.69")
+        self.assertEqual(payload["current_version"], "V0.0.70")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.70")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.70",
                 "V0.0.69",
                 "V0.0.68",
                 "V0.0.67",
@@ -1623,6 +1720,42 @@ class FullTaskCreationApiTests(unittest.TestCase):
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.created_agent_tasks, [])
 
+    def test_creates_automatic_job_metric_with_custom_target_and_seeded_current(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Apply for more companies",
+                "detail": "Continue from work already completed.",
+                "priority": "high",
+                "initial_todo": "Apply to the next company",
+                "due_day": "2026-07-31",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 3,
+                    "current": 2,
+                    "event_binding": "job_applied",
+                    "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 201)
+        created = adapter.created[0]
+        self.assertEqual(created.progress_metric.target, 3)
+        self.assertEqual(created.progress_metric.current, 2)
+        self.assertEqual(created.event_progress.baseline_count, 2)
+        self.assertEqual(
+            payload["task"]["event_progress"],
+            {"baseline_count": 2, "evidence_slugs": [], "receipt_ids": []},
+        )
+
     def test_creates_an_optional_manual_metric_without_auto_completion(self) -> None:
         adapter = FakeAdapter(
             projects=(sample_project(),),
@@ -2198,6 +2331,41 @@ class TaskTodoApiTests(unittest.TestCase):
 
 
 class TaskProgressMetricApiTests(unittest.TestCase):
+    def test_sets_custom_job_application_target_with_seeded_progress(self) -> None:
+        now = datetime.fromisoformat("2026-07-30T09:00:00-07:00")
+        task = new_task(
+            title="Apply for more companies",
+            due_day=date(2026, 7, 30),
+            now=now,
+            identity="metric00",
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{task.slug.replace('/', '%2F')}/progress-metric",
+            {
+                "task_day": "2026-07-30",
+                "progress_metric": {
+                    "kind": "count",
+                    "label": "Job applications",
+                    "target": 3,
+                    "current": 1,
+                    "event_binding": "job_applied",
+                    "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["receipt"]["task"]["progress_metric"]["target"], 3)
+        self.assertEqual(payload["receipt"]["task"]["progress_metric"]["current"], 1)
+        self.assertEqual(
+            payload["receipt"]["task"]["event_progress"],
+            {"baseline_count": 1, "evidence_slugs": [], "receipt_ids": []},
+        )
+
     def test_sets_daily_job_application_metric_with_verified_empty_evidence(
         self,
     ) -> None:
@@ -2318,6 +2486,400 @@ class AgentApiTests(unittest.TestCase):
         self.assertTrue(work["tasks"][0]["read_only"])
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.status_updates, [])
+
+
+class ArtifactApiTests(unittest.TestCase):
+
+    def test_artifact_publisher_auth_rejects_non_object_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "publishers.json"
+            path.write_text("[]\n", encoding="utf-8")
+            path.chmod(0o600)
+
+            with self.assertRaisesRegex(ValueError, "wrong schema"):
+                ArtifactPublisherAuth.from_file(path)
+
+    def test_artifact_publisher_auth_rejects_shared_token_hashes(self) -> None:
+        digest = "a" * 64
+        payload = {
+            "schema_version": 1,
+            "publishers": [
+                {"agent_slug": "agents/tammy", "token_sha256": digest},
+                {"agent_slug": "agents/toddy", "token_sha256": digest},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "publishers.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            path.chmod(0o600)
+
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                ArtifactPublisherAuth.from_file(path)
+
+    def test_explicit_missing_publisher_credentials_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.json"
+
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                load_artifact_publisher_auth(missing)
+    @staticmethod
+    def _execution_headers(agent_slug: str = "agents/toddy") -> dict[str, str]:
+        token_key = agent_slug.rsplit("/", 1)[-1]
+        return {
+            "Authorization": f"Bearer {token_key}-test-publisher-token"
+        }
+
+    def _publish_payload(self) -> dict:
+        return {
+            "title": "Family care weekly review brief",
+            "artifact_kind": "markdown",
+            "created_by": "agents/toddy",
+            "produced_for": "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+            "markdown": "# Weekly review\n\nCanonical content.",
+            "attachments": [],
+            "project": None,
+            "goal": None,
+            "git_url": None,
+            "supersedes": None,
+            "idempotency_key": (
+                "toddy:tasks/561640dd-8e34-43e1-a03e-e3f3f270033d:"
+                "weekly-review:v1"
+            ),
+        }
+
+    def test_lists_artifacts_with_strict_filters_and_pagination(self) -> None:
+        adapter = FakeAdapter(artifacts=(sample_artifact(),))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "GET",
+            "/api/artifacts?agent=agents%2Ftoddy&"
+            "task=tasks%2F561640dd-8e34-43e1-a03e-e3f3f270033d&"
+            "project=projects%2F65c2f720-fb49-5403-9a9e-76228e285277&"
+            "goal=goals%2F41fb50e0-e1d7-592b-b2c3-ff1f7aacff10&"
+            "kind=markdown&limit=25&cursor=0",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [artifact["slug"] for artifact in payload["artifacts"]],
+            [sample_artifact().slug],
+        )
+        self.assertEqual(
+            adapter.artifact_reads,
+            [{
+                "agent": "agents/toddy",
+                "task": "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
+                "project": "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+                "goal": "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+                "kind": "markdown",
+                "cursor": 0,
+                "limit": 25,
+            }],
+        )
+
+    def test_rejects_repeated_unknown_and_out_of_range_artifact_filters(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+        for path in (
+            "/api/artifacts?agent=agents%2Ftoddy&agent=agents%2Ftimmy",
+            "/api/artifacts?unknown=value",
+            "/api/artifacts?cursor=-1",
+            "/api/artifacts?limit=51",
+            "/api/artifacts?task=tasks%2Ftitle-derived",
+            "/api/artifacts?project=projects%2Ftitle-derived",
+            "/api/artifacts?goal=goals%2Ftitle-derived",
+            "/api/artifacts?task=tasks%2F6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "/api/artifacts?project=projects%2F3d813cbb-47fb-32ba-91df-831e1593ac29",
+            "/api/artifacts?goal=goals%2F6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        ):
+            status, payload, _ = harness.request("GET", path)
+            self.assertEqual(status, 400, path)
+            self.assertEqual(payload["code"], "invalid_artifact_filters")
+
+    def test_gets_one_artifact_by_encoded_canonical_slug(self) -> None:
+        artifact = sample_artifact()
+        harness = ServerHarness(self, FakeAdapter(artifacts=(artifact,)))
+
+        status, payload, _ = harness.request(
+            "GET", f"/api/artifacts/{artifact.slug.replace('/', '%2F')}"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["artifact"], artifact.to_dict())
+        self.assertEqual(payload["readback"], {"verified": True})
+
+    def test_detail_get_accepts_exact_gbrain_normalized_artifact_shape(self) -> None:
+        artifact = sample_artifact()
+        links = [
+            {"to": artifact.agent_collection, "type": "member_of"},
+            {"to": artifact.created_by, "type": "created_by"},
+            {"to": artifact.produced_for, "type": "produced_for"},
+            {"to": artifact.project, "type": "supports_project"},
+            {"to": artifact.goal, "type": "supports_goal"},
+        ]
+        page = {
+            "slug": artifact.slug,
+            "type": "artifact",
+            "title": artifact.title,
+            "frontmatter": {
+                "artifact_kind": artifact.artifact_kind,
+                "created_by": artifact.created_by,
+                "produced_for": artifact.produced_for,
+                "created_at": artifact.created_at.isoformat(),
+                "attachments": [],
+                "git_url": None,
+                "links": links,
+            },
+            "compiled_truth": artifact.markdown,
+        }
+        edges = [
+            {"from_slug": artifact.slug, "to_slug": link["to"], "link_type": link["type"]}
+            for link in links
+        ]
+
+        class NormalizedArtifactRunner:
+            def run(self, tool, params):
+                if tool == "get_page":
+                    return page
+                if tool == "get_links":
+                    return edges
+                raise AssertionError(f"unexpected tool: {tool}")
+
+        harness = ServerHarness(self, gbrain.GBrainAdapter(NormalizedArtifactRunner()))
+
+        status, payload, _ = harness.request(
+            "GET", f"/api/artifacts/{artifact.slug.replace('/', '%2F')}"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["artifact"], artifact.to_dict())
+        self.assertEqual(payload["readback"], {"verified": True})
+
+    def test_detail_get_rejects_normalized_frontmatter_type_conflict(self) -> None:
+        artifact = sample_artifact()
+        page = {
+            "slug": artifact.slug,
+            "type": "artifact",
+            "title": artifact.title,
+            "frontmatter": {"type": "task"},
+            "compiled_truth": artifact.markdown,
+        }
+
+        class ConflictingArtifactRunner:
+            def run(self, tool, params):
+                if tool == "get_page":
+                    return page
+                if tool == "get_links":
+                    return []
+                raise AssertionError(f"unexpected tool: {tool}")
+
+        harness = ServerHarness(self, gbrain.GBrainAdapter(ConflictingArtifactRunner()))
+
+        status, payload, _ = harness.request(
+            "GET", f"/api/artifacts/{artifact.slug.replace('/', '%2F')}"
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_artifact")
+
+    def test_detail_get_rejects_non_opaque_artifact_slug_before_adapter_read(self) -> None:
+        class TrackingAdapter(FakeAdapter):
+            def __init__(self):
+                super().__init__()
+                self.detail_reads = []
+
+            def get_agent_artifact(self, slug):
+                self.detail_reads.append(slug)
+                return super().get_agent_artifact(slug)
+
+        adapter = TrackingAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "GET", "/api/artifacts/artifacts%2Ftitle-derived"
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_artifact")
+        self.assertEqual(adapter.detail_reads, [])
+
+    def test_detail_get_maps_page_not_found_to_404(self) -> None:
+        class MissingAdapter(FakeAdapter):
+            def get_agent_artifact(self, slug):
+                raise gbrain.GBrainCommandError(self.message)
+
+        slug = "artifacts/72a4d170-978f-4a37-bd92-b9d3bdde9339"
+        for message in (
+            "page_not_found",
+            "PAGE_NOT_FOUND",
+            "Page not found",
+            "GBrain tool get_page failed: Page Not Found",
+        ):
+            with self.subTest(message=message):
+                adapter = MissingAdapter()
+                adapter.message = message
+                harness = ServerHarness(self, adapter)
+                status, payload, _ = harness.request(
+                    "GET", f"/api/artifacts/{slug.replace('/', '%2F')}"
+                )
+                self.assertEqual(status, 404)
+                self.assertEqual(payload["code"], "artifact_not_found")
+
+    def test_detail_get_keeps_malformed_separate_from_dependency_failure(self) -> None:
+        class FailingAdapter(FakeAdapter):
+            def get_agent_artifact(self, slug):
+                if self.failure == "malformed":
+                    raise DomainValidationError("malformed Artifact page")
+                raise gbrain.GBrainCommandError("dependency unavailable")
+
+        slug = "artifacts/72a4d170-978f-4a37-bd92-b9d3bdde9339"
+        for failure, expected_status, expected_code in (
+            ("malformed", 422, "invalid_artifact"),
+            ("dependency", 503, "gbrain_unavailable"),
+        ):
+            with self.subTest(failure=failure):
+                adapter = FailingAdapter()
+                adapter.failure = failure
+                harness = ServerHarness(self, adapter)
+                status, payload, _ = harness.request(
+                    "GET", f"/api/artifacts/{slug.replace('/', '%2F')}"
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(payload["code"], expected_code)
+
+    def test_publishes_only_after_verified_readback_and_reuses_idempotency(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        body = self._publish_payload()
+
+        first_status, first, _ = harness.request(
+            "POST", "/api/artifacts", body, self._execution_headers()
+        )
+        second_status, second, _ = harness.request(
+            "POST", "/api/artifacts", body, self._execution_headers()
+        )
+
+        self.assertEqual(first_status, 201)
+        self.assertEqual(second_status, 200)
+        self.assertTrue(first["receipt"]["verified"])
+        self.assertFalse(first["receipt"]["idempotent"])
+        self.assertTrue(second["receipt"]["idempotent"])
+        self.assertEqual(second["artifact"]["slug"], first["artifact"]["slug"])
+        self.assertEqual(len(adapter.created_artifacts), 1)
+
+    def test_publish_requires_matching_execution_identity_header(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+        body = self._publish_payload()
+
+        missing_status, missing, _ = harness.request(
+            "POST", "/api/artifacts", body
+        )
+        mismatch_status, mismatch, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            body,
+            self._execution_headers("agents/timmy"),
+        )
+
+        self.assertEqual(missing_status, 403)
+        self.assertEqual(mismatch_status, 403)
+        self.assertEqual(missing["code"], "artifact_identity_mismatch")
+        self.assertEqual(mismatch["code"], "artifact_identity_mismatch")
+        self.assertEqual(missing["error"], mismatch["error"])
+        self.assertNotIn("Toddy", missing["error"])
+        self.assertNotIn("Timmy", missing["error"])
+
+        accepted_status, accepted, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            body,
+            self._execution_headers("agents/toddy"),
+        )
+        self.assertEqual(accepted_status, 201)
+        self.assertTrue(accepted["receipt"]["verified"])
+
+    def test_rejects_unknown_publish_keys_and_malformed_relationships(self) -> None:
+        harness = ServerHarness(self, FakeAdapter())
+        unknown = {**self._publish_payload(), "status": "completed"}
+        malformed = {
+            **self._publish_payload(),
+            "created_by": "agents/unknown",
+        }
+        publisher_verified = {**self._publish_payload(), "verified": True}
+
+        status, payload, _ = harness.request(
+            "POST", "/api/artifacts", unknown, self._execution_headers()
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_artifact")
+        status, payload, _ = harness.request(
+            "POST", "/api/artifacts", malformed, self._execution_headers()
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "artifact_identity_mismatch")
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            publisher_verified,
+            self._execution_headers(),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_artifact")
+
+    def test_maps_idempotency_conflict_partial_write_and_gbrain_failure(self) -> None:
+        class FailingAdapter(FakeAdapter):
+            def create_agent_artifact(
+                self, artifact, *, executing_agent, idempotency_key
+            ):
+                if self.failure == "partial":
+                    raise PartialMutationError(artifact.slug, "artifact link failed")
+                if self.failure == "gbrain":
+                    raise gbrain.GBrainError("GBrain unavailable")
+                raise gbrain.ArtifactIdempotencyConflict("key has different content")
+
+        for failure, expected in (
+            ("conflict", 409),
+            ("partial", 502),
+            ("gbrain", 503),
+        ):
+            adapter = FailingAdapter()
+            adapter.failure = failure
+            harness = ServerHarness(self, adapter)
+            status, payload, _ = harness.request(
+                "POST",
+                "/api/artifacts",
+                self._publish_payload(),
+                self._execution_headers(),
+            )
+            self.assertEqual(status, expected)
+            if failure == "partial":
+                self.assertTrue(payload["slug"].startswith("artifacts/"))
+
+    def test_real_adapter_prewrite_outage_maps_to_503_without_artifact_write(self) -> None:
+        calls = []
+
+        class OfflineRunner:
+            def run(self, tool, params):
+                calls.append((tool, dict(params)))
+                raise gbrain.GBrainCommandError("GBrain offline before publication")
+
+        harness = ServerHarness(self, gbrain.GBrainAdapter(OfflineRunner()))
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            self._publish_payload(),
+            self._execution_headers(),
+        )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "gbrain_unavailable")
+        self.assertFalse(
+            any(
+                tool == "put_page"
+                and str(params.get("slug", "")).startswith("artifacts/")
+                for tool, params in calls
+            )
+        )
 
 
 class ProjectApiTests(unittest.TestCase):

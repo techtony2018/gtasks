@@ -1,5 +1,6 @@
 const AUTO_REFRESH_MINUTES = 30;
 const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000;
+const MEMORY_STARGRAPH_ORIGIN = "http://127.0.0.1:8788";
 
 function renderSafeMarkdown(container, value) {
   const source = typeof value === "string" ? value : "";
@@ -20,9 +21,18 @@ function renderSafeMarkdown(container, value) {
         target.append(code);
       } else {
         const url = match[2];
-        if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/|\/media\/)/.test(url)) {
+        let href = null;
+        if (url.startsWith("/media/")) {
+          const mediaUrl = safeStargraphMediaUrl(url);
+          if (mediaUrl && /\.(?:png|jpe?g|gif|webp|pdf)$/i.test(mediaUrl.pathname)) {
+            href = mediaUrl.href;
+          }
+        } else if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/)/.test(url)) {
+          href = url;
+        }
+        if (href) {
           const link = document.createElement("a");
-          link.href = url;
+          link.href = href;
           link.textContent = match[1];
           link.target = "_blank";
           link.rel = "noreferrer";
@@ -52,8 +62,71 @@ function renderSafeMarkdown(container, value) {
     flushParagraph();
     flushList();
   };
-  for (const line of lines) {
+  const parseTableRow = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+    return trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+  };
+  const isTableSeparator = (cells) => Boolean(
+    cells?.length && cells.every((cell) => /^:?-{3,}:?$/.test(cell)),
+  );
+  const appendTableRow = (row, values, tagName) => {
+    values.forEach((value) => {
+      const cell = document.createElement(tagName);
+      appendInline(cell, value);
+      row.append(cell);
+    });
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (!line.trim()) { flushBlocks(); continue; }
+    const fence = line.match(/^```([A-Za-z0-9_+-]*)\s*$/);
+    if (fence) {
+      flushBlocks();
+      const fencedLines = [];
+      index += 1;
+      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+        fencedLines.push(lines[index]);
+        index += 1;
+      }
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = fencedLines.join("\n");
+      if (fence[1]) code.dataset.language = fence[1];
+      pre.append(code);
+      container.append(pre);
+      continue;
+    }
+    const tableHeader = parseTableRow(line);
+    const tableSeparator = parseTableRow(lines[index + 1] || "");
+    if (
+      tableHeader && isTableSeparator(tableSeparator) &&
+      tableHeader.length === tableSeparator.length
+    ) {
+      flushBlocks();
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      appendTableRow(headRow, tableHeader, "th");
+      head.append(headRow);
+      table.append(head);
+      const body = document.createElement("tbody");
+      index += 2;
+      while (index < lines.length) {
+        const values = parseTableRow(lines[index]);
+        if (!values || values.length !== tableHeader.length) break;
+        const row = document.createElement("tr");
+        appendTableRow(row, values, "td");
+        body.append(row);
+        index += 1;
+      }
+      index -= 1;
+      if (body.childNodes.length) table.append(body);
+      const wrap = node("div", "markdown-table-wrap");
+      wrap.append(table);
+      container.append(wrap);
+      continue;
+    }
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) {
       flushBlocks();
@@ -92,6 +165,7 @@ const state = {
   selectedSlug: null,
   selectedKind: null,
   detailReturnFocus: null,
+  artifactTaskReturn: null,
   showCompletedTodos: false,
   todoAddOpen: false,
   todoReturnFocus: null,
@@ -172,6 +246,16 @@ const state = {
   agentAvatarControlsOpen: false,
   agentGoalControlsOpen: false,
   avatarPreviewUrl: null,
+  artifacts: [],
+  artifactIssues: [],
+  artifactsLoaded: false,
+  artifactsLoading: false,
+  artifactsError: "",
+  artifactsNextCursor: null,
+  artifactAgentFilter: "all",
+  artifactTaskFilter: null,
+  artifactRequestToken: 0,
+  taskArtifacts: new Map(),
 };
 
 function setHudTooltip(element, text) {
@@ -337,6 +421,11 @@ const viewMeta = {
     emptyTitle: "No agent work yet",
     emptyCopy: "No active agent has typed work items in its canonical GBrain collection.",
   },
+  artifacts: {
+    title: "Artifacts",
+    emptyTitle: "No Agent Artifacts yet",
+    emptyCopy: "Durable Agent deliverables linked to authorized Tasks will appear here after canonical GBrain readback.",
+  },
   "system-tickets": { title: "Mission Control System Tickets" },
   blocked: {
     title: "Blocked",
@@ -371,6 +460,8 @@ const elements = {
   refreshButton: document.querySelector("#refresh-button"),
   boardAgentFilter: document.querySelector("#board-agent-filter"),
   showAgentTasks: document.querySelector("#show-agent-tasks"),
+  artifactAgentFilter: document.querySelector("#artifact-agent-filter"),
+  artifactAgentSelect: document.querySelector("#artifact-agent-select"),
   boardStatusAlert: document.querySelector("#board-status-alert"),
   boardStatusMessage: document.querySelector("#board-status-message"),
   boardStatusRetry: document.querySelector("#board-status-retry"),
@@ -480,6 +571,20 @@ const elements = {
   detailPanel: document.querySelector("#detail-panel"),
   detailEmpty: document.querySelector("#detail-empty"),
   detailContent: document.querySelector("#detail-content"),
+  artifactDetailContent: document.querySelector("#artifact-detail-content"),
+  artifactDetailClose: document.querySelector("#artifact-detail-close"),
+  artifactDetailKind: document.querySelector("#artifact-detail-kind"),
+  artifactDetailTitle: document.querySelector("#artifact-detail-title"),
+  artifactDetailMeta: document.querySelector("#artifact-detail-meta"),
+  artifactDetailMarkdown: document.querySelector("#artifact-detail-markdown"),
+  artifactDetailAttachments: document.querySelector("#artifact-detail-attachments"),
+  artifactDetailAgent: document.querySelector("#artifact-detail-agent"),
+  artifactDetailTask: document.querySelector("#artifact-detail-task"),
+  artifactDetailProject: document.querySelector("#artifact-detail-project"),
+  artifactDetailGoal: document.querySelector("#artifact-detail-goal"),
+  artifactDetailCreated: document.querySelector("#artifact-detail-created"),
+  artifactDetailGbrainLink: document.querySelector("#artifact-detail-gbrain-link"),
+  artifactDetailSlug: document.querySelector("#artifact-detail-slug"),
   goalDetailContent: document.querySelector("#goal-detail-content"),
   systemTicketDetailContent: document.querySelector("#system-ticket-detail-content"),
   projectDetailContent: document.querySelector("#project-detail-content"),
@@ -556,6 +661,9 @@ const elements = {
   taskGoalNav: document.querySelector("#task-goal-nav"),
   taskGoalValue: document.querySelector("#task-goal-value"),
   taskProjectValue: document.querySelector("#task-project-value"),
+  taskArtifacts: document.querySelector("#task-artifacts"),
+  taskArtifactsState: document.querySelector("#task-artifacts-state"),
+  taskArtifactList: document.querySelector("#task-artifact-list"),
   goalDetailClose: document.querySelector("#goal-detail-close"),
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
@@ -1124,13 +1232,17 @@ function reconcileVerifiedTask(task) {
 }
 
 function navCounts() {
-  if (!state.snapshot) return {};
+  if (!state.snapshot) return {
+    artifacts: state.artifacts.length,
+    "system-tickets": state.systemTickets.length,
+  };
   return {
     inbox: state.snapshot.views.inbox.length,
     today: new Set(allTodayTasks().map((task) => task.slug)).size,
     week: currentWeekTasks().length,
     board: state.snapshot.tasks.length,
     "agent-work": state.agentTasks.length,
+    artifacts: state.artifacts.length,
     blocked: visibleBlockedTasks().length,
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
@@ -1173,6 +1285,7 @@ function inContextCountLabel(view) {
     week: "tasks this week",
     board: "tasks on Board",
     "agent-work": "agent work items",
+    artifacts: "Agent Artifacts",
     blocked: "blocked tasks",
     projects: "projects",
     goals: "goals",
@@ -2606,6 +2719,7 @@ function selectProject(slug, returnFocus = undefined) {
   elements.detailPanel.setAttribute("aria-label", "Project details");
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.remove("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
@@ -3785,12 +3899,19 @@ function render() {
     "is-hidden",
     state.activeView !== "board",
   );
+  elements.artifactAgentFilter.classList.toggle(
+    "is-hidden",
+    state.activeView !== "artifacts",
+  );
+  elements.artifactAgentSelect.value = state.artifactAgentFilter;
   // The filter is a persisted, client-only preference. Rendering can happen
   // during navigation and while agent work is loading, so keep the control in
   // lockstep with state rather than relying on the previous DOM value.
   elements.showAgentTasks.checked = state.showAgentTasks;
   const view = state.activeView;
-  const content = !state.snapshot
+  const content = view === "artifacts"
+    ? renderArtifactsView()
+    : !state.snapshot
     ? view === "system-tickets"
       ? renderSystemTicketsView()
       : renderTaskSurfaceLoading(view)
@@ -3818,7 +3939,9 @@ function render() {
       content,
     ],
   );
-  if (state.snapshot) {
+  if (view === "artifacts") {
+    elements.dateLabel.textContent = "Canonical GBrain deliverables";
+  } else if (state.snapshot) {
     const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
     elements.dateLabel.textContent = new Intl.DateTimeFormat(undefined, {
       weekday: "long",
@@ -3953,6 +4076,7 @@ function selectSystemTicket(ticketSlug) {
   elements.detailPanel.setAttribute("aria-label", "System Ticket details");
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.remove("is-hidden");
@@ -4617,6 +4741,324 @@ function renderProposalDecisionTimeline(task) {
   }
 }
 
+function artifactAgent(artifact) {
+  const profile = state.agents.find((agent) => agent.slug === artifact.created_by);
+  if (profile) return profile;
+  const name = String(artifact.created_by || "Unknown Agent").split("/").pop();
+  return {
+    slug: artifact.created_by,
+    name: name ? `${name[0].toUpperCase()}${name.slice(1)}` : "Unknown Agent",
+    avatar: { kind: "initials", value: name?.slice(0, 2).toUpperCase() || "A" },
+  };
+}
+
+function artifactTask(artifact) {
+  return findTaskBySlug(artifact.produced_for);
+}
+
+function artifactCard(artifact) {
+  const button = node("button", "artifact-card");
+  button.type = "button";
+  button.dataset.slug = artifact.slug;
+  button.setAttribute("aria-label", `Open Artifact ${artifact.title}`);
+  button.setAttribute("aria-current", state.selectedKind === "artifact" && state.selectedSlug === artifact.slug ? "true" : "false");
+  button.classList.toggle("is-selected", state.selectedKind === "artifact" && state.selectedSlug === artifact.slug);
+  const owner = artifactAgent(artifact);
+  const ownerRow = node("div", "artifact-owner-row");
+  const avatar = node("span", "agent-avatar");
+  avatar.setAttribute("aria-hidden", "true");
+  setCompactAgentAvatar(avatar, owner);
+  ownerRow.append(avatar, node("span", "", owner.name), node("span", "artifact-kind", artifact.artifact_kind));
+  const task = artifactTask(artifact);
+  const project = state.projects.find((item) => item.slug === artifact.project);
+  button.append(
+    node("strong", "artifact-card-title", artifact.title),
+    ownerRow,
+    node("span", "artifact-card-task", task?.title || artifact.produced_for),
+    node("span", "artifact-card-meta", `${project?.title || artifact.project || "No project"} · ${new Date(artifact.created_at).toLocaleString()}`),
+  );
+  button.addEventListener("click", () => selectArtifact(artifact.slug, button));
+  return button;
+}
+
+function renderArtifactsView() {
+  const section = node("section", "artifacts-view");
+  if (state.artifactsLoading && !state.artifacts.length) {
+    section.append(node("div", "section-empty", "Reading canonical Agent Artifacts…"));
+    return section;
+  }
+  if (state.artifactsError && !state.artifacts.length) {
+    const error = node("div", "section-empty artifact-error-state");
+    error.append(node("h2", "", "Artifacts are temporarily unavailable"), node("p", "", state.artifactsError));
+    const retry = node("button", "secondary-button", "Try again");
+    retry.type = "button";
+    retry.addEventListener("click", () => void loadArtifacts({ reset: true }));
+    error.append(retry);
+    section.append(error);
+    return section;
+  }
+  if (state.artifactIssues.length) {
+    const issues = node("section", "needs-attention artifact-issues");
+    issues.append(node("h2", "", "Artifact data needs attention"));
+    state.artifactIssues.forEach((issue) => {
+      const item = node("article", "attention-item");
+      item.append(node("strong", "", issue.slug || "Unknown Artifact"), node("p", "", issue.message || "Canonical Artifact data is invalid."));
+      issues.append(item);
+    });
+    section.append(issues);
+  }
+  if (!state.artifacts.length) {
+    const empty = node("section", "simple-empty");
+    const copy = node("div");
+    copy.append(
+      node("h2", "", viewMeta.artifacts.emptyTitle),
+      node("p", "", viewMeta.artifacts.emptyCopy),
+    );
+    empty.append(copy);
+    section.append(empty);
+    return section;
+  }
+  const grid = node("div", "artifact-grid");
+  state.artifacts.forEach((artifact) => grid.append(artifactCard(artifact)));
+  section.append(grid);
+  if (state.artifactsLoading) section.append(node("p", "artifact-load-state", "Reading newer canonical results…"));
+  if (state.artifactsNextCursor !== null && !state.artifactsLoading) {
+    const more = node("button", "secondary-button artifact-load-more", "Load more");
+    more.type = "button";
+    more.addEventListener("click", () => void loadArtifacts({ append: true }));
+    section.append(more);
+  }
+  return section;
+}
+
+async function loadArtifacts({ reset = false, append = false } = {}) {
+  const requestToken = ++state.artifactRequestToken;
+  if (reset) {
+    state.artifactsNextCursor = null;
+    state.artifactTaskFilter = null;
+  }
+  state.artifactsLoading = true;
+  state.artifactsError = "";
+  if (state.activeView === "artifacts") render();
+  const params = new URLSearchParams({
+    cursor: String(append ? state.artifactsNextCursor || 0 : 0),
+    limit: "25",
+  });
+  if (state.artifactAgentFilter !== "all") params.set("agent", state.artifactAgentFilter);
+  if (state.artifactTaskFilter) params.set("task", state.artifactTaskFilter);
+  try {
+    const response = await fetch(`/api/artifacts?${params}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Artifacts could not be read.");
+    if (requestToken !== state.artifactRequestToken) return;
+    const incoming = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+    state.artifacts = append ? [...state.artifacts, ...incoming] : incoming;
+    state.artifactIssues = Array.isArray(payload.issues) ? payload.issues : [];
+    state.artifactsNextCursor = payload.next_cursor ?? null;
+    state.artifactsLoaded = true;
+  } catch (error) {
+    if (requestToken !== state.artifactRequestToken) return;
+    state.artifactsError = error.message || "Artifacts could not be read.";
+  } finally {
+    if (requestToken === state.artifactRequestToken) {
+      state.artifactsLoading = false;
+      if (state.activeView === "artifacts") render();
+    }
+  }
+}
+
+function safeGitCommitUrl(value) {
+  if (typeof value !== "string" || !value || value.includes("%")) return false;
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== "https:" || parsed.username || parsed.password ||
+      parsed.port || parsed.search || parsed.hash
+    ) return false;
+    const host = parsed.hostname.toLowerCase();
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const commitId = parts.at(-1) || "";
+    if (!/^[0-9a-f]{7,64}$/i.test(commitId)) return false;
+    if (host === "github.com") return parts.length === 4 && parts[2] === "commit";
+    if (host === "gitlab.com") {
+      return parts.length >= 5 && parts.at(-3) === "-" && parts.at(-2) === "commit";
+    }
+    if (host === "bitbucket.org") return parts.length === 4 && parts[2] === "commits";
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+function safeStargraphMediaUrl(reference) {
+  if (
+    typeof reference !== "string" ||
+    !reference.startsWith("/media/") ||
+    /%2f|%5c/i.test(reference)
+  ) return null;
+  try {
+    const resolved = new URL(reference, MEMORY_STARGRAPH_ORIGIN);
+    if (
+      resolved.origin !== MEMORY_STARGRAPH_ORIGIN ||
+      !resolved.pathname.startsWith("/media/") ||
+      resolved.search || resolved.hash
+    ) return null;
+    const decodedPath = decodeURIComponent(resolved.pathname);
+    const decodedReferencePath = decodeURIComponent(reference);
+    const hasUnsafeSegment = (path) => path
+      .split("/")
+      .slice(2)
+      .some((segment) => !segment || segment === "." || segment === "..");
+    if (
+      !decodedPath.startsWith("/media/") ||
+      !decodedReferencePath.startsWith("/media/") ||
+      /[\\\u0000-\u001f]/.test(decodedPath) ||
+      /[\\\u0000-\u001f]/.test(decodedReferencePath) ||
+      hasUnsafeSegment(decodedPath) ||
+      hasUnsafeSegment(decodedReferencePath)
+    ) return null;
+    return resolved;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderArtifactAttachments(artifact) {
+  elements.artifactDetailAttachments.replaceChildren();
+  const references = Array.isArray(artifact.attachments) ? artifact.attachments : [];
+  references.forEach((reference) => {
+    const mediaUrl = safeStargraphMediaUrl(reference);
+    if (!mediaUrl) {
+      elements.artifactDetailAttachments.append(node("p", "artifact-unsupported-reference", reference));
+      return;
+    }
+    if (/\.(?:png|jpe?g|gif|webp)$/i.test(mediaUrl.pathname)) {
+      const image = document.createElement("img");
+      image.src = mediaUrl.href;
+      image.alt = `${artifact.title} attachment`;
+      image.loading = "lazy";
+      elements.artifactDetailAttachments.append(image);
+      return;
+    }
+    if (/\.pdf$/i.test(mediaUrl.pathname)) {
+      const link = node("a", "detail-link", "Open PDF");
+      link.href = mediaUrl.href;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      elements.artifactDetailAttachments.append(link);
+      return;
+    }
+    elements.artifactDetailAttachments.append(
+      node("p", "artifact-unsupported-reference", reference),
+    );
+  });
+  if (artifact.git_url && safeGitCommitUrl(artifact.git_url)) {
+    const link = node("a", "detail-link", "Open Git commit");
+    link.href = artifact.git_url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    elements.artifactDetailAttachments.append(link);
+  } else if (artifact.git_url) {
+    elements.artifactDetailAttachments.append(
+      node("p", "artifact-unsupported-reference", artifact.git_url),
+    );
+  }
+}
+
+function selectArtifact(artifactSlug, originControl = null) {
+  const taskEntries = Array.from(state.taskArtifacts.values()).flatMap((entry) => entry.artifacts || []);
+  const artifact = [...state.artifacts, ...taskEntries].find((item) => item.slug === artifactSlug);
+  if (!artifact) return;
+  const returnFocus = originControl instanceof HTMLElement
+    ? originControl
+    : document.activeElement instanceof HTMLElement
+      ? document.activeElement
+    : null;
+  state.artifactTaskReturn = state.selectedKind === "task" && state.selectedSlug
+    ? {
+      taskSlug: state.selectedSlug,
+      element: returnFocus,
+      artifactSlug,
+      detailReturnFocus: state.detailReturnFocus,
+    }
+    : null;
+  if (!state.artifactTaskReturn && returnFocus) {
+    state.detailReturnFocus = { element: returnFocus, slug: artifactSlug };
+  }
+  state.selectedSlug = artifactSlug;
+  state.selectedKind = "artifact";
+  elements.detailPanel.setAttribute("aria-hidden", "false");
+  elements.detailPanel.setAttribute("aria-label", "Artifact details");
+  elements.detailEmpty.classList.add("is-hidden");
+  elements.detailContent.classList.add("is-hidden");
+  elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.remove("is-hidden");
+  const owner = artifactAgent(artifact);
+  const task = artifactTask(artifact);
+  const project = state.projects.find((item) => item.slug === artifact.project);
+  const goal = state.snapshot?.goals.find((item) => item.slug === artifact.goal);
+  elements.artifactDetailKind.textContent = artifact.artifact_kind;
+  elements.artifactDetailTitle.textContent = artifact.title;
+  elements.artifactDetailMeta.textContent = "Immutable canonical Agent deliverable";
+  renderSafeMarkdown(elements.artifactDetailMarkdown, artifact.markdown || "");
+  renderArtifactAttachments(artifact);
+  elements.artifactDetailAgent.textContent = owner.name;
+  elements.artifactDetailTask.textContent = task?.title || artifact.produced_for;
+  elements.artifactDetailProject.textContent = project?.title || artifact.project || "No project";
+  elements.artifactDetailGoal.textContent = goal?.title || artifact.goal || "No goal";
+  elements.artifactDetailCreated.textContent = new Date(artifact.created_at).toLocaleString();
+  elements.artifactDetailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(artifact.slug)}`;
+  elements.artifactDetailSlug.textContent = artifact.slug;
+  render();
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+    elements.artifactDetailTitle.focus({ preventScroll: true });
+  });
+}
+
+function renderTaskArtifacts(taskSlug) {
+  const entry = state.taskArtifacts.get(taskSlug);
+  elements.taskArtifactList.replaceChildren();
+  if (!entry || entry.loading) {
+    elements.taskArtifactsState.textContent = "Reading artifacts…";
+    return;
+  }
+  if (entry.error) {
+    elements.taskArtifactsState.textContent = `Artifacts unavailable: ${entry.error}`;
+    return;
+  }
+  if (!entry.artifacts.length) {
+    elements.taskArtifactsState.textContent = "No artifacts yet";
+    return;
+  }
+  elements.taskArtifactsState.textContent = `${entry.artifacts.length} canonical Artifact${entry.artifacts.length === 1 ? "" : "s"}`;
+  entry.artifacts.forEach((artifact) => {
+    const button = node("button", "task-artifact-row", artifact.title);
+    button.type = "button";
+    button.dataset.slug = artifact.slug;
+    button.setAttribute("aria-label", `Open Artifact ${artifact.title}`);
+    button.addEventListener("click", () => selectArtifact(artifact.slug, button));
+    elements.taskArtifactList.append(button);
+  });
+}
+
+async function loadTaskArtifacts(taskSlug) {
+  state.taskArtifacts.set(taskSlug, { loading: true, error: "", artifacts: [] });
+  if (state.selectedKind === "task" && state.selectedSlug === taskSlug) renderTaskArtifacts(taskSlug);
+  try {
+    const params = new URLSearchParams({ task: taskSlug, limit: "10", cursor: "0" });
+    const response = await fetch(`/api/artifacts?${params}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Artifacts could not be read.");
+    state.taskArtifacts.set(taskSlug, { loading: false, error: "", artifacts: Array.isArray(payload.artifacts) ? payload.artifacts : [] });
+  } catch (error) {
+    state.taskArtifacts.set(taskSlug, { loading: false, error: error.message || "read failed", artifacts: [] });
+  }
+  if (state.selectedKind === "task" && state.selectedSlug === taskSlug) renderTaskArtifacts(taskSlug);
+}
+
 function keepSelectedCalendarTaskVisible(taskSlug) {
   if (state.activeView !== "week" || state.calendarMode !== "week") return;
   window.requestAnimationFrame(() => {
@@ -4650,6 +5092,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   elements.detailPanel.setAttribute("aria-label", "Task details");
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.remove("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
@@ -4693,6 +5136,10 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   }
   elements.taskTodoError.classList.add("is-hidden");
   renderTaskTodos(task);
+  renderTaskArtifacts(task.slug);
+  if (state.artifactTaskReturn?.taskSlug !== task.slug) {
+    void loadTaskArtifacts(task.slug);
+  }
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -4834,6 +5281,7 @@ function selectGoal(slug) {
   elements.detailPanel.setAttribute("aria-label", "Goal details");
   elements.detailEmpty.classList.add("is-hidden");
   elements.detailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.remove("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
@@ -4879,12 +5327,31 @@ function selectGoal(slug) {
 }
 
 function closeDetails() {
+  const artifactReturn = state.selectedKind === "artifact"
+    ? state.artifactTaskReturn
+    : null;
+  if (artifactReturn) {
+    selectTask(artifactReturn.taskSlug);
+    state.detailReturnFocus = artifactReturn.detailReturnFocus;
+    state.artifactTaskReturn = null;
+    window.requestAnimationFrame(() => {
+      const target = artifactReturn.element?.isConnected
+        ? artifactReturn.element
+        : Array.from(document.querySelectorAll(".task-artifact-row")).find(
+          (candidate) => candidate.dataset.slug === artifactReturn.artifactSlug,
+        );
+      (target || elements.detailTitle)?.focus({ preventScroll: true });
+    });
+    return;
+  }
   const returnFocus = state.detailReturnFocus;
+  state.artifactTaskReturn = null;
   state.detailReturnFocus = null;
   state.selectedSlug = null;
   state.selectedKind = null;
   elements.detailPanel.setAttribute("aria-hidden", "true");
   elements.detailContent.classList.add("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
   elements.goalDetailContent.classList.add("is-hidden");
   elements.projectDetailContent.classList.add("is-hidden");
   elements.systemTicketDetailContent.classList.add("is-hidden");
@@ -4898,6 +5365,7 @@ function closeDetails() {
           ...document.querySelectorAll(".proposal-card"),
           ...document.querySelectorAll(".task-row-open"),
           ...document.querySelectorAll(".project-card-open"),
+          ...document.querySelectorAll(".artifact-card"),
         ].find(
           (candidate) => candidate.dataset.slug === returnFocus.slug,
         );
@@ -5056,6 +5524,15 @@ function setView(view) {
   }
   if (view === "inbox" && !state.proposalsLoaded && !state.proposalsLoading) {
     void loadProposals();
+  }
+  if (view === "artifacts" && !state.artifactsLoaded && !state.artifactsLoading) {
+    void loadArtifacts({ reset: true });
+  }
+  if (view === "artifacts" && !state.agentsLoaded && !state.agentsLoading) {
+    void loadAgents();
+  }
+  if (view === "artifacts" && !state.projectsLoaded && !state.projectsLoading) {
+    void loadProjects();
   }
   if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
     void loadAgents();
@@ -5276,7 +5753,7 @@ function updateTaskMetricPreview() {
   const binding = elements.taskMetricEventBinding.value;
   elements.taskMetricBindingCopy.textContent =
     binding === "job_applied"
-      ? "Only distinct verified job-applied queue events increment this daily 5-application quota. The fifth completes the task after GBrain readback."
+      ? "Your current value is saved as the starting baseline. Each distinct verified job-applied queue event increments progress by 1, and reaching the target completes the task after GBrain readback."
       : "Manual metrics never change task status just because current equals target.";
   elements.taskMetricPreview.textContent =
     label && Number.isInteger(target) && target > 0 && Number.isInteger(current)
@@ -5414,11 +5891,6 @@ function taskEditorMetricPayload() {
   if (!Number.isInteger(current) || current < 0 || current > target) {
     throw new Error("Current progress must be a whole number from 0 through the target.");
   }
-  if (eventBinding === "job_applied" && (target !== 5 || current !== 0)) {
-    throw new Error(
-      "Automatic job-applied tracking requires target 5 and current 0 because only verified queue events count.",
-    );
-  }
   return {
     kind: "count",
     label,
@@ -5551,6 +6023,12 @@ async function saveAndApproveProposedTask() {
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
+elements.artifactAgentSelect.addEventListener("change", () => {
+  state.artifactAgentFilter = elements.artifactAgentSelect.value;
+  state.artifacts = [];
+  state.artifactsLoaded = false;
+  void loadArtifacts({ reset: true });
+});
 elements.createTaskButton.addEventListener("click", openCreateTask);
 elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
@@ -5596,8 +6074,6 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
     if (!elements.taskMetricLabel.value.trim()) {
       elements.taskMetricLabel.value = "Job applications";
     }
-    elements.taskMetricTarget.value = "5";
-    elements.taskMetricCurrent.value = "0";
   }
   updateTaskMetricPreview();
 });
@@ -5610,11 +6086,15 @@ elements.refreshButton.addEventListener("click", () => {
     state.activeView === "blocked"
   ) loadAgentWork();
   loadProposals({ refresh: true });
+  if (state.activeView === "artifacts" || state.artifactsLoaded) {
+    void loadArtifacts({ reset: true });
+  }
 });
 elements.showAgentTasks.addEventListener("change", () => {
   setAgentTasksVisible(elements.showAgentTasks.checked);
 });
 elements.detailClose.addEventListener("click", closeDetails);
+elements.artifactDetailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.projectDetailClose.addEventListener("click", closeDetails);
 elements.systemTicketDetailClose.addEventListener("click", closeDetails);

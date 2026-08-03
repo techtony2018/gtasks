@@ -1,0 +1,9 @@
+{
+  "key": "timmy",
+  "name": "Timmy",
+  "agent_slug": "agents/timmy",
+  "task_collection": "collections/timmys-tasks",
+  "artifact_collection": "collections/timmys-artifacts",
+  "daytime_automation_id": "timmy-mission-control-hourly-coordinator",
+  "nighttime_automation_id": "timmy-nightly-long-term-planning-review"
+}

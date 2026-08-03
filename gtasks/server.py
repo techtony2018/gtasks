@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -22,6 +24,8 @@ from . import __version__
 from .domain import (
     ACTIVE_ROOT,
     AGENT_SCOPES,
+    ARTIFACT_BY_AGENT,
+    ARTIFACT_KINDS,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -38,15 +42,19 @@ from .domain import (
     Task,
     group_today,
     new_goal,
+    new_agent_artifact,
     new_inbox_task,
     new_project,
     new_task,
     new_system_ticket,
 )
 from .gbrain import (
+    ArtifactIdempotencyConflict,
     ConcurrentTodoUpdateError,
     GBrainAdapter,
+    GBrainCommandError,
     GBrainError,
+    is_page_not_found_error,
     LifecycleIntegrityError,
     PartialMutationError,
     TONY_PROFILE_SLUG,
@@ -71,6 +79,108 @@ ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 SNAPSHOT_CACHE_SECONDS = 30
 PROPOSAL_CACHE_SECONDS = 5 * 60
+DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
+    Path.home()
+    / ".codex"
+    / "services"
+    / "all-things-codex-dashboard"
+    / "state"
+    / "gtasks"
+    / "artifact-publisher-credentials.json"
+)
+
+
+class ArtifactPublisherAuth:
+    def __init__(self, token_hashes: dict[str, str] | None = None) -> None:
+        self._token_hashes = dict(token_hashes or {})
+
+    @classmethod
+    def from_plaintext_tokens_for_tests(
+        cls, tokens: dict[str, str]
+    ) -> "ArtifactPublisherAuth":
+        return cls(
+            {
+                agent: hashlib.sha256(token.encode("utf-8")).hexdigest()
+                for agent, token in tokens.items()
+            }
+        )
+
+    @classmethod
+    def from_file(cls, path: Path) -> "ArtifactPublisherAuth":
+        try:
+            mode = path.stat().st_mode & 0o777
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Artifact publisher credentials are unavailable") from exc
+        if mode != 0o600:
+            raise ValueError("Artifact publisher credentials must use mode 0600")
+        publishers = payload.get("publishers") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != 1
+            or not isinstance(publishers, list)
+        ):
+            raise ValueError("Artifact publisher credentials have the wrong schema")
+        token_hashes: dict[str, str] = {}
+        for publisher in publishers:
+            if not isinstance(publisher, dict):
+                raise ValueError("Artifact publisher credential entry is invalid")
+            agent = publisher.get("agent_slug")
+            digest = publisher.get("token_sha256")
+            if (
+                agent not in ARTIFACT_BY_AGENT
+                or not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or agent in token_hashes
+                or digest in token_hashes.values()
+            ):
+                raise ValueError("Artifact publisher credential entry is invalid")
+            token_hashes[agent] = digest
+        return cls(token_hashes)
+
+    def resolve(self, authorization: str | None) -> str | None:
+        if not isinstance(authorization, str) or not authorization.startswith(
+            "Bearer "
+        ):
+            return None
+        token = authorization[7:]
+        if not token or len(token) > 512 or "\n" in token or "\r" in token:
+            return None
+        supplied = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        match = None
+        for agent, expected in self._token_hashes.items():
+            if hmac.compare_digest(supplied, expected):
+                match = agent
+        return match
+
+
+def load_artifact_publisher_auth(
+    configured_path: Path | None,
+) -> ArtifactPublisherAuth:
+    path = configured_path or DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS
+    if not path.exists() and configured_path is None:
+        return ArtifactPublisherAuth()
+    return ArtifactPublisherAuth.from_file(path)
+
+
+def _canonical_uuid_slug(
+    value: object, namespace: str, *, required_version: int | None = None
+) -> str:
+    if not isinstance(value, str) or not value.startswith(f"{namespace}/"):
+        raise ValueError("Artifact filter must use a canonical UUID slug")
+    suffix = value.split("/", 1)[1]
+    try:
+        parsed = uuid.UUID(suffix)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("Artifact filter must use a canonical UUID slug") from exc
+    if str(parsed) != suffix.lower() or (
+        required_version is not None and parsed.version != required_version
+    ) or (
+        required_version is None and parsed.version not in {4, 5}
+    ):
+        raise ValueError("Artifact filter must use a canonical UUID slug")
+    return value
 
 
 def _lifecycle_attention_payload(exc: LifecycleIntegrityError) -> dict[str, object]:
@@ -125,10 +235,6 @@ def _progress_metric_from_request(
             "job_applied is the only supported automatic event binding"
         )
     binding = binding or None
-    if binding == "job_applied" and current != 0:
-        raise DomainValidationError(
-            "job_applied progress must start at 0 without verified event evidence"
-        )
     value = {
         "kind": kind,
         "label": label,
@@ -145,7 +251,10 @@ def _progress_metric_from_request(
         "timezone": "America/Los_Angeles" if binding else None,
     }
     metric = ProgressMetric.from_value(value)
-    return metric, EventProgress() if binding else None
+    return (
+        metric,
+        EventProgress(baseline_count=current) if binding else None,
+    )
 
 
 def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
@@ -282,10 +391,14 @@ def _handler_class(
     ical_reader: ICalendarReader | None = None,
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
+    artifact_publisher_auth: ArtifactPublisherAuth | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
     active_calendar_preferences = calendar_preferences or CalendarPreferences()
+    active_artifact_publisher_auth = (
+        artifact_publisher_auth or ArtifactPublisherAuth()
+    )
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -604,6 +717,130 @@ def _handler_class(
                     ),
                 )
                 return
+            if path == "/api/artifacts":
+                query = parse_qs(
+                    urlsplit(self.path).query, keep_blank_values=True
+                )
+                allowed = {
+                    "agent", "task", "project", "goal", "kind", "cursor", "limit"
+                }
+                if any(
+                    key not in allowed or len(values) != 1
+                    for key, values in query.items()
+                ):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "error": "Artifact filters are unsupported or repeated.",
+                            "code": "invalid_artifact_filters",
+                        },
+                    )
+                    return
+                try:
+                    cursor = int(query.get("cursor", ["0"])[0])
+                    limit = int(query.get("limit", ["25"])[0])
+                    if cursor < 0 or limit < 1 or limit > 50:
+                        raise ValueError
+                    kind = query.get("kind", [None])[0] or None
+                    if kind is not None and kind not in ARTIFACT_KINDS:
+                        raise ValueError
+                    agent_filter = query.get("agent", [None])[0] or None
+                    if agent_filter is not None and agent_filter not in dict(AGENT_SCOPES):
+                        raise ValueError
+                    task_filter = query.get("task", [None])[0] or None
+                    project_filter = query.get("project", [None])[0] or None
+                    goal_filter = query.get("goal", [None])[0] or None
+                    for value, namespace in (
+                        (task_filter, "tasks"),
+                        (project_filter, "projects"),
+                        (goal_filter, "goals"),
+                    ):
+                        if value is not None:
+                            _canonical_uuid_slug(value, namespace)
+                    with foreground_operation():
+                        payload = adapter.list_agent_artifacts(
+                            agent=agent_filter,
+                            task=task_filter,
+                            project=project_filter,
+                            goal=goal_filter,
+                            kind=kind,
+                            cursor=cursor,
+                            limit=limit,
+                        ).to_dict()
+                except (DomainValidationError, ValueError):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {
+                            "error": "Artifact cursor must be nonnegative, limit must be 1 to 50, and filters must use canonical values.",
+                            "code": "invalid_artifact_filters",
+                        },
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, decorate_issues(payload))
+                return
+            artifact_prefix = "/api/artifacts/"
+            if path.startswith(artifact_prefix):
+                artifact_slug = unquote(path[len(artifact_prefix) :])
+                try:
+                    _canonical_uuid_slug(
+                        artifact_slug, "artifacts", required_version=4
+                    )
+                except ValueError:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "Artifact slug is invalid.", "code": "invalid_artifact"},
+                    )
+                    return
+                try:
+                    with foreground_operation():
+                        artifact = adapter.get_agent_artifact(artifact_slug)
+                except StopIteration:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Artifact was not found.", "code": "artifact_not_found"},
+                    )
+                    return
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_artifact"},
+                    )
+                    return
+                except GBrainCommandError as exc:
+                    if is_page_not_found_error(exc):
+                        self._json(
+                            HTTPStatus.NOT_FOUND,
+                            {
+                                "error": "Artifact was not found.",
+                                "code": "artifact_not_found",
+                            },
+                        )
+                    else:
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {"error": str(exc), "code": "gbrain_unavailable"},
+                        )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "artifact": artifact.to_dict(),
+                        "readback": {"verified": True},
+                    },
+                )
+                return
             if path == "/api/logs":
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                 if any(
@@ -801,6 +1038,127 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/artifacts":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "title",
+                    "artifact_kind",
+                    "created_by",
+                    "produced_for",
+                    "markdown",
+                    "attachments",
+                    "project",
+                    "goal",
+                    "git_url",
+                    "supersedes",
+                    "idempotency_key",
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Artifact publication requires the exact supported fields.",
+                            "code": "invalid_artifact",
+                        },
+                    )
+                    return
+                attachments = payload.get("attachments")
+                optional_slugs = {
+                    "project": "projects/",
+                    "goal": "goals/",
+                    "supersedes": "artifacts/",
+                }
+                if (
+                    not isinstance(attachments, list)
+                    or not all(isinstance(item, str) for item in attachments)
+                    or any(
+                        payload.get(field) is not None
+                        and (
+                            not isinstance(payload.get(field), str)
+                            or not payload[field].startswith(prefix)
+                        )
+                        for field, prefix in optional_slugs.items()
+                    )
+                    or payload.get("git_url") is not None
+                    and not isinstance(payload.get("git_url"), str)
+                    or not isinstance(payload.get("idempotency_key"), str)
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "Artifact fields are invalid.", "code": "invalid_artifact"},
+                    )
+                    return
+                try:
+                    executing_agent = active_artifact_publisher_auth.resolve(
+                        self.headers.get("Authorization")
+                    )
+                    if (
+                        executing_agent != payload.get("created_by")
+                        or ARTIFACT_BY_AGENT.get(executing_agent)
+                        != ARTIFACT_BY_AGENT.get(payload.get("created_by"))
+                    ):
+                        self._json(
+                            HTTPStatus.FORBIDDEN,
+                            {
+                                "error": (
+                                    "Artifact publisher identity does not match its "
+                                    "installed execution contract."
+                                ),
+                                "code": "artifact_identity_mismatch",
+                            },
+                        )
+                        return
+                    artifact = new_agent_artifact(
+                        title=payload["title"],
+                        artifact_kind=payload["artifact_kind"],
+                        created_by=payload["created_by"],
+                        produced_for=payload["produced_for"],
+                        markdown=payload["markdown"],
+                        attachments=attachments,
+                        project=payload["project"],
+                        goal=payload["goal"],
+                        git_url=payload["git_url"],
+                        supersedes=payload["supersedes"],
+                        now=clock(),
+                    )
+                    with foreground_operation():
+                        receipt = adapter.create_agent_artifact(
+                            artifact,
+                            executing_agent=executing_agent,
+                            idempotency_key=payload["idempotency_key"],
+                        )
+                except ArtifactIdempotencyConflict as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "artifact_idempotency_conflict"},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_artifact"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                body = {"artifact": receipt.artifact.to_dict(), "receipt": receipt.to_dict()}
+                self._json(
+                    HTTPStatus.OK if receipt.idempotent else HTTPStatus.CREATED,
+                    body,
+                )
+                return
             task_todo_prefix = "/api/tasks/"
             question_suffix = "/questions"
             if path.startswith(task_todo_prefix) and path.endswith(question_suffix):
@@ -2222,8 +2580,19 @@ def _handler_class(
                     if isinstance(raw_metric, dict) and raw_metric.get("event_binding") == "job_applied":
                         event_progress = current.event_progress
                         current_value = raw_metric.get("current")
-                        if event_progress is None or current_value != len(event_progress.receipt_ids):
-                            raise DomainValidationError("Automatic job-applied progress is changed only by verified queue evidence.")
+                        if (
+                            event_progress is None
+                            or isinstance(current_value, bool)
+                            or not isinstance(current_value, int)
+                            or current_value < len(event_progress.receipt_ids)
+                        ):
+                            raise DomainValidationError(
+                                "Automatic job-applied progress cannot be lower than its verified queue events."
+                            )
+                        event_progress = replace(
+                            event_progress,
+                            baseline_count=current_value - len(event_progress.receipt_ids),
+                        )
                         progress_metric = ProgressMetric(
                             kind=raw_metric.get("kind", "count"), label=raw_metric.get("label"),
                             unit="job_application", target=raw_metric.get("target"), current=current_value,
@@ -2669,6 +3038,7 @@ def build_server(
     ical_reader: ICalendarReader | None = None,
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
+    artifact_publisher_auth: ArtifactPublisherAuth | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -2689,6 +3059,7 @@ def build_server(
         ical_reader,
         calendar_preferences,
         read_cache,
+        artifact_publisher_auth,
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -2702,6 +3073,7 @@ def main() -> None:
     parser.add_argument("--warning-state-file", type=Path)
     parser.add_argument("--operation-log-file", type=Path)
     parser.add_argument("--queue-log-file", type=Path)
+    parser.add_argument("--artifact-publisher-credentials-file", type=Path)
     parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
@@ -2720,6 +3092,9 @@ def main() -> None:
         if args.operation_log_file or args.queue_log_file
         else None,
         stargraph_url=args.stargraph_url,
+        artifact_publisher_auth=load_artifact_publisher_auth(
+            args.artifact_publisher_credentials_file
+        ),
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

@@ -7,6 +7,171 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class FrontendContractTests(unittest.TestCase):
 
+    def test_agent_artifacts_have_safe_browsing_and_task_discovery(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="artifacts"', html)
+        self.assertIn('<span class="nav-label">Artifacts</span>', html)
+        self.assertIn('id="artifact-agent-filter"', html)
+        self.assertIn('id="artifact-detail-content"', html)
+        self.assertIn('id="task-artifacts"', html)
+        self.assertIn("function renderArtifactsView()", javascript)
+        self.assertIn(
+            "function selectArtifact(artifactSlug, originControl = null)",
+            javascript,
+        )
+        self.assertIn("function loadArtifacts(", javascript)
+        self.assertIn("No artifacts yet", javascript)
+        self.assertIn("renderSafeMarkdown(elements.artifactDetailMarkdown", javascript)
+        artifact_selector = javascript[
+            javascript.index("function selectArtifact(artifactSlug, originControl = null)") :
+            javascript.index("function selectTask(")
+        ]
+        self.assertNotIn("innerHTML", artifact_selector)
+        self.assertIn(".artifact-detail-content", stylesheet)
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        self.assertIn(".detail-panel", mobile)
+        self.assertIn("position: fixed", mobile)
+        self.assertIn("inset: 0", mobile)
+        self.assertIn("overflow-x: hidden", mobile)
+
+    def test_artifact_git_links_use_the_same_explicit_commit_allowlist(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function safeGitCommitUrl") :
+            javascript.index("function selectArtifact")
+        ]
+
+        self.assertIn('host === "github.com"', renderer)
+        self.assertIn('host === "gitlab.com"', renderer)
+        self.assertIn('host === "bitbucket.org"', renderer)
+        self.assertIn("safeGitCommitUrl(artifact.git_url)", renderer)
+        self.assertIn('node("p", "artifact-unsupported-reference", artifact.git_url)', renderer)
+        self.assertNotIn("artifact.git_url && /^https", renderer)
+
+    def test_artifact_media_uses_stargraph_origin_and_only_safe_preview_types(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderArtifactAttachments") :
+            javascript.index("function selectArtifact")
+        ]
+
+        self.assertIn(
+            'const MEMORY_STARGRAPH_ORIGIN = "http://127.0.0.1:8788"',
+            javascript,
+        )
+        self.assertIn("safeStargraphMediaUrl(reference)", renderer)
+        self.assertIn("image.src = mediaUrl.href", renderer)
+        self.assertIn("link.href = mediaUrl.href", renderer)
+        self.assertIn('node("p", "artifact-unsupported-reference", reference)', renderer)
+        self.assertNotIn('"Open attachment"', renderer)
+
+        validator = javascript[
+            javascript.index("function safeStargraphMediaUrl") :
+            javascript.index("function renderArtifactAttachments")
+        ]
+        self.assertIn("new URL(reference, MEMORY_STARGRAPH_ORIGIN)", validator)
+        self.assertIn("resolved.origin !== MEMORY_STARGRAPH_ORIGIN", validator)
+        self.assertIn('!resolved.pathname.startsWith("/media/")', validator)
+        self.assertIn("/%2f|%5c/i.test(reference)", validator)
+        self.assertIn("decodeURIComponent(resolved.pathname)", validator)
+        self.assertIn("resolved.search || resolved.hash", validator)
+
+    def test_artifact_close_restores_task_detail_and_focus_context(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        selector = javascript[
+            javascript.index("function selectArtifact") :
+            javascript.index("function renderTaskArtifacts")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails") :
+            javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn("artifactTaskReturn", javascript)
+        self.assertIn('state.selectedKind === "task"', selector)
+        self.assertIn("taskSlug: state.selectedSlug", selector)
+        self.assertIn("state.detailReturnFocus", selector)
+        self.assertIn('state.selectedKind === "artifact"', close_details)
+        self.assertIn("selectTask(artifactReturn.taskSlug)", close_details)
+        self.assertIn("state.detailReturnFocus = artifactReturn.detailReturnFocus", close_details)
+        self.assertIn("artifactReturn.element", close_details)
+        self.assertIn("button.dataset.slug = artifact.slug", javascript)
+
+    def test_artifact_list_close_restores_the_rerendered_origin_card(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        card = javascript[
+            javascript.index("function artifactCard") :
+            javascript.index("function renderArtifactsView")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails") :
+            javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn("selectArtifact(artifact.slug, button)", card)
+        self.assertIn('document.querySelectorAll(".artifact-card")', close_details)
+        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
+
+    def test_safe_markdown_formats_fences_tables_and_contains_long_tokens(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderSafeMarkdown") :
+            javascript.index("const AGENT_TASKS_PREFERENCE_KEY")
+        ]
+
+        self.assertIn('document.createElement("pre")', renderer)
+        self.assertIn('document.createElement("table")', renderer)
+        self.assertIn('node("div", "markdown-table-wrap")', renderer)
+        self.assertIn("code.textContent = fencedLines.join", renderer)
+        self.assertIn("appendInline(cell, value)", renderer)
+        self.assertNotIn("innerHTML", renderer)
+        self.assertIn(".detail-copy code", stylesheet)
+        self.assertIn("overflow-wrap: anywhere", stylesheet)
+        self.assertIn(".markdown-table-wrap", stylesheet)
+
+    def test_artifact_unavailable_state_is_stacked_and_readable(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        artifacts_view = javascript[
+            javascript.index("function renderArtifactsView") :
+            javascript.index("async function loadArtifacts")
+        ]
+
+        self.assertIn('node("div", "section-empty artifact-error-state")', artifacts_view)
+        self.assertIn(".artifact-error-state", stylesheet)
+        self.assertIn("display: grid", stylesheet[stylesheet.index(".artifact-error-state") :])
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", stylesheet)
+
+    def test_latest_artifact_filter_request_wins_over_stale_response(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        loader = javascript[
+            javascript.index("async function loadArtifacts") :
+            javascript.index("function renderArtifactAttachments")
+        ]
+
+        self.assertIn("artifactRequestToken", javascript)
+        self.assertIn("const requestToken = ++state.artifactRequestToken", loader)
+        self.assertIn("if (requestToken !== state.artifactRequestToken) return", loader)
+        self.assertLess(
+            loader.index("if (requestToken !== state.artifactRequestToken) return"),
+            loader.index("state.artifacts ="),
+        )
+        self.assertNotIn("if (state.artifactsLoading) return", loader)
+
+    def test_artifact_does_not_render_publisher_asserted_readback_metadata(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="artifact-detail-sha-row"', html)
+        self.assertNotIn('id="artifact-detail-hash-row"', html)
+        self.assertNotIn('id="artifact-detail-verified-row"', html)
+        self.assertNotIn("function renderArtifactReadbackMetadata", javascript)
+        self.assertNotIn("renderArtifactReadbackMetadata(artifact)", javascript)
+
     def test_task_detail_markdown_keeps_blocks_and_inline_formatting(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -110,6 +275,24 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function renderBoard()", javascript)
         self.assertIn('`/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}`', javascript)
         self.assertIn("renderBoard()", javascript)
+
+    def test_automatic_job_metric_accepts_custom_target_and_seeded_current(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        metric_payload = javascript[
+            javascript.index("function taskEditorMetricPayload()")
+            : javascript.index("async function submitTaskEditor")
+        ]
+        binding_listener = javascript[
+            javascript.index('elements.taskMetricEventBinding.addEventListener("change"')
+            : javascript.index("elements.refreshButton.addEventListener")
+        ]
+
+        self.assertNotIn("target !== 5", metric_payload)
+        self.assertNotIn("current !== 0", metric_payload)
+        self.assertNotIn('elements.taskMetricTarget.value = "5"', binding_listener)
+        self.assertNotIn('elements.taskMetricCurrent.value = "0"', binding_listener)
+        self.assertNotIn("requires target 5 and current 0", javascript)
+        self.assertIn("increments progress by 1", javascript)
 
     def test_board_has_five_exact_drop_destinations_and_retry(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -535,8 +718,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.69"', html)
-        self.assertIn('src="/app.js?v=0.0.69"', html)
+        self.assertIn('href="/styles.css?v=0.0.70"', html)
+        self.assertIn('src="/app.js?v=0.0.70"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

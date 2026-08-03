@@ -48,21 +48,23 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-V0.0.69 keeps completed To Dos and System Tickets out of the default view,
-reveals them only through explicit compact controls, and makes Agent profile
-metadata and progressive avatar/goal controls readable and keyboard accessible.
+V0.0.70 makes durable Agent deliverables directly browsable from Mission
+Control and their producing Tasks. GBrain remains the only Artifact source of
+truth, with exact Agent collection membership and typed Task/Agent provenance.
 
 ### Independent UI/UX release gate
 
 For every UI-affecting Mission Control change, independent UI/UX QA is a
 required pre-commit gate. QA verifies the frozen uncommitted candidate through
-an isolated local server at desktop and a genuine 390px-wide mobile viewport.
-Only a documented QA **PASS** authorizes the commit. A QA **FAIL** or
-**INCONCLUSIVE** result requires repair and another independent retest before
-any commit; developer self-checks are not a substitute. The resulting commit
-must reference the corresponding QA evidence, be pushed, and only then be
-deployed through the dashboard-managed service. This rule also applies to
-System Ticket nightly-automation UI work.
+the dashboard-managed service at desktop and a genuine 390px-wide mobile
+viewport. Restarting that managed process from the checkout is a candidate
+gate, not a release deployment. Only a documented QA **PASS** authorizes the
+commit. A QA **FAIL** or **INCONCLUSIVE** result requires repair and another
+independent retest before any commit; developer self-checks are not a
+substitute. The resulting commit must reference the corresponding QA evidence,
+be pushed, and then be deployed through the dashboard-managed service with a
+clean tracked checkout. This rule also applies to System Ticket
+nightly-automation UI work.
 
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
@@ -211,6 +213,38 @@ reviewed at the next daytime heartbeat unless Tony separately authorizes an
 urgent wake. The heartbeat always continues in the Agent's existing fixed
 Codex task; it never creates a new task for a question or handoff.
 
+### Agent Artifact publication
+
+Durable Agent deliverables live only in canonical GBrain Artifact pages under
+`collections/mission-control-artifacts` and exactly one producing-Agent child
+collection. Authenticated `POST /api/artifacts` is the schema-enforcing write
+boundary: it derives the executing Agent from a private local credential,
+requires `created_by` and collection to match that identity, stores an
+idempotency key, writes the
+page plus typed `member_of`, `created_by`, and `produced_for` relationships,
+and reports success only after exact page/link readback. `GET /api/artifacts`
+and `GET /api/artifacts/<encoded-slug>` are read-only browsing boundaries.
+
+Mission Control does not maintain an Artifact database, file index, or sync
+service. Agents must fail closed when the authenticated publication boundary
+is unavailable; raw GBrain writes are not an identity-safe substitute.
+Attachments must already be verified GBrain-served
+`/media/...` references; source code remains in Git and is linked by an HTTPS
+commit URL. Secrets, credentials, browser profiles, raw logs, routine scans,
+and unchanged status messages are not Artifacts.
+
+The version-controlled automation source is
+`config/agent-artifact-protocol`. It provides a generic parameterized identity
+template, one isolated instance per Agent, daytime/nighttime sources, and
+checked-in rendered prompts. Installed `~/.codex/automations/*/automation.toml`
+files are readback state only. `scripts/verify_agent_artifact_protocol.py`
+renders, detects drift, and emits validated inputs for the supported Codex
+automation update tool without overwriting installed TOML or committing
+schedules, target task IDs, hosts, credentials, or other private runtime data.
+`scripts/provision_artifact_publisher_credentials.py` atomically provisions
+only unique token hashes into the dashboard's private `0600` runtime state;
+plaintext publisher tokens remain outside the repository and prompts.
+
 ## Agent proposal review
 
 Inbox reads proposals only from typed `member_of
@@ -289,16 +323,19 @@ progress_metric:
   task_day: YYYY-MM-DD
   timezone: America/Los_Angeles
 event_progress:
+  baseline_count: 0
   evidence_slugs: []
   receipt_ids: []
 ```
 
 `label` is display-only and may be absent on rollout-era pages; the Queue
-Reader never uses it for selection. For an event-bound metric, `current`
-always equals both unique evidence and receipt counts. GTasks requires
-`task_day` to match the task due day. Only the fifth distinct accepted
-`job_applied` event completes the task, using the same verified canonical
-status mutation as the UI.
+Reader never uses it for selection. `target` may be any positive integer, and
+`baseline_count` records progress entered when the task is created. For an
+event-bound metric, `current` always equals `baseline_count` plus both unique
+evidence and receipt counts. GTasks requires `task_day` to match the task due
+day. Every distinct accepted `job_applied` event increments `current` by one;
+reaching `target` completes the task using the same verified canonical status
+mutation as the UI. Older task pages without `baseline_count` read it as zero.
 
 Task detail exposes a read-only per-task To Do list with All, Not Done, and
 Done filters. The Add form remains hidden until the accessible Plus action is

@@ -1,0 +1,9 @@
+{
+  "key": "tammy",
+  "name": "Tammy",
+  "agent_slug": "agents/tammy",
+  "task_collection": "collections/tammys-tasks",
+  "artifact_collection": "collections/tammys-artifacts",
+  "daytime_automation_id": "tammy-daytime-authorized-work-loop",
+  "nighttime_automation_id": "tammy-nightly-long-term-planning-review"
+}

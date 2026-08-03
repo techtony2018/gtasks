@@ -7,6 +7,7 @@ from calendar import monthrange
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
+from urllib.parse import unquote, urlsplit
 
 from .handoff import DomainValidationError, TaskHandoff, validate_task_handoff
 
@@ -18,6 +19,17 @@ PROJECTS_ROOT = "collections/tonys-projects"
 PROPOSALS_ROOT = "collections/gtasks-proposed-work"
 SYSTEM_TICKETS_ROOT = "collections/mission-control-system-tickets"
 QA_FIXTURES_ROOT = "collections/mission-control-qa-fixtures"
+ARTIFACTS_ROOT = "collections/mission-control-artifacts"
+ARTIFACT_AGENT_SCOPES = (
+    ("agents/tammy", "collections/tammys-artifacts"),
+    ("agents/timmy", "collections/timmys-artifacts"),
+    ("agents/toddy", "collections/toddys-artifacts"),
+)
+ARTIFACT_BY_AGENT = dict(ARTIFACT_AGENT_SCOPES)
+ARTIFACT_BY_COLLECTION = {
+    collection: agent for agent, collection in ARTIFACT_AGENT_SCOPES
+}
+ARTIFACT_KINDS = frozenset({"markdown", "image", "pdf", "git", "file"})
 AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
@@ -528,6 +540,386 @@ class SystemTicket:
         return {"slug":self.slug,"title":self.title,"status":self.status,"verbatim_request":self.verbatim_request,"target_subsystem":self.target_subsystem,"priority":self.priority,"acceptance_criteria":self.acceptance_criteria,"linked_evidence":list(self.linked_evidence),"implementation_receipts":list(self.implementation_receipts),"qa_receipts":list(self.qa_receipts),"created_at":self.created_at.isoformat() if self.created_at else None,"updated_at":self.updated_at.isoformat() if self.updated_at else None}
 
 
+def _artifact_frontmatter_targets(
+    slug: str,
+    frontmatter: Mapping[str, Any],
+    link_type: str,
+) -> tuple[str, ...]:
+    return tuple(
+        link["to"] for link in _links_from(frontmatter) if link["type"] == link_type
+    )
+
+
+def _artifact_graph_targets(
+    slug: str,
+    edges: Iterable[Mapping[str, Any]],
+    link_type: str,
+) -> tuple[str, ...]:
+    return tuple(
+        str(edge["to_slug"])
+        for edge in edges
+        if isinstance(edge, Mapping)
+        and edge.get("from_slug") == slug
+        and edge.get("link_type") == link_type
+        and isinstance(edge.get("to_slug"), str)
+    )
+
+
+def _artifact_uuid_slug(value: Any, field: str) -> str:
+    if not isinstance(value, str) or "/" not in value:
+        raise DomainValidationError(f"{field} must use an opaque UUID slug")
+    namespace, suffix = value.split("/", 1)
+    expected_namespace = "artifacts" if field != "produced_for" else "tasks"
+    if namespace != expected_namespace:
+        raise DomainValidationError(f"{field} must use an opaque UUID slug")
+    try:
+        parsed = uuid.UUID(suffix)
+    except (AttributeError, ValueError) as exc:
+        raise DomainValidationError(f"{field} must use an opaque UUID slug") from exc
+    if str(parsed) != suffix.lower() or (
+        expected_namespace == "artifacts" and parsed.version != 4
+    ):
+        raise DomainValidationError(f"{field} must use an opaque UUID slug")
+    if expected_namespace != "artifacts" and parsed.version not in {4, 5}:
+        raise DomainValidationError(
+            f"{field} must use a canonical UUIDv4 or UUIDv5 slug"
+        )
+    return value
+
+
+_GIT_COMMIT_ID = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def is_safe_git_commit_url(value: object) -> bool:
+    if not isinstance(value, str) or not value or "%" in value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    host = (parsed.hostname or "").lower()
+    parts = [part for part in parsed.path.split("/") if part]
+    if host == "github.com":
+        return (
+            len(parts) == 4
+            and parts[2] == "commit"
+            and _GIT_COMMIT_ID.fullmatch(parts[3]) is not None
+        )
+    if host == "gitlab.com":
+        return (
+            len(parts) >= 5
+            and parts[-3:-1] == ["-", "commit"]
+            and _GIT_COMMIT_ID.fullmatch(parts[-1]) is not None
+        )
+    if host == "bitbucket.org":
+        return (
+            len(parts) == 4
+            and parts[2] == "commits"
+            and _GIT_COMMIT_ID.fullmatch(parts[3]) is not None
+        )
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class AgentArtifact:
+    slug: str
+    title: str
+    artifact_kind: str
+    created_by: str
+    agent_collection: str
+    produced_for: str
+    markdown: str
+    attachments: tuple[str, ...]
+    project: str | None
+    goal: str | None
+    git_url: str | None
+    supersedes: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_page(
+        cls,
+        page: Mapping[str, Any],
+        edges: Iterable[Mapping[str, Any]] = (),
+    ) -> "AgentArtifact":
+        slug = _artifact_uuid_slug(page.get("slug"), "artifact slug")
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping):
+            raise DomainValidationError(f"{slug} is not a canonical artifact page")
+        top_level_type = page.get("type")
+        frontmatter_type = frontmatter.get("type")
+        if not (
+            (top_level_type == "concept" and frontmatter_type == "artifact")
+            or (
+                top_level_type == "artifact"
+                and frontmatter_type in {None, "artifact"}
+            )
+        ):
+            raise DomainValidationError(f"{slug} is not a canonical artifact page")
+
+        top_level_title = page.get("title")
+        frontmatter_title = frontmatter.get("title")
+        if top_level_title is None and frontmatter_title is None:
+            raise DomainValidationError("artifact title is required")
+        validated_top_level_title = (
+            _required_text(
+                top_level_title,
+                "artifact title",
+                maximum=160,
+                single_line=True,
+            )
+            if top_level_title is not None
+            else None
+        )
+        validated_frontmatter_title = (
+            _required_text(
+                frontmatter_title,
+                "artifact title",
+                maximum=160,
+                single_line=True,
+            )
+            if frontmatter_title is not None
+            else None
+        )
+        if (
+            validated_top_level_title is not None
+            and validated_frontmatter_title is not None
+            and validated_top_level_title != validated_frontmatter_title
+        ):
+            raise DomainValidationError(
+                "artifact title conflicts between top-level and frontmatter"
+            )
+        title = validated_frontmatter_title or validated_top_level_title
+        assert title is not None
+        artifact_kind = frontmatter.get("artifact_kind")
+        if artifact_kind not in ARTIFACT_KINDS:
+            raise DomainValidationError("artifact_kind is invalid")
+        created_by = frontmatter.get("created_by")
+        if created_by not in ARTIFACT_BY_AGENT:
+            raise DomainValidationError("artifact created_by is not an approved Agent")
+        produced_for = _artifact_uuid_slug(
+            frontmatter.get("produced_for"), "produced_for"
+        )
+
+        graph_edges = tuple(edges)
+        verify_graph = bool(graph_edges)
+
+        def required_link(link_type: str, expected: str) -> tuple[str, ...]:
+            declared = _artifact_frontmatter_targets(slug, frontmatter, link_type)
+            if declared != (expected,):
+                raise DomainValidationError(
+                    f"artifact frontmatter requires exactly one {link_type} relationship"
+                )
+            if verify_graph and _artifact_graph_targets(
+                slug, graph_edges, link_type
+            ) != (expected,):
+                raise DomainValidationError(
+                    f"artifact graph requires exactly one {link_type} relationship"
+                )
+            return declared
+
+        memberships = _artifact_frontmatter_targets(slug, frontmatter, "member_of")
+        if len(memberships) != 1:
+            raise DomainValidationError(
+                "artifact frontmatter requires exactly one typed member_of relationship"
+            )
+        agent_collection = memberships[0]
+        if agent_collection != ARTIFACT_BY_AGENT[created_by]:
+            raise DomainValidationError(
+                "artifact Agent collection does not match created_by"
+            )
+        required_link("member_of", agent_collection)
+        required_link("created_by", created_by)
+        required_link("produced_for", produced_for)
+
+        def optional_link(link_type: str, namespace: str) -> str | None:
+            targets = _artifact_frontmatter_targets(slug, frontmatter, link_type)
+            if len(targets) > 1:
+                raise DomainValidationError(
+                    f"artifact frontmatter permits at most one {link_type} relationship"
+                )
+            if targets:
+                target = targets[0]
+                if not target.startswith(f"{namespace}/"):
+                    raise DomainValidationError(
+                        f"artifact {link_type} relationship must use a canonical UUID slug"
+                    )
+                suffix = target.split("/", 1)[1]
+                try:
+                    parsed = uuid.UUID(suffix)
+                except (AttributeError, ValueError) as exc:
+                    raise DomainValidationError(
+                        f"artifact {link_type} relationship must use a canonical UUID slug"
+                    ) from exc
+                if str(parsed) != suffix.lower() or (
+                    namespace in {"projects", "goals"}
+                    and parsed.version not in {4, 5}
+                ):
+                    raise DomainValidationError(
+                        f"artifact {link_type} relationship must use a canonical UUIDv4 or UUIDv5 slug"
+                    )
+            if verify_graph and _artifact_graph_targets(
+                slug, graph_edges, link_type
+            ) != targets:
+                raise DomainValidationError(
+                    f"artifact graph {link_type} relationships must exactly match frontmatter"
+                )
+            return targets[0] if targets else None
+
+        project = optional_link("supports_project", "projects")
+        goal = optional_link("supports_goal", "goals")
+        supersedes = optional_link("supersedes", "artifacts")
+        if supersedes is not None:
+            _artifact_uuid_slug(supersedes, "artifact supersedes")
+
+        def safe_media_reference(reference: object) -> bool:
+            if not isinstance(reference, str):
+                return False
+            parsed = urlsplit(reference)
+            if (
+                parsed.scheme
+                or parsed.netloc
+                or parsed.query
+                or parsed.fragment
+                or parsed.path != reference
+                or not parsed.path.startswith("/media/")
+                or re.search(r"%(?![0-9a-fA-F]{2})", parsed.path)
+                or re.search(r"%(?:2f|5c)", parsed.path, re.IGNORECASE)
+            ):
+                return False
+            decoded = unquote(parsed.path)
+            if (
+                not decoded.startswith("/media/")
+                or "\\" in decoded
+                or any(ord(character) < 32 for character in decoded)
+            ):
+                return False
+            segments = decoded.split("/")
+            return all(segment not in {"", ".", ".."} for segment in segments[2:])
+
+        raw_attachments = frontmatter.get("attachments", [])
+        if not isinstance(raw_attachments, list) or any(
+            not safe_media_reference(reference)
+            for reference in raw_attachments
+        ):
+            raise DomainValidationError(
+                "artifact attachments must use verified /media references"
+            )
+        attachments = tuple(dict.fromkeys(raw_attachments))
+        git_url = frontmatter.get("git_url")
+        if git_url in {None, "", "none"}:
+            git_url = None
+        if git_url is not None and not is_safe_git_commit_url(git_url):
+            raise DomainValidationError(
+                "artifact git_url must be an allowlisted HTTPS commit URL"
+            )
+        if artifact_kind == "git" and git_url is None:
+            raise DomainValidationError("git artifact requires an HTTPS commit URL")
+
+        markdown = page.get("compiled_markdown")
+        if markdown is None:
+            markdown = page.get("compiled_truth", "")
+        if not isinstance(markdown, str):
+            raise DomainValidationError("artifact Markdown must be text")
+        created_at = _required_zoned_datetime(
+            frontmatter.get("created_at"), "artifact created_at"
+        )
+        return cls(
+            slug=slug,
+            title=title,
+            artifact_kind=artifact_kind,
+            created_by=created_by,
+            agent_collection=agent_collection,
+            produced_for=produced_for,
+            markdown=markdown.strip(),
+            attachments=attachments,
+            project=project,
+            goal=goal,
+            git_url=git_url,
+            supersedes=supersedes,
+            created_at=created_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {
+            "slug": self.slug,
+            "title": self.title,
+            "artifact_kind": self.artifact_kind,
+            "created_by": self.created_by,
+            "agent_collection": self.agent_collection,
+            "produced_for": self.produced_for,
+            "markdown": self.markdown,
+            "attachments": list(self.attachments),
+            "project": self.project,
+            "goal": self.goal,
+            "git_url": self.git_url,
+            "supersedes": self.supersedes,
+            "created_at": self.created_at.isoformat(),
+        }
+        return result
+
+
+def new_agent_artifact(
+    *,
+    title: str,
+    artifact_kind: str,
+    created_by: str,
+    produced_for: str,
+    markdown: str,
+    attachments: Iterable[str] = (),
+    project: str | None = None,
+    goal: str | None = None,
+    git_url: str | None = None,
+    supersedes: str | None = None,
+    now: datetime,
+) -> AgentArtifact:
+    slug = f"artifacts/{uuid.uuid4()}"
+    collection = ARTIFACT_BY_AGENT.get(created_by)
+    if collection is None:
+        raise DomainValidationError("artifact created_by is not an approved Agent")
+    links = [
+        {"to": collection, "type": "member_of"},
+        {"to": created_by, "type": "created_by"},
+        {"to": produced_for, "type": "produced_for"},
+    ]
+    for target, relation in (
+        (project, "supports_project"),
+        (goal, "supports_goal"),
+        (supersedes, "supersedes"),
+    ):
+        if target:
+            links.append({"to": target, "type": relation})
+    return AgentArtifact.from_page(
+        {
+            "slug": slug,
+            "type": "concept",
+            "frontmatter": {
+                "type": "artifact",
+                "title": title.strip(),
+                "artifact_kind": artifact_kind,
+                "created_by": created_by,
+                "produced_for": produced_for,
+                "attachments": list(dict.fromkeys(attachments)),
+                "git_url": git_url,
+                "created_at": now.isoformat(),
+                "links": links,
+            },
+            "compiled_markdown": markdown.strip(),
+        },
+        edges=(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AgentProfile:
     slug: str
@@ -991,12 +1383,10 @@ class ProgressMetric:
                 )
             if event_binding == "job_applied" and (
                 unit != "job_application"
-                or target != 5
                 or not auto_complete
             ):
                 raise DomainValidationError(
-                    "job_applied requires unit job_application, target 5, "
-                    "and automatic completion"
+                    "job_applied requires unit job_application and automatic completion"
                 )
         return cls(
             kind="count",
@@ -1026,6 +1416,7 @@ class ProgressMetric:
 
 @dataclass(frozen=True, slots=True)
 class EventProgress:
+    baseline_count: int = 0
     evidence_slugs: tuple[str, ...] = ()
     receipt_ids: tuple[str, ...] = ()
 
@@ -1035,6 +1426,15 @@ class EventProgress:
             raise DomainValidationError("event_progress must be an object")
         evidence_slugs = value.get("evidence_slugs")
         receipt_ids = value.get("receipt_ids")
+        baseline_count = value.get("baseline_count", 0)
+        if (
+            isinstance(baseline_count, bool)
+            or not isinstance(baseline_count, int)
+            or baseline_count < 0
+        ):
+            raise DomainValidationError(
+                "event progress baseline_count must be a nonnegative whole number"
+            )
         for field_name, raw_items in (
             ("evidence_slugs", evidence_slugs),
             ("receipt_ids", receipt_ids),
@@ -1055,15 +1455,23 @@ class EventProgress:
                 "event progress evidence and receipts must stay paired"
             )
         return cls(
+            baseline_count=baseline_count,
             evidence_slugs=tuple(evidence_slugs),
             receipt_ids=tuple(receipt_ids),
         )
 
+    @property
+    def derived_current(self) -> int:
+        return self.baseline_count + len(self.receipt_ids)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "evidence_slugs": list(self.evidence_slugs),
             "receipt_ids": list(self.receipt_ids),
         }
+        if self.baseline_count:
+            value["baseline_count"] = self.baseline_count
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1337,6 +1745,15 @@ class Task:
                     "matching its work collection"
                 )
             owner_agent = expected_agent
+        elif lifecycle_root == QA_FIXTURES_ROOT:
+            approved_agents = {agent for agent, _work_root in AGENT_SCOPES}
+            if len(assigned_agents) > 1 or any(
+                agent not in approved_agents for agent in assigned_agents
+            ):
+                raise DomainValidationError(
+                    "QA fixture permits at most one executing Agent"
+                )
+            owner_agent = assigned_agents[0] if assigned_agents else None
         else:
             if assigned_agents:
                 raise DomainValidationError(
@@ -1388,9 +1805,9 @@ class Task:
                 raise DomainValidationError(
                     "event-bound progress metric requires event_progress"
                 )
-            if progress_metric.current != len(event_progress.receipt_ids):
+            if progress_metric.current != event_progress.derived_current:
                 raise DomainValidationError(
-                    "event-bound metric current must match unique event evidence"
+                    "event-bound metric current must match baseline plus unique event evidence"
                 )
         elif event_progress is not None:
             raise DomainValidationError(
@@ -1645,9 +2062,9 @@ def new_task(
         raise DomainValidationError("goal must be a goal slug or none")
     if progress_metric and progress_metric.event_binding:
         event_progress = event_progress or EventProgress()
-        if progress_metric.current != len(event_progress.receipt_ids):
+        if progress_metric.current != event_progress.derived_current:
             raise DomainValidationError(
-                "event-bound metric current must match unique event evidence"
+                "event-bound metric current must match baseline plus unique event evidence"
             )
     elif event_progress is not None:
         raise DomainValidationError(

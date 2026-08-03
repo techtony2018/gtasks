@@ -21,10 +21,15 @@ from urllib.request import Request, urlopen
 
 from .domain import (
     ACTIVE_ROOT,
+    ARTIFACTS_ROOT,
+    ARTIFACT_AGENT_SCOPES,
+    ARTIFACT_BY_AGENT,
+    ARTIFACT_BY_COLLECTION,
     AGENT_SCOPES,
     AGENT_WORK_ROOTS,
     AGENT_BY_WORK_ROOT,
     AgentProfile,
+    AgentArtifact,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -65,7 +70,18 @@ class GBrainCommandError(GBrainError):
     pass
 
 
+def is_page_not_found_error(exc: GBrainCommandError) -> bool:
+    message = str(exc).casefold()
+    return "page_not_found" in message or "page not found" in message
+
+
 class GBrainProtocolError(GBrainError):
+    pass
+
+
+class ArtifactIdempotencyConflict(ValueError):
+    """A publication key already identifies different canonical content."""
+
     pass
 
 
@@ -454,6 +470,34 @@ class AgentWorkRead:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactRead:
+    artifacts: tuple[AgentArtifact, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+    next_cursor: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "issues": [issue.to_dict() for issue in self.issues],
+            "next_cursor": self.next_cursor,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMutationReceipt:
+    artifact: AgentArtifact
+    verified: bool
+    idempotent: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifact": self.artifact.to_dict(),
+            "verified": self.verified,
+            "idempotent": self.idempotent,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ProposalRead:
     proposals: tuple[TaskProposal, ...]
     issues: tuple[CollectionIssue, ...] = ()
@@ -774,6 +818,96 @@ def _yaml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return json.dumps(str(value), ensure_ascii=False)
+
+
+def render_artifact_collection_page(
+    *, slug: str, title: str, agent: str | None
+) -> str:
+    if slug != ARTIFACTS_ROOT and slug not in ARTIFACT_BY_COLLECTION:
+        raise ValueError("artifact collection slug is not reserved")
+    if agent is None and slug != ARTIFACTS_ROOT:
+        raise ValueError("only the Artifact root may omit an Agent")
+    if agent is not None and ARTIFACT_BY_AGENT.get(agent) != slug:
+        raise ValueError("artifact collection Agent does not match its slug")
+    lines = [
+        "---",
+        "type: collection",
+        f"title: {_yaml_scalar(title)}",
+        "collection_kind: mission_control_artifacts",
+        f"agent: {_yaml_scalar(agent)}",
+        "links:",
+    ]
+    if agent is not None:
+        lines.extend(
+            [
+                f"  - to: {_yaml_scalar(ARTIFACTS_ROOT)}",
+                "    type: part_of",
+                "    context: This Agent Artifact collection belongs to Mission Control Artifacts.",
+                f"  - to: {_yaml_scalar(agent)}",
+                "    type: for_agent",
+                "    context: This collection stores durable output from this Agent.",
+            ]
+        )
+    lines.extend(["---", "", f"# {title}", "", "Mission Control Agent artifacts.", ""])
+    return "\n".join(lines)
+
+
+def render_qa_fixtures_collection_page() -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: collection",
+            "title: Mission Control QA Fixtures",
+            "collection_kind: mission_control_qa_fixtures",
+            "member_type: task",
+            "---",
+            "",
+            "Isolated Mission Control release-verification fixtures.",
+            "",
+        ]
+    )
+
+
+def render_agent_artifact_page(
+    artifact: AgentArtifact,
+    *,
+    idempotency_key: str | None = None,
+) -> str:
+    links = [
+        (artifact.agent_collection, "member_of", "Producing Agent Artifact collection."),
+        (artifact.created_by, "created_by", "Canonical producing Agent."),
+        (artifact.produced_for, "produced_for", "Authorized canonical Task."),
+    ]
+    if artifact.project:
+        links.append((artifact.project, "supports_project", "Supported canonical Project."))
+    if artifact.goal:
+        links.append((artifact.goal, "supports_goal", "Supported canonical Goal."))
+    if artifact.supersedes:
+        links.append((artifact.supersedes, "supersedes", "Earlier Artifact replaced by this output."))
+    lines = [
+        "---",
+        "type: artifact",
+        f"title: {_yaml_scalar(artifact.title)}",
+        f"artifact_kind: {_yaml_scalar(artifact.artifact_kind)}",
+        f"created_by: {_yaml_scalar(artifact.created_by)}",
+        f"produced_for: {_yaml_scalar(artifact.produced_for)}",
+        "attachments: " + json.dumps(list(artifact.attachments), ensure_ascii=False),
+        f"git_url: {_yaml_scalar(artifact.git_url)}",
+        f"created_at: {_yaml_scalar(artifact.created_at.isoformat())}",
+    ]
+    if idempotency_key is not None:
+        lines.append(f"idempotency_key: {_yaml_scalar(idempotency_key)}")
+    lines.append("links:")
+    for target, link_type, context in links:
+        lines.extend(
+            [
+                f"  - to: {_yaml_scalar(target)}",
+                f"    type: {link_type}",
+                f"    context: {_yaml_scalar(context)}",
+            ]
+        )
+    lines.extend(["---", "", artifact.markdown, ""])
+    return "\n".join(lines)
 
 
 def render_task_page(task: Task) -> str:
@@ -1534,6 +1668,717 @@ class GBrainAdapter:
         self._todo_comment_cache: dict[str, TodoComment] = {}
         self._todo_event_cache: dict[str, TodoEvent] = {}
         self._todo_child_cache_lock = Lock()
+        self._artifact_create_lock = Lock()
+
+    @staticmethod
+    def _artifact_collection_title(slug: str) -> str:
+        if slug == ARTIFACTS_ROOT:
+            return "Mission Control Artifacts"
+        agent = ARTIFACT_BY_COLLECTION.get(slug)
+        if agent is None:
+            raise ValueError("artifact collection slug is not reserved")
+        return f"{agent.rsplit('/', 1)[-1].title()} Artifacts"
+
+    def _verify_artifact_collection(
+        self, slug: str, page: object, links: object
+    ) -> None:
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError(f"{slug} collection readback was not an object")
+        if page.get("slug") != slug or page.get("type") != "collection":
+            raise GBrainProtocolError(f"{slug} is not a canonical Artifact collection")
+        frontmatter = page.get("frontmatter")
+        if not isinstance(frontmatter, Mapping) or frontmatter.get(
+            "collection_kind"
+        ) != "mission_control_artifacts":
+            raise GBrainProtocolError(f"{slug} has the wrong Artifact collection contract")
+        if slug == ARTIFACTS_ROOT:
+            return
+        agent = ARTIFACT_BY_COLLECTION[slug]
+        if frontmatter.get("agent") != agent or not isinstance(links, list):
+            raise GBrainProtocolError(f"{slug} has the wrong Agent scope")
+        part_of = [
+            edge.get("to_slug")
+            for edge in links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == slug
+            and edge.get("link_type") == "part_of"
+        ]
+        for_agent = [
+            edge.get("to_slug")
+            for edge in links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == slug
+            and edge.get("link_type") == "for_agent"
+        ]
+        if part_of != [ARTIFACTS_ROOT]:
+            raise GBrainProtocolError(
+                f"{slug} must have exactly one part_of relationship to {ARTIFACTS_ROOT}"
+            )
+        if for_agent != [agent]:
+            raise GBrainProtocolError(
+                f"{slug} must have exactly one for_agent relationship to {agent}"
+            )
+
+    def ensure_artifact_collections(self) -> None:
+        scopes: tuple[tuple[str, str | None], ...] = (
+            (ARTIFACTS_ROOT, None),
+            *((collection, agent) for agent, collection in ARTIFACT_AGENT_SCOPES),
+        )
+        for slug, agent in scopes:
+            try:
+                page = self.runner.run("get_page", {"slug": slug})
+            except GBrainCommandError as exc:
+                if "page_not_found" not in str(exc):
+                    raise
+                self.runner.run(
+                    "put_page",
+                    {
+                        "slug": slug,
+                        "content": render_artifact_collection_page(
+                            slug=slug,
+                            title=self._artifact_collection_title(slug),
+                            agent=agent,
+                        ),
+                    },
+                )
+                page = self.runner.run("get_page", {"slug": slug})
+            if not isinstance(page, Mapping) or page.get("type") != "collection":
+                raise GBrainProtocolError(
+                    f"reserved Artifact slug {slug} is not a collection page"
+                )
+            if agent is not None:
+                for target, link_type, context in (
+                    (
+                        ARTIFACTS_ROOT,
+                        "part_of",
+                        "This Agent Artifact collection belongs to Mission Control Artifacts.",
+                    ),
+                    (
+                        agent,
+                        "for_agent",
+                        "This collection stores durable output from this Agent.",
+                    ),
+                ):
+                    existing = self.runner.run("get_links", {"slug": slug})
+                    if not isinstance(existing, list):
+                        raise GBrainProtocolError(
+                            f"{slug} collection links readback was not a list"
+                        )
+                    if not any(
+                        isinstance(edge, Mapping)
+                        and edge.get("from_slug") == slug
+                        and edge.get("to_slug") == target
+                        and edge.get("link_type") == link_type
+                        for edge in existing
+                    ):
+                        self.runner.run(
+                            "add_link",
+                            {
+                                "from": slug,
+                                "to": target,
+                                "link_type": link_type,
+                                "context": context,
+                                "link_source": "gtasks",
+                            },
+                        )
+            links = self.runner.run("get_links", {"slug": slug})
+            self._verify_artifact_collection(slug, page, links)
+
+    @staticmethod
+    def _verify_artifact_graph(
+        artifact: AgentArtifact,
+        edges: Sequence[Mapping[str, Any]],
+        *,
+        require_gtasks_source: bool = False,
+    ) -> None:
+        outgoing = [
+            edge
+            for edge in edges
+            if isinstance(edge, Mapping) and edge.get("from_slug") == artifact.slug
+        ]
+        quadruples = {
+            (
+                edge.get("from_slug"),
+                edge.get("to_slug"),
+                edge.get("link_type"),
+                edge.get("link_source"),
+            )
+            for edge in outgoing
+        }
+        expected = {
+            (artifact.slug, artifact.agent_collection, "member_of", "gtasks"),
+            (artifact.slug, artifact.created_by, "created_by", "gtasks"),
+            (artifact.slug, artifact.produced_for, "produced_for", "gtasks"),
+        }
+        for target, link_type in (
+            (artifact.project, "supports_project"),
+            (artifact.goal, "supports_goal"),
+            (artifact.supersedes, "supersedes"),
+        ):
+            if target:
+                expected.add((artifact.slug, target, link_type, "gtasks"))
+        triples = {(source, target, kind) for source, target, kind, _source in quadruples}
+        expected_triples = {
+            (source, target, kind) for source, target, kind, _source in expected
+        }
+        if (
+            len(outgoing) != len(expected)
+            or triples != expected_triples
+            or require_gtasks_source
+            and quadruples != expected
+        ):
+            raise GBrainProtocolError(
+                "Artifact must have exactly the requested typed relationships"
+                + (
+                    " from the canonical gtasks source"
+                    if require_gtasks_source
+                    else ""
+                )
+            )
+
+    def get_agent_artifact(
+        self,
+        slug: str,
+        *,
+        require_gtasks_source: bool = False,
+    ) -> AgentArtifact:
+        if not isinstance(slug, str) or not slug.startswith("artifacts/"):
+            raise ValueError("Artifact slug must start with artifacts/")
+        page = self.runner.run("get_page", {"slug": slug})
+        links = self.runner.run("get_links", {"slug": slug})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError("Artifact page or link readback was not structured")
+        artifact = AgentArtifact.from_page(page, edges=links)
+        self._verify_artifact_graph(
+            artifact,
+            links,
+            require_gtasks_source=require_gtasks_source,
+        )
+        return artifact
+
+    def list_agent_artifacts(
+        self,
+        *,
+        agent: str | None = None,
+        task: str | None = None,
+        project: str | None = None,
+        goal: str | None = None,
+        kind: str | None = None,
+        cursor: int = 0,
+        limit: int = 25,
+    ) -> ArtifactRead:
+        if agent is not None and agent not in ARTIFACT_BY_AGENT:
+            raise ValueError("Artifact Agent filter is invalid")
+        for value, namespace, label in (
+            (task, "tasks", "task"),
+            (project, "projects", "project"),
+            (goal, "goals", "goal"),
+        ):
+            if value is not None:
+                self._require_canonical_uuid_slug(value, namespace, label)
+        if cursor < 0 or limit < 1 or limit > 50:
+            raise ValueError("Artifact pagination is invalid")
+        collections = (
+            (ARTIFACT_BY_AGENT[agent],)
+            if agent is not None
+            else tuple(collection for _agent, collection in ARTIFACT_AGENT_SCOPES)
+        )
+        candidate_slugs: list[str] = []
+        for collection in collections:
+            backlinks = self.runner.run("get_backlinks", {"slug": collection})
+            if not isinstance(backlinks, list):
+                raise GBrainProtocolError(
+                    f"{collection} Artifact backlinks were not a list"
+                )
+            candidate_slugs.extend(
+                str(edge["from_slug"])
+                for edge in backlinks
+                if isinstance(edge, Mapping)
+                and edge.get("to_slug") == collection
+                and edge.get("link_type") == "member_of"
+                and isinstance(edge.get("from_slug"), str)
+                and str(edge["from_slug"]).startswith("artifacts/")
+            )
+        candidates = set(candidate_slugs)
+        for target, link_type in (
+            (task, "produced_for"),
+            (project, "supports_project"),
+            (goal, "supports_goal"),
+        ):
+            if target is None:
+                continue
+            backlinks = self.runner.run("get_backlinks", {"slug": target})
+            if not isinstance(backlinks, list):
+                raise GBrainProtocolError("Artifact filter backlinks were not a list")
+            linked = {
+                str(edge["from_slug"])
+                for edge in backlinks
+                if isinstance(edge, Mapping)
+                and edge.get("to_slug") == target
+                and edge.get("link_type") == link_type
+                and isinstance(edge.get("from_slug"), str)
+            }
+            candidates &= linked
+
+        def read_one(slug: str) -> tuple[AgentArtifact | None, CollectionIssue | None]:
+            try:
+                artifact = self.get_agent_artifact(slug)
+                if kind is not None and artifact.artifact_kind != kind:
+                    return None, None
+                return artifact, None
+            except (DomainValidationError, GBrainError, ValueError) as exc:
+                return None, CollectionIssue(
+                    slug=slug,
+                    message=str(exc),
+                    category="artifact_data",
+                    impact=(
+                        "This canonical Artifact remains in GBrain but cannot be "
+                        "browsed until its page and typed relationships are repaired."
+                    ),
+                )
+
+        artifacts: list[AgentArtifact] = []
+        issues: list[CollectionIssue] = []
+        for artifact, issue in self._bounded_map(read_one, sorted(candidates)):
+            if artifact is not None:
+                artifacts.append(artifact)
+            if issue is not None:
+                issues.append(issue)
+        artifacts.sort(key=lambda item: (item.created_at, item.slug), reverse=True)
+        selected = artifacts[cursor : cursor + limit]
+        next_cursor = cursor + limit if cursor + limit < len(artifacts) else None
+        return ArtifactRead(tuple(selected), tuple(issues), next_cursor)
+
+    @staticmethod
+    def _require_canonical_uuid_slug(value: object, namespace: str, label: str) -> str:
+        if not isinstance(value, str) or not value.startswith(f"{namespace}/"):
+            raise ValueError(f"Artifact {label} filter must be a canonical UUID slug")
+        suffix = value.split("/", 1)[1]
+        try:
+            parsed = uuid.UUID(suffix)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                f"Artifact {label} filter must be a canonical UUID slug"
+            ) from exc
+        if str(parsed) != suffix.lower() or parsed.version not in {4, 5}:
+            raise ValueError(f"Artifact {label} filter must be a canonical UUID slug")
+        return value
+
+    def _preflight_artifact_task(self, artifact: AgentArtifact) -> Task:
+        self._require_canonical_uuid_slug(artifact.produced_for, "tasks", "produced_for")
+        page = self.runner.run("get_page", {"slug": artifact.produced_for})
+        links = self.runner.run("get_links", {"slug": artifact.produced_for})
+        if not isinstance(page, Mapping) or not isinstance(links, list):
+            raise GBrainProtocolError(
+                "Artifact produced_for task readback was not structured"
+            )
+        task = Task.from_page(page, edges=links)
+        expected_work_root = dict(AGENT_SCOPES)[artifact.created_by]
+        scope_memberships = [
+            edge.get("to_slug")
+            for edge in links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == artifact.produced_for
+            and edge.get("link_type") == "member_of"
+            and edge.get("to_slug") in TASK_SCOPE_ROOTS
+        ]
+        assignments = [
+            edge.get("to_slug")
+            for edge in links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == artifact.produced_for
+            and edge.get("link_type") == "assigned_to"
+            and isinstance(edge.get("to_slug"), str)
+            and str(edge.get("to_slug")).startswith("agents/")
+        ]
+        is_agent_work = not (
+            task.slug != artifact.produced_for
+            or task.status not in {"planned", "active", "blocked", "completed"}
+            or task.lifecycle_root != expected_work_root
+            or task.owner_agent != artifact.created_by
+            or scope_memberships != [expected_work_root]
+            or assignments != [artifact.created_by]
+        )
+        is_completed_agent_qa_fixture = (
+            task.slug == artifact.produced_for
+            and task.status == "completed"
+            and task.completed_at is not None
+            and task.lifecycle_root == QA_FIXTURES_ROOT
+            and task.qa_fixture
+            and bool(task.qa_owner)
+            and task.owner_agent == artifact.created_by
+            and scope_memberships == [QA_FIXTURES_ROOT]
+            and assignments == [artifact.created_by]
+        )
+        if not is_agent_work and not is_completed_agent_qa_fixture:
+            raise DomainValidationError(
+                "Artifact produced_for must be an approved canonical Agent task "
+                "or completed Agent QA fixture owned by created_by with exact "
+                "collection membership"
+            )
+        return task
+
+    def ensure_qa_fixture_collection(self) -> None:
+        try:
+            page = self.runner.run("get_page", {"slug": QA_FIXTURES_ROOT})
+        except GBrainCommandError as exc:
+            if "page_not_found" not in str(exc):
+                raise
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": QA_FIXTURES_ROOT,
+                    "content": render_qa_fixtures_collection_page(),
+                },
+            )
+            page = self.runner.run("get_page", {"slug": QA_FIXTURES_ROOT})
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError(
+                "QA fixture collection readback was not structured"
+            )
+        frontmatter = page.get("frontmatter")
+        if (
+            page.get("slug") != QA_FIXTURES_ROOT
+            or page.get("type") != "collection"
+            or not isinstance(frontmatter, Mapping)
+            or frontmatter.get("collection_kind")
+            != "mission_control_qa_fixtures"
+            or frontmatter.get("member_type") != "task"
+        ):
+            raise GBrainProtocolError(
+                "reserved QA fixture root has the wrong collection contract"
+            )
+
+    def create_agent_qa_fixture_task(
+        self,
+        task: Task,
+        agent_slug: str,
+    ) -> MutationReceipt:
+        approved_agents = {agent for agent, _work_root in AGENT_SCOPES}
+        try:
+            self._require_canonical_uuid_slug(task.slug, "tasks", "QA fixture task")
+        except ValueError as exc:
+            raise ValueError(
+                "QA fixture task must use a canonical tasks UUID slug"
+            ) from exc
+        if (
+            agent_slug not in approved_agents
+            or task.owner_agent != agent_slug
+            or task.lifecycle_root != QA_FIXTURES_ROOT
+            or task.status != "completed"
+            or task.completed_at is None
+            or not task.qa_fixture
+            or not task.qa_owner
+            or task.inbox
+        ):
+            raise ValueError(
+                "Agent QA fixture must be completed, explicitly QA-owned, "
+                "and assigned to one approved Agent"
+            )
+        if (
+            task.project is not None
+            or task.goal is not None
+            or task.parent is not None
+            or task.dependencies
+            or task.blockers
+        ):
+            raise ValueError(
+                "QA fixture cannot contain project, goal, parent, dependency, "
+                "or blocker relationships"
+            )
+        self.ensure_qa_fixture_collection()
+        expected_outgoing = {
+            (QA_FIXTURES_ROOT, "member_of"),
+            (agent_slug, "assigned_to"),
+        }
+        existing_page: Mapping[str, Any] | None = None
+        existing_links: list[Mapping[str, Any]] = []
+        try:
+            page_candidate = self.runner.run("get_page", {"slug": task.slug})
+        except GBrainCommandError as exc:
+            if "page_not_found" not in str(exc):
+                raise
+        else:
+            links_candidate = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(page_candidate, Mapping) or not isinstance(
+                links_candidate, list
+            ):
+                raise ValueError("Existing QA fixture readback was not structured")
+            try:
+                existing_task = Task.from_page(page_candidate)
+            except DomainValidationError as exc:
+                raise ValueError(
+                    "Existing QA fixture page does not match the requested fixture"
+                ) from exc
+            frontmatter = page_candidate.get("frontmatter")
+            page_links = (
+                frontmatter.get("links") if isinstance(frontmatter, Mapping) else None
+            )
+            page_outgoing = [
+                (link.get("to"), link.get("type"))
+                for link in page_links
+                if isinstance(link, Mapping)
+            ] if isinstance(page_links, list) else []
+            expected_page_outgoing = [
+                (QA_FIXTURES_ROOT, "member_of"),
+                (agent_slug, "assigned_to"),
+            ]
+            if (
+                replace(existing_task, owner_agent=task.owner_agent).to_dict()
+                != task.to_dict()
+                or page_outgoing != expected_page_outgoing
+            ):
+                raise ValueError(
+                    "Existing QA fixture page does not match the requested fixture"
+                )
+            existing_links = [
+                edge
+                for edge in links_candidate
+                if isinstance(edge, Mapping) and edge.get("from_slug") == task.slug
+            ]
+            existing_outgoing = {
+                (edge.get("to_slug"), edge.get("link_type"))
+                for edge in existing_links
+            }
+            if (
+                not existing_outgoing.issubset(expected_outgoing)
+                or any(edge.get("link_source") != "gtasks" for edge in existing_links)
+            ):
+                raise ValueError(
+                    "Existing QA fixture relationships do not match the resumable contract"
+                )
+            existing_page = page_candidate
+
+        try:
+            if existing_page is None:
+                self.runner.run(
+                    "put_page",
+                    {"slug": task.slug, "content": render_task_page(task)},
+                )
+            existing_pairs = {
+                (edge.get("to_slug"), edge.get("link_type"))
+                for edge in existing_links
+            }
+            for target, link_type, context in (
+                (
+                    QA_FIXTURES_ROOT,
+                    "member_of",
+                    "Isolated Mission Control QA fixture membership.",
+                ),
+                (
+                    agent_slug,
+                    "assigned_to",
+                    "Executing Agent for this isolated release canary.",
+                ),
+            ):
+                if (target, link_type) in existing_pairs:
+                    continue
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.slug,
+                        "to": target,
+                        "link_type": link_type,
+                        "context": context,
+                        "link_source": "gtasks",
+                    },
+                )
+            page = self.runner.run("get_page", {"slug": task.slug})
+            links = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError(
+                    "QA fixture task readback was not structured"
+                )
+            stored = Task.from_page(page, edges=links)
+            if stored.to_dict() != task.to_dict():
+                raise GBrainProtocolError(
+                    "QA fixture task readback did not match the requested content"
+                )
+            scope_memberships = [
+                edge.get("to_slug")
+                for edge in links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task.slug
+                and edge.get("link_type") == "member_of"
+                and edge.get("to_slug") in TASK_SCOPE_ROOTS
+            ]
+            assignments = [
+                edge.get("to_slug")
+                for edge in links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task.slug
+                and edge.get("link_type") == "assigned_to"
+            ]
+            outgoing = {
+                (edge.get("to_slug"), edge.get("link_type"))
+                for edge in links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task.slug
+            }
+            if (
+                scope_memberships != [QA_FIXTURES_ROOT]
+                or assignments != [agent_slug]
+                or outgoing != expected_outgoing
+                or any(
+                    edge.get("link_source") != "gtasks"
+                    for edge in links
+                    if isinstance(edge, Mapping)
+                    and edge.get("from_slug") == task.slug
+                )
+            ):
+                raise GBrainProtocolError(
+                    "QA fixture task relationship readback was incomplete"
+                )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                task.slug,
+                f"QA fixture task write could not be verified: {exc}",
+            ) from exc
+        return MutationReceipt(slug=task.slug, verified=True)
+
+    def create_agent_artifact(
+        self,
+        artifact: AgentArtifact,
+        *,
+        executing_agent: str,
+        idempotency_key: str | None = None,
+    ) -> ArtifactMutationReceipt:
+        with self._artifact_create_lock:
+            return self._create_agent_artifact_locked(
+                artifact,
+                executing_agent=executing_agent,
+                idempotency_key=idempotency_key,
+            )
+
+    def _create_agent_artifact_locked(
+        self,
+        artifact: AgentArtifact,
+        *,
+        executing_agent: str,
+        idempotency_key: str | None = None,
+    ) -> ArtifactMutationReceipt:
+        if (
+            executing_agent != artifact.created_by
+            or ARTIFACT_BY_AGENT.get(executing_agent) != artifact.agent_collection
+        ):
+            raise DomainValidationError(
+                "Artifact publisher identity does not match its installed execution contract"
+            )
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key.strip()
+            or len(idempotency_key) > 200
+            or "\n" in idempotency_key
+            or "\r" in idempotency_key
+        ):
+            raise ValueError(
+                "Artifact idempotency_key must be 1 to 200 characters on one line"
+            )
+        if idempotency_key is not None:
+            idempotency_key = idempotency_key.strip()
+        self._preflight_artifact_task(artifact)
+        self.ensure_artifact_collections()
+        backlinks = (
+            self.runner.run(
+                "get_backlinks", {"slug": artifact.agent_collection}
+            )
+            if idempotency_key is not None
+            else []
+        )
+        if not isinstance(backlinks, list):
+            raise GBrainProtocolError("Artifact collection backlinks were not a list")
+        matches: list[AgentArtifact] = []
+        for edge in backlinks:
+            if (
+                not isinstance(edge, Mapping)
+                or edge.get("to_slug") != artifact.agent_collection
+                or edge.get("link_type") != "member_of"
+                or not isinstance(edge.get("from_slug"), str)
+                or not str(edge["from_slug"]).startswith("artifacts/")
+            ):
+                continue
+            page = self.runner.run(
+                "get_page", {"slug": str(edge["from_slug"])}
+            )
+            frontmatter = (
+                page.get("frontmatter") if isinstance(page, Mapping) else None
+            )
+            if (
+                isinstance(frontmatter, Mapping)
+                and idempotency_key is not None
+                and frontmatter.get("idempotency_key") == idempotency_key
+            ):
+                matches.append(
+                    self.get_agent_artifact(
+                        str(edge["from_slug"]),
+                        require_gtasks_source=True,
+                    )
+                )
+        if len(matches) > 1:
+            raise GBrainProtocolError(
+                "Artifact idempotency key has multiple canonical matches"
+            )
+        if matches:
+            existing_fields = matches[0].to_dict()
+            incoming_fields = artifact.to_dict()
+            for field in ("slug", "created_at"):
+                existing_fields.pop(field)
+                incoming_fields.pop(field)
+            if existing_fields != incoming_fields:
+                raise ArtifactIdempotencyConflict(
+                    "Artifact idempotency key already identifies different content"
+                )
+            return ArtifactMutationReceipt(matches[0], True, True)
+        try:
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": artifact.slug,
+                    "content": render_agent_artifact_page(
+                        artifact, idempotency_key=idempotency_key
+                    ),
+                },
+            )
+            relationships = [
+                (artifact.agent_collection, "member_of", "Producing Agent Artifact collection."),
+                (artifact.created_by, "created_by", "Canonical producing Agent."),
+                (artifact.produced_for, "produced_for", "Authorized canonical Task."),
+            ]
+            for target, link_type, context in (
+                (artifact.project, "supports_project", "Supported canonical Project."),
+                (artifact.goal, "supports_goal", "Supported canonical Goal."),
+                (artifact.supersedes, "supersedes", "Earlier Artifact replaced by this output."),
+            ):
+                if target:
+                    relationships.append((target, link_type, context))
+            for target, link_type, context in relationships:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": artifact.slug,
+                        "to": target,
+                        "link_type": link_type,
+                        "context": context,
+                        "link_source": "gtasks",
+                    },
+                )
+            stored = self.get_agent_artifact(
+                artifact.slug,
+                require_gtasks_source=True,
+            )
+            if stored.to_dict() != artifact.to_dict():
+                raise GBrainProtocolError(
+                    "Artifact page readback did not match the requested content"
+                )
+            return ArtifactMutationReceipt(stored, True)
+        except ArtifactIdempotencyConflict:
+            raise
+        except (DomainValidationError, GBrainError, ValueError) as exc:
+            raise PartialMutationError(
+                artifact.slug,
+                "Artifact publication was not fully verified. Inspect the page and typed links before retrying: "
+                + str(exc),
+            ) from exc
 
     @staticmethod
     def _identity_namespace(slug: str) -> str:
@@ -4249,6 +5094,8 @@ class GBrainAdapter:
                 "without completion history"
             )
         if task.event_progress and (
+            task.event_progress.baseline_count
+            or
             task.event_progress.evidence_slugs
             or task.event_progress.receipt_ids
         ):
@@ -4492,8 +5339,8 @@ class GBrainAdapter:
         if priority not in {"low", "normal", "high", "urgent"}:
             raise ValueError("priority is not supported")
         if progress_metric and progress_metric.event_binding:
-            if event_progress is None or progress_metric.current != len(event_progress.receipt_ids):
-                raise ValueError("event-bound metric progress must match its verified evidence and receipts")
+            if event_progress is None or progress_metric.current != event_progress.derived_current:
+                raise ValueError("event-bound metric progress must match its baseline and verified evidence and receipts")
 
         if project_slug != task.project:
             approved = {project.slug for project in self.list_projects().projects}
@@ -4980,10 +5827,10 @@ class GBrainAdapter:
         if progress_metric and progress_metric.event_binding:
             if (
                 event_progress is None
-                or progress_metric.current != len(event_progress.receipt_ids)
+                or progress_metric.current != event_progress.derived_current
             ):
                 raise ValueError(
-                    "event-bound metric current must match unique event evidence"
+                    "event-bound metric current must match baseline plus unique event evidence"
                 )
         elif event_progress is not None:
             raise ValueError(
@@ -5236,6 +6083,7 @@ class GBrainAdapter:
             raise ValueError("task progress target is already reached")
 
         updated_progress = EventProgress(
+            baseline_count=progress.baseline_count,
             evidence_slugs=(*progress.evidence_slugs, evidence_slug),
             receipt_ids=(*progress.receipt_ids, receipt_id),
         )
@@ -5659,8 +6507,7 @@ class GBrainAdapter:
 
     @staticmethod
     def _page_not_found(exc: GBrainCommandError) -> bool:
-        message = str(exc).casefold()
-        return "page_not_found" in message or "page not found" in message
+        return is_page_not_found_error(exc)
 
     def _read_todo_comment(
         self,

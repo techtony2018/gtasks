@@ -2790,6 +2790,55 @@ kbd {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.05);
   white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.detail-copy pre {
+  max-width: 100%;
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.detail-copy pre code {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  white-space: pre-wrap;
+}
+
+.markdown-table-wrap {
+  max-width: 100%;
+  margin: 0 0 10px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.markdown-table-wrap table {
+  width: 100%;
+  min-width: 0;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.markdown-table-wrap th,
+.markdown-table-wrap td {
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.markdown-table-wrap th {
+  color: var(--ink);
+  background: rgba(56, 189, 248, 0.08);
 }
 
 .task-duplicate-button {
@@ -5006,6 +5055,198 @@ button:active {
   transform: translateY(1px);
 }
 
+.artifact-agent-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.artifact-agent-filter select {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 28px 0 9px;
+  color: var(--text);
+  background: #07111f;
+}
+
+.artifacts-view {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+  gap: 9px;
+}
+
+.artifact-card {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  background: #07111f;
+  text-align: left;
+}
+
+.artifact-card:hover,
+.artifact-card:focus-visible,
+.artifact-card.is-selected {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.artifact-card-title,
+.artifact-card-task,
+.artifact-card-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.artifact-owner-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.artifact-owner-row .agent-avatar {
+  width: 26px;
+  height: 26px;
+  font-size: 9px;
+}
+
+.artifact-kind {
+  margin-left: auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #bff8ff;
+  background: rgba(56, 189, 248, 0.1);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 10px;
+}
+
+.artifact-card-task {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.artifact-card-meta,
+.artifact-detail-meta,
+.artifact-load-state {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.artifact-detail-content {
+  padding: 24px 20px;
+  min-width: 0;
+}
+
+.artifact-detail-content .detail-copy,
+.artifact-detail-content .detail-copy > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.artifact-error-state {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: center;
+  align-items: start;
+  gap: 7px;
+  padding: 14px 0;
+}
+
+.artifact-error-state h2,
+.artifact-error-state p {
+  margin: 0;
+}
+
+.artifact-error-state .secondary-button {
+  justify-self: start;
+  margin-top: 2px;
+}
+
+.artifact-attachments {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.artifact-attachments img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #020816;
+}
+
+.artifact-unsupported-reference {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11px;
+}
+
+.task-artifacts {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(56, 189, 248, 0.035);
+}
+
+.task-artifacts-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-artifacts-heading h3 {
+  margin: 0;
+}
+
+.task-artifacts-heading span,
+.task-artifacts-state {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.task-artifact-list {
+  display: grid;
+  gap: 5px;
+}
+
+.task-artifact-row {
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text);
+  background: #07111f;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.artifact-load-more {
+  justify-self: start;
+}
+
 @media (max-width: 1080px) {
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     grid-template-columns: 92px minmax(0, 1fr) minmax(292px, 334px);
@@ -5100,6 +5341,31 @@ button:active {
     justify-content: space-between;
     padding-bottom: 0;
     text-align: left;
+  }
+
+  .artifact-agent-filter {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .artifact-agent-filter select {
+    min-height: 44px;
+  }
+
+  .artifact-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .artifact-detail-content {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding: 18px 15px 28px;
+  }
+
+  .task-artifacts-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .create-task-button,
