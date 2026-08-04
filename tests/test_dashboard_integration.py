@@ -4,6 +4,10 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_RUNTIME_ROOT = Path("/Users/tony/work/gtasks")
+HANDOFF_STATE_ROOT = Path(
+    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks"
+)
 
 
 class DashboardIntegrationTests(unittest.TestCase):
@@ -26,7 +30,7 @@ class DashboardIntegrationTests(unittest.TestCase):
                 "gtasks-events/reader-observability.json"
             )
         )
-        self.assertEqual(contract["working_directory"], str(PROJECT_ROOT))
+        self.assertEqual(contract["working_directory"], str(CANONICAL_RUNTIME_ROOT))
         self.assertEqual(
             contract["command"],
             [
@@ -39,11 +43,36 @@ class DashboardIntegrationTests(unittest.TestCase):
                 "4179",
                 "--artifact-publisher-credentials-file",
                 "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/artifact-publisher-credentials.json",
+                "--handoff-store",
+                str(HANDOFF_STATE_ROOT / "handoff-dispatcher.sqlite3"),
+                "--handoff-dispatcher-credentials-file",
+                str(HANDOFF_STATE_ROOT / "handoff-dispatcher-credentials.json"),
             ],
         )
         self.assertEqual(contract["canonical_store"], "gbrain")
         self.assertFalse(contract["vendored_copy"])
         self.assertEqual(contract["managed_actions"], ["start", "stop", "restart"])
+
+    def test_contract_declares_private_handoff_runtime_paths_without_secrets(self) -> None:
+        contract = json.loads(
+            (PROJECT_ROOT / "dashboard-integration.json").read_text(encoding="utf-8")
+        )
+
+        handoff = contract["handoff_dispatcher"]
+        self.assertEqual(
+            handoff,
+            {
+                "store": str(HANDOFF_STATE_ROOT / "handoff-dispatcher.sqlite3"),
+                "credentials": str(
+                    HANDOFF_STATE_ROOT / "handoff-dispatcher-credentials.json"
+                ),
+                "credentials_mode": "0600",
+                "credential_contents": "private_runtime_only",
+            },
+        )
+        rendered = json.dumps(contract)
+        self.assertNotIn("fixed_thread_id", rendered)
+        self.assertNotIn("bearer_token", rendered)
 
     def test_contract_registers_independent_broker_and_consumer_services(self) -> None:
         contract = json.loads(

@@ -1,7 +1,14 @@
+from pathlib import Path
 import unittest
 
 from gtasks import __version__
 from gtasks.releases import CURRENT_RELEASE, RELEASES
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+README = PROJECT_ROOT / "README.md"
+RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
+RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.76.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -11,7 +18,15 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.75")
+        self.assertEqual(__version__, "V0.0.76")
+
+    def test_v0_0_76_records_event_driven_agent_handoffs(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.76")
+        self.assertIn("event-driven Agent handoffs", release["summary"])
+        self.assertIn("Task Timeline and Handoff Log", release["summary"])
+        self.assertIn("same redacted append-only audit events", release["summary"])
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -98,7 +113,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("legacy verified evidence", release["summary"])
 
     def test_v0_0_75_records_focused_artifact_and_calendar_navigation(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.75")
 
         self.assertEqual(release["version"], "V0.0.75")
         self.assertIn("producing Task", release["summary"])
@@ -212,8 +227,142 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.73",
                 "V0.0.74",
                 "V0.0.75",
+                "V0.0.76",
             ],
         )
+
+    def test_dispatcher_runbook_declares_one_audit_source_and_exact_resume_boundary(self) -> None:
+        self.assertTrue(RUNBOOK.is_file(), "Dispatcher runbook must exist")
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        readme = README.read_text(encoding="utf-8")
+
+        one_source = (
+            "Task Timeline and Handoff Log are read-only projections over the same "
+            "append-only handoff event table."
+        )
+        self.assertIn(one_source, " ".join(runbook.split()))
+        self.assertIn(one_source, " ".join(readme.split()))
+        self.assertIn("docs/runbooks/agent-handoff-dispatcher.md", readme)
+        self.assertIn(
+            "codex exec resume <fixed-thread-id> <prompt> --json",
+            runbook,
+        )
+        self.assertIn(
+            "never create, fork, replace, or guess a Codex thread",
+            runbook,
+        )
+
+    def test_dispatcher_runbook_documents_retention_export_and_redaction(self) -> None:
+        self.assertTrue(RUNBOOK.is_file(), "Dispatcher runbook must exist")
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+
+        self.assertIn("90-day default retention", runbook)
+        self.assertIn("GET /api/handoff-events?export=1", runbook)
+        self.assertIn("handoff-audit-v1", runbook)
+        self.assertIn("registration_ref", runbook)
+        for forbidden in ("bearer tokens", "raw registration ids", "fixed thread ids", "full prompts"):
+            self.assertIn(forbidden, runbook)
+
+    def test_dispatcher_runbook_documents_failure_recovery_and_rollback(self) -> None:
+        self.assertTrue(RUNBOOK.is_file(), "Dispatcher runbook must exist")
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        normalized = " ".join(runbook.split())
+
+        for required in (
+            "retrying",
+            "dead_letter",
+            "Guardian",
+            "does not roll back an already verified canonical GBrain mutation",
+            "Rollback",
+            "previous verified release",
+        ):
+            self.assertIn(required, normalized)
+
+    def test_dispatcher_runbook_limits_tailnet_exposure_to_authenticated_handoffs(self) -> None:
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        normalized = " ".join(runbook.split())
+
+        self.assertIn("http://127.0.0.1:4179/", runbook)
+        self.assertIn("https://tonys-macbook-pro.taildb46a7.ts.net", runbook)
+        self.assertIn(
+            "tailscale serve --bg --https=443 --set-path=/api/handoffs/ "
+            "http://127.0.0.1:4179",
+            normalized,
+        )
+        self.assertIn("only `/api/handoffs`", runbook)
+        self.assertIn("HTTP 404", runbook)
+        self.assertIn("HTTP 401", runbook)
+        self.assertIn("HTTP 422", runbook)
+        self.assertIn("invalid_handoff_claim", runbook)
+        self.assertIn("valid bearer", normalized)
+
+    def test_dispatcher_runbook_orders_canonical_registration_before_runtime_enablement(self) -> None:
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        normalized = " ".join(runbook.split())
+
+        for agent, route in (("tammy", "hosts/tammy"), ("timmy", "hosts/timmy"), ("toddy", "hosts/toddy")):
+            self.assertIn(f"agents/{agent}", runbook)
+            self.assertIn(f"route: {route}", runbook)
+        self.assertGreaterEqual(runbook.count("registration_sha256:"), 3)
+        self.assertGreaterEqual(runbook.count("verified: true"), 3)
+        self.assertIn("gbrain put agents/tammy", runbook)
+        self.assertIn("gbrain get agents/tammy", runbook)
+        self.assertIn("exactly three unique routes", normalized)
+        self.assertLess(
+            runbook.index("gbrain put agents/tammy"),
+            runbook.index("provision_handoff_dispatcher_credentials.py"),
+        )
+        self.assertLess(
+            runbook.index("provision_handoff_dispatcher_credentials.py"),
+            runbook.index("POST http://127.0.0.1:4188/api/services/gtasks/restart"),
+        )
+
+    def test_dispatcher_runbook_uses_verified_host_python_and_checkout_module(self) -> None:
+        runbook = RUNBOOK.read_text(encoding="utf-8")
+        normalized = " ".join(runbook.split())
+
+        self.assertIn("Tammy, Timmy, and Toddy", runbook)
+        self.assertIn("--python-path /absolute/path/to/python3", normalized)
+        self.assertIn("--module-root /absolute/path/to/gtasks", normalized)
+        self.assertIn("--runner-path /absolute/path/to/gtasks/gtasks/local_handoff_dispatcher.py", normalized)
+        self.assertIn("/absolute/path/to/python3 -m gtasks.local_handoff_dispatcher", normalized)
+        self.assertIn("must not use `/usr/bin/python3`", runbook)
+        self.assertIn("pre-existing Agent thread's workspace", normalized)
+        self.assertIn("independent paths", normalized)
+        self.assertIn("WorkingDirectory", runbook)
+
+    def test_release_evidence_keeps_install_and_canary_work_explicitly_pending(self) -> None:
+        self.assertTrue(RELEASE_EVIDENCE.is_file(), "V0.0.76 release evidence must exist")
+        evidence = RELEASE_EVIDENCE.read_text(encoding="utf-8")
+        normalized = " ".join(evidence.split())
+
+        self.assertIn("PRECOMMIT_QA_PASSED", normalized)
+        self.assertIn("Tammy, Timmy, and Toddy installations: NOT RUN", normalized)
+        self.assertIn("Tammy-only canary: NOT RUN", normalized)
+        self.assertIn("Do not canary Timmy or Toddy in V0.0.76", normalized)
+        self.assertIn("No live Agent wake", normalized)
+        self.assertIn("709 passed", normalized)
+        self.assertIn("5 skipped", normalized)
+        self.assertIn("Ran 52 tests", evidence)
+        self.assertIn("git diff --check", evidence)
+        self.assertIn("Source review: `APPROVED`", evidence)
+        self.assertIn("no Critical or Important findings", normalized)
+        self.assertIn("Independent pre-commit UI/UX QA", evidence)
+        self.assertIn("explicit `PASS`", evidence)
+        self.assertIn("desktop `1440x1000`", evidence)
+        self.assertIn("genuine mobile `390x844`", evidence)
+        self.assertIn(
+            "`be4eee74ff413cd88194dcdff025a58c18e81e916b66a78c489c2bab9c4bb00e`",
+            evidence,
+        )
+        self.assertIn("`b479...`", evidence)
+        self.assertIn(
+            "`b5db8a71ef8e389df743db1536fdc91b9ccdac750cf65817da6d7c5cb06331d1`",
+            evidence,
+        )
+        self.assertIn("superseded", normalized)
+        self.assertNotIn("V0.0.75", evidence)
+        self.assertNotIn("task-6-report.md", evidence)
 
     def test_v0_0_4_records_durable_projects_and_read_latency_work(self) -> None:
         release = RELEASES[3]

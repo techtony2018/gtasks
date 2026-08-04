@@ -1,8 +1,86 @@
 import unittest
 from pathlib import Path
+import subprocess
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_app_runtime_probe(probe: str) -> subprocess.CompletedProcess[str]:
+    javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    source = javascript.rsplit(
+        '\ndocument.querySelectorAll(".nav-item").forEach',
+        maxsplit=1,
+    )[0]
+    harness = r"""
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+  contains() { return false; }
+}
+class FakeElement {
+  constructor(tagName = "div") {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.dataset = {};
+    this.classList = new FakeClassList();
+    this.attributes = {};
+    this.value = "";
+    this.name = "";
+    this.focused = false;
+  }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = [...children]; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  removeAttribute(name) { delete this.attributes[name]; }
+  addEventListener() {}
+  querySelectorAll() { return []; }
+  querySelector() { return null; }
+  closest() { return this.closestResult || null; }
+  focus() { this.focused = true; document.activeElement = this; }
+}
+const document = {
+  activeElement: null,
+  body: new FakeElement("body"),
+  cookie: "",
+  querySelector: () => new FakeElement(),
+  querySelectorAll: () => [],
+  createElement: (tagName) => new FakeElement(tagName),
+  createTextNode: (text) => ({ textContent: String(text) }),
+};
+document.activeElement = document.body;
+const window = {
+  innerWidth: 1440,
+  localStorage: { getItem: () => null, setItem() {} },
+  matchMedia: () => ({ matches: false }),
+  requestAnimationFrame: (callback) => callback(),
+  setTimeout: (callback) => callback(),
+  clearTimeout() {},
+};
+const CSS = { escape: (value) => String(value).replace(/[^A-Za-z0-9_-]/g, "_") };
+const HTMLElement = FakeElement;
+const HTMLInputElement = FakeElement;
+const HTMLTextAreaElement = FakeElement;
+const HTMLSelectElement = FakeElement;
+"""
+    script = (
+        harness
+        + "\n"
+        + source
+        + "\n(async () => {\n"
+        + probe
+        + "\n})().catch((error) => { console.error(error.stack || error); process.exitCode = 1; });\n"
+    )
+    return subprocess.run(
+        ["node", "-"],
+        input=script,
+        text=True,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        check=False,
+    )
 
 
 class FrontendContractTests(unittest.TestCase):
@@ -1273,6 +1351,52 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('reason === "manual"', loader)
         self.assertIn("state.tasksLoadPromise", javascript)
 
+    def test_mobile_handoff_log_is_not_rerendered_by_background_task_reads(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.innerWidth = 390;
+window.matchMedia = (query) => ({ matches: query.includes("760px") });
+state.activeView = "handoff-log";
+state.snapshot = null;
+state.tasksReadState = null;
+state.handoffLogEvents = [{
+  sequence: 1,
+  task_slug: "tasks/runtime-mobile-handoff",
+  agent_slug: "agents/tammy",
+  event_type: "handoff_queued",
+  status: "queued",
+  occurred_at: "2026-08-04T18:00:00Z",
+  summary: "Stable mobile Handoff Log event.",
+  correlation_id: "correlation-runtime-mobile",
+}];
+state.handoffLogTotal = 1;
+state.handoffLogNextSequence = null;
+render();
+const originalSurface = elements.viewSurface.children[0];
+let release;
+globalThis.fetch = () => new Promise((resolve) => {
+  release = () => resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      as_of: "2026-08-04",
+      tasks: [], goals: [], views: { inbox: [], completed: [] },
+      read_state: { status: "fresh", refreshing: false, last_valid_at: 1785870000 },
+    }),
+  });
+});
+const pending = performTaskLoad("initial");
+await Promise.resolve();
+assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Handoff Log while pending");
+release();
+await pending;
+assert(state.activeView === "handoff-log", "task read changed the active Handoff Log view");
+assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Handoff Log after completion");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_task_project_and_goal_updates_share_accessible_hud_feedback(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1879,6 +2003,366 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("Restore warning", javascript)
         self.assertIn("never hides or changes the task or project", javascript)
         self.assertIn("Needs Attention", javascript)
+
+    def test_handoff_events_share_one_read_only_renderer_and_bounded_source(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="handoff-log"', html)
+        self.assertIn('<span class="nav-label">Handoff Log</span>', html)
+        self.assertIn('id="task-handoff-timeline"', html)
+        self.assertIn('id="task-handoff-timeline-heading">Task Timeline</h3>', html)
+        self.assertIn('<ol class="handoff-event-list" id="task-handoff-event-list"', html)
+        self.assertIn('id="task-handoff-load-more"', html)
+        self.assertIn("const HANDOFF_EVENT_PAGE_SIZE = 50", javascript)
+        self.assertIn("async function loadTaskHandoffTimeline(taskSlug)", javascript)
+        self.assertIn("async function loadHandoffLog({ reset = false, filters = null } = {})", javascript)
+        self.assertIn("function renderHandoffEvents(events, destination)", javascript)
+        self.assertIn("function openHandoffCorrelation(correlationId, taskSlug", javascript)
+        self.assertIn('`/api/tasks/${encodeURIComponent(taskSlug)}/handoff-events?${params}`', javascript)
+        self.assertIn('fetch(`/api/handoff-events?${params}`', javascript)
+        self.assertGreaterEqual(javascript.count("renderHandoffEvents("), 3)
+
+        task_loader = javascript[
+            javascript.index("async function loadTaskHandoffTimeline(taskSlug)") :
+            javascript.index("function handoffLogFilters")
+        ]
+        log_loader = javascript[
+            javascript.index("async function loadHandoffLog") :
+            javascript.index("function openHandoffCorrelation")
+        ]
+        for loader in (task_loader, log_loader):
+            self.assertNotIn("method:", loader)
+            self.assertNotIn('fetch("/api/handoffs', loader)
+            self.assertNotIn("/ack", loader)
+            self.assertNotIn("/failure", loader)
+
+    def test_handoff_log_filters_counts_order_correlation_and_safe_states(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function renderHandoffEvents(events, destination)", javascript)
+        renderer = javascript[
+            javascript.index("function renderHandoffEvents(events, destination)") :
+            javascript.index("async function loadTaskHandoffTimeline")
+        ]
+        for label in ("Time", "Agent", "Status", "Event", "Failure", "Correlation"):
+            self.assertIn(f'"{label}"', javascript)
+        self.assertIn("handoffLogTotal", javascript)
+        self.assertIn("nextSequence", javascript)
+        self.assertIn("event.sequence", renderer)
+        self.assertIn("privacySafeEventText", renderer)
+        self.assertIn("redactedCorrelationLabel", renderer)
+        self.assertIn("is-dead-letter", renderer)
+        self.assertIn("Open correlated Task", renderer)
+        self.assertNotIn("event.detail", renderer)
+        self.assertNotIn("event.handoff_id", renderer)
+        self.assertNotIn("event.registration_ref", renderer)
+        self.assertNotIn("event.idempotency_key", renderer)
+        for state_copy in (
+            "Loading handoff events",
+            "No handoff events match",
+            "Last verified handoff events",
+            "Handoff events are unavailable",
+            "Dead letter",
+        ):
+            self.assertIn(state_copy, javascript)
+        self.assertIn("aria-live", html)
+        self.assertIn(".handoff-event-list", stylesheet)
+        self.assertIn("overflow-wrap: anywhere", stylesheet)
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        self.assertIn(".handoff-log-view", mobile)
+        self.assertIn("overflow-x: hidden", mobile)
+        self.assertIn(".handoff-filter-grid", mobile)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", mobile)
+
+    def test_handoff_correlation_preserves_detail_focus_return_and_fixture_data(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        fixture = (PROJECT_ROOT / "tests" / "project_browser_fixture.py").read_text(encoding="utf-8")
+
+        self.assertIn("function openHandoffCorrelation", javascript)
+        opener = javascript[
+            javascript.index("function openHandoffCorrelation") :
+            javascript.index("function renderHandoffLogView")
+        ]
+        self.assertIn('state.activeView = "handoff-log"', opener)
+        self.assertIn("selectTask(taskSlug, null, originControl)", opener)
+        self.assertIn('document.querySelectorAll(".handoff-event-task")', javascript)
+        self.assertIn("loadTaskHandoffTimeline(task.slug)", javascript)
+        self.assertIn("DurableHandoffStore", fixture)
+        self.assertIn("ActionableChange", fixture)
+        self.assertIn("build_fixture_server", fixture)
+        self.assertIn("ReadSnapshotStore(read_cache_path)", fixture)
+        self.assertIn("background=False", fixture)
+        self.assertIn("correlation-fixture-task", fixture)
+        self.assertIn("fixture-terminal", fixture)
+        self.assertIn("append_correction", fixture)
+        self.assertIn("handoff_store=handoff_store", fixture)
+
+    def test_handoff_correlation_waits_for_inflight_canonical_task_read(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/runtime-canonical";
+const task = { slug: taskSlug, status: "active", title: "Runtime canonical task" };
+state.snapshot = { tasks: [], goals: [], views: {} };
+state.agentTasks = [];
+let releaseTaskRead;
+state.tasksLoadPromise = new Promise((resolve) => {
+  releaseTaskRead = () => { state.snapshot.tasks = [task]; resolve(); };
+});
+let selected = null;
+render = () => {};
+loadHandoffLog = async () => {};
+selectTask = (slug, fallback, focus) => { selected = { slug, fallback, focus }; };
+const origin = new FakeElement("button");
+const pending = openHandoffCorrelation("correlation-runtime", taskSlug, origin);
+await Promise.resolve();
+assert(selected === null, "task detail opened before canonical read completed");
+releaseTaskRead();
+await pending;
+assert(selected?.slug === taskSlug, "task detail did not open after canonical read");
+assert(selected?.focus === origin, "correlation origin focus context was not preserved");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_correlation_loads_agent_task_or_reports_stable_error(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/runtime-agent";
+const agentTask = { slug: taskSlug, status: "active", title: "Runtime Agent task" };
+state.snapshot = { tasks: [], goals: [], views: {} };
+state.agentTasks = [];
+state.tasksLoadPromise = null;
+let releaseAgentRead;
+state.agentWorkLoading = true;
+state.agentWorkLoadPromise = new Promise((resolve) => {
+  releaseAgentRead = () => { state.agentTasks = [agentTask]; resolve(); };
+});
+let selected = null;
+render = () => {};
+loadHandoffLog = async () => {};
+loadTasks = async () => {};
+selectTask = (slug) => { selected = slug; };
+const pendingAgent = openHandoffCorrelation("correlation-agent", taskSlug, new FakeElement("button"));
+await Promise.resolve();
+assert(selected === null, "Agent task opened before its startup read completed");
+releaseAgentRead();
+await pendingAgent;
+assert(selected === taskSlug, "Agent task was not loaded before selection");
+
+state.agentTasks = [];
+state.agentWorkLoading = false;
+state.agentWorkLoadPromise = null;
+selected = null;
+loadAgentWork = async () => {};
+await openHandoffCorrelation("correlation-missing", "tasks/runtime-missing", new FakeElement("button"));
+assert(selected === null, "missing task opened an unrelated detail");
+assert(state.handoffLogError.includes("Linked Task"), "missing linked task had no explicit read error");
+assert(state.handoffLogFocusKey === "load-status", "missing linked task did not target stable status focus");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_missing_linked_task_renders_specific_safe_error(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const diagnosis = "Linked Task could not be read from canonical or Agent work.";
+state.handoffLogEvents = [];
+state.handoffLogLoading = false;
+state.handoffLogStale = false;
+state.handoffLogError = diagnosis;
+const view = renderHandoffLogView();
+const renderedState = view.children[2];
+assert(renderedState.textContent === diagnosis, `specific error was replaced by: ${renderedState.textContent}`);
+assert(!renderedState.textContent.includes("without changing any task"), "contradictory generic advice remained");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_close_detail_focus_falls_back_when_origin_row_disappears(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const origin = new FakeElement("button");
+origin.isConnected = false;
+const stableStatus = new FakeElement("p");
+stableStatus.isConnected = true;
+document.querySelectorAll = () => [];
+document.querySelector = (selector) => selector.includes("load-status") ? stableStatus : null;
+render = () => {};
+state.activeView = "handoff-log";
+state.selectedKind = "task";
+state.selectedSlug = "tasks/runtime-disappeared-origin";
+state.detailReturnFocus = {
+  element: origin,
+  slug: "tasks/runtime-disappeared-origin",
+};
+elements.detailPanel.setAttribute("aria-hidden", "false");
+document.activeElement = elements.detailClose;
+closeDetails();
+assert(stableStatus.focused, "close detail did not focus the stable Handoff Log status");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_handoff_final_page_moves_load_more_focus_to_timeline_state(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(
+            'id="task-handoff-event-state" role="status" aria-live="polite" tabindex="-1"',
+            html,
+        )
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/runtime-timeline";
+const event = (sequence) => ({
+  sequence,
+  task_slug: taskSlug,
+  event_type: "handoff_queued",
+  status: "queued",
+  occurred_at: "2026-08-04T12:00:00Z",
+  summary: "Safe runtime event.",
+});
+state.taskHandoffEvents.set(taskSlug, {
+  events: [event(1)], total: 2, nextSequence: 1,
+  loading: false, error: "", stale: false, requestToken: 0,
+});
+state.selectedKind = "task";
+state.selectedSlug = taskSlug;
+elements.taskHandoffLoadMore.focus();
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({ total: 1, events: [event(2)] }),
+});
+await readTaskHandoffPage(taskSlug, { reset: false });
+assert(taskHandoffEntry(taskSlug).nextSequence === null, "fixture did not reach final page");
+assert(elements.taskHandoffEventState.focused, "final page did not focus stable timeline state");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_recent_time_filter_uses_one_server_bounded_range(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const now = Date.parse("2026-08-04T18:00:00Z");
+Date.now = () => now;
+const recentEvent = { sequence: 51, occurred_at: "2026-08-04T17:30:00Z" };
+let reads = 0;
+let requested = "";
+globalThis.fetch = async (url) => {
+  reads += 1;
+  requested = url;
+  return { ok: true, json: async () => ({ total: 1, events: [recentEvent] }) };
+};
+state.activeView = "runtime-probe";
+state.handoffLogFilters.time = "hour";
+await loadHandoffLog({ reset: true });
+const query = new URL(`http://fixture${requested}`).searchParams;
+assert(reads === 1, `expected one bounded request, got ${reads}`);
+assert(query.get("occurred_after") === "2026-08-04T17:00:00.000Z", "missing lower timestamp bound");
+assert(query.get("occurred_before") === "2026-08-04T18:00:00.000Z", "missing upper timestamp bound");
+assert(state.handoffLogEvents[0].sequence === 51, "bounded recent event was not rendered");
+assert(state.handoffLogTotal === 1, `expected bounded server total 1, got ${state.handoffLogTotal}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_runtime_filter_enums_cover_every_stored_value(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const statusValues = new Set(HANDOFF_STATUS_FILTER_OPTIONS.map(([value]) => value));
+const eventValues = new Set(HANDOFF_EVENT_FILTER_OPTIONS.map(([value]) => value));
+for (const value of ["suppressed", "still_blocked", "dead_letter", "retrying"]) {
+  assert(statusValues.has(value), `missing status enum ${value}`);
+}
+for (const value of ["handoff_suppressed", "handoff_leased", "capability_rotated", "lease_expired"]) {
+  assert(eventValues.has(value), `missing event enum ${value}`);
+}
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_append_growth_keeps_snapshot_total_and_cursor_coherent(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const event = (sequence) => ({ sequence, occurred_at: "2026-08-04T12:00:00Z" });
+const pages = [
+  { total: 100, events: Array.from({ length: 50 }, (_, index) => event(index + 1)), next_sequence: 50 },
+  { total: 70, events: Array.from({ length: 50 }, (_, index) => event(index + 51)), next_sequence: 100 },
+];
+let reads = 0;
+globalThis.fetch = async () => ({ ok: true, json: async () => pages[reads++] });
+state.activeView = "runtime-probe";
+await loadHandoffLog({ reset: true });
+await loadHandoffLog({ reset: false });
+assert(state.handoffLogEvents.length === 100, `expected snapshot size 100, got ${state.handoffLogEvents.length}`);
+assert(state.handoffLogTotal === 100, `expected stable total 100, got ${state.handoffLogTotal}`);
+assert(state.handoffLogNextSequence === null, "growth beyond the snapshot left an impossible load-more cursor");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_runtime_focus_restores_equivalent_controls(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+for (const key of ["filter:status", "filter-submit", "load-more"]) {
+  const original = markHandoffFocus(new FakeElement("button"), key);
+  original.closestResult = original;
+  document.activeElement = original;
+  assert(captureHandoffFocus() === key, `did not capture ${key}`);
+  const replacement = markHandoffFocus(new FakeElement("button"), key);
+  document.querySelector = () => replacement;
+  state.handoffLogFocusKey = key;
+  restoreHandoffFocus(key);
+  assert(replacement.focused, `did not restore ${key}`);
+}
+const statusFilter = handoffFilterSelect("Status", "status", [["", "All"]], "");
+assert(statusFilter.children[1].dataset.handoffFocus === "filter:status", "status filter lacks equivalent focus key");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_clear_correlation_focus_moves_to_surviving_input(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const clear = markHandoffFocus(new FakeElement("button"), "filter-clear-correlation");
+clear.closestResult = clear;
+document.activeElement = clear;
+assert(captureHandoffFocus() === "filter-clear-correlation", "clear focus was not captured");
+const correlationInput = markHandoffFocus(new FakeElement("input"), "filter:correlation_id");
+document.querySelector = (selector) => selector.includes("filter:correlation_id")
+  ? correlationInput
+  : null;
+state.handoffLogFocusKey = "filter-clear-correlation";
+restoreHandoffFocus();
+assert(correlationInput.focused, "focus did not move to the surviving correlation input");
+assert(state.handoffLogFocusKey === null, "completed focus restoration remained pending");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_mobile_390_controls_have_44px_targets(self) -> None:
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+        required_rule = """.handoff-filter-control select,
+  .handoff-filter-control input,
+  .handoff-filter-grid > .secondary-button,
+  .handoff-correlation-button,
+  .handoff-load-more,
+  #task-handoff-load-more {
+    min-height: 44px;
+  }"""
+        self.assertIn(required_rule, mobile)
 
 
 if __name__ == "__main__":

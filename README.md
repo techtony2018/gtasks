@@ -67,6 +67,10 @@ the resolved handoff is cleared before canonical readback, and repeating a
 completion safely repairs an already-partial terminal task without changing its
 original completion time.
 
+V0.0.76 adds event-driven Agent handoffs from verified canonical mutation
+receipts, identity-scoped delivery to an existing fixed Codex thread, and one
+redacted append-only audit source for Task Timeline and Handoff Log.
+
 ### Independent UI/UX release gate
 
 For every UI-affecting Mission Control change, independent UI/UX QA is a
@@ -227,6 +231,24 @@ minutes. Answers outside the 09:00–19:00 America/Los_Angeles schedule are
 reviewed at the next daytime heartbeat unless Tony separately authorizes an
 urgent wake. The heartbeat always continues in the Agent's existing fixed
 Codex task; it never creates a new task for a question or handoff.
+
+### Event-driven Agent Dispatcher
+
+Verified actionable task changes are recorded idempotently in the durable
+handoff outbox only after exact canonical mutation readback. One private local
+Dispatcher per host claims only its registered Agent identity and resumes only
+that Agent's already-approved fixed Codex thread. It never creates, forks,
+replaces, or guesses a thread.
+
+Task Timeline and Handoff Log are read-only projections over the same
+append-only handoff event table. They share ordering, totals, filters,
+correlation, pagination, retention/export metadata, and privacy-safe
+`registration_ref` evidence; neither view mutates or repairs GBrain.
+
+The central runtime paths, exact local install/resume contracts, redaction and
+retention rules, retry/dead-letter recovery, Guardian boundary, rollback, and
+three-host/Tammy-only canary sequence are documented in
+[`docs/runbooks/agent-handoff-dispatcher.md`](docs/runbooks/agent-handoff-dispatcher.md).
 
 ### Agent Artifact publication
 

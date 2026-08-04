@@ -58,6 +58,9 @@
           <button class="nav-item has-tooltip" data-view="goals" type="button" aria-label="Goals" data-tooltip="Goals">
             <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Goals</span>
           </button>
+          <button class="nav-item has-tooltip" data-view="handoff-log" type="button" aria-label="Handoff Log" data-tooltip="Handoff Log">
+            <span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Handoff Log</span>
+          </button>
           <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
             <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
           </button>
@@ -220,6 +223,18 @@
               <button class="primary-button" id="task-handoff-submit" type="submit">Answer and Hand Back</button>
             </form>
             <p class="form-error is-hidden" role="alert" id="task-handoff-error"></p>
+          </section>
+          <section class="task-handoff-timeline" id="task-handoff-timeline" aria-labelledby="task-handoff-timeline-heading">
+            <div class="task-handoff-timeline-heading">
+              <div>
+                <h3 id="task-handoff-timeline-heading">Task Timeline</h3>
+                <span>Read-only handoff audit events</span>
+              </div>
+              <span id="task-handoff-total" aria-live="polite"></span>
+            </div>
+            <p class="handoff-surface-state" id="task-handoff-event-state" role="status" aria-live="polite" tabindex="-1">Loading handoff events…</p>
+            <ol class="handoff-event-list" id="task-handoff-event-list" aria-label="Task handoff timeline"></ol>
+            <button class="secondary-button is-hidden" id="task-handoff-load-more" type="button">Load more events</button>
           </section>
           <section class="task-todos" aria-labelledby="task-todo-heading">
             <div class="task-todo-heading-row">

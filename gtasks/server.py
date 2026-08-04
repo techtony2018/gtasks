@@ -7,11 +7,12 @@ import json
 import mimetypes
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import replace
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -52,6 +53,7 @@ from .domain import (
 )
 from .gbrain import (
     ArtifactIdempotencyConflict,
+    CanonicalHandoffEventBridge,
     ConcurrentTodoUpdateError,
     GBrainAdapter,
     GBrainCommandError,
@@ -66,6 +68,12 @@ from .job_application_binding import (
     JOB_APPLIED_BOUND_TASK_SLUG,
     JOB_APPLIED_TIMEZONE,
     progress_revision,
+)
+from .handoff_dispatcher import (
+    AgentRegistration,
+    DurableHandoffStore,
+    HandoffDispatcher,
+    HandoffOwnershipError,
 )
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
@@ -96,6 +104,147 @@ DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     / "gtasks"
     / "artifact-publisher-credentials.json"
 )
+DEFAULT_HANDOFF_STORE = (
+    Path.home()
+    / ".codex"
+    / "services"
+    / "all-things-codex-dashboard"
+    / "state"
+    / "gtasks"
+    / "handoff-dispatcher.sqlite3"
+)
+DEFAULT_HANDOFF_DISPATCHER_CREDENTIALS = (
+    Path.home()
+    / ".codex"
+    / "services"
+    / "all-things-codex-dashboard"
+    / "state"
+    / "gtasks"
+    / "handoff-dispatcher-credentials.json"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffDispatcherIdentity:
+    agent_slug: str
+    registration_id: str
+
+
+class HandoffDispatcherAuth:
+    """Resolve a bearer credential to one pseudonymized dispatcher identity."""
+
+    def __init__(
+        self,
+        identities: tuple[tuple[HandoffDispatcherIdentity, str], ...] = (),
+    ) -> None:
+        registration_hashes = [identity.registration_id for identity, _ in identities]
+        token_hashes = [token_hash for _, token_hash in identities]
+        agent_slugs = [identity.agent_slug for identity, _ in identities]
+        if (
+            len(set(registration_hashes)) != len(registration_hashes)
+            or len(set(token_hashes)) != len(token_hashes)
+            or len(set(agent_slugs)) != len(agent_slugs)
+        ):
+            raise ValueError(
+                "Dispatcher identity, registration, and token hashes must be unique"
+            )
+        self._identities = identities
+
+    @staticmethod
+    def _digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _valid_digest(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    @classmethod
+    def from_plaintext_tokens_for_tests(
+        cls,
+        credentials: dict[str, tuple[str, str]],
+    ) -> "HandoffDispatcherAuth":
+        return cls(
+            tuple(
+                (
+                    HandoffDispatcherIdentity(
+                        agent_slug, cls._digest(registration_id)
+                    ),
+                    cls._digest(token),
+                )
+                for agent_slug, (registration_id, token) in credentials.items()
+            )
+        )
+
+    @classmethod
+    def from_file(cls, path: Path) -> "HandoffDispatcherAuth":
+        try:
+            mode = path.stat().st_mode & 0o777
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Handoff dispatcher credentials are unavailable") from exc
+        if mode != 0o600:
+            raise ValueError("Handoff dispatcher credentials must use mode 0600")
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"schema_version", "identities"}
+            or payload.get("schema_version") != 1
+        ):
+            raise ValueError("Handoff dispatcher credentials have the wrong schema")
+        entries = payload.get("identities")
+        if not isinstance(entries, list) or len(entries) != 3:
+            raise ValueError("Handoff dispatcher credentials have the wrong schema")
+        identities: list[tuple[HandoffDispatcherIdentity, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {
+                "agent_slug",
+                "registration_sha256",
+                "token_sha256",
+            }:
+                raise ValueError("Handoff dispatcher credential entry is invalid")
+            agent_slug = entry.get("agent_slug")
+            registration_hash = entry.get("registration_sha256")
+            token_hash = entry.get("token_sha256")
+            if (
+                not isinstance(agent_slug, str)
+                or re.fullmatch(r"agents/[a-z0-9][a-z0-9._-]{0,63}", agent_slug)
+                is None
+                or not cls._valid_digest(registration_hash)
+                or not cls._valid_digest(token_hash)
+            ):
+                raise ValueError("Handoff dispatcher credential entry is invalid")
+            identities.append(
+                (HandoffDispatcherIdentity(agent_slug, registration_hash), token_hash)
+            )
+        return cls(tuple(identities))
+
+    def resolve(
+        self, authorization: str | None
+    ) -> HandoffDispatcherIdentity | None:
+        if not isinstance(authorization, str) or not authorization.startswith(
+            "Bearer "
+        ):
+            return None
+        token = authorization[7:]
+        if not token or len(token) > 512 or "\n" in token or "\r" in token:
+            return None
+        supplied = self._digest(token)
+        match = None
+        for identity, expected in self._identities:
+            if hmac.compare_digest(supplied, expected):
+                match = identity
+        return match
+
+    @property
+    def identities(self) -> tuple[HandoffDispatcherIdentity, ...]:
+        return tuple(identity for identity, _token_hash in self._identities)
+
+
+class _HandoffIdentityMismatch(ValueError):
+    pass
 
 
 class ArtifactPublisherAuth:
@@ -170,6 +319,57 @@ def load_artifact_publisher_auth(
     if not path.exists() and configured_path is None:
         return ArtifactPublisherAuth()
     return ArtifactPublisherAuth.from_file(path)
+
+
+def load_handoff_dispatcher_auth(
+    configured_path: Path | None,
+) -> HandoffDispatcherAuth:
+    path = configured_path or DEFAULT_HANDOFF_DISPATCHER_CREDENTIALS
+    if not path.exists() and configured_path is None:
+        return HandoffDispatcherAuth()
+    return HandoffDispatcherAuth.from_file(path)
+
+
+def build_runtime_handoff_event_bridge(
+    adapter: GBrainAdapter,
+    store: DurableHandoffStore,
+    auth: HandoffDispatcherAuth,
+) -> CanonicalHandoffEventBridge:
+    """Build a fail-closed bridge from hash-only canonical route readback."""
+    reader = getattr(
+        adapter,
+        "read_handoff_dispatcher_registration_by_reference",
+        None,
+    )
+    registrations: list[AgentRegistration] = []
+    if callable(reader):
+        for identity in auth.identities:
+            try:
+                registration = reader(identity.agent_slug, identity.registration_id)
+            except (GBrainError, ValueError):
+                continue
+            if (
+                not isinstance(registration, AgentRegistration)
+                or registration.verified is not True
+                or registration.agent_slug != identity.agent_slug
+                or registration.registration_id != identity.registration_id
+                or registration.reference != identity.registration_id
+                or registration.lease_identity != identity.registration_id
+            ):
+                continue
+            registrations.append(registration)
+
+    route_counts: dict[str, int] = {}
+    for registration in registrations:
+        route_counts[registration.route] = route_counts.get(registration.route, 0) + 1
+    unambiguous = tuple(
+        registration
+        for registration in registrations
+        if route_counts[registration.route] == 1
+    )
+    return CanonicalHandoffEventBridge(
+        HandoffDispatcher(store, registrations=unambiguous)
+    )
 
 
 def _canonical_uuid_slug(
@@ -429,6 +629,14 @@ def _handler_class(
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
+    handoff_store: DurableHandoffStore | None = None,
+    handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
+    handoff_registration_validator: Callable[
+        [str, str], AgentRegistration | None
+    ]
+    | None = None,
+    handoff_waiter: Callable[[float], None] | None = None,
+    handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
@@ -436,6 +644,17 @@ def _handler_class(
     active_artifact_publisher_auth = (
         artifact_publisher_auth or ArtifactPublisherAuth()
     )
+    active_handoff_auth = handoff_dispatcher_auth or HandoffDispatcherAuth()
+    active_handoff_registration_validator = handoff_registration_validator or getattr(
+        adapter, "read_handoff_dispatcher_registration", None
+    )
+    active_handoff_registration_reference_reader = getattr(
+        adapter,
+        "read_handoff_dispatcher_registration_by_reference",
+        None,
+    )
+    active_handoff_waiter = handoff_waiter or time.sleep
+    active_handoff_event_bridge = handoff_event_bridge
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -470,6 +689,121 @@ def _handler_class(
 
     def invalidate_system_tickets() -> None:
         active_read_cache.invalidate("system_tickets")
+
+    def canonical_mapping(value: object) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            rendered = to_dict()
+            if isinstance(rendered, dict):
+                return rendered
+        return {}
+
+    def mutation_snapshot(
+        task: object,
+        *,
+        todo: object | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        task_value = canonical_mapping(task)
+        owner = task_value.get("owner_agent")
+        handoff = task_value.get("handoff")
+        if not isinstance(owner, str) and isinstance(handoff, dict):
+            owner = handoff.get("resume_owner")
+        assigned_to = [owner] if isinstance(owner, str) else []
+        return {
+            "task_slug": task_value.get("slug"),
+            "task": {**task_value, "assigned_to": assigned_to},
+            "todo": canonical_mapping(todo) if todo is not None else None,
+            "route": route,
+        }
+
+    def read_todo_mutation_snapshot(todo_slug: str) -> dict[str, Any]:
+        todo = adapter.get_todo(todo_slug)
+        todo_value = canonical_mapping(todo)
+        task = adapter.get_task(str(todo_value.get("parent_task")))
+        return mutation_snapshot(task, todo=todo)
+
+    def after_canonical_mutation(
+        before: dict[str, Any],
+        after: dict[str, Any],
+        receipt: object,
+        *,
+        mutation_kind: str,
+    ) -> None:
+        if active_handoff_event_bridge is None:
+            return
+        receipt_value = canonical_mapping(receipt)
+        receipt_value["mutation_kind"] = mutation_kind
+        try:
+            active_handoff_event_bridge.after_verified_mutation(
+                before, after, receipt_value, clock()
+            )
+        except Exception:
+            # The canonical write is already verified. Dispatcher persistence or
+            # delivery is operational evidence and must never roll it back.
+            log_reader.append_gtasks(
+                severity="error",
+                message="Verified canonical mutation could not enter the handoff dispatcher.",
+                now=clock(),
+            )
+
+    def partial_mutation_attention(
+        before: dict[str, Any] | None,
+        *,
+        slug: str,
+        mutation_kind: str,
+    ) -> None:
+        if active_handoff_event_bridge is None or before is None:
+            return
+        after_canonical_mutation(
+            before,
+            before,
+            {
+                "verified": False,
+                "canonical_event_id": slug,
+            },
+            mutation_kind=mutation_kind,
+        )
+
+    def after_verified_todo_mutation(
+        before: dict[str, Any],
+        receipt: object,
+        *,
+        mutation_kind: str,
+        task_slug: str | None = None,
+        todo_slug: str | None = None,
+    ) -> None:
+        if active_handoff_event_bridge is None:
+            return
+        receipt_value = canonical_mapping(receipt)
+        receipt_todo = canonical_mapping(receipt_value.get("todo"))
+        attention_slug = (
+            receipt_todo.get("slug")
+            or todo_slug
+            or task_slug
+            or str(before.get("task_slug") or "tasks/unknown")
+        )
+        try:
+            if todo_slug is not None:
+                after = read_todo_mutation_snapshot(todo_slug)
+            else:
+                after_task = adapter.get_task(str(task_slug))
+                after = mutation_snapshot(after_task, todo=receipt_todo)
+        except (DomainValidationError, GBrainError, KeyError, ValueError):
+            partial_mutation_attention(
+                before,
+                slug=str(attention_slug),
+                mutation_kind=f"{mutation_kind}_post_write_readback",
+            )
+            return
+        after_canonical_mutation(
+            before,
+            after,
+            receipt_value,
+            mutation_kind=mutation_kind,
+        )
 
     def read_snapshot(force: bool = False):
         return active_read_cache.read(
@@ -543,6 +877,201 @@ def _handler_class(
             self._security_headers()
             self.end_headers()
             self.wfile.write(body)
+
+        def _empty(self, status: int) -> None:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.end_headers()
+
+        def _handoff_identity(self) -> HandoffDispatcherIdentity | None:
+            identity = active_handoff_auth.resolve(self.headers.get("Authorization"))
+            if identity is None:
+                self._json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {
+                        "error": "A valid dispatcher bearer credential is required.",
+                        "code": "handoff_auth_required",
+                    },
+                )
+            return identity
+
+        def _canonical_handoff_registration(
+            self,
+            identity: HandoffDispatcherIdentity,
+            registration_id: str,
+        ) -> AgentRegistration:
+            if active_handoff_event_bridge is not None:
+                if not callable(active_handoff_registration_reference_reader):
+                    raise RuntimeError("canonical registration reader unavailable")
+                registrations: dict[str, AgentRegistration] = {}
+                routes: set[str] = set()
+                for configured_identity in active_handoff_auth.identities:
+                    canonical = active_handoff_registration_reference_reader(
+                        configured_identity.agent_slug,
+                        configured_identity.registration_id,
+                    )
+                    if (
+                        not isinstance(canonical, AgentRegistration)
+                        or canonical.verified is not True
+                        or canonical.agent_slug != configured_identity.agent_slug
+                        or canonical.registration_id
+                        != configured_identity.registration_id
+                        or canonical.reference != configured_identity.registration_id
+                        or canonical.lease_identity
+                        != configured_identity.registration_id
+                        or canonical.route in routes
+                    ):
+                        raise _HandoffIdentityMismatch(
+                            "canonical dispatcher registration does not match"
+                        )
+                    registrations[canonical.agent_slug] = canonical
+                    routes.add(canonical.route)
+                canonical = registrations.get(identity.agent_slug)
+                if (
+                    canonical is None
+                    or not hmac.compare_digest(
+                        hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+                        identity.registration_id,
+                    )
+                ):
+                    raise _HandoffIdentityMismatch(
+                        "canonical dispatcher registration does not match"
+                    )
+                return canonical
+            if not callable(active_handoff_registration_validator):
+                raise RuntimeError("canonical registration reader unavailable")
+            canonical = active_handoff_registration_validator(
+                identity.agent_slug, registration_id
+            )
+            if (
+                not isinstance(canonical, AgentRegistration)
+                or canonical.verified is not True
+                or canonical.agent_slug != identity.agent_slug
+                or canonical.registration_id != registration_id
+                or canonical.reference != identity.registration_id
+            ):
+                raise _HandoffIdentityMismatch(
+                    "canonical dispatcher registration does not match"
+                )
+            return canonical
+
+        def _handoff_mutation_headers(
+            self,
+            identity: HandoffDispatcherIdentity,
+        ) -> tuple[str, str, int, str] | None:
+            registration_id = self.headers.get("X-Handoff-Registration-ID")
+            capability = self.headers.get("X-Handoff-Lease-Capability")
+            raw_generation = self.headers.get("X-Handoff-Lease-Generation")
+            mutation_id = self.headers.get("Idempotency-Key")
+            try:
+                generation = int(raw_generation or "")
+            except ValueError:
+                generation = 0
+            if (
+                not isinstance(registration_id, str)
+                or not registration_id
+                or not hmac.compare_digest(
+                    hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+                    identity.registration_id,
+                )
+                or not isinstance(capability, str)
+                or not capability
+                or len(capability) > 512
+                or generation < 1
+                or not isinstance(mutation_id, str)
+                or not mutation_id
+            ):
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {
+                        "error": "A valid lease capability, generation, and idempotency key are required.",
+                        "code": "invalid_handoff_lease",
+                    },
+                )
+                return None
+            lease_identity = (
+                identity.registration_id
+                if active_handoff_event_bridge is not None
+                else registration_id
+            )
+            return lease_identity, capability, generation, mutation_id
+
+        def _read_handoff_events(
+            self,
+            *,
+            task_slug: str | None,
+        ) -> None:
+            if handoff_store is None:
+                self._json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "error": "Handoff audit storage is unavailable.",
+                        "code": "handoff_store_unavailable",
+                    },
+                )
+                return
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            allowed = {
+                "limit",
+                "after_sequence",
+                "agent_slug",
+                "status",
+                "event_type",
+                "correlation_id",
+                "occurred_after",
+                "occurred_before",
+                "export",
+            }
+            if any(key not in allowed or len(values) != 1 for key, values in query.items()):
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "Unsupported or repeated handoff event filter.",
+                        "code": "invalid_handoff_event_filter",
+                    },
+                )
+                return
+            try:
+                limit = int(query.get("limit", ["50"])[0])
+                after_sequence = int(query.get("after_sequence", ["0"])[0])
+                export = query.get("export", ["0"])[0]
+                if export not in {"0", "1"}:
+                    raise ValueError("export must be 0 or 1")
+                def timestamp_filter(name: str) -> datetime | None:
+                    raw = query.get(name, [None])[0] or None
+                    if raw is None:
+                        return None
+                    try:
+                        return datetime.fromisoformat(raw)
+                    except ValueError as exc:
+                        raise ValueError(f"{name} must be an ISO 8601 timestamp") from exc
+
+                filters = {
+                    "limit": limit,
+                    "after_sequence": after_sequence,
+                    "task_slug": task_slug,
+                    "agent_slug": query.get("agent_slug", [None])[0] or None,
+                    "status": query.get("status", [None])[0] or None,
+                    "event_type": query.get("event_type", [None])[0] or None,
+                    "correlation_id": query.get("correlation_id", [None])[0]
+                    or None,
+                    "occurred_after": timestamp_filter("occurred_after"),
+                    "occurred_before": timestamp_filter("occurred_before"),
+                }
+                payload = (
+                    handoff_store.export_events(**filters)
+                    if export == "1"
+                    else handoff_store.query_events(**filters).to_dict()
+                )
+            except ValueError as exc:
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {"error": str(exc), "code": "invalid_handoff_event_filter"},
+                )
+                return
+            self._json(HTTPStatus.OK, payload)
 
         def _read_json(self) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length", "0")
@@ -672,6 +1201,21 @@ def _handler_class(
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            if path == "/api/handoff-events":
+                self._read_handoff_events(task_slug=None)
+                return
+            handoff_event_prefix = "/api/tasks/"
+            handoff_event_suffix = "/handoff-events"
+            if path.startswith(handoff_event_prefix) and path.endswith(
+                handoff_event_suffix
+            ):
+                task_slug = unquote(
+                    path[
+                        len(handoff_event_prefix) : -len(handoff_event_suffix)
+                    ]
+                )
+                self._read_handoff_events(task_slug=task_slug)
                 return
             todo_list_prefix = "/api/tasks/"
             todo_list_suffix = "/todos"
@@ -1113,6 +1657,417 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/handoffs/claim":
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {
+                    "registration_id",
+                    "wait_seconds",
+                    "lease_seconds",
+                }:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "A handoff claim requires the exact supported fields.",
+                            "code": "invalid_handoff_claim",
+                        },
+                    )
+                    return
+                registration_id = payload.get("registration_id")
+                wait_seconds = payload.get("wait_seconds")
+                lease_seconds = payload.get("lease_seconds")
+                if (
+                    not isinstance(registration_id, str)
+                    or not registration_id
+                    or isinstance(wait_seconds, bool)
+                    or not isinstance(wait_seconds, int)
+                    or wait_seconds < 0
+                    or wait_seconds > 25
+                    or isinstance(lease_seconds, bool)
+                    or not isinstance(lease_seconds, int)
+                    or lease_seconds < 5
+                    or lease_seconds > 120
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Claim wait must be 0 to 25 seconds and lease must be 5 to 120 seconds.",
+                            "code": "invalid_handoff_claim",
+                        },
+                    )
+                    return
+                registration_ref = hashlib.sha256(
+                    registration_id.encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(
+                    identity.registration_id, registration_ref
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher registration does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                def verified_claim():
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
+                    return handoff_store.claim(
+                        canonical.lease_identity,
+                        now=clock().astimezone(timezone.utc),
+                        lease_seconds=lease_seconds,
+                        expected_agent_slug=canonical.agent_slug,
+                        expected_registration_ref=canonical.reference,
+                        expected_route=canonical.route,
+                    )
+
+                try:
+                    claim = verified_claim()
+                    if claim is None and wait_seconds:
+                        active_handoff_waiter(wait_seconds)
+                        claim = verified_claim()
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                if claim is None:
+                    self._empty(HTTPStatus.NO_CONTENT)
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        **claim.record.to_dict(),
+                        "lease_capability": claim.lease_token,
+                        "lease_generation": claim.lease_generation,
+                    },
+                )
+                return
+            recover_match = re.fullmatch(r"/api/handoffs/([^/]+)/recover", path)
+            if recover_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {"registration_id", "expected_generation"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Recovery requires exactly registration_id and expected_generation.",
+                            "code": "invalid_handoff_recovery",
+                        },
+                    )
+                    return
+                registration_id = payload.get("registration_id")
+                expected_generation = payload.get("expected_generation")
+                if (
+                    not isinstance(registration_id, str)
+                    or not registration_id
+                    or isinstance(expected_generation, bool)
+                    or not isinstance(expected_generation, int)
+                    or expected_generation < 1
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Recovery registration and generation are invalid.",
+                            "code": "invalid_handoff_recovery",
+                        },
+                    )
+                    return
+                registration_ref = hashlib.sha256(
+                    registration_id.encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(
+                    identity.registration_id, registration_ref
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher registration does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                try:
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote(recover_match.group(1))
+
+                def reconcile(state) -> None:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {
+                            "error": "Persisted handoff claim requires authoritative reconciliation.",
+                            "code": "handoff_recovery_reconcile",
+                            **state.to_dict(),
+                        },
+                    )
+
+                try:
+                    state = handoff_store.read_recovery_state(
+                        handoff_id,
+                        registration=canonical,
+                    )
+                except HandoffOwnershipError:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    state.lease_generation != expected_generation
+                    or state.status
+                    not in {
+                        "leased",
+                        "received",
+                        "actively_executing",
+                        "still_blocked",
+                    }
+                ):
+                    reconcile(state)
+                    return
+                try:
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
+                    recovered = handoff_store.recover_in_progress(
+                        handoff_id,
+                        registration=canonical,
+                        expected_generation=expected_generation,
+                        now=clock().astimezone(timezone.utc),
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except HandoffOwnershipError:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except ValueError:
+                    try:
+                        canonical = self._canonical_handoff_registration(
+                            identity, registration_id
+                        )
+                        state = handoff_store.read_recovery_state(
+                            handoff_id,
+                            registration=canonical,
+                        )
+                    except _HandoffIdentityMismatch:
+                        self._json(
+                            HTTPStatus.FORBIDDEN,
+                            {
+                                "error": "Dispatcher route no longer matches its registration.",
+                                "code": "handoff_identity_mismatch",
+                            },
+                        )
+                        return
+                    except Exception:
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": "Handoff route readback is unavailable.",
+                                "code": "handoff_route_unavailable",
+                            },
+                        )
+                        return
+                    reconcile(state)
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        **recovered.record.to_dict(),
+                        "lease_capability": recovered.lease_token,
+                        "lease_generation": recovered.lease_generation,
+                    },
+                )
+                return
+            ack_match = re.fullmatch(r"/api/handoffs/([^/]+)/ack", path)
+            failure_match = re.fullmatch(r"/api/handoffs/([^/]+)/failure", path)
+            if ack_match or failure_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote((ack_match or failure_match).group(1))
+                try:
+                    current = handoff_store.get(handoff_id)
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    current.agent_slug != identity.agent_slug
+                    or current.registration_ref is None
+                    or not hmac.compare_digest(
+                        current.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                lease = self._handoff_mutation_headers(identity)
+                if lease is None:
+                    return
+                registration_id, capability, generation, mutation_id = lease
+                try:
+                    if ack_match:
+                        if set(payload) != {"status", "detail"}:
+                            raise ValueError(
+                                "Acknowledgement requires exactly status and detail"
+                            )
+                        result = handoff_store.acknowledge(
+                            handoff_id,
+                            payload.get("status"),
+                            registration_id=registration_id,
+                            lease_token=capability,
+                            lease_generation=generation,
+                            mutation_id=mutation_id,
+                            now=clock().astimezone(timezone.utc),
+                            detail=payload.get("detail"),
+                        )
+                    else:
+                        if set(payload) != {"failure_class"} or payload.get(
+                            "failure_class"
+                        ) not in {"retryable", "terminal"}:
+                            raise ValueError(
+                                "Failure class must be retryable or terminal"
+                            )
+                        retryable = payload["failure_class"] == "retryable"
+                        result = handoff_store.record_failure(
+                            handoff_id,
+                            registration_id=registration_id,
+                            lease_token=capability,
+                            lease_generation=generation,
+                            mutation_id=mutation_id,
+                            retryable=retryable,
+                            summary=(
+                                "Dispatcher delivery will retry."
+                                if retryable
+                                else "Dispatcher delivery stopped after terminal failure."
+                            ),
+                            now=clock().astimezone(timezone.utc),
+                        )
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": (
+                                "invalid_handoff_ack"
+                                if ack_match
+                                else "invalid_handoff_failure"
+                            ),
+                        },
+                    )
+                    return
+                self._json(HTTPStatus.OK, result.to_dict())
+                return
             if path == "/api/artifacts":
                 payload = self._read_json()
                 if payload is None:
@@ -1340,6 +2295,7 @@ def _handler_class(
             answer_suffix = "/answer"
             if path.startswith(answer_prefix) and path.endswith(answer_suffix):
                 todo_slug = unquote(path[len(answer_prefix) : -len(answer_suffix)])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -1364,6 +2320,15 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_todo = adapter.get_todo(todo_slug)
+                            before_todo_value = canonical_mapping(before_todo)
+                            before_task = adapter.get_task(
+                                str(before_todo_value.get("parent_task"))
+                            )
+                            before_snapshot = mutation_snapshot(
+                                before_task, todo=before_todo
+                            )
                         receipt = adapter.answer_agent_question(
                             todo_slug,
                             answer=payload["answer"],
@@ -1386,6 +2351,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="answer_agent_question",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -1397,6 +2367,16 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(
+                        receipt_value.get("task"),
+                        todo=receipt_value.get("todo"),
+                    ),
+                    receipt_value,
+                    mutation_kind="answer_agent_question",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, receipt.to_dict())
                 return
@@ -1446,6 +2426,7 @@ def _handler_class(
                 todo_slug = unquote(
                     path[len(todo_comment_prefix) : -len(todo_comment_suffix)]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -1463,6 +2444,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         receipt = adapter.add_todo_comment(
                             todo_slug,
                             body=payload["body"],
@@ -1485,6 +2468,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_comment",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -1496,6 +2484,12 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                after_verified_todo_mutation(
+                    before_snapshot,
+                    receipt,
+                    mutation_kind="todo_comment",
+                    todo_slug=todo_slug,
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
                 return
@@ -1504,6 +2498,7 @@ def _handler_class(
                 task_slug = unquote(
                     path[len(task_todo_prefix) : -len(todo_create_suffix)]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -1518,6 +2513,9 @@ def _handler_class(
                     return
                 try:
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_task = adapter.get_task(task_slug)
+                            before_snapshot = mutation_snapshot(before_task)
                         receipt = adapter.create_todo(
                             task_slug,
                             text=payload["text"],
@@ -1535,6 +2533,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_created",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -1546,6 +2549,12 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                after_verified_todo_mutation(
+                    before_snapshot,
+                    receipt,
+                    mutation_kind="todo_created",
+                    task_slug=task_slug,
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
                 return
@@ -1644,6 +2653,7 @@ def _handler_class(
                         len(proposal_prefix) : -len(proposal_decision_suffix)
                     ]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -1673,6 +2683,10 @@ def _handler_class(
                     )
                     return
                 try:
+                    if action == "approve" and active_handoff_event_bridge is not None:
+                        before_snapshot = mutation_snapshot(
+                            adapter.get_task(proposal_slug)
+                        )
                     receipt = adapter.decide_proposal(
                         proposal_slug,
                         action=action,
@@ -1692,6 +2706,12 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    if action == "approve":
+                        partial_mutation_attention(
+                            before_snapshot,
+                            slug=exc.slug,
+                            mutation_kind="proposal_decision",
+                        )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -1707,6 +2727,18 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                approved_task = canonical_mapping(receipt_value.get("created_task"))
+                if (
+                    action == "approve"
+                    and approved_task.get("proposal_decision") == "approve"
+                ):
+                    after_canonical_mutation(
+                        before_snapshot,
+                        mutation_snapshot(approved_task),
+                        receipt_value,
+                        mutation_kind="proposal_decision",
+                    )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -2268,6 +3300,7 @@ def _handler_class(
             todo_status_suffix = "/status"
             if path.startswith(todo_prefix) and path.endswith(todo_status_suffix):
                 todo_slug = unquote(path[len(todo_prefix) : -len(todo_status_suffix)])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2291,6 +3324,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         if (
                             payload["status"] == "done"
                             and adapter.is_active_handoff_question(todo_slug)
@@ -2330,6 +3365,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_status",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -2341,11 +3381,18 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                after_verified_todo_mutation(
+                    before_snapshot,
+                    receipt,
+                    mutation_kind="todo_status",
+                    todo_slug=todo_slug,
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if path.startswith(todo_prefix) and "/" not in path[len(todo_prefix) :]:
                 todo_slug = unquote(path[len(todo_prefix) :])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2363,6 +3410,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         receipt = adapter.edit_todo(
                             todo_slug,
                             text=payload["text"],
@@ -2386,6 +3435,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_edited",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -2397,6 +3451,12 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                after_verified_todo_mutation(
+                    before_snapshot,
+                    receipt,
+                    mutation_kind="todo_edited",
+                    todo_slug=todo_slug,
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -2641,6 +3701,7 @@ def _handler_class(
             prefix = "/api/tasks/"
             if path.startswith(prefix) and "/" not in path[len(prefix) :]:
                 task_slug = unquote(path[len(prefix) :])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2655,6 +3716,7 @@ def _handler_class(
                 try:
                     due_day = date.fromisoformat(payload.get("due_day", ""))
                     current = adapter.get_task(task_slug)
+                    before_snapshot = mutation_snapshot(current)
                     raw_metric = payload.get("progress_metric")
                     existing_verified_history = bool(
                         current.event_progress
@@ -2759,11 +3821,23 @@ def _handler_class(
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_task_edit"})
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="task_edit",
+                    )
                     self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
                     return
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="task_edit",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -2856,6 +3930,7 @@ def _handler_class(
                 )
                 return
             if action == "progress_metric":
+                before_snapshot = None
                 if set(payload) - {"progress_metric", "task_day", "progress_metric_revision"}:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -2898,6 +3973,7 @@ def _handler_class(
                         return
                 try:
                     current = adapter.get_task(task_slug)
+                    before_snapshot = mutation_snapshot(current)
                     existing_verified_history = bool(
                         current.event_progress
                         and (
@@ -2944,6 +4020,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="derived_count",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -2959,6 +4040,13 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="derived_count",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3006,6 +4094,7 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "status":
+                before_snapshot = None
                 requested_status = payload.get("status")
                 if (
                     not isinstance(requested_status, str)
@@ -3024,6 +4113,8 @@ def _handler_class(
                     )
                     return
                 try:
+                    if active_handoff_event_bridge is not None:
+                        before_snapshot = mutation_snapshot(adapter.get_task(task_slug))
                     receipt = adapter.set_task_status(
                         task_slug,
                         requested_status,
@@ -3039,6 +4130,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="task_status",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -3054,6 +4150,13 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="task_status",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3194,6 +4297,14 @@ def build_server(
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
+    handoff_store: DurableHandoffStore | None = None,
+    handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
+    handoff_registration_validator: Callable[
+        [str, str], AgentRegistration | None
+    ]
+    | None = None,
+    handoff_waiter: Callable[[float], None] | None = None,
+    handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -3215,6 +4326,11 @@ def build_server(
         calendar_preferences,
         read_cache,
         artifact_publisher_auth,
+        handoff_store,
+        handoff_dispatcher_auth,
+        handoff_registration_validator,
+        handoff_waiter,
+        handoff_event_bridge,
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -3229,9 +4345,29 @@ def main() -> None:
     parser.add_argument("--operation-log-file", type=Path)
     parser.add_argument("--queue-log-file", type=Path)
     parser.add_argument("--artifact-publisher-credentials-file", type=Path)
+    parser.add_argument("--handoff-store", type=Path)
+    parser.add_argument("--handoff-dispatcher-credentials-file", type=Path)
     parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
+    adapter = GBrainAdapter()
+    handoff_store = (
+        DurableHandoffStore(str(args.handoff_store))
+        if args.handoff_store
+        else None
+    )
+    handoff_dispatcher_auth = load_handoff_dispatcher_auth(
+        args.handoff_dispatcher_credentials_file
+    )
+    handoff_event_bridge = (
+        build_runtime_handoff_event_bridge(
+            adapter,
+            handoff_store,
+            handoff_dispatcher_auth,
+        )
+        if handoff_store is not None
+        else None
+    )
     server = build_server(
         host=args.host,
         port=args.port,
@@ -3247,9 +4383,13 @@ def main() -> None:
         if args.operation_log_file or args.queue_log_file
         else None,
         stargraph_url=args.stargraph_url,
+        adapter=adapter,
         artifact_publisher_auth=load_artifact_publisher_auth(
             args.artifact_publisher_credentials_file
         ),
+        handoff_store=handoff_store,
+        handoff_dispatcher_auth=handoff_dispatcher_auth,
+        handoff_event_bridge=handoff_event_bridge,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:
@@ -3258,6 +4398,8 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        if handoff_store is not None:
+            handoff_store.close()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import threading
@@ -36,6 +37,7 @@ from gtasks.domain import (
 import gtasks.gbrain as gbrain_module
 from gtasks.gbrain import (
     GBrainAdapter,
+    CanonicalHandoffEventBridge,
     AgentWorkRead,
     GBrainCommandError,
     GBrainProtocolError,
@@ -99,6 +101,364 @@ class EntityTypePreservationTests(unittest.TestCase):
         content = _render_preserved_page(page, page["frontmatter"])
 
         self.assertIn('type: "task"', content)
+
+
+class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
+    def test_reads_runtime_route_from_stored_registration_reference_only(self) -> None:
+        registration_reference = hashlib.sha256(
+            b"private-registration-tammy"
+        ).hexdigest()
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": registration_reference,
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+        adapter = GBrainAdapter(runner)
+        reader = getattr(
+            adapter,
+            "read_handoff_dispatcher_registration_by_reference",
+            None,
+        )
+        self.assertTrue(callable(reader), "safe registration reference reader is missing")
+
+        registration = reader("agents/tammy", registration_reference)
+
+        self.assertEqual(registration.agent_slug, "agents/tammy")
+        self.assertEqual(registration.registration_id, registration_reference)
+        self.assertEqual(registration.lease_identity, registration_reference)
+        self.assertEqual(registration.reference, registration_reference)
+        self.assertEqual(registration.route, "hosts/tammy")
+        self.assertTrue(registration.verified)
+
+    def test_reference_reader_rejects_mismatch_invalid_or_ambiguous_route(self) -> None:
+        expected = hashlib.sha256(b"private-registration-tammy").hexdigest()
+        cases = (
+            {
+                "registration_sha256": "0" * 64,
+                "route": "hosts/tammy",
+                "verified": True,
+            },
+            {
+                "registration_sha256": expected,
+                "route": "invalid route",
+                "verified": True,
+            },
+            [
+                {
+                    "registration_sha256": expected,
+                    "route": "hosts/tammy",
+                    "verified": True,
+                },
+                {
+                    "registration_sha256": expected,
+                    "route": "hosts/timmy",
+                    "verified": True,
+                },
+            ],
+        )
+        for dispatcher in cases:
+            with self.subTest(dispatcher=dispatcher):
+                runner = FakeRunner(
+                    {
+                        "get_page": [
+                            {
+                                "slug": "agents/tammy",
+                                "type": "agent",
+                                "title": "Agent Tammy",
+                                "frontmatter": {"handoff_dispatcher": dispatcher},
+                            }
+                        ]
+                    }
+                )
+                adapter = GBrainAdapter(runner)
+                reader = getattr(
+                    adapter,
+                    "read_handoff_dispatcher_registration_by_reference",
+                    None,
+                )
+                self.assertTrue(callable(reader))
+                self.assertIsNone(reader("agents/tammy", expected))
+
+    def test_reads_exact_verified_canonical_agent_registration_and_route(self) -> None:
+        registration_id = "private-registration-tammy"
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": hashlib.sha256(
+                                    registration_id.encode("utf-8")
+                                ).hexdigest(),
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+        registration = GBrainAdapter(runner).read_handoff_dispatcher_registration(
+            "agents/tammy", registration_id
+        )
+
+        self.assertEqual(registration.agent_slug, "agents/tammy")
+        self.assertEqual(registration.registration_id, registration_id)
+        self.assertEqual(registration.route, "hosts/tammy")
+        self.assertTrue(registration.verified)
+
+    def test_rejects_revoked_or_mismatched_canonical_registration(self) -> None:
+        registration_id = "private-registration-tammy"
+        digest = hashlib.sha256(registration_id.encode("utf-8")).hexdigest()
+        for dispatcher in (
+            {"registration_sha256": digest, "route": "hosts/tammy", "verified": False},
+            {"registration_sha256": "0" * 64, "route": "hosts/tammy", "verified": True},
+            {"registration_sha256": digest, "route": "invalid route", "verified": True},
+        ):
+            with self.subTest(dispatcher=dispatcher):
+                runner = FakeRunner(
+                    {
+                        "get_page": [
+                            {
+                                "slug": "agents/tammy",
+                                "type": "agent",
+                                "title": "Agent Tammy",
+                                "frontmatter": {"handoff_dispatcher": dispatcher},
+                            }
+                        ]
+                    }
+                )
+                self.assertIsNone(
+                    GBrainAdapter(runner).read_handoff_dispatcher_registration(
+                        "agents/tammy", registration_id
+                    )
+                )
+
+    def test_rejects_soft_deleted_canonical_agent_registration(self) -> None:
+        registration_id = "private-registration-tammy"
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "deleted_at": "2026-08-04T18:00:00Z",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": hashlib.sha256(
+                                    registration_id.encode("utf-8")
+                                ).hexdigest(),
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertIsNone(
+            GBrainAdapter(runner).read_handoff_dispatcher_registration(
+                "agents/tammy", registration_id
+            )
+        )
+
+
+class HandoffMutationReadbackTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 4, 19, 0, tzinfo=timezone.utc)
+    TASK = "tasks/11111111-1111-4111-8111-111111111111"
+    TODO = "todos/22222222-2222-4222-8222-222222222222"
+
+    class RecordingDispatcher:
+        def __init__(self) -> None:
+            self.changes = []
+
+        def record(self, change, *, now):
+            self.changes.append((change, now))
+            return change
+
+    def snapshot(self, **overrides):
+        value = {
+            "task_slug": self.TASK,
+            "task": {
+                "slug": self.TASK,
+                "status": "active",
+                "title": "Ship the bridge",
+                "detail": "Verified canonical work.",
+                "priority": "normal",
+                "blockers": [],
+                "assigned_to": ["agents/tammy"],
+                "authorization": "granted",
+                "system_dependencies": {"gbrain": "available"},
+                "updated_at": self.NOW.isoformat(),
+            },
+            "todo": None,
+            "route": "hosts/tammy",
+        }
+        value.update(overrides)
+        return value
+
+    def receipt(self, **overrides):
+        value = {
+            "verified": True,
+            "canonical_event_id": "events/bridge-1",
+            "canonical_version": "versions/2",
+            "idempotent": False,
+        }
+        value.update(overrides)
+        return value
+
+    def test_normalizes_every_actionable_verified_canonical_change(self) -> None:
+        todo = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Use the verified answer",
+            "detail": "",
+            "status": "not_done",
+            "updated_at": self.NOW.isoformat(),
+        }
+        cases = (
+            (
+                self.snapshot(task={**self.snapshot()["task"], "handoff": {"state": "waiting_for_input"}}),
+                self.snapshot(task={**self.snapshot()["task"], "handoff": {"state": "ready_for_agent"}}, todo={**todo, "status": "done"}),
+                self.receipt(mutation_kind="answer_agent_question"),
+                "answer_received",
+            ),
+            (self.snapshot(), self.snapshot(todo=todo), self.receipt(mutation_kind="todo_created"), "todo_added"),
+            (self.snapshot(todo=todo), self.snapshot(todo={**todo, "text": "Use the final verified answer"}), self.receipt(mutation_kind="todo_edited"), "todo_materially_changed"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "planned"}), self.snapshot(), self.receipt(), "task_activated"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["people/tony-guan"]}), self.snapshot(), self.receipt(), "blocker_resolved"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["systems/gbrain"], "system_dependencies": {"gbrain": "unavailable"}}), self.snapshot(), self.receipt(), "system_dependency_recovered"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "proposed", "proposal_decision": None}), self.snapshot(task={**self.snapshot()["task"], "status": "planned", "proposal_decision": "approve"}), self.receipt(mutation_kind="proposal_decision"), "authorization_granted"),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": ["agents/timmy"]}), self.snapshot(), self.receipt(), "ownership_changed"),
+        )
+
+        for before, after, receipt, expected in cases:
+            with self.subTest(trigger=expected):
+                dispatcher = self.RecordingDispatcher()
+                change = CanonicalHandoffEventBridge(dispatcher).after_verified_mutation(
+                    before, after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, expected)
+                self.assertEqual(change.task_slug, self.TASK)
+                self.assertEqual(change.assigned_to, ("agents/tammy",))
+                self.assertEqual(dispatcher.changes, [(change, self.NOW)])
+
+    def test_unchanged_system_blocker_is_suppressed_not_recovered(self) -> None:
+        task = self.snapshot()["task"]
+        blocked = {
+            **task,
+            "status": "blocked",
+            "blockers": ["systems/gbrain"],
+            "system_dependencies": {"gbrain": "unavailable"},
+        }
+        still_blocked = {**blocked, "status": "active"}
+
+        change = CanonicalHandoffEventBridge(
+            self.RecordingDispatcher()
+        ).after_verified_mutation(
+            self.snapshot(task=blocked),
+            self.snapshot(task=still_blocked),
+            self.receipt(),
+            self.NOW,
+        )
+
+        self.assertEqual(change.trigger, "unchanged_blocker")
+
+    def test_blocked_task_reassignment_preserves_actionable_ownership_handoff(self) -> None:
+        task = self.snapshot()["task"]
+        before_task = {
+            **task,
+            "status": "blocked",
+            "blockers": ["systems/gbrain"],
+            "assigned_to": ["agents/timmy"],
+        }
+        after_task = {
+            **before_task,
+            "assigned_to": ["agents/tammy"],
+        }
+        dispatcher = self.RecordingDispatcher()
+
+        change = CanonicalHandoffEventBridge(dispatcher).after_verified_mutation(
+            self.snapshot(task=before_task),
+            self.snapshot(task=after_task),
+            self.receipt(),
+            self.NOW,
+        )
+
+        self.assertEqual(change.trigger, "ownership_changed")
+        self.assertEqual(change.assigned_to, ("agents/tammy",))
+        self.assertEqual(change.route, "hosts/tammy")
+        self.assertEqual(dispatcher.changes, [(change, self.NOW)])
+
+    def test_normalizes_explicit_non_actionable_canonical_changes(self) -> None:
+        task = self.snapshot()["task"]
+        cases = (
+            (self.snapshot(), self.snapshot(task={**task, "title": "Ship the verified bridge"}), self.receipt(), "presentation_only"),
+            (self.snapshot(), self.snapshot(), self.receipt(idempotent=True), "duplicate_save"),
+            (self.snapshot(), self.snapshot(task={**task, "progress_metric": {"current": 2}}), self.receipt(mutation_kind="derived_count"), "derived_count"),
+            (self.snapshot(), self.snapshot(), self.receipt(mutation_kind="stale_cache_refresh"), "stale_cache_refresh"),
+            (self.snapshot(task={**task, "status": "blocked", "blockers": ["people/tony-guan"]}), self.snapshot(task={**task, "status": "blocked", "blockers": ["people/tony-guan"]}), self.receipt(), "unchanged_blocker"),
+        )
+
+        for before, after, receipt, expected in cases:
+            with self.subTest(trigger=expected):
+                change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+                    before, after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, expected)
+
+    def test_preserves_task_and_todo_identity_from_verified_readback(self) -> None:
+        todo = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Use the verified answer",
+            "detail": "",
+            "status": "not_done",
+            "updated_at": self.NOW.isoformat(),
+        }
+        change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+            self.snapshot(),
+            self.snapshot(todo=todo),
+            self.receipt(mutation_kind="todo_created", canonical_event_id=self.TODO),
+            self.NOW,
+        )
+
+        self.assertEqual(change.task_slug, self.TASK)
+        self.assertEqual(change.canonical_event_id, self.TODO)
+
+    def test_unverified_partial_or_ambiguous_routing_is_system_attention(self) -> None:
+        cases = (
+            (self.snapshot(), self.receipt(verified=False)),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": []}), self.receipt()),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": ["agents/tammy", "agents/timmy"]}), self.receipt()),
+            (self.snapshot(route=None), self.receipt()),
+        )
+        for after, receipt in cases:
+            with self.subTest(after=after, receipt=receipt):
+                change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+                    self.snapshot(), after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, "system_attention")
+                self.assertNotEqual(change.blocker, "Tony")
 
 
 def stored_goal(slug: str, title: str) -> dict:
