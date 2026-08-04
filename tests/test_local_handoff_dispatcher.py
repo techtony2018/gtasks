@@ -445,7 +445,11 @@ class CodexResumeAdapterTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             calls.append((arguments, kwargs))
-            stdout = "codex-cli 1.2.3" if arguments[-1] == "--version" else "Usage: codex exec resume"
+            stdout = (
+                "codex-cli 1.2.3"
+                if arguments[-1] == "--version"
+                else "Usage: codex exec resume --skip-git-repo-check"
+            )
             return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
 
         adapter = CodexResumeAdapter(
@@ -471,6 +475,19 @@ class CodexResumeAdapterTests(unittest.TestCase):
         with self.assertRaises(CodexContractError):
             CodexResumeAdapter("codex", fixed_thread_id="thread-1", working_directory=".", run=run).verify_contract()
 
+    def test_contract_verification_rejects_resume_without_trusted_workspace_flag(self) -> None:
+        def run(arguments, **kwargs):
+            stdout = "codex-cli 1.2.3" if arguments[-1] == "--version" else "Usage: codex exec resume"
+            return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+
+        with self.assertRaisesRegex(CodexContractError, "resume --help"):
+            CodexResumeAdapter(
+                "codex",
+                fixed_thread_id="thread-1",
+                working_directory=".",
+                run=run,
+            ).verify_contract()
+
     def test_resumes_exact_existing_thread_with_sanitized_safe_prompt(self) -> None:
         calls: list[tuple[object, object]] = []
 
@@ -495,14 +512,15 @@ class CodexResumeAdapterTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0)
         arguments, kwargs = calls[0]
-        self.assertEqual(arguments[:4], [
+        self.assertEqual(arguments[:5], [
             "/opt/bin/codex",
             "exec",
             "resume",
+            "--skip-git-repo-check",
             "019fb4e7-8846-71a0-8d4b-24d262979981",
         ])
         self.assertEqual(arguments[-1], "--json")
-        prompt = arguments[4]
+        prompt = arguments[5]
         self.assertIn("handoff-100", prompt)
         self.assertIn("tasks/100", prompt)
         self.assertIn("installed local Dispatcher helper", prompt)
@@ -580,9 +598,17 @@ class RunForeverTests(unittest.TestCase):
             with self.subTest(result=result):
                 client = self.Client([claim_payload()])
                 adapter = self.Adapter([result])
-                run_forever(client, adapter, max_iterations=1, retry_delay=0)
+                sleeps: list[float] = []
+                run_forever(
+                    client,
+                    adapter,
+                    max_iterations=1,
+                    retry_delay=0.25,
+                    sleep=sleeps.append,
+                )
                 self.assertEqual(client.acks, [])
                 self.assertEqual(client.failures, [("handoff-100", "retryable")])
+                self.assertEqual(sleeps, [0.25])
 
     def test_process_restart_can_retry_same_handoff_id(self) -> None:
         first_client = self.Client([claim_payload()])
@@ -1087,7 +1113,7 @@ class InstallerTests(unittest.TestCase):
             if arguments[-1] == "--version":
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
-                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
             if arguments[1] == "print":
                 if self.plist.exists():
                     stdout = self.launchctl_output()
@@ -1155,7 +1181,7 @@ class InstallerTests(unittest.TestCase):
             if arguments[-1] == "--version":
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
-                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
             if arguments[1] == "print":
                 if self.plist.exists():
                     stdout = self.launchctl_output(
@@ -1250,7 +1276,7 @@ class InstallerTests(unittest.TestCase):
             if arguments[-1] == "--version":
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
-                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
             if arguments[1] == "print":
                 stdout = self.launchctl_output()
                 return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
@@ -1491,7 +1517,7 @@ class InstalledAcknowledgementHelperTests(unittest.TestCase):
 
         adapter.resume_existing_thread(claim_payload())
 
-        prompt = calls[0][0][4]
+        prompt = calls[0][0][5]
         self.assertIn("gtasks.local_handoff_dispatcher", prompt)
         self.assertIn("--claim-file", prompt)
         self.assertIn("--status", prompt)

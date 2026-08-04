@@ -15,7 +15,7 @@
 - Persist and read back the outbox and first audit event before any claim or wake attempt.
 - Use task slug, canonical version/event id, and deterministic trigger discriminator for idempotency; replay, retry, restart, Guardian, and concurrency produce one effective handoff.
 - Local configs contain one Agent identity and one private fixed-thread binding. Repository files contain no private tokens or thread bindings.
-- Never create, fork, replace, or guess a Codex thread. The runner may only invoke the locally verified `codex exec resume <fixed-thread-id> <prompt> --json` contract.
+- Never create, fork, replace, or guess a Codex thread. The runner may only invoke the locally verified `codex exec resume --skip-git-repo-check <fixed-thread-id> <prompt> --json` contract; this permits a trusted non-Git Agent workspace without bypassing approvals or sandboxing.
 - Guardian is fallback lease/dead-letter reconciliation, never the primary sender or business-task executor.
 - Store only privacy-safe structured summaries and pseudonymized destination registration references; never store or render tokens, raw thread ids, private prompts, or full thread output.
 - The handoff event table is the one evidence source. Task Timeline and Handoff Log are read-only projections and never repair GBrain implicitly.

@@ -244,7 +244,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn(one_source, " ".join(readme.split()))
         self.assertIn("docs/runbooks/agent-handoff-dispatcher.md", readme)
         self.assertIn(
-            "codex exec resume <fixed-thread-id> <prompt> --json",
+            "codex exec resume --skip-git-repo-check <fixed-thread-id> <prompt> --json",
             runbook,
         )
         self.assertIn(

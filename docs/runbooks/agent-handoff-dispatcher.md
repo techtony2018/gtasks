@@ -16,12 +16,14 @@ Each installed local Dispatcher owns exactly one Agent identity, one private
 registration, and one existing fixed Codex thread. It may only run:
 
 ```text
-codex exec resume <fixed-thread-id> <prompt> --json
+codex exec resume --skip-git-repo-check <fixed-thread-id> <prompt> --json
 ```
 
 The Dispatcher must never create, fork, replace, or guess a Codex thread. The
 fixed thread id, registration id, bearer token, and full prompt stay in private
 host state and are never written to repository files or audit events.
+`--skip-git-repo-check` is required because an existing Agent workspace may be
+a trusted non-Git directory; it does not bypass approvals or sandboxing.
 
 ## Canonical Agent registration projections
 
@@ -227,6 +229,8 @@ logs.
 
 - A retryable delivery failure moves the same handoff to `retrying`; a later
   identity-scoped claim increments its attempt and lease generation.
+- A local timeout or nonzero Codex exit waits for the configured retry delay
+  after recording the verified retry, preventing a tight claim/failure loop.
 - A terminal delivery failure moves it to `dead_letter`. It remains visible
   in the same audit chain and is never silently requeued.
 - Guardian requeues only an expired leased delivery or records a terminal

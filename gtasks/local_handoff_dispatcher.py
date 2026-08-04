@@ -730,9 +730,12 @@ class CodexResumeAdapter:
         )
         if version.returncode != 0 or not version.stdout.strip():
             raise CodexContractError("codex --version failed")
-        if resume_help.returncode != 0 or "resume" not in (
-            f"{resume_help.stdout}\n{resume_help.stderr}"
-        ).lower():
+        help_text = f"{resume_help.stdout}\n{resume_help.stderr}".lower()
+        if (
+            resume_help.returncode != 0
+            or "resume" not in help_text
+            or "--skip-git-repo-check" not in help_text
+        ):
             raise CodexContractError("codex exec resume --help failed")
         return version.stdout.strip()
 
@@ -790,7 +793,15 @@ class CodexResumeAdapter:
     ) -> subprocess.CompletedProcess[str]:
         prompt = self._safe_prompt(claim)
         return self._run(
-            [self.codex_path, "exec", "resume", self.fixed_thread_id, prompt, "--json"],
+            [
+                self.codex_path,
+                "exec",
+                "resume",
+                "--skip-git-repo-check",
+                self.fixed_thread_id,
+                prompt,
+                "--json",
+            ],
             cwd=self.working_directory,
             check=False,
             capture_output=True,
@@ -899,6 +910,8 @@ def run_forever(
                         raise ValueError("delivery failure was not verified")
                     claim_store.complete_failure("retryable", response)
                 resumed_handoffs.discard(handoff_id)
+                if retry_delay > 0:
+                    sleep(retry_delay)
                 continue
             if result.returncode != 0:
                 if claim_store is not None:
@@ -909,6 +922,8 @@ def run_forever(
                         raise ValueError("delivery failure was not verified")
                     claim_store.complete_failure("retryable", response)
                 resumed_handoffs.discard(handoff_id)
+                if retry_delay > 0:
+                    sleep(retry_delay)
         except (OSError, TimeoutError):
             if retry_delay > 0:
                 sleep(retry_delay)
