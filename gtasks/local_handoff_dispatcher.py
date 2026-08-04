@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from typing import Callable, Mapping, Sequence
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -51,6 +52,23 @@ CLAIM_KEYS = frozenset(
         "lease_capability",
         "lease_generation",
     }
+)
+RECOVERY_RECONCILIATION_KEYS = frozenset(
+    {
+        "code",
+        "error",
+        "handoff_id",
+        "status",
+        "lease_generation",
+        "agent_slug",
+        "registration_ref",
+    }
+)
+RECOVERABLE_STATES = frozenset(
+    {"leased", "received", "actively_executing", "still_blocked"}
+)
+RECONCILED_CLEAR_STATES = frozenset(
+    {"queued", "retrying", "completed", "dead_letter"}
 )
 ACKNOWLEDGEMENT_STATES = frozenset(
     {"received", "actively_executing", "still_blocked", "completed"}
@@ -221,6 +239,7 @@ class PrivateClaimStore:
             "next_ack_sequence",
             "pending_ack",
             "pending_failure",
+            "pending_recovery",
         }:
             raise ValueError("claim state must match the documented response shape")
         claim = state.get("claim")
@@ -240,6 +259,16 @@ class PrivateClaimStore:
             raise ValueError("claim state pending acknowledgement is invalid")
         if state.get("pending_failure") not in {None, "retryable", "terminal"}:
             raise ValueError("claim state pending failure is invalid")
+        pending_recovery = state.get("pending_recovery")
+        if pending_recovery is not None and (
+            not isinstance(pending_recovery, dict)
+            or set(pending_recovery) != {"expected_generation", "reconciliations"}
+            or not isinstance(pending_recovery.get("expected_generation"), int)
+            or pending_recovery["expected_generation"] < 1
+            or not isinstance(pending_recovery.get("reconciliations"), int)
+            or pending_recovery["reconciliations"] < 0
+        ):
+            raise ValueError("claim state pending recovery is invalid")
         return state
 
     def save(self, claim: Mapping[str, object]) -> None:
@@ -258,6 +287,7 @@ class PrivateClaimStore:
                 "next_ack_sequence": 1,
                 "pending_ack": None,
                 "pending_failure": None,
+                "pending_recovery": None,
             }
         self._write(state)
 
@@ -272,6 +302,87 @@ class PrivateClaimStore:
         if not self.path.exists():
             return None
         return dict(self._load_state()["claim"])
+
+    def prepare_recovery(self) -> tuple[int, int]:
+        state = self._load_state()
+        pending = state["pending_recovery"]
+        if pending is None:
+            generation = state["claim"].get("lease_generation")
+            if not isinstance(generation, int) or generation < 1:
+                raise ValueError("persisted lease generation is invalid")
+            pending = {"expected_generation": generation, "reconciliations": 0}
+            state["pending_recovery"] = pending
+            self._write(state)
+        return pending["expected_generation"], pending["reconciliations"]
+
+    def pending_recovery(self) -> tuple[int, int] | None:
+        pending = self._load_state()["pending_recovery"]
+        if pending is None:
+            return None
+        return pending["expected_generation"], pending["reconciliations"]
+
+    def reconcile_recovery(
+        self,
+        reconciliation: Mapping[str, object],
+        *,
+        max_reconciliations: int,
+    ) -> tuple[int, int]:
+        state = self._load_state()
+        pending = state["pending_recovery"]
+        if pending is None:
+            raise ValueError("recovery reconciliation requires a pending recovery")
+        claim = state["claim"]
+        if reconciliation.get("handoff_id") != claim["handoff_id"]:
+            raise ValueError("recovery reconciliation does not match the pending handoff")
+        if reconciliation.get("status") not in RECOVERABLE_STATES:
+            raise ValueError("only a recoverable state can advance recovery")
+        generation = reconciliation.get("lease_generation")
+        if (
+            not isinstance(generation, int)
+            or generation <= pending["expected_generation"]
+        ):
+            raise ValueError("recovery reconciliation did not advance the generation")
+        reconciliations = pending["reconciliations"] + 1
+        pending["expected_generation"] = generation
+        pending["reconciliations"] = reconciliations
+        self._write(state)
+        if reconciliations > max_reconciliations:
+            raise RuntimeError("recovery reconciliation limit exceeded")
+        return generation, reconciliations
+
+    def complete_recovery(self, claim: Mapping[str, object]) -> None:
+        if set(claim) != CLAIM_KEYS:
+            raise ValueError("recovered claim must match the documented response shape")
+        state = self._load_state()
+        pending = state["pending_recovery"]
+        if pending is None:
+            raise ValueError("recovery completion requires a pending recovery")
+        if claim.get("handoff_id") != state["claim"]["handoff_id"]:
+            raise ValueError("recovered claim does not match the pending handoff")
+        generation = claim.get("lease_generation")
+        if (
+            not isinstance(generation, int)
+            or generation <= pending["expected_generation"]
+        ):
+            raise ValueError("recovered claim did not rotate the lease generation")
+        state["claim"] = dict(claim)
+        state["pending_recovery"] = None
+        self._write(state)
+
+    def complete_reconciled_recovery(
+        self,
+        reconciliation: Mapping[str, object],
+    ) -> str:
+        state = self._load_state()
+        if state["pending_recovery"] is None:
+            raise ValueError("recovery reconciliation requires a pending recovery")
+        if reconciliation.get("handoff_id") != state["claim"]["handoff_id"]:
+            raise ValueError("recovery reconciliation does not match the pending handoff")
+        status = reconciliation.get("status")
+        if status not in RECONCILED_CLEAR_STATES:
+            raise ValueError("recovery reconciliation did not verify a clearable state")
+        self.path.unlink()
+        return str(status)
 
     def prepare_ack(self, status: str, detail: str | None) -> int:
         if status not in ACKNOWLEDGEMENT_STATES:
@@ -369,6 +480,7 @@ class LocalDispatcherClient:
         *,
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        accepted_statuses: frozenset[int] = frozenset(),
     ) -> tuple[int, object | None]:
         request_headers = {
             "Accept": "application/json",
@@ -383,12 +495,21 @@ class LocalDispatcherClient:
             headers=request_headers,
             method="POST",
         )
-        with self._opener(request, timeout=timeout or self._request_timeout) as response:
-            status_code = int(response.status)
-            response_body = response.read()
+        try:
+            with self._opener(request, timeout=timeout or self._request_timeout) as response:
+                status_code = int(response.status)
+                response_body = response.read()
+        except HTTPError as exc:
+            status_code = int(exc.code)
+            if status_code not in accepted_statuses:
+                raise OSError(f"Mission Control returned HTTP {status_code}") from exc
+            try:
+                response_body = exc.read()
+            finally:
+                exc.close()
         if status_code == 204:
             return status_code, None
-        if status_code < 200 or status_code >= 300:
+        if (status_code < 200 or status_code >= 300) and status_code not in accepted_statuses:
             raise OSError(f"Mission Control returned HTTP {status_code}")
         if not response_body:
             return status_code, None
@@ -450,13 +571,39 @@ class LocalDispatcherClient:
         generation = claim.get("lease_generation")
         if not isinstance(generation, int) or generation < 1:
             raise ValueError("persisted lease generation is invalid")
-        _, payload = self._post(
+        status_code, payload = self._post(
             f"/api/handoffs/{quote(handoff_id, safe='')}/recover",
             {
                 "registration_id": self._registration_id,
                 "expected_generation": generation,
             },
+            accepted_statuses=frozenset({409}),
         )
+        if status_code == 409:
+            if not isinstance(payload, dict) or set(payload) != RECOVERY_RECONCILIATION_KEYS:
+                raise ValueError("recovery reconciliation must match the documented safe shape")
+            if payload.get("code") != "handoff_recovery_reconcile":
+                raise ValueError("recovery reconciliation code is invalid")
+            if not isinstance(payload.get("error"), str) or not payload["error"]:
+                raise ValueError("recovery reconciliation error is invalid")
+            if payload.get("handoff_id") != handoff_id:
+                raise ValueError("recovery reconciliation does not match the persisted handoff")
+            if payload.get("status") not in RECOVERABLE_STATES | RECONCILED_CLEAR_STATES:
+                raise ValueError("recovery reconciliation status is invalid")
+            authoritative_generation = payload.get("lease_generation")
+            if not isinstance(authoritative_generation, int) or authoritative_generation < 0:
+                raise ValueError("recovery reconciliation generation is invalid")
+            expected_agent = agent_slug or self._agent_slug
+            if expected_agent is not None and payload.get("agent_slug") != expected_agent:
+                raise ValueError("recovery reconciliation does not match the configured Agent identity")
+            expected_registration_ref = hashlib.sha256(
+                self._registration_id.encode("utf-8")
+            ).hexdigest()
+            if payload.get("registration_ref") != expected_registration_ref:
+                raise ValueError(
+                    "recovery reconciliation does not match the configured registration identity"
+                )
+            return payload
         return self._validate_claim(payload, agent_slug=agent_slug)
 
     def _claim_headers(self, claim: Mapping[str, object]) -> dict[str, str]:
@@ -491,10 +638,17 @@ class LocalDispatcherClient:
         if not isinstance(operation_sequence, int) or operation_sequence < 1:
             raise ValueError("operation_sequence must be a positive integer")
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        attempt = claim.get("attempt")
+        generation = claim.get("lease_generation")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise ValueError("claim attempt is invalid")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise ValueError("claim lease generation is invalid")
         headers = self._claim_headers(claim)
         headers["Idempotency-Key"] = _mutation_id(
             handoff_id,
-            f"ack/{operation_sequence}/{status}/{detail or ''}",
+            f"ack/attempt/{attempt}/generation/{generation}/sequence/"
+            f"{operation_sequence}/{status}/{detail or ''}",
         )
         _, response = self._post(
             f"/api/handoffs/{quote(handoff_id, safe='')}/ack",
@@ -507,9 +661,16 @@ class LocalDispatcherClient:
         if failure_class not in {"retryable", "terminal"}:
             raise ValueError("failure_class must be retryable or terminal")
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        attempt = claim.get("attempt")
+        generation = claim.get("lease_generation")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise ValueError("claim attempt is invalid")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise ValueError("claim lease generation is invalid")
         headers = self._claim_headers(claim)
         headers["Idempotency-Key"] = _mutation_id(
-            handoff_id, f"failure/{failure_class}"
+            handoff_id,
+            f"failure/attempt/{attempt}/generation/{generation}/{failure_class}",
         )
         _, response = self._post(
             f"/api/handoffs/{quote(handoff_id, safe='')}/failure",
@@ -649,11 +810,14 @@ def run_forever(
     stop_requested: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
     claim_store: PrivateClaimStore | None = None,
+    max_recovery_reconciliations: int = 2,
 ) -> None:
     """Run a bounded long-poll loop without worker threads."""
 
     if max_iterations is not None and max_iterations < 0:
         raise ValueError("max_iterations must not be negative")
+    if max_recovery_reconciliations < 0:
+        raise ValueError("max_recovery_reconciliations must not be negative")
     iterations = 0
     resumed_handoffs: set[str] = set()
     while not stop_requested() and (max_iterations is None or iterations < max_iterations):
@@ -688,13 +852,34 @@ def run_forever(
                     if retry_delay > 0:
                         sleep(retry_delay)
                     continue
-                if claim["status"] in {
-                    "received",
-                    "actively_executing",
-                    "still_blocked",
-                }:
-                    claim = client.recover(claim)
-                    claim_store.save(claim)
+                expected_generation, reconciliations = claim_store.prepare_recovery()
+                if reconciliations > max_recovery_reconciliations:
+                    raise RuntimeError("recovery reconciliation limit exceeded")
+                recovery_claim = dict(claim)
+                recovery_claim["lease_generation"] = expected_generation
+                recovery_cleared = False
+                while True:
+                    recovered = client.recover(recovery_claim)
+                    if recovered.get("code") == "handoff_recovery_reconcile":
+                        if recovered.get("status") in RECONCILED_CLEAR_STATES:
+                            reconciled_status = claim_store.complete_reconciled_recovery(
+                                recovered
+                            )
+                            if reconciled_status in {"completed", "dead_letter"}:
+                                return
+                            recovery_cleared = True
+                            break
+                        expected_generation, _ = claim_store.reconcile_recovery(
+                            recovered,
+                            max_reconciliations=max_recovery_reconciliations,
+                        )
+                        recovery_claim["lease_generation"] = expected_generation
+                        continue
+                    claim_store.complete_recovery(recovered)
+                    claim = recovered
+                    break
+                if recovery_cleared:
+                    continue
             else:
                 claim = client.claim(wait_seconds=wait_seconds, lease_seconds=lease_seconds)
                 if claim is None:

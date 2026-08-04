@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from gtasks.local_handoff_dispatcher import (
     CodexContractError,
@@ -261,10 +261,38 @@ class LocalDispatcherClientTests(unittest.TestCase):
             self.assertEqual(headers["x-handoff-lease-capability"], "private-lease-capability")
             self.assertEqual(headers["x-handoff-lease-generation"], "3")
             expected_id = "local/" + hashlib.sha256(
-                f"handoff-100\0ack/{index + 1}/{status}/{detail or ''}".encode("utf-8")
+                f"handoff-100\0ack/attempt/1/generation/3/sequence/{index + 1}/{status}/{detail or ''}".encode("utf-8")
             ).hexdigest()
             self.assertEqual(headers["idempotency-key"], expected_id)
             self.assertRegex(headers["idempotency-key"], r"^[a-z0-9][a-z0-9._/-]{0,127}$")
+
+    def test_generation_and_attempt_fence_acknowledgement_mutation_ids(self) -> None:
+        self.responses.extend(
+            (
+                FakeResponse(200, {"status": "received"}),
+                FakeResponse(200, {"status": "received"}),
+                FakeResponse(200, {"status": "received"}),
+            )
+        )
+
+        first_attempt = claim_payload(attempt=1, lease_generation=3)
+        second_attempt = claim_payload(attempt=2, lease_generation=4)
+        for claim in (first_attempt, first_attempt, second_attempt):
+            self.client.ack(
+                claim,
+                status="received",
+                operation_sequence=1,
+            )
+
+        mutation_ids = [self.request_details(index)[3]["idempotency-key"] for index in range(3)]
+        expected_first = "local/" + hashlib.sha256(
+            b"handoff-100\0ack/attempt/1/generation/3/sequence/1/received/"
+        ).hexdigest()
+        expected_second = "local/" + hashlib.sha256(
+            b"handoff-100\0ack/attempt/2/generation/4/sequence/1/received/"
+        ).hexdigest()
+        self.assertEqual(mutation_ids, [expected_first, expected_first, expected_second])
+        self.assertNotEqual(expected_first, expected_second)
 
     def test_failure_uses_exact_body_and_same_handoff_identity(self) -> None:
         self.responses.append(FakeResponse(200, {"status": "retrying"}))
@@ -275,15 +303,50 @@ class LocalDispatcherClientTests(unittest.TestCase):
         self.assertEqual(url, "http://127.0.0.1:4176/api/handoffs/handoff-100/failure")
         self.assertEqual(body, {"failure_class": "retryable"})
         expected_id = "local/" + hashlib.sha256(
-            b"handoff-100\0failure/retryable"
+            b"handoff-100\0failure/attempt/1/generation/3/retryable"
         ).hexdigest()
         self.assertEqual(headers["idempotency-key"], expected_id)
+
+    def test_generation_and_attempt_fence_failure_mutation_ids_while_retries_stay_stable(self) -> None:
+        self.responses.extend(FakeResponse(200, {"status": "retrying"}) for _ in range(3))
+        first_attempt = claim_payload(attempt=1, lease_generation=3)
+        second_attempt = claim_payload(attempt=2, lease_generation=4)
+
+        self.client.fail(first_attempt, failure_class="retryable")
+        self.client.fail(first_attempt, failure_class="retryable")
+        self.client.fail(second_attempt, failure_class="retryable")
+
+        mutation_ids = [self.request_details(index)[3]["idempotency-key"] for index in range(3)]
+        expected_first = "local/" + hashlib.sha256(
+            b"handoff-100\0failure/attempt/1/generation/3/retryable"
+        ).hexdigest()
+        expected_second = "local/" + hashlib.sha256(
+            b"handoff-100\0failure/attempt/2/generation/4/retryable"
+        ).hexdigest()
+        self.assertEqual(mutation_ids, [expected_first, expected_first, expected_second])
+        self.assertNotEqual(expected_first, expected_second)
 
     def test_failure_requires_verified_retry_or_terminal_response(self) -> None:
         self.responses.append(FakeResponse(200, {"status": "leased"}))
 
         with self.assertRaisesRegex(ValueError, "verify"):
             self.client.fail(claim_payload(), failure_class="retryable")
+
+    def test_mutations_reject_boolean_attempt_and_generation_values(self) -> None:
+        self.responses.extend(
+            (
+                FakeResponse(200, {"status": "received"}),
+                FakeResponse(200, {"status": "retrying"}),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "attempt"):
+            self.client.ack(claim_payload(attempt=True), status="received")
+        with self.assertRaisesRegex(ValueError, "generation"):
+            self.client.fail(
+                claim_payload(lease_generation=True),
+                failure_class="retryable",
+            )
 
     def test_recover_rotates_persisted_in_progress_claim_before_new_claim(self) -> None:
         persisted = claim_payload(status="actively_executing", lease_generation=3)
@@ -305,6 +368,64 @@ class LocalDispatcherClientTests(unittest.TestCase):
         )
         self.assertEqual(headers["authorization"], "Bearer local-bearer-token")
         self.assertNotIn("x-handoff-lease-capability", headers)
+
+    def test_recover_returns_exact_authoritative_reconciliation_for_stale_generation(self) -> None:
+        reconciliation = {
+            "code": "handoff_recovery_reconcile",
+            "error": "Persisted lease generation is stale.",
+            "handoff_id": "handoff-100",
+            "status": "actively_executing",
+            "lease_generation": 4,
+            "agent_slug": "agents/tammy",
+            "registration_ref": hashlib.sha256(b"private-registration-tammy").hexdigest(),
+        }
+        self.responses.append(FakeResponse(409, reconciliation))
+
+        try:
+            result = self.client.recover(
+                claim_payload(status="actively_executing", lease_generation=3),
+                agent_slug="agents/tammy",
+            )
+        except OSError as exc:
+            self.fail(f"recover discarded the authoritative reconciliation: {exc}")
+
+        self.assertEqual(result, reconciliation)
+
+    def test_recover_reads_authoritative_reconciliation_from_urllib_http_error(self) -> None:
+        reconciliation = {
+            "code": "handoff_recovery_reconcile",
+            "error": "Persisted lease generation is stale.",
+            "handoff_id": "handoff-100",
+            "status": "actively_executing",
+            "lease_generation": 4,
+            "agent_slug": "agents/tammy",
+            "registration_ref": hashlib.sha256(b"private-registration-tammy").hexdigest(),
+        }
+
+        def opener(request, timeout):
+            raise HTTPError(
+                request.full_url,
+                409,
+                "Conflict",
+                {},
+                io.BytesIO(json.dumps(reconciliation).encode("utf-8")),
+            )
+
+        client = LocalDispatcherClient(
+            "http://127.0.0.1:4176",
+            registration_id="private-registration-tammy",
+            bearer_token="local-bearer-token",
+            agent_slug="agents/tammy",
+            opener=opener,
+        )
+        try:
+            result = client.recover(
+                claim_payload(status="actively_executing", lease_generation=3)
+            )
+        except HTTPError as exc:
+            self.fail(f"recover discarded urllib's authoritative response body: {exc}")
+
+        self.assertEqual(result, reconciliation)
 
     def test_rejects_out_of_bounds_calls_and_malformed_or_cross_identity_claims(self) -> None:
         for wait_seconds, lease_seconds in ((-1, 5), (26, 5), (0, 4), (0, 121)):
@@ -504,6 +625,255 @@ class RunForeverTests(unittest.TestCase):
             self.assertEqual(adapter.claims, ["handoff-100"])
             self.assertEqual(len(client.claims), 1)
             self.assertEqual(store.load_current()["lease_generation"], 4)
+
+    def test_process_restart_recovers_persisted_leased_claim_before_waking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="leased", lease_generation=3))
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, claim):
+                    events.append(f"recover:{claim['status']}:{claim['lease_generation']}")
+                    return claim_payload(
+                        status="leased",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+            class Adapter(self.Adapter):
+                def resume_existing_thread(inner_self, claim):
+                    events.append(f"resume:{claim['lease_generation']}")
+                    return super().resume_existing_thread(claim)
+
+            run_forever(
+                Client(),
+                Adapter([subprocess.CompletedProcess([], 0)]),
+                claim_store=store,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(events, ["recover:leased:3", "resume:4"])
+
+    def test_recovery_crash_window_reconciles_authoritative_generation_before_waking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing", lease_generation=3))
+            store.prepare_recovery()
+            generations: list[int] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, claim):
+                    generation = claim["lease_generation"]
+                    generations.append(generation)
+                    if generation == 3:
+                        return {
+                            "code": "handoff_recovery_reconcile",
+                            "error": "Persisted lease generation is stale.",
+                            "handoff_id": "handoff-100",
+                            "status": "actively_executing",
+                            "lease_generation": 4,
+                            "agent_slug": "agents/tammy",
+                            "registration_ref": hashlib.sha256(
+                                b"private-registration-tammy"
+                            ).hexdigest(),
+                        }
+                    return claim_payload(
+                        status="actively_executing",
+                        lease_capability="rotated-capability",
+                        lease_generation=5,
+                    )
+
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            try:
+                run_forever(
+                    Client(),
+                    adapter,
+                    claim_store=store,
+                    max_iterations=1,
+                    retry_delay=0,
+                )
+            except ValueError as exc:
+                self.fail(f"runner rejected authoritative recovery reconciliation: {exc}")
+
+            self.assertEqual(generations, [3, 4])
+            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(store.load_current()["lease_generation"], 5)
+            self.assertIsNone(store.pending_recovery())
+
+    def test_recovery_reconciliation_limit_is_persisted_and_stops_stale_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing", lease_generation=3))
+            calls: list[int] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, claim):
+                    generation = claim["lease_generation"]
+                    calls.append(generation)
+                    return {
+                        "code": "handoff_recovery_reconcile",
+                        "error": "Persisted lease generation is stale.",
+                        "handoff_id": "handoff-100",
+                        "status": "actively_executing",
+                        "lease_generation": generation + 1,
+                        "agent_slug": "agents/tammy",
+                        "registration_ref": hashlib.sha256(
+                            b"private-registration-tammy"
+                        ).hexdigest(),
+                    }
+
+            with self.assertRaisesRegex(RuntimeError, "limit"):
+                run_forever(
+                    Client(),
+                    self.Adapter([]),
+                    claim_store=store,
+                    max_iterations=1,
+                    max_recovery_reconciliations=2,
+                    retry_delay=0,
+                )
+
+            self.assertEqual(calls, [3, 4, 5])
+            self.assertEqual(store.pending_recovery(), (6, 3))
+            calls.clear()
+            with self.assertRaisesRegex(RuntimeError, "limit"):
+                run_forever(
+                    Client(),
+                    self.Adapter([]),
+                    claim_store=PrivateClaimStore(store.path),
+                    max_iterations=1,
+                    max_recovery_reconciliations=2,
+                    retry_delay=0,
+                )
+            self.assertEqual(calls, [])
+
+    def test_queued_reconciliation_discards_stale_local_state_then_reclaims(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="leased", lease_generation=3))
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([claim_payload(handoff_id="handoff-new")])
+
+                def recover(inner_self, claim):
+                    events.append("reconcile:queued")
+                    return {
+                        "code": "handoff_recovery_reconcile",
+                        "error": "Handoff returned to the queue.",
+                        "handoff_id": "handoff-100",
+                        "status": "queued",
+                        "lease_generation": 3,
+                        "agent_slug": "agents/tammy",
+                        "registration_ref": hashlib.sha256(
+                            b"private-registration-tammy"
+                        ).hexdigest(),
+                    }
+
+                def claim(inner_self, **kwargs):
+                    events.append("claim")
+                    return super().claim(**kwargs)
+
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            try:
+                run_forever(
+                    Client(),
+                    adapter,
+                    claim_store=store,
+                    max_iterations=2,
+                    retry_delay=0,
+                )
+            except ValueError as exc:
+                self.fail(f"runner did not accept queued reconciliation: {exc}")
+
+            self.assertEqual(events, ["reconcile:queued", "claim"])
+            self.assertEqual(adapter.claims, ["handoff-new"])
+            self.assertEqual(store.load_current()["handoff_id"], "handoff-new")
+
+    def test_retrying_reconciliation_discards_stale_local_state_then_reclaims(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="leased", lease_generation=3))
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([claim_payload(handoff_id="handoff-retry")])
+
+                def recover(inner_self, claim):
+                    return {
+                        "code": "handoff_recovery_reconcile",
+                        "error": "Handoff is retrying.",
+                        "handoff_id": "handoff-100",
+                        "status": "retrying",
+                        "lease_generation": 3,
+                        "agent_slug": "agents/tammy",
+                        "registration_ref": hashlib.sha256(
+                            b"private-registration-tammy"
+                        ).hexdigest(),
+                    }
+
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            try:
+                run_forever(
+                    Client(),
+                    adapter,
+                    claim_store=store,
+                    max_iterations=2,
+                    retry_delay=0,
+                )
+            except ValueError as exc:
+                self.fail(f"runner did not accept retrying reconciliation: {exc}")
+
+            self.assertEqual(adapter.claims, ["handoff-retry"])
+            self.assertEqual(store.load_current()["handoff_id"], "handoff-retry")
+
+    def test_terminal_reconciliation_clears_local_state_and_stops_without_reclaim(self) -> None:
+        for terminal_status in ("completed", "dead_letter"):
+            with self.subTest(status=terminal_status), tempfile.TemporaryDirectory() as temporary:
+                store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+                store.save(claim_payload(status="actively_executing", lease_generation=3))
+
+                class Client(self.Client):
+                    def __init__(inner_self):
+                        super().__init__([claim_payload(handoff_id="must-not-be-claimed")])
+
+                    def recover(inner_self, claim):
+                        return {
+                            "code": "handoff_recovery_reconcile",
+                            "error": "Handoff is terminal.",
+                            "handoff_id": "handoff-100",
+                            "status": terminal_status,
+                            "lease_generation": 3,
+                            "agent_slug": "agents/tammy",
+                            "registration_ref": hashlib.sha256(
+                                b"private-registration-tammy"
+                            ).hexdigest(),
+                        }
+
+                client = Client()
+                adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+                run_forever(
+                    client,
+                    adapter,
+                    claim_store=store,
+                    max_iterations=2,
+                    retry_delay=0,
+                )
+
+                self.assertEqual(adapter.claims, [])
+                self.assertEqual(len(client.claims), 1)
+                self.assertIsNone(store.load_current())
 
     def test_recovered_in_progress_resume_failure_retries_and_clears_verified_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -801,6 +1171,55 @@ class InstallerTests(unittest.TestCase):
 
 
 class InstalledAcknowledgementHelperTests(unittest.TestCase):
+    def test_recovery_intent_is_persisted_before_request_and_stable_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "active-claim.json"
+            store = PrivateClaimStore(path)
+            store.save(claim_payload(status="leased", lease_generation=3))
+
+            self.assertTrue(
+                hasattr(store, "prepare_recovery") and hasattr(store, "pending_recovery"),
+                "claim store must expose durable recovery intent operations",
+            )
+            prepared = store.prepare_recovery()
+            restarted = PrivateClaimStore(path)
+
+            self.assertEqual(prepared, (3, 0))
+            self.assertEqual(restarted.pending_recovery(), (3, 0))
+
+    def test_recovery_reconciliation_and_rotated_claim_are_committed_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "active-claim.json"
+            store = PrivateClaimStore(path)
+            store.save(claim_payload(status="leased", lease_generation=3))
+            store.prepare_recovery()
+            reconciliation = {
+                "code": "handoff_recovery_reconcile",
+                "error": "Persisted lease generation is stale.",
+                "handoff_id": "handoff-100",
+                "status": "leased",
+                "lease_generation": 4,
+                "agent_slug": "agents/tammy",
+                "registration_ref": hashlib.sha256(b"private-registration-tammy").hexdigest(),
+            }
+            self.assertTrue(
+                hasattr(store, "reconcile_recovery") and hasattr(store, "complete_recovery"),
+                "claim store must durably reconcile and complete recovery",
+            )
+
+            retry = store.reconcile_recovery(reconciliation, max_reconciliations=2)
+            restarted = PrivateClaimStore(path)
+            rotated = claim_payload(
+                status="leased",
+                lease_generation=5,
+                lease_capability="rotated-after-reconcile",
+            )
+            restarted.complete_recovery(rotated)
+
+            self.assertEqual(retry, (4, 1))
+            self.assertEqual(restarted.pending_recovery(), None)
+            self.assertEqual(restarted.load_current(), rotated)
+
     def test_persists_stable_per_transition_sequences_across_recurring_states(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = PrivateClaimStore(Path(temporary) / "active-claim.json")
