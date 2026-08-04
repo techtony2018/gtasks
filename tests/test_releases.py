@@ -336,7 +336,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         evidence = RELEASE_EVIDENCE.read_text(encoding="utf-8")
         normalized = " ".join(evidence.split())
 
-        self.assertIn("PRECOMMIT_REPAIR_QA_PASSED", normalized)
+        self.assertIn("Status: `VERIFIED`", evidence)
         self.assertIn("Tammy, Timmy, and Toddy installations: PASS", normalized)
         self.assertIn("Tammy-only canary: PASS", normalized)
         self.assertIn("Do not canary Timmy or Toddy in V0.0.76", normalized)
@@ -360,6 +360,12 @@ class ReleaseCatalogTests(unittest.TestCase):
             "`37bbcd1dc0f6407850024258a1bb554c9dcd0b4a3912a512b900f1dca86dd817`",
             evidence,
         )
+        self.assertIn(
+            "`44abd12ea56f15f50bf1232daaa04be05fd877d6`",
+            evidence,
+        )
+        self.assertIn("Final dashboard-managed repair deploy/readback: PASS", normalized)
+        self.assertIn("Final independent live desktop/mobile UI QA: PASS", normalized)
         self.assertIn(
             "`be4eee74ff413cd88194dcdff025a58c18e81e916b66a78c489c2bab9c4bb00e`",
             evidence,
