@@ -104,6 +104,94 @@ class EntityTypePreservationTests(unittest.TestCase):
 
 
 class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
+    def test_reads_runtime_route_from_stored_registration_reference_only(self) -> None:
+        registration_reference = hashlib.sha256(
+            b"private-registration-tammy"
+        ).hexdigest()
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": registration_reference,
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+        adapter = GBrainAdapter(runner)
+        reader = getattr(
+            adapter,
+            "read_handoff_dispatcher_registration_by_reference",
+            None,
+        )
+        self.assertTrue(callable(reader), "safe registration reference reader is missing")
+
+        registration = reader("agents/tammy", registration_reference)
+
+        self.assertEqual(registration.agent_slug, "agents/tammy")
+        self.assertEqual(registration.registration_id, registration_reference)
+        self.assertEqual(registration.lease_identity, registration_reference)
+        self.assertEqual(registration.reference, registration_reference)
+        self.assertEqual(registration.route, "hosts/tammy")
+        self.assertTrue(registration.verified)
+
+    def test_reference_reader_rejects_mismatch_invalid_or_ambiguous_route(self) -> None:
+        expected = hashlib.sha256(b"private-registration-tammy").hexdigest()
+        cases = (
+            {
+                "registration_sha256": "0" * 64,
+                "route": "hosts/tammy",
+                "verified": True,
+            },
+            {
+                "registration_sha256": expected,
+                "route": "invalid route",
+                "verified": True,
+            },
+            [
+                {
+                    "registration_sha256": expected,
+                    "route": "hosts/tammy",
+                    "verified": True,
+                },
+                {
+                    "registration_sha256": expected,
+                    "route": "hosts/timmy",
+                    "verified": True,
+                },
+            ],
+        )
+        for dispatcher in cases:
+            with self.subTest(dispatcher=dispatcher):
+                runner = FakeRunner(
+                    {
+                        "get_page": [
+                            {
+                                "slug": "agents/tammy",
+                                "type": "agent",
+                                "title": "Agent Tammy",
+                                "frontmatter": {"handoff_dispatcher": dispatcher},
+                            }
+                        ]
+                    }
+                )
+                adapter = GBrainAdapter(runner)
+                reader = getattr(
+                    adapter,
+                    "read_handoff_dispatcher_registration_by_reference",
+                    None,
+                )
+                self.assertTrue(callable(reader))
+                self.assertIsNone(reader("agents/tammy", expected))
+
     def test_reads_exact_verified_canonical_agent_registration_and_route(self) -> None:
         registration_id = "private-registration-tammy"
         runner = FakeRunner(

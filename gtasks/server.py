@@ -72,6 +72,7 @@ from .job_application_binding import (
 from .handoff_dispatcher import (
     AgentRegistration,
     DurableHandoffStore,
+    HandoffDispatcher,
     HandoffOwnershipError,
 )
 from .operational_logs import (
@@ -237,6 +238,10 @@ class HandoffDispatcherAuth:
                 match = identity
         return match
 
+    @property
+    def identities(self) -> tuple[HandoffDispatcherIdentity, ...]:
+        return tuple(identity for identity, _token_hash in self._identities)
+
 
 class _HandoffIdentityMismatch(ValueError):
     pass
@@ -323,6 +328,48 @@ def load_handoff_dispatcher_auth(
     if not path.exists() and configured_path is None:
         return HandoffDispatcherAuth()
     return HandoffDispatcherAuth.from_file(path)
+
+
+def build_runtime_handoff_event_bridge(
+    adapter: GBrainAdapter,
+    store: DurableHandoffStore,
+    auth: HandoffDispatcherAuth,
+) -> CanonicalHandoffEventBridge:
+    """Build a fail-closed bridge from hash-only canonical route readback."""
+    reader = getattr(
+        adapter,
+        "read_handoff_dispatcher_registration_by_reference",
+        None,
+    )
+    registrations: list[AgentRegistration] = []
+    if callable(reader):
+        for identity in auth.identities:
+            try:
+                registration = reader(identity.agent_slug, identity.registration_id)
+            except (GBrainError, ValueError):
+                continue
+            if (
+                not isinstance(registration, AgentRegistration)
+                or registration.verified is not True
+                or registration.agent_slug != identity.agent_slug
+                or registration.registration_id != identity.registration_id
+                or registration.reference != identity.registration_id
+                or registration.lease_identity != identity.registration_id
+            ):
+                continue
+            registrations.append(registration)
+
+    route_counts: dict[str, int] = {}
+    for registration in registrations:
+        route_counts[registration.route] = route_counts.get(registration.route, 0) + 1
+    unambiguous = tuple(
+        registration
+        for registration in registrations
+        if route_counts[registration.route] == 1
+    )
+    return CanonicalHandoffEventBridge(
+        HandoffDispatcher(store, registrations=unambiguous)
+    )
 
 
 def _canonical_uuid_slug(
@@ -601,6 +648,11 @@ def _handler_class(
     active_handoff_registration_validator = handoff_registration_validator or getattr(
         adapter, "read_handoff_dispatcher_registration", None
     )
+    active_handoff_registration_reference_reader = getattr(
+        adapter,
+        "read_handoff_dispatcher_registration_by_reference",
+        None,
+    )
     active_handoff_waiter = handoff_waiter or time.sleep
     active_handoff_event_bridge = handoff_event_bridge
 
@@ -850,6 +902,44 @@ def _handler_class(
             identity: HandoffDispatcherIdentity,
             registration_id: str,
         ) -> AgentRegistration:
+            if active_handoff_event_bridge is not None:
+                if not callable(active_handoff_registration_reference_reader):
+                    raise RuntimeError("canonical registration reader unavailable")
+                registrations: dict[str, AgentRegistration] = {}
+                routes: set[str] = set()
+                for configured_identity in active_handoff_auth.identities:
+                    canonical = active_handoff_registration_reference_reader(
+                        configured_identity.agent_slug,
+                        configured_identity.registration_id,
+                    )
+                    if (
+                        not isinstance(canonical, AgentRegistration)
+                        or canonical.verified is not True
+                        or canonical.agent_slug != configured_identity.agent_slug
+                        or canonical.registration_id
+                        != configured_identity.registration_id
+                        or canonical.reference != configured_identity.registration_id
+                        or canonical.lease_identity
+                        != configured_identity.registration_id
+                        or canonical.route in routes
+                    ):
+                        raise _HandoffIdentityMismatch(
+                            "canonical dispatcher registration does not match"
+                        )
+                    registrations[canonical.agent_slug] = canonical
+                    routes.add(canonical.route)
+                canonical = registrations.get(identity.agent_slug)
+                if (
+                    canonical is None
+                    or not hmac.compare_digest(
+                        hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+                        identity.registration_id,
+                    )
+                ):
+                    raise _HandoffIdentityMismatch(
+                        "canonical dispatcher registration does not match"
+                    )
+                return canonical
             if not callable(active_handoff_registration_validator):
                 raise RuntimeError("canonical registration reader unavailable")
             canonical = active_handoff_registration_validator(
@@ -901,7 +991,12 @@ def _handler_class(
                     },
                 )
                 return None
-            return registration_id, capability, generation, mutation_id
+            lease_identity = (
+                identity.registration_id
+                if active_handoff_event_bridge is not None
+                else registration_id
+            )
+            return lease_identity, capability, generation, mutation_id
 
         def _read_handoff_events(
             self,
@@ -1633,7 +1728,7 @@ def _handler_class(
                         identity, registration_id
                     )
                     return handoff_store.claim(
-                        registration_id,
+                        canonical.lease_identity,
                         now=clock().astimezone(timezone.utc),
                         lease_seconds=lease_seconds,
                         expected_agent_slug=canonical.agent_slug,
@@ -1800,12 +1895,24 @@ def _handler_class(
                     reconcile(state)
                     return
                 try:
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
                     recovered = handoff_store.recover_in_progress(
                         handoff_id,
                         registration=canonical,
                         expected_generation=expected_generation,
                         now=clock().astimezone(timezone.utc),
                     )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
                 except HandoffOwnershipError:
                     self._json(
                         HTTPStatus.FORBIDDEN,
@@ -1816,11 +1923,42 @@ def _handler_class(
                     )
                     return
                 except ValueError:
-                    state = handoff_store.read_recovery_state(
-                        handoff_id,
-                        registration=canonical,
-                    )
+                    try:
+                        canonical = self._canonical_handoff_registration(
+                            identity, registration_id
+                        )
+                        state = handoff_store.read_recovery_state(
+                            handoff_id,
+                            registration=canonical,
+                        )
+                    except _HandoffIdentityMismatch:
+                        self._json(
+                            HTTPStatus.FORBIDDEN,
+                            {
+                                "error": "Dispatcher route no longer matches its registration.",
+                                "code": "handoff_identity_mismatch",
+                            },
+                        )
+                        return
+                    except Exception:
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": "Handoff route readback is unavailable.",
+                                "code": "handoff_route_unavailable",
+                            },
+                        )
+                        return
                     reconcile(state)
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
                     return
                 self._json(
                     HTTPStatus.OK,
@@ -4212,9 +4350,22 @@ def main() -> None:
     parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
+    adapter = GBrainAdapter()
     handoff_store = (
         DurableHandoffStore(str(args.handoff_store))
         if args.handoff_store
+        else None
+    )
+    handoff_dispatcher_auth = load_handoff_dispatcher_auth(
+        args.handoff_dispatcher_credentials_file
+    )
+    handoff_event_bridge = (
+        build_runtime_handoff_event_bridge(
+            adapter,
+            handoff_store,
+            handoff_dispatcher_auth,
+        )
+        if handoff_store is not None
         else None
     )
     server = build_server(
@@ -4232,13 +4383,13 @@ def main() -> None:
         if args.operation_log_file or args.queue_log_file
         else None,
         stargraph_url=args.stargraph_url,
+        adapter=adapter,
         artifact_publisher_auth=load_artifact_publisher_auth(
             args.artifact_publisher_credentials_file
         ),
         handoff_store=handoff_store,
-        handoff_dispatcher_auth=load_handoff_dispatcher_auth(
-            args.handoff_dispatcher_credentials_file
-        ),
+        handoff_dispatcher_auth=handoff_dispatcher_auth,
+        handoff_event_bridge=handoff_event_bridge,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

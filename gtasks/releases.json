@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.75",
+  "current_version": "V0.0.76",
   "releases": [
     {
       "version": "V0.0.1",
@@ -450,6 +450,12 @@
       "date": "2026-08-04",
       "title": "Focused Artifact navigation and Calendar controls",
       "summary": "Artifact details now open their canonical producing Task and return to the same Artifact context, while the hierarchy uses compact title-only Task rows with clear Default Goal and Default Project labels. A healthy Calendar connection shows one concise Manage action and transient verified-selection feedback."
+    },
+    {
+      "version": "V0.0.76",
+      "date": "2026-08-04",
+      "title": "Event-driven Agent handoffs",
+      "summary": "Verified canonical task changes now produce event-driven Agent handoffs for one identity-scoped local Dispatcher and one existing fixed Codex thread. Task Timeline and Handoff Log show the same redacted append-only audit events, including bounded recovery-safe retry and failure evidence."
     }
   ]
 }

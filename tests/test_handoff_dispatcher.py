@@ -58,6 +58,24 @@ def change(**overrides: object) -> ActionableChange:
 
 
 class HandoffClassifierTests(unittest.TestCase):
+    def test_reference_backed_registration_preserves_direct_registration_semantics(self) -> None:
+        direct = registration()
+        reference = direct.reference
+        factory = getattr(AgentRegistration, "from_reference", None)
+        self.assertTrue(callable(factory), "reference-backed registration factory is missing")
+
+        runtime = factory(
+            reference,
+            agent_slug=AGENT,
+            route="hosts/tammy",
+        )
+
+        self.assertEqual(direct.lease_identity, REGISTRATION_ID)
+        self.assertEqual(direct.reference, reference)
+        self.assertEqual(runtime.registration_id, reference)
+        self.assertEqual(runtime.lease_identity, reference)
+        self.assertEqual(runtime.reference, reference)
+
     def test_classifies_every_actionable_trigger(self) -> None:
         classifier = HandoffClassifier()
         triggers = (

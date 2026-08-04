@@ -3603,6 +3603,42 @@ class GBrainAdapter:
             or not registration_id
         ):
             raise ValueError("dispatcher registration lookup requires exact identities")
+        registration_reference = hashlib.sha256(
+            registration_id.encode("utf-8")
+        ).hexdigest()
+        return self._read_handoff_dispatcher_registration(
+            agent_slug,
+            registration_reference,
+            registration_id=registration_id,
+        )
+
+    def read_handoff_dispatcher_registration_by_reference(
+        self,
+        agent_slug: str,
+        registration_reference: str,
+    ) -> AgentRegistration | None:
+        """Read one canonical route using only its configured private digest."""
+        if (
+            not isinstance(agent_slug, str)
+            or re.fullmatch(r"agents/[a-z0-9][a-z0-9._-]{0,63}", agent_slug)
+            is None
+            or not isinstance(registration_reference, str)
+            or re.fullmatch(r"[0-9a-f]{64}", registration_reference) is None
+        ):
+            raise ValueError("dispatcher registration lookup requires exact identities")
+        return self._read_handoff_dispatcher_registration(
+            agent_slug,
+            registration_reference,
+            registration_id=registration_reference,
+        )
+
+    def _read_handoff_dispatcher_registration(
+        self,
+        agent_slug: str,
+        registration_reference: str,
+        *,
+        registration_id: str,
+    ) -> AgentRegistration | None:
         page = self.runner.run("get_page", {"slug": agent_slug})
         if (
             not isinstance(page, Mapping)
@@ -3624,12 +3660,11 @@ class GBrainAdapter:
             return None
         expected = dispatcher.get("registration_sha256")
         route = dispatcher.get("route")
-        supplied = hashlib.sha256(registration_id.encode("utf-8")).hexdigest()
         if (
             dispatcher.get("verified") is not True
             or not isinstance(expected, str)
             or re.fullmatch(r"[0-9a-f]{64}", expected) is None
-            or not hmac.compare_digest(supplied, expected)
+            or not hmac.compare_digest(registration_reference, expected)
             or not isinstance(route, str)
             or re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", route) is None
         ):
@@ -3639,6 +3674,7 @@ class GBrainAdapter:
             agent_slug=agent_slug,
             route=route,
             verified=True,
+            _registration_reference=registration_reference,
         )
 
     def set_agent_default_goal(

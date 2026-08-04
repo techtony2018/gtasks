@@ -121,10 +121,36 @@ class AgentRegistration:
     agent_slug: str
     route: str
     verified: bool
+    _registration_reference: str | None = None
+
+    @classmethod
+    def from_reference(
+        cls,
+        registration_reference: str,
+        *,
+        agent_slug: str,
+        route: str,
+        verified: bool = True,
+    ) -> "AgentRegistration":
+        if re.fullmatch(r"[0-9a-f]{64}", registration_reference) is None:
+            raise ValueError("registration reference must be a SHA-256 digest")
+        return cls(
+            registration_id=registration_reference,
+            agent_slug=agent_slug,
+            route=route,
+            verified=verified,
+            _registration_reference=registration_reference,
+        )
 
     @property
     def reference(self) -> str:
-        return _registration_reference(self.registration_id)
+        return self._registration_reference or _registration_reference(
+            self.registration_id
+        )
+
+    @property
+    def lease_identity(self) -> str:
+        return self._registration_reference or self.registration_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -682,7 +708,7 @@ class DurableHandoffStore:
             }:
                 raise ValueError("recovery requires an in-progress handoff")
             if (
-                current["registration_id"] != registration.registration_id
+                current["registration_id"] != registration.lease_identity
                 or current["registration_agent_slug"] != registration.agent_slug
                 or current["registration_route"] != registration.route
                 or current["agent_slug"] != registration.agent_slug
@@ -717,7 +743,7 @@ class DurableHandoffStore:
                     lease_capability_ref,
                     lease_until,
                     handoff_id,
-                    registration.registration_id,
+                    registration.lease_identity,
                     registration.agent_slug,
                     registration.route,
                     expected_generation,
@@ -767,7 +793,7 @@ class DurableHandoffStore:
         if current is None:
             raise KeyError(handoff_id)
         if (
-            current["registration_id"] != registration.registration_id
+            current["registration_id"] != registration.lease_identity
             or current["registration_agent_slug"] != registration.agent_slug
             or current["registration_route"] != registration.route
             or current["agent_slug"] != registration.agent_slug
@@ -1295,7 +1321,7 @@ class HandoffDispatcher:
         registration_id = None
         if classification.actionable:
             registration_id = next(
-                registration.registration_id
+                registration.lease_identity
                 for registration in self.registrations
                 if registration.reference == classification.registration_ref
             )

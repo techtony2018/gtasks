@@ -1,6 +1,8 @@
 import http.client
+import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -11,6 +13,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import gtasks.gbrain as gbrain
+import gtasks.server as server_module
 
 from gtasks.domain import (
     ACTIVE_ROOT,
@@ -886,6 +889,190 @@ class ServerHarness:
         return response.status, parsed, response_headers
 
 
+class HandoffRuntimeConstructionTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 4, 20, 0, tzinfo=timezone.utc)
+    TASK = "tasks/11111111-1111-4111-8111-111111111111"
+    RAW_REGISTRATIONS = {
+        "agents/tammy": "private-registration-tammy",
+        "agents/timmy": "private-registration-timmy",
+        "agents/toddy": "private-registration-toddy",
+    }
+
+    class RuntimeAdapter:
+        def __init__(self, routes: dict[str, str | None]) -> None:
+            self.routes = routes
+            self.reads: list[tuple[str, str]] = []
+
+        def read_handoff_dispatcher_registration_by_reference(
+            self,
+            agent_slug: str,
+            registration_reference: str,
+        ):
+            self.reads.append((agent_slug, registration_reference))
+            route = self.routes.get(agent_slug)
+            if route is None:
+                return None
+            return AgentRegistration.from_reference(
+                registration_reference,
+                agent_slug=agent_slug,
+                route=route,
+            )
+
+    def _auth(self) -> HandoffDispatcherAuth:
+        return HandoffDispatcherAuth.from_plaintext_tokens_for_tests(
+            {
+                agent: (registration_id, f"token-{agent.rsplit('/', 1)[-1]}")
+                for agent, registration_id in self.RAW_REGISTRATIONS.items()
+            }
+        )
+
+    def _run_main(self, adapter, auth, *, exercise_agent: str | None = None):
+        captured: dict[str, object] = {}
+
+        class FakeServer:
+            server_address = ("127.0.0.1", 4179)
+
+            def serve_forever(_self) -> None:
+                bridge = captured.get("handoff_event_bridge")
+                if bridge is None or exercise_agent is None:
+                    return
+                route = adapter.routes[exercise_agent]
+                before = {
+                    "task_slug": self.TASK,
+                    "task": {
+                        "slug": self.TASK,
+                        "status": "blocked",
+                        "assigned_to": [exercise_agent],
+                        "blockers": ["systems/runtime"],
+                    },
+                    "route": route,
+                }
+                after = {
+                    **before,
+                    "task": {
+                        **before["task"],
+                        "status": "active",
+                        "blockers": [],
+                    },
+                }
+                captured["record"] = bridge.after_verified_mutation(
+                    before,
+                    after,
+                    {
+                        "verified": True,
+                        "canonical_event_id": "events/runtime-wiring",
+                        "canonical_version": "versions/1",
+                        "mutation_kind": "system_dependency_recovered",
+                    },
+                    self.NOW,
+                )
+                reference = hashlib.sha256(
+                    self.RAW_REGISTRATIONS[exercise_agent].encode("utf-8")
+                ).hexdigest()
+                captured["claim"] = captured["handoff_store"].claim(
+                    reference,
+                    now=self.NOW,
+                    lease_seconds=30,
+                )
+
+            def server_close(_self) -> None:
+                return None
+
+        def capture_build_server(**kwargs):
+            captured.update(kwargs)
+            return FakeServer()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store_path = Path(temporary) / "handoffs.sqlite3"
+            argv = [
+                "gtasks.server",
+                "--handoff-store",
+                str(store_path),
+                "--handoff-dispatcher-credentials-file",
+                str(Path(temporary) / "credentials.json"),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(server_module, "GBrainAdapter", return_value=adapter),
+                patch.object(
+                    server_module,
+                    "load_handoff_dispatcher_auth",
+                    return_value=auth,
+                ),
+                patch.object(
+                    server_module,
+                    "load_artifact_publisher_auth",
+                    return_value=ArtifactPublisherAuth(),
+                ),
+                patch.object(
+                    server_module,
+                    "build_server",
+                    side_effect=capture_build_server,
+                ),
+            ):
+                server_module.main()
+        return captured
+
+    def test_main_wires_hash_only_runtime_bridge_into_verified_mutations(self) -> None:
+        routes = {
+            "agents/tammy": "hosts/tammy",
+            "agents/timmy": "hosts/timmy",
+            "agents/toddy": "hosts/toddy",
+        }
+        adapter = self.RuntimeAdapter(routes)
+        auth = self._auth()
+
+        captured = self._run_main(
+            adapter,
+            auth,
+            exercise_agent="agents/tammy",
+        )
+
+        self.assertIs(captured.get("adapter"), adapter)
+        bridge = captured.get("handoff_event_bridge")
+        self.assertIsNotNone(bridge)
+        expected_reads = {
+            (
+                agent,
+                hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+            )
+            for agent, registration_id in self.RAW_REGISTRATIONS.items()
+        }
+        self.assertEqual(set(adapter.reads), expected_reads)
+        registrations = bridge.dispatcher.registrations
+        self.assertEqual(len(registrations), 3)
+        for registration in registrations:
+            self.assertEqual(registration.registration_id, registration.reference)
+            self.assertEqual(registration.lease_identity, registration.reference)
+        self.assertEqual(captured["record"].status, "queued")
+        self.assertIsNotNone(captured["claim"])
+        self.assertNotIn(
+            "private-registration-",
+            repr((adapter.reads, registrations, captured["record"].to_dict())),
+        )
+
+    def test_main_quarantines_missing_and_duplicate_canonical_routes(self) -> None:
+        adapter = self.RuntimeAdapter(
+            {
+                "agents/tammy": "hosts/shared",
+                "agents/timmy": "hosts/shared",
+                "agents/toddy": None,
+            }
+        )
+
+        captured = self._run_main(
+            adapter,
+            self._auth(),
+            exercise_agent="agents/tammy",
+        )
+
+        bridge = captured.get("handoff_event_bridge")
+        self.assertIsNotNone(bridge)
+        self.assertEqual(bridge.dispatcher.registrations, ())
+        self.assertEqual(captured["record"].status, "suppressed")
+        self.assertEqual(captured["record"].reason, "missing_registration")
+        self.assertIsNone(captured["claim"])
+
 class HandoffMutationBridgeTests(unittest.TestCase):
     TASK = "tasks/agent-work"
     TODO = "todos/question"
@@ -1309,6 +1496,248 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             "Idempotency-Key": "mutation-api-1",
         }
 
+    class MutableRuntimeAdapter(FakeAdapter):
+        def __init__(self, routes: dict[str, str | None], references: dict[str, str]):
+            super().__init__()
+            self.routes = routes
+            self.references = references
+            self.registration_reads: list[tuple[str, str]] = []
+
+        def read_handoff_dispatcher_registration_by_reference(
+            self,
+            agent_slug: str,
+            registration_reference: str,
+        ):
+            self.registration_reads.append((agent_slug, registration_reference))
+            if self.references.get(agent_slug) != registration_reference:
+                return None
+            route = self.routes.get(agent_slug)
+            if route is None:
+                return None
+            return AgentRegistration.from_reference(
+                registration_reference,
+                agent_slug=agent_slug,
+                route=route,
+            )
+
+        def read_handoff_dispatcher_registration(
+            self,
+            agent_slug: str,
+            registration_id: str,
+        ):
+            registration_reference = hashlib.sha256(
+                registration_id.encode("utf-8")
+            ).hexdigest()
+            self.registration_reads.append((agent_slug, registration_reference))
+            route = self.routes.get(agent_slug)
+            if self.references.get(agent_slug) != registration_reference or route is None:
+                return None
+            return AgentRegistration(
+                registration_id=registration_id,
+                agent_slug=agent_slug,
+                route=route,
+                verified=True,
+                _registration_reference=registration_reference,
+            )
+
+    def _runtime_route_harness(
+        self,
+        *,
+        store: DurableHandoffStore,
+        dispatcher: HandoffDispatcher,
+        adapter: FakeAdapter,
+        waiter=lambda _seconds: None,
+    ) -> ServerHarness:
+        return ServerHarness(
+            self,
+            adapter,
+            handoff_store=store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_waiter=waiter,
+            handoff_event_bridge=gbrain.CanonicalHandoffEventBridge(dispatcher),
+        )
+
+    def _runtime_registrations(self) -> tuple[AgentRegistration, AgentRegistration]:
+        return (
+            AgentRegistration.from_reference(
+                hashlib.sha256(self.REGISTRATION.encode("utf-8")).hexdigest(),
+                agent_slug="agents/tammy",
+                route="hosts/tammy",
+            ),
+            AgentRegistration.from_reference(
+                hashlib.sha256(b"private-registration-timmy").hexdigest(),
+                agent_slug="agents/timmy",
+                route="hosts/timmy",
+            ),
+        )
+
+    def test_runtime_claim_rejects_post_startup_duplicate_route_without_store_mutation(self) -> None:
+        registrations = self._runtime_registrations()
+        private_path = Path(self.harness.runtime_directory.name) / "route-drift-claim.sqlite3"
+        store = DurableHandoffStore(str(private_path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(store, registrations=registrations)
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/route-drift-claim",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-route-drift-claim",
+            ),
+            now=self.NOW,
+        )
+        adapter = self.MutableRuntimeAdapter(
+            {"agents/tammy": "hosts/tammy", "agents/timmy": "hosts/tammy"},
+            {registration.agent_slug: registration.reference for registration in registrations},
+        )
+        harness = self._runtime_route_harness(
+            store=store,
+            dispatcher=dispatcher,
+            adapter=adapter,
+        )
+        baseline = store.query_events(limit=50, after_sequence=0).total
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertEqual(store.get(record.handoff_id).status, "queued")
+        self.assertEqual(store.query_events(limit=50, after_sequence=0).total, baseline)
+        self.assertEqual(len(adapter.registration_reads), 2)
+        self.assertNotIn(self.REGISTRATION, repr(adapter.registration_reads))
+
+    def test_runtime_claim_revalidates_all_routes_after_long_poll_wait(self) -> None:
+        registrations = self._runtime_registrations()
+        private_path = Path(self.harness.runtime_directory.name) / "route-drift-wait.sqlite3"
+        store = DurableHandoffStore(str(private_path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(store, registrations=registrations)
+        adapter = self.MutableRuntimeAdapter(
+            {"agents/tammy": "hosts/tammy", "agents/timmy": "hosts/timmy"},
+            {registration.agent_slug: registration.reference for registration in registrations},
+        )
+
+        def drift_during_wait(_seconds: float) -> None:
+            dispatcher.record(
+                ActionableChange(
+                    task_slug=self.TASK,
+                    canonical_event_id="events/route-drift-wait",
+                    canonical_version="42",
+                    trigger="answer_received",
+                    assigned_to=("agents/tammy",),
+                    route="hosts/tammy",
+                    summary="A verified answer is ready.",
+                    occurred_at=self.NOW,
+                    correlation_id="correlation-route-drift-wait",
+                ),
+                now=self.NOW,
+            )
+            adapter.routes["agents/timmy"] = "hosts/tammy"
+
+        harness = self._runtime_route_harness(
+            store=store,
+            dispatcher=dispatcher,
+            adapter=adapter,
+            waiter=drift_during_wait,
+        )
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 25, "lease_seconds": 30},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        events = store.query_events(limit=50, after_sequence=0)
+        self.assertEqual(events.total, 1)
+        self.assertEqual(events.events[0].status, "queued")
+        self.assertEqual(len(adapter.registration_reads), 4)
+
+    def test_runtime_recovery_revalidates_route_uniqueness_immediately_before_mutation(self) -> None:
+        registrations = self._runtime_registrations()
+        references = {
+            registration.agent_slug: registration.reference
+            for registration in registrations
+        }
+        routes = {"agents/tammy": "hosts/tammy", "agents/timmy": "hosts/timmy"}
+
+        class DriftAfterReadStore(DurableHandoffStore):
+            def read_recovery_state(_self, handoff_id, *, registration):
+                state = super().read_recovery_state(
+                    handoff_id,
+                    registration=registration,
+                )
+                routes["agents/timmy"] = "hosts/tammy"
+                return state
+
+        private_path = Path(self.harness.runtime_directory.name) / "route-drift-recover.sqlite3"
+        store = DriftAfterReadStore(str(private_path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(store, registrations=registrations)
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/route-drift-recover",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-route-drift-recover",
+            ),
+            now=self.NOW,
+        )
+        claim = store.claim(
+            registrations[0].lease_identity,
+            now=self.NOW,
+            lease_seconds=30,
+        )
+        store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=registrations[0].lease_identity,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-route-drift-received",
+            now=self.NOW,
+        )
+        adapter = self.MutableRuntimeAdapter(routes, references)
+        harness = self._runtime_route_harness(
+            store=store,
+            dispatcher=dispatcher,
+            adapter=adapter,
+        )
+        baseline = store.query_events(limit=50, after_sequence=0).total
+
+        status, payload, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim.lease_generation,
+            },
+            self._auth(),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertEqual(store.get(record.handoff_id).status, "received")
+        self.assertEqual(store.query_events(limit=50, after_sequence=0).total, baseline)
+        self.assertEqual(len(adapter.registration_reads), 4)
+
     def test_claim_auth_is_identity_scoped_and_rejected_requests_do_not_write(self) -> None:
         self._record()
         baseline = self._event_count()
@@ -1695,6 +2124,90 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertNotIn(self.REGISTRATION, rendered)
         self.assertNotIn("tammy-handoff-api-token", rendered)
         self.assertNotIn("thread", rendered.lower())
+
+    def test_runtime_recovery_internalizes_raw_registration_before_store_access(self) -> None:
+        class CapturingStore(DurableHandoffStore):
+            def __init__(self, path: str) -> None:
+                super().__init__(path)
+                self.recovery_registration_ids: list[str] = []
+
+            def read_recovery_state(self, handoff_id, *, registration):
+                self.recovery_registration_ids.append(registration.registration_id)
+                return super().read_recovery_state(
+                    handoff_id,
+                    registration=registration,
+                )
+
+        private_path = Path(self.harness.runtime_directory.name) / "runtime-hash.sqlite3"
+        store = CapturingStore(str(private_path))
+        self.addCleanup(store.close)
+        registration_reference = self.registration.reference
+        runtime_registration = AgentRegistration.from_reference(
+            registration_reference,
+            agent_slug=self.registration.agent_slug,
+            route=self.registration.route,
+        )
+        dispatcher = HandoffDispatcher(store, registrations=(runtime_registration,))
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/runtime-internal-recovery",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=(self.registration.agent_slug,),
+                route=self.registration.route,
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-runtime-internal-recovery",
+            ),
+            now=self.NOW,
+        )
+        claim = store.claim(
+            registration_reference,
+            now=self.NOW,
+            lease_seconds=30,
+        )
+        store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=registration_reference,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-runtime-internal-received",
+            now=self.NOW,
+        )
+        runtime_registrations = self._runtime_registrations()
+        adapter = self.MutableRuntimeAdapter(
+            {"agents/tammy": "hosts/tammy", "agents/timmy": "hosts/timmy"},
+            {
+                registration.agent_slug: registration.reference
+                for registration in runtime_registrations
+            },
+        )
+        harness = ServerHarness(
+            self,
+            adapter,
+            handoff_store=store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_event_bridge=gbrain.CanonicalHandoffEventBridge(dispatcher),
+        )
+
+        status, _payload, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim.lease_generation,
+            },
+            self._auth(),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            store.recovery_registration_ids,
+            [registration_reference],
+        )
+        self.assertNotIn(self.REGISTRATION, repr(store.recovery_registration_ids))
 
     def test_recover_validates_leased_and_reconciles_crash_window_generation(self) -> None:
         record = self._record(event="events/recover-leased")
@@ -2248,7 +2761,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.75")
+        self.assertEqual(payload["version"], "V0.0.76")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -2256,11 +2769,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.75")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.75")
+        self.assertEqual(payload["current_version"], "V0.0.76")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.76")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.76",
                 "V0.0.75",
                 "V0.0.74",
                 "V0.0.73",
