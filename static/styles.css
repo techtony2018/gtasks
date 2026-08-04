@@ -5496,6 +5496,166 @@ button:active {
   overflow-wrap: anywhere;
 }
 
+.task-handoff-timeline,
+.handoff-log-view {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.task-handoff-timeline {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(56, 189, 248, 0.035);
+}
+
+.task-handoff-timeline-heading,
+.handoff-log-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-handoff-timeline-heading h3,
+.handoff-log-heading h2,
+.handoff-log-heading p {
+  margin: 0;
+}
+
+.task-handoff-timeline-heading span,
+.handoff-log-heading p,
+.handoff-surface-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.handoff-filter-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(11, 23, 42, 0.78);
+}
+
+.handoff-filter-control {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.handoff-filter-control select,
+.handoff-filter-control input {
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.handoff-event-list {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.handoff-event {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) auto auto;
+  align-items: start;
+  gap: 7px 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(7, 17, 31, 0.7);
+  overflow-wrap: anywhere;
+}
+
+.handoff-event.is-dead-letter {
+  border-color: rgba(255, 154, 169, 0.58);
+  background: rgba(255, 154, 169, 0.065);
+}
+
+.handoff-event-heading {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.handoff-event-type,
+.handoff-event-status,
+.handoff-event-time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.handoff-event-status {
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.handoff-event-summary,
+.handoff-surface-state {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.handoff-event-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.handoff-correlation-button {
+  min-height: 36px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+  cursor: pointer;
+}
+
+.handoff-dead-letter {
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.handoff-surface-state.is-stale {
+  color: var(--warning);
+}
+
+.handoff-surface-state.is-error {
+  color: var(--danger);
+}
+
+.handoff-load-more,
+#task-handoff-load-more {
+  justify-self: start;
+}
+
 .artifact-load-more {
   justify-self: start;
 }
@@ -5648,6 +5808,33 @@ button:active {
   .task-artifacts-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .handoff-log-view,
+  .task-handoff-timeline,
+  .handoff-event-list,
+  .handoff-event {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .handoff-filter-grid,
+  .handoff-event {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .handoff-event-status,
+  .handoff-event-time {
+    justify-self: start;
+  }
+
+  .handoff-filter-control select,
+  .handoff-filter-control input,
+  .handoff-filter-grid > .secondary-button,
+  .handoff-correlation-button,
+  .handoff-load-more,
+  #task-handoff-load-more {
+    min-height: 44px;
   }
 
   .create-task-button,

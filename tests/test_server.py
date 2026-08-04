@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -2077,6 +2078,37 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(exported["metadata"]["format"], "handoff-audit-v1")
         self.assertEqual(self._event_count(), before)
+
+    def test_event_endpoints_share_bounded_timestamp_range_filter(self) -> None:
+        self._record(event="events/range-current")
+        encoded = self.TASK.replace("/", "%2F")
+        query = (
+            "limit=50&after_sequence=0"
+            "&occurred_after=2026-08-04T16%3A00%3A00%2B00%3A00"
+            "&occurred_before=2026-08-04T17%3A00%3A00%2B00%3A00"
+        )
+
+        status, global_page, _ = self.harness.request(
+            "GET", f"/api/handoff-events?{query}"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(global_page["total"], 1)
+        self.assertEqual(global_page["events"][0]["task_slug"], self.TASK)
+
+        status, scoped_page, _ = self.harness.request(
+            "GET", f"/api/tasks/{encoded}/handoff-events?{query}"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(scoped_page, global_page)
+
+        status, invalid, _ = self.harness.request(
+            "GET",
+            "/api/handoff-events?limit=50&after_sequence=0"
+            "&occurred_after=2026-08-04T17%3A00%3A00%2B00%3A00"
+            "&occurred_before=2026-08-04T16%3A00%3A00%2B00%3A00",
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(invalid["code"], "invalid_handoff_event_filter")
 
 
 class CalendarApiTests(unittest.TestCase):
@@ -4437,6 +4469,122 @@ class TaskRelationshipRepairApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(adapter.membership_repairs, ["tasks/legacy"])
         self.assertTrue(payload["receipt"]["verified"])
+
+
+class ProjectBrowserFixtureTests(unittest.TestCase):
+    def test_fixture_serves_only_synthetic_task_agent_work_and_paginated_handoffs(self) -> None:
+        from tests.project_browser_fixture import build_fixture_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            external_preferences = Path(temporary) / "external-calendar-preferences.json"
+            external_preferences.write_text(
+                json.dumps({"selected_calendar_ids": ["real-calendar"]}),
+                encoding="utf-8",
+            )
+            runtime = Path(temporary) / "fixture-runtime"
+            with patch.dict(
+                os.environ,
+                {"MISSION_CONTROL_CALENDAR_PREFERENCES": str(external_preferences)},
+            ):
+                server, adapter = build_fixture_server(runtime, port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            def read(path: str) -> tuple[int, dict]:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_address[1], timeout=3
+                )
+                connection.request("GET", path)
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                connection.close()
+                return response.status, payload
+
+            task_status, tasks = read("/api/tasks")
+            work_status, agent_work = read("/api/agent-work")
+            release_status, releases = read("/api/releases")
+            calendar_status, calendars = read("/api/ical-calendars")
+            event_status, events = read("/api/handoff-events?limit=50&after_sequence=0")
+            all_event_status, all_events = read(
+                "/api/handoff-events?limit=200&after_sequence=0"
+            )
+            artifact_status, artifacts = read(
+                f"/api/artifacts?task={adapter.task.slug}&limit=10&cursor=0"
+            )
+
+            self.assertEqual(task_status, 200)
+            self.assertEqual(work_status, 200)
+            self.assertEqual(release_status, 200)
+            self.assertIn("current_version", releases)
+            self.assertEqual(calendar_status, 200)
+            self.assertEqual(calendars["calendars"], [])
+            self.assertEqual(calendars["selected_calendar_ids"], [])
+            self.assertEqual(adapter.calendar_reader.calendar_reads, 1)
+            self.assertEqual(
+                adapter.calendar_preferences_path,
+                runtime / "calendar-preferences.json",
+            )
+            self.assertNotEqual(
+                adapter.calendar_preferences_path,
+                external_preferences,
+            )
+            self.assertEqual(event_status, 200)
+            self.assertEqual(all_event_status, 200)
+            self.assertEqual(artifact_status, 200)
+            self.assertEqual(artifacts["artifacts"], [])
+            self.assertEqual([task["slug"] for task in tasks["tasks"]], [adapter.task.slug])
+            self.assertEqual(
+                [task["slug"] for task in agent_work["tasks"]],
+                [adapter.task.slug],
+            )
+            self.assertGreater(events["total"], 50)
+            self.assertEqual(len(events["events"]), 50)
+            self.assertIsNotNone(events["next_sequence"])
+            self.assertEqual(
+                adapter.read_cache_path,
+                runtime / "read-snapshots.json",
+            )
+            self.assertTrue(adapter.read_cache_path.exists())
+            self.assertEqual(
+                {event["task_slug"] for event in events["events"]},
+                {adapter.task.slug},
+            )
+            self.assertTrue(
+                {
+                    "handoff_queued",
+                    "handoff_suppressed",
+                    "handoff_leased",
+                    "acknowledgement",
+                    "capability_rotated",
+                    "lease_expired",
+                    "delivery_retry",
+                    "delivery_terminal",
+                    "correction",
+                }.issubset({event["event_type"] for event in all_events["events"]})
+            )
+            self.assertTrue(
+                {
+                    "queued",
+                    "suppressed",
+                    "leased",
+                    "received",
+                    "actively_executing",
+                    "still_blocked",
+                    "completed",
+                    "retrying",
+                    "dead_letter",
+                }.issubset({event["status"] for event in all_events["events"]})
+            )
+            self.assertGreater(
+                max(len(event["summary"]) for event in all_events["events"]),
+                120,
+            )
+            self.assertIn(
+                "correlation-redacted-display",
+                {event["correlation_id"] for event in all_events["events"]},
+            )
 
 
 class SystemTicketApiTests(unittest.TestCase):

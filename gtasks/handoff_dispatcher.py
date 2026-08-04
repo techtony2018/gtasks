@@ -1086,11 +1086,23 @@ class DurableHandoffStore:
         status: str | None = None,
         event_type: str | None = None,
         correlation_id: str | None = None,
+        occurred_after: datetime | None = None,
+        occurred_before: datetime | None = None,
     ) -> EventPage:
         if limit < 1 or limit > 200:
             raise ValueError("limit must be between 1 and 200")
         if after_sequence is not None and after_sequence < 0:
             raise ValueError("after_sequence must be non-negative")
+        if occurred_after is not None:
+            occurred_after = _require_utc(occurred_after, "occurred_after")
+        if occurred_before is not None:
+            occurred_before = _require_utc(occurred_before, "occurred_before")
+        if (
+            occurred_after is not None
+            and occurred_before is not None
+            and occurred_after > occurred_before
+        ):
+            raise ValueError("occurred_after must not exceed occurred_before")
         clauses = ["sequence > ?"]
         parameters: list[object] = [after_sequence or 0]
         for column, value in (
@@ -1103,6 +1115,12 @@ class DurableHandoffStore:
             if value is not None:
                 clauses.append(f"{column} = ?")
                 parameters.append(value)
+        if occurred_after is not None:
+            clauses.append("occurred_at >= ?")
+            parameters.append(_timestamp(occurred_after))
+        if occurred_before is not None:
+            clauses.append("occurred_at <= ?")
+            parameters.append(_timestamp(occurred_before))
         where = " AND ".join(clauses)
         with self._lock:
             rows = self._connection.execute(

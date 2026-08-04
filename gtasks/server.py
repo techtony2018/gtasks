@@ -925,6 +925,8 @@ def _handler_class(
                 "status",
                 "event_type",
                 "correlation_id",
+                "occurred_after",
+                "occurred_before",
                 "export",
             }
             if any(key not in allowed or len(values) != 1 for key, values in query.items()):
@@ -942,6 +944,15 @@ def _handler_class(
                 export = query.get("export", ["0"])[0]
                 if export not in {"0", "1"}:
                     raise ValueError("export must be 0 or 1")
+                def timestamp_filter(name: str) -> datetime | None:
+                    raw = query.get(name, [None])[0] or None
+                    if raw is None:
+                        return None
+                    try:
+                        return datetime.fromisoformat(raw)
+                    except ValueError as exc:
+                        raise ValueError(f"{name} must be an ISO 8601 timestamp") from exc
+
                 filters = {
                     "limit": limit,
                     "after_sequence": after_sequence,
@@ -951,6 +962,8 @@ def _handler_class(
                     "event_type": query.get("event_type", [None])[0] or None,
                     "correlation_id": query.get("correlation_id", [None])[0]
                     or None,
+                    "occurred_after": timestamp_filter("occurred_after"),
+                    "occurred_before": timestamp_filter("occurred_before"),
                 }
                 payload = (
                     handoff_store.export_events(**filters)

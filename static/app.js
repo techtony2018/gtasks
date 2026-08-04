@@ -1,6 +1,32 @@
 const AUTO_REFRESH_MINUTES = 30;
 const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000;
 const MEMORY_STARGRAPH_ORIGIN = "http://127.0.0.1:8788";
+const HANDOFF_EVENT_PAGE_SIZE = 50;
+const MISSING_LINKED_TASK_ERROR = "Linked Task could not be read from canonical or Agent work.";
+const HANDOFF_STATUS_FILTER_OPTIONS = [
+  ["", "All statuses"],
+  ["queued", "Queued"],
+  ["suppressed", "Suppressed"],
+  ["leased", "Leased"],
+  ["received", "Received"],
+  ["actively_executing", "Actively executing"],
+  ["still_blocked", "Still blocked"],
+  ["completed", "Completed"],
+  ["retrying", "Retrying"],
+  ["dead_letter", "Dead letter"],
+];
+const HANDOFF_EVENT_FILTER_OPTIONS = [
+  ["", "All events"],
+  ["handoff_queued", "Handoff queued"],
+  ["handoff_suppressed", "Handoff suppressed"],
+  ["handoff_leased", "Handoff leased"],
+  ["acknowledgement", "Acknowledgement"],
+  ["delivery_retry", "Delivery retry"],
+  ["delivery_terminal", "Delivery terminal"],
+  ["capability_rotated", "Capability rotated"],
+  ["lease_expired", "Lease expired"],
+  ["correction", "Correction"],
+];
 
 function renderSafeMarkdown(container, value) {
   const source = typeof value === "string" ? value : "";
@@ -247,6 +273,7 @@ const state = {
   agentIssues: [],
   agentWorkLoaded: false,
   agentWorkLoading: false,
+  agentWorkLoadPromise: null,
   agentWorkError: "",
   showAgentTasks: readAgentTasksPreference(),
   proposals: [],
@@ -276,6 +303,25 @@ const state = {
   artifactTaskFilter: null,
   artifactRequestToken: 0,
   taskArtifacts: new Map(),
+  taskHandoffEvents: new Map(),
+  handoffLogEvents: [],
+  handoffLogTotal: 0,
+  handoffLogSnapshotTotal: 0,
+  handoffLogNextSequence: null,
+  handoffLogLoading: false,
+  handoffLogError: "",
+  handoffLogStale: false,
+  handoffLogRequestToken: 0,
+  handoffLogFocusKey: null,
+  handoffLogTimeRange: null,
+  handoffLogFilters: {
+    time: "all",
+    agent_slug: "",
+    status: "",
+    event_type: "",
+    failure: "",
+    correlation_id: "",
+  },
 };
 
 function setHudTooltip(element, text) {
@@ -616,6 +662,9 @@ const viewMeta = {
     emptyCopy: "Durable Agent deliverables linked to authorized Tasks will appear here after canonical GBrain readback.",
   },
   "system-tickets": { title: "Mission Control System Tickets" },
+  "handoff-log": {
+    title: "Handoff Log",
+  },
   blocked: {
     title: "Blocked",
     emptyTitle: "No blocked work",
@@ -863,6 +912,11 @@ const elements = {
   taskArtifacts: document.querySelector("#task-artifacts"),
   taskArtifactsState: document.querySelector("#task-artifacts-state"),
   taskArtifactList: document.querySelector("#task-artifact-list"),
+  taskHandoffTimeline: document.querySelector("#task-handoff-timeline"),
+  taskHandoffTotal: document.querySelector("#task-handoff-total"),
+  taskHandoffEventState: document.querySelector("#task-handoff-event-state"),
+  taskHandoffEventList: document.querySelector("#task-handoff-event-list"),
+  taskHandoffLoadMore: document.querySelector("#task-handoff-load-more"),
   goalDetailClose: document.querySelector("#goal-detail-close"),
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
@@ -1452,6 +1506,7 @@ function reconcileVerifiedTask(task) {
 function navCounts() {
   if (!state.snapshot) return {
     artifacts: state.artifacts.length,
+    "handoff-log": state.handoffLogTotal,
     "system-tickets": state.systemTickets.length,
   };
   return {
@@ -1465,6 +1520,7 @@ function navCounts() {
     blocked: visibleBlockedTasks().length,
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
+    "handoff-log": state.handoffLogTotal,
     completed: state.snapshot.views.completed.length,
     "system-tickets": state.systemTickets.length + (
       state.showCompletedSystemTickets ? state.completedSystemTickets.length : 0
@@ -1525,6 +1581,7 @@ function inContextCountLabel(view) {
     blocked: "blocked tasks",
     projects: "projects",
     goals: "goals",
+    "handoff-log": "handoff events",
     completed: "completed tasks",
     "system-tickets": "System Tickets",
   }[view] || "items";
@@ -3324,29 +3381,34 @@ async function loadAgents() {
   return state.agentsLoadPromise;
 }
 
-async function loadAgentWork() {
-  if (state.agentWorkLoading) return;
-  state.agentWorkLoading = true;
-  state.agentWorkError = "";
-  render();
-  try {
-    const response = await fetch("/api/agent-work", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Agent work could not be read.");
-    }
-    state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
-    state.agentIssues = Array.isArray(payload.issues) ? payload.issues : [];
-    state.agentWorkLoaded = true;
-  } catch (error) {
-    state.agentWorkError = error.message || "Agent work could not be read.";
-  } finally {
-    state.agentWorkLoading = false;
+function loadAgentWork() {
+  if (state.agentWorkLoadPromise) return state.agentWorkLoadPromise;
+  state.agentWorkLoadPromise = (async () => {
+    state.agentWorkLoading = true;
+    state.agentWorkError = "";
     render();
-  }
+    try {
+      const response = await fetch("/api/agent-work", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Agent work could not be read.");
+      }
+      state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+      state.agentIssues = Array.isArray(payload.issues) ? payload.issues : [];
+      state.agentWorkLoaded = true;
+    } catch (error) {
+      state.agentWorkError = error.message || "Agent work could not be read.";
+    } finally {
+      state.agentWorkLoading = false;
+      render();
+    }
+  })().finally(() => {
+    state.agentWorkLoadPromise = null;
+  });
+  return state.agentWorkLoadPromise;
 }
 
 function scheduleSurfacePoll(surface) {
@@ -4444,9 +4506,43 @@ function renderTaskSurfaceLoading(view) {
   return wrapper;
 }
 
+function markHandoffFocus(element, key) {
+  element.dataset.handoffFocus = key;
+  return element;
+}
+
+function captureHandoffFocus() {
+  const control = document.activeElement?.closest?.("[data-handoff-focus]");
+  return control?.dataset?.handoffFocus || null;
+}
+
+function restoreHandoffFocus(key = state.handoffLogFocusKey) {
+  if (!key) return;
+  window.requestAnimationFrame(() => {
+    const selector = `[data-handoff-focus="${CSS.escape(key)}"]`;
+    let replacement = document.querySelector(selector);
+    const unavailable = (element) => (
+      !element || element.disabled || element.hidden || element.classList.contains("is-hidden")
+    );
+    const fallbackSelector = {
+      "filter-clear-correlation": '[data-handoff-focus="filter:correlation_id"]',
+      "load-more": '[data-handoff-focus="load-status"]',
+    }[key];
+    if (unavailable(replacement) && fallbackSelector) {
+      replacement = document.querySelector(fallbackSelector);
+    }
+    if (unavailable(replacement)) return;
+    replacement.focus({ preventScroll: true });
+    if (state.handoffLogFocusKey === key) state.handoffLogFocusKey = null;
+  });
+}
+
 function render() {
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
   const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
+  if (state.activeView === "handoff-log") {
+    state.handoffLogFocusKey = captureHandoffFocus() || state.handoffLogFocusKey;
+  }
   hideHudTooltip();
   window.requestAnimationFrame(() => {
     restorePendingDetailFocus();
@@ -4480,7 +4576,9 @@ function render() {
   // lockstep with state rather than relying on the previous DOM value.
   elements.showAgentTasks.checked = state.showAgentTasks;
   const view = state.activeView;
-  const content = view === "artifacts"
+  const content = view === "handoff-log"
+    ? renderHandoffLogView()
+    : view === "artifacts"
     ? renderArtifactsView()
     : !state.snapshot
     ? view === "system-tickets"
@@ -4512,7 +4610,10 @@ function render() {
       content,
     ],
   );
-  if (view === "artifacts") {
+  if (view === "handoff-log") restoreHandoffFocus();
+  if (view === "handoff-log") {
+    elements.dateLabel.textContent = "Immutable dispatcher audit";
+  } else if (view === "artifacts") {
     elements.dateLabel.textContent = "Canonical GBrain deliverables";
   } else if (state.snapshot) {
     const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
@@ -5868,6 +5969,461 @@ async function loadTaskArtifacts(taskSlug) {
   if (state.selectedKind === "task" && state.selectedSlug === taskSlug) renderTaskArtifacts(taskSlug);
 }
 
+function privacySafeEventText(value, maximum = 240) {
+  const normalized = String(value || "")
+    .replace(/\b(?:bearer|token|secret|password|thread(?:[_ -]?id)?)\b\s*[:=]?\s*\S*/gi, "[redacted]")
+    .replace(/https?:\/\/\S+/gi, "[link redacted]")
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, "[opaque value redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "No privacy-safe summary recorded.";
+  return normalized.length > maximum
+    ? `${normalized.slice(0, maximum - 1)}…`
+    : normalized;
+}
+
+function redactedCorrelationLabel(value) {
+  const safe = String(value || "").replace(/[^A-Za-z0-9._-]/g, "");
+  return safe ? `Correlation ••••${safe.slice(-6)}` : "No correlation";
+}
+
+function handoffAgentLabel(agentSlug) {
+  const profile = state.agents.find((agent) => agent.slug === agentSlug);
+  if (profile?.name) return privacySafeEventText(profile.name, 80);
+  const leaf = String(agentSlug || "Unassigned").split("/").pop() || "Unassigned";
+  return privacySafeEventText(`${leaf[0]?.toUpperCase() || ""}${leaf.slice(1)}`, 80);
+}
+
+function eventPassesHandoffTimeFilter(event, filter) {
+  if (!filter || filter === "all") return true;
+  const occurred = Date.parse(event.occurred_at || "");
+  if (!Number.isFinite(occurred)) return false;
+  const windows = { hour: 60 * 60 * 1000, day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000 };
+  return Date.now() - occurred <= (windows[filter] || Number.POSITIVE_INFINITY);
+}
+
+function renderHandoffEvents(events, destination) {
+  const list = destination.list;
+  list.replaceChildren();
+  const ordered = [...events]
+    .filter((event) => eventPassesHandoffTimeFilter(event, destination.timeFilter))
+    .sort((left, right) => Number(left.sequence) - Number(right.sequence));
+  ordered.forEach((event) => {
+    const deadLetter = event.status === "dead_letter" || event.event_type === "delivery_terminal";
+    const item = node("li", `handoff-event${deadLetter ? " is-dead-letter" : ""}`);
+    item.dataset.sequence = String(event.sequence);
+    const heading = node("div", "handoff-event-heading");
+    heading.append(
+      node("strong", "handoff-event-agent", handoffAgentLabel(event.agent_slug)),
+      node("span", "handoff-event-type", privacySafeEventText(String(event.event_type || "event").replaceAll("_", " "), 80)),
+    );
+    const status = node("span", "handoff-event-status", privacySafeEventText(String(event.status || "unknown").replaceAll("_", " "), 80));
+    const when = node(
+      "time",
+      "handoff-event-time",
+      event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "Time unavailable",
+    );
+    if (event.occurred_at) when.dateTime = event.occurred_at;
+    const summary = node("p", "handoff-event-summary", privacySafeEventText(event.summary));
+    const controls = node("div", "handoff-event-controls");
+    if (deadLetter) controls.append(node("span", "handoff-dead-letter", "Dead letter"));
+    if (event.correlation_id && event.task_slug) {
+      const correlation = node(
+        "button",
+        "handoff-correlation-button handoff-event-task",
+        redactedCorrelationLabel(event.correlation_id),
+      );
+      correlation.type = "button";
+      correlation.dataset.slug = event.task_slug;
+      correlation.setAttribute("aria-label", "Open correlated Task");
+      correlation.addEventListener("click", () => {
+        openHandoffCorrelation(event.correlation_id, event.task_slug, correlation);
+      });
+      controls.append(correlation);
+    }
+    item.append(heading, status, when, summary, controls);
+    list.append(item);
+  });
+  return ordered.length;
+}
+
+function taskHandoffEntry(taskSlug) {
+  return state.taskHandoffEvents.get(taskSlug) || {
+    events: [],
+    total: 0,
+    nextSequence: null,
+    loading: false,
+    error: "",
+    stale: false,
+    requestToken: 0,
+  };
+}
+
+function renderTaskHandoffTimeline(taskSlug) {
+  const entry = taskHandoffEntry(taskSlug);
+  const visible = renderHandoffEvents(entry.events, {
+    list: elements.taskHandoffEventList,
+    timeFilter: "all",
+  });
+  elements.taskHandoffTotal.textContent = entry.events.length
+    ? `${entry.events.length} of ${entry.total}`
+    : "";
+  elements.taskHandoffEventState.classList.remove("is-error", "is-stale");
+  if (entry.loading && !entry.events.length) {
+    elements.taskHandoffEventState.textContent = "Loading handoff events…";
+  } else if (entry.error && entry.events.length) {
+    elements.taskHandoffEventState.textContent = "Last verified handoff events remain visible; refresh failed.";
+    elements.taskHandoffEventState.classList.add("is-stale");
+  } else if (entry.error) {
+    elements.taskHandoffEventState.textContent = "Handoff events are unavailable for this task.";
+    elements.taskHandoffEventState.classList.add("is-error");
+  } else if (!visible) {
+    elements.taskHandoffEventState.textContent = "No handoff events match this task.";
+  } else {
+    elements.taskHandoffEventState.textContent = "Read-only events in canonical sequence order.";
+  }
+  elements.taskHandoffLoadMore.classList.toggle("is-hidden", entry.nextSequence === null);
+  elements.taskHandoffLoadMore.disabled = entry.loading;
+}
+
+async function readTaskHandoffPage(taskSlug, { reset }) {
+  const previous = taskHandoffEntry(taskSlug);
+  const returnFocusToTimelineState = (
+    !reset && document.activeElement === elements.taskHandoffLoadMore
+  );
+  const requestToken = previous.requestToken + 1;
+  const entry = {
+    ...previous,
+    loading: true,
+    error: "",
+    stale: false,
+    requestToken,
+  };
+  state.taskHandoffEvents.set(taskSlug, entry);
+  if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+    renderTaskHandoffTimeline(taskSlug);
+  }
+  const params = new URLSearchParams({
+    limit: String(HANDOFF_EVENT_PAGE_SIZE),
+    after_sequence: String(reset ? 0 : previous.nextSequence || 0),
+  });
+  try {
+    const response = await fetch(
+      `/api/tasks/${encodeURIComponent(taskSlug)}/handoff-events?${params}`,
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Handoff events could not be read.");
+    if (taskHandoffEntry(taskSlug).requestToken !== requestToken) return;
+    const received = Array.isArray(payload.events) ? payload.events : [];
+    const combined = reset ? received : [...previous.events, ...received];
+    const snapshotTotal = reset ? Number(payload.total || 0) : previous.total;
+    const unique = Array.from(
+      new Map(combined.map((event) => [event.sequence, event])).values(),
+    ).slice(0, snapshotTotal);
+    const nextSequence = unique.length >= snapshotTotal
+      ? null
+      : Number.isInteger(payload.next_sequence) ? payload.next_sequence : null;
+    state.taskHandoffEvents.set(taskSlug, {
+      events: unique,
+      total: snapshotTotal,
+      nextSequence,
+      loading: false,
+      error: "",
+      stale: false,
+      requestToken,
+    });
+  } catch (error) {
+    if (taskHandoffEntry(taskSlug).requestToken !== requestToken) return;
+    state.taskHandoffEvents.set(taskSlug, {
+      ...previous,
+      loading: false,
+      error: error.message || "Handoff events are unavailable.",
+      stale: previous.events.length > 0,
+      requestToken,
+    });
+  }
+  if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
+    renderTaskHandoffTimeline(taskSlug);
+    if (
+      returnFocusToTimelineState &&
+      taskHandoffEntry(taskSlug).nextSequence === null
+    ) {
+      window.requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (
+          active !== elements.taskHandoffLoadMore &&
+          active !== document.body &&
+          active?.isConnected
+        ) return;
+        elements.taskHandoffEventState.focus({ preventScroll: true });
+      });
+    }
+  }
+}
+
+async function loadTaskHandoffTimeline(taskSlug) {
+  return readTaskHandoffPage(taskSlug, { reset: true });
+}
+
+function handoffLogFilters(form = null) {
+  if (!form) return { ...state.handoffLogFilters };
+  const values = new FormData(form);
+  const correlationInput = form.elements.namedItem("correlation_id");
+  const typedCorrelation = String(values.get("correlation_id") || "").trim();
+  return {
+    time: String(values.get("time") || "all"),
+    agent_slug: String(values.get("agent_slug") || ""),
+    status: String(values.get("status") || ""),
+    event_type: String(values.get("event_type") || ""),
+    failure: String(values.get("failure") || ""),
+    correlation_id: typedCorrelation || (
+      correlationInput?.dataset.preserveActive === "true"
+        ? state.handoffLogFilters.correlation_id
+        : ""
+    ),
+  };
+}
+
+function handoffTimeRange(timeFilter, now = Date.now()) {
+  const duration = {
+    hour: 60 * 60 * 1000,
+    day: 24 * 60 * 60 * 1000,
+    week: 7 * 24 * 60 * 60 * 1000,
+  }[timeFilter];
+  if (!duration) return null;
+  return {
+    occurredAfter: new Date(now - duration).toISOString(),
+    occurredBefore: new Date(now).toISOString(),
+  };
+}
+
+async function loadHandoffLog({ reset = false, filters = null } = {}) {
+  const nextFilters = filters
+    ? { ...state.handoffLogFilters, ...filters }
+    : state.handoffLogFilters;
+  const filtersChanged = JSON.stringify(nextFilters) !== JSON.stringify(state.handoffLogFilters);
+  state.handoffLogFilters = nextFilters;
+  if (reset && filtersChanged) {
+    state.handoffLogEvents = [];
+    state.handoffLogTotal = 0;
+    state.handoffLogSnapshotTotal = 0;
+    state.handoffLogNextSequence = null;
+  }
+  const requestToken = ++state.handoffLogRequestToken;
+  const previousEvents = state.handoffLogEvents;
+  const previousTotal = state.handoffLogTotal;
+  const previousSnapshotTotal = state.handoffLogSnapshotTotal;
+  const previousNextSequence = state.handoffLogNextSequence;
+  const previousTimeRange = state.handoffLogTimeRange;
+  if (reset) state.handoffLogTimeRange = handoffTimeRange(nextFilters.time);
+  state.handoffLogFocusKey = captureHandoffFocus() || state.handoffLogFocusKey;
+  state.handoffLogLoading = true;
+  state.handoffLogError = "";
+  state.handoffLogStale = false;
+  if (state.activeView === "handoff-log") render();
+  const active = handoffLogFilters();
+  try {
+    const params = new URLSearchParams({
+      limit: String(HANDOFF_EVENT_PAGE_SIZE),
+      after_sequence: String(reset ? 0 : state.handoffLogNextSequence || 0),
+    });
+    if (active.agent_slug) params.set("agent_slug", active.agent_slug);
+    const effectiveStatus = active.failure || active.status;
+    if (effectiveStatus) params.set("status", effectiveStatus);
+    if (active.event_type) params.set("event_type", active.event_type);
+    if (active.correlation_id) params.set("correlation_id", active.correlation_id);
+    if (state.handoffLogTimeRange) {
+      params.set("occurred_after", state.handoffLogTimeRange.occurredAfter);
+      params.set("occurred_before", state.handoffLogTimeRange.occurredBefore);
+    }
+    const response = await fetch(`/api/handoff-events?${params}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Handoff events could not be read.");
+    if (requestToken !== state.handoffLogRequestToken) return;
+    const snapshotTotal = reset
+      ? Math.max(0, Number(payload.total || 0))
+      : state.handoffLogSnapshotTotal || state.handoffLogTotal;
+    const received = Array.isArray(payload.events) ? payload.events : [];
+    const events = Array.from(
+      new Map([
+        ...(reset ? [] : previousEvents),
+        ...received,
+      ].map((event) => [event.sequence, event])).values(),
+    ).slice(0, snapshotTotal);
+    const candidate = Number.isInteger(payload.next_sequence)
+      ? payload.next_sequence
+      : null;
+    const nextSequence = events.length >= snapshotTotal ? null : candidate;
+    state.handoffLogEvents = events;
+    state.handoffLogSnapshotTotal = snapshotTotal || 0;
+    state.handoffLogTotal = state.handoffLogSnapshotTotal;
+    state.handoffLogNextSequence = nextSequence;
+  } catch (error) {
+    if (requestToken !== state.handoffLogRequestToken) return;
+    state.handoffLogEvents = previousEvents;
+    state.handoffLogTotal = previousTotal;
+    state.handoffLogSnapshotTotal = previousSnapshotTotal;
+    state.handoffLogNextSequence = previousNextSequence;
+    state.handoffLogTimeRange = previousTimeRange;
+    state.handoffLogError = error.message || "Handoff events are unavailable.";
+    state.handoffLogStale = previousEvents.length > 0;
+  } finally {
+    if (requestToken === state.handoffLogRequestToken) {
+      state.handoffLogLoading = false;
+      if (state.activeView === "handoff-log") render();
+    }
+  }
+}
+
+async function loadCorrelatedHandoffTask(taskSlug) {
+  let task = findTaskBySlug(taskSlug);
+  if (task) return task;
+  await (state.tasksLoadPromise || loadTasks({ reason: "manual" }));
+  task = findTaskBySlug(taskSlug);
+  if (task) return task;
+  await loadAgentWork();
+  return findTaskBySlug(taskSlug);
+}
+
+async function openHandoffCorrelation(correlationId, taskSlug, originControl = null) {
+  state.handoffLogFilters = {
+    ...state.handoffLogFilters,
+    correlation_id: correlationId || "",
+  };
+  state.handoffLogEvents = [];
+  state.handoffLogTotal = 0;
+  state.handoffLogSnapshotTotal = 0;
+  state.handoffLogNextSequence = null;
+  state.activeView = "handoff-log";
+  render();
+  state.handoffLogFocusKey = null;
+  const logRead = loadHandoffLog({ reset: true });
+  const task = taskSlug ? await loadCorrelatedHandoffTask(taskSlug) : null;
+  if (task) {
+    selectTask(taskSlug, null, originControl);
+    await logRead;
+    return;
+  }
+  await logRead;
+  state.handoffLogError = MISSING_LINKED_TASK_ERROR;
+  state.handoffLogStale = false;
+  state.handoffLogFocusKey = "load-status";
+  if (state.activeView === "handoff-log") render();
+}
+
+function handoffFilterSelect(label, name, options, value) {
+  const wrapper = node("label", "handoff-filter-control");
+  wrapper.append(node("span", "", label));
+  const select = document.createElement("select");
+  select.name = name;
+  markHandoffFocus(select, `filter:${name}`);
+  select.setAttribute("aria-label", `${label} filter`);
+  options.forEach(([optionValue, optionLabel]) => {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = optionLabel;
+    option.selected = optionValue === value;
+    select.append(option);
+  });
+  wrapper.append(select);
+  return wrapper;
+}
+
+function renderHandoffLogView() {
+  const section = node("section", "handoff-log-view");
+  const heading = node("div", "handoff-log-heading");
+  heading.append(
+    node("h2", "", "Handoff Log"),
+    node("p", "", "Read-only projection of the same immutable audit events shown in each Task Timeline."),
+  );
+  const filters = handoffLogFilters();
+  const form = node("form", "handoff-filter-grid");
+  form.append(
+    handoffFilterSelect("Time", "time", [["all", "All loaded time"], ["hour", "Past hour"], ["day", "Past day"], ["week", "Past week"]], filters.time),
+    handoffFilterSelect("Agent", "agent_slug", [["", "All Agents"], ["agents/tammy", "Tammy"], ["agents/timmy", "Timmy"], ["agents/toddy", "Toddy"]], filters.agent_slug),
+    handoffFilterSelect("Status", "status", HANDOFF_STATUS_FILTER_OPTIONS, filters.status),
+    handoffFilterSelect("Event", "event_type", HANDOFF_EVENT_FILTER_OPTIONS, filters.event_type),
+    handoffFilterSelect("Failure", "failure", [["", "All outcomes"], ["retrying", "Retrying"], ["dead_letter", "Dead letter"]], filters.failure),
+  );
+  const correlation = node("label", "handoff-filter-control");
+  correlation.append(node("span", "", "Correlation"));
+  const correlationInput = document.createElement("input");
+  correlationInput.name = "correlation_id";
+  correlationInput.maxLength = 60;
+  correlationInput.autocomplete = "off";
+  correlationInput.placeholder = filters.correlation_id
+    ? redactedCorrelationLabel(filters.correlation_id)
+    : "Exact safe correlation ID";
+  correlationInput.dataset.preserveActive = filters.correlation_id ? "true" : "false";
+  correlationInput.setAttribute("aria-label", "Correlation filter");
+  markHandoffFocus(correlationInput, "filter:correlation_id");
+  correlation.append(correlationInput);
+  const apply = node("button", "secondary-button", "Apply filters");
+  apply.type = "submit";
+  markHandoffFocus(apply, "filter-submit");
+  form.append(correlation, apply);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
+  });
+  form.querySelectorAll("select").forEach((select) => {
+    select.addEventListener("change", () => {
+      const statusFilter = form.elements.namedItem("status");
+      const failureFilter = form.elements.namedItem("failure");
+      if (select.name === "status" && select.value && failureFilter) failureFilter.value = "";
+      if (select.name === "failure" && select.value && statusFilter) statusFilter.value = "";
+      void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
+    });
+  });
+  if (filters.correlation_id) {
+    const clearCorrelation = node("button", "secondary-button", "Clear correlation");
+    clearCorrelation.type = "button";
+    markHandoffFocus(clearCorrelation, "filter-clear-correlation");
+    clearCorrelation.addEventListener("click", () => {
+      void loadHandoffLog({ reset: true, filters: { correlation_id: "" } });
+    });
+    form.append(clearCorrelation);
+  }
+  const stateMessage = node("p", "handoff-surface-state");
+  stateMessage.tabIndex = -1;
+  markHandoffFocus(stateMessage, "load-status");
+  stateMessage.setAttribute("role", state.handoffLogError && !state.handoffLogEvents.length ? "alert" : "status");
+  stateMessage.setAttribute("aria-live", "polite");
+  const list = node("ol", "handoff-event-list");
+  list.setAttribute("aria-label", "Handoff audit events");
+  const visible = renderHandoffEvents(state.handoffLogEvents, {
+    list,
+    timeFilter: "all",
+  });
+  if (state.handoffLogLoading && !state.handoffLogEvents.length) {
+    stateMessage.textContent = "Loading handoff events…";
+  } else if (state.handoffLogStale) {
+    stateMessage.textContent = "Last verified handoff events remain visible; the latest read failed.";
+    stateMessage.classList.add("is-stale");
+  } else if (state.handoffLogError) {
+    stateMessage.textContent = state.handoffLogError === MISSING_LINKED_TASK_ERROR
+      ? state.handoffLogError
+      : "Handoff events are unavailable. Try again without changing any task.";
+    stateMessage.classList.add("is-error");
+  } else if (!visible) {
+    stateMessage.textContent = "No handoff events match these filters.";
+  } else {
+    stateMessage.textContent = `${visible} displayed of ${state.handoffLogTotal} matching events · canonical sequence order.`;
+  }
+  const loadMore = node("button", "secondary-button handoff-load-more", "Load more events");
+  loadMore.type = "button";
+  markHandoffFocus(loadMore, "load-more");
+  loadMore.disabled = state.handoffLogLoading;
+  loadMore.classList.toggle("is-hidden", state.handoffLogNextSequence === null);
+  loadMore.addEventListener("click", () => void loadHandoffLog({ reset: false }));
+  section.append(heading, form, stateMessage, list, loadMore);
+  return section;
+}
+
 function keepSelectedCalendarTaskVisible(taskSlug) {
   if (state.activeView !== "week" || state.calendarMode !== "week") return;
   window.requestAnimationFrame(() => {
@@ -5948,9 +6504,11 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   elements.taskTodoError.classList.add("is-hidden");
   renderTaskTodos(task);
   renderTaskArtifacts(task.slug);
+  renderTaskHandoffTimeline(task.slug);
   if (state.artifactTaskReturn?.taskSlug !== task.slug) {
     void loadTaskArtifacts(task.slug);
   }
+  void loadTaskHandoffTimeline(task.slug);
   elements.detailPriority.textContent = task.priority;
   elements.detailDue.textContent = formatDay(task.due_day, "long");
   const metric = task.progress_metric;
@@ -6208,15 +6766,24 @@ function closeDetails() {
 function detailFocusReturnTarget(anchor) {
   if (!anchor) return null;
   if (anchor.element?.isConnected) return anchor.element;
-  return [
+  const matchingOrigin = [
     ...document.querySelectorAll(".proposal-card"),
     ...document.querySelectorAll(".task-row-open"),
     ...document.querySelectorAll(".project-card-open"),
     ...document.querySelectorAll(".goal-card"),
     ...document.querySelectorAll(".artifact-card"),
+    ...document.querySelectorAll(".handoff-event-task"),
     ...document.querySelectorAll(".system-ticket-card"),
     ...document.querySelectorAll(".ical-event"),
   ].find((candidate) => candidate.dataset.slug === anchor.slug) || null;
+  if (matchingOrigin) return matchingOrigin;
+  if (state.activeView === "handoff-log") {
+    return (
+      document.querySelector('[data-handoff-focus="load-status"]') ||
+      document.querySelector('[data-handoff-focus="filter:correlation_id"]')
+    );
+  }
+  return null;
 }
 
 function restorePendingDetailFocus({ force = false } = {}) {
@@ -6399,6 +6966,9 @@ function setView(view) {
   if (view === "week" && !state.icalConnectionLoaded && !state.icalConnectionLoading) {
     void loadCalendarConnectionState();
   }
+  if (view === "handoff-log" && !state.handoffLogEvents.length && !state.handoffLogLoading) {
+    void loadHandoffLog({ reset: true });
+  }
 }
 
 function setConnection(status, label) {
@@ -6453,6 +7023,10 @@ function clearAutoRefreshTimer() {
   }
 }
 
+function activeViewUsesTaskSnapshot() {
+  return !["handoff-log", "artifacts", "system-tickets"].includes(state.activeView);
+}
+
 function scheduleAutoRefresh({ reset = false } = {}) {
   clearAutoRefreshTimer();
   if (reset || state.autoRefreshDueAt === null) {
@@ -6487,7 +7061,7 @@ async function performTaskLoad(reason) {
     elements.syncLabel.textContent = "Reading GBrain…";
     elements.refreshButton.disabled = true;
     setConnection("loading", "Connecting");
-    render();
+    if (activeViewUsesTaskSnapshot()) render();
   } else if (reason === "manual") {
     elements.syncLabel.textContent = "Refreshing verified data…";
     elements.refreshButton.disabled = true;
@@ -6556,7 +7130,7 @@ async function performTaskLoad(reason) {
   } finally {
     state.loading = false;
     elements.refreshButton.disabled = false;
-    render();
+    if (activeViewUsesTaskSnapshot()) render();
   }
 }
 
@@ -7000,6 +7574,10 @@ elements.taskTodoAddCancel.addEventListener("click", () => {
 });
 elements.taskTodoAddForm.addEventListener("submit", createTaskTodo);
 elements.taskHandoffAnswerForm.addEventListener("submit", answerAndHandBack);
+elements.taskHandoffLoadMore.addEventListener("click", () => {
+  if (state.selectedKind !== "task" || !state.selectedSlug) return;
+  void readTaskHandoffPage(state.selectedSlug, { reset: false });
+});
 elements.taskTodoShowCompleted.addEventListener("change", () => {
   state.showCompletedTodos = elements.taskTodoShowCompleted.checked;
   const task = findTaskBySlug(state.selectedSlug);
@@ -7056,6 +7634,9 @@ elements.refreshButton.addEventListener("click", () => {
   }
   if (state.activeView === "system-tickets" || state.systemTickets.length) {
     void loadSystemTickets({ force: true });
+  }
+  if (state.activeView === "handoff-log" || state.handoffLogEvents.length) {
+    void loadHandoffLog({ reset: true });
   }
 });
 elements.showAgentTasks.addEventListener("change", () => {

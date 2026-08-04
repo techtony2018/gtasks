@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from gtasks.domain import ACTIVE_ROOT, COMPLETED_ROOT, Project, new_inbox_task
+from gtasks.domain import (
+    ACTIVE_ROOT,
+    COMPLETED_ROOT,
+    AgentProfile,
+    Project,
+    new_inbox_task,
+)
 from gtasks.gbrain import (
+    AgentRead,
+    AgentWorkRead,
+    ArtifactRead,
     CollectionIssue,
     CollectionRead,
     GoalDeletionReceipt,
@@ -17,22 +26,70 @@ from gtasks.gbrain import (
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
     ProjectRead,
+    ProposalRead,
     StatusMutationReceipt,
+    SystemTicketRead,
+    TodoRead,
 )
 from gtasks.server import build_server
+from gtasks.handoff_dispatcher import (
+    ActionableChange,
+    AgentRegistration,
+    DurableHandoffStore,
+    HandoffDispatcher,
+)
+from gtasks.ical import CalendarPreferences
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
+from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 from gtasks.warnings import WarningDismissalStore
 
 
-class IsolatedProjectAdapter:
+class SyntheticCalendarReader:
     def __init__(self) -> None:
-        self.task = new_inbox_task(
+        self.calendar_reads = 0
+
+    def status(self) -> dict:
+        return {"status": "not_determined"}
+
+    def calendars(self) -> dict:
+        self.calendar_reads += 1
+        return {"status": "not_determined", "calendars": []}
+
+    def read(self, start, end, *, calendar_ids=()) -> dict:
+        return {"status": "not_determined", "events": []}
+
+    def request_full_access(self) -> dict:
+        return {"status": "not_determined"}
+
+
+class IsolatedProjectAdapter:
+    def __init__(self, *, read_cache_path: Path) -> None:
+        self.read_cache_path = read_cache_path
+        self.task = replace(new_inbox_task(
             "Isolated project task",
             datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
             "fixture1",
-        )
+        ), owner_agent="agents/tammy")
         self.projects: tuple[Project, ...] = ()
         self.goals = ()
+        self.agents = (
+            AgentProfile(
+                slug="agents/tammy",
+                name="Tammy",
+                title="Agent Tammy",
+                summary="Synthetic browser QA agent.",
+                work_root="collections/tammys-tasks",
+                default_goal_slugs=(),
+                avatar_value="TA",
+            ),
+        )
+
+    def get_tony_profile(self) -> dict:
+        return {
+            "slug": "people/tony-guan",
+            "name": "Tony",
+            "avatar": {"kind": "initials", "value": "TG"},
+        }
 
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = (self.task,) if root_slug == ACTIVE_ROOT else ()
@@ -40,6 +97,36 @@ class IsolatedProjectAdapter:
 
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
+
+    def list_agent_profiles(self) -> AgentRead:
+        return AgentRead(agents=self.agents)
+
+    def list_agent_work(self) -> AgentWorkRead:
+        return AgentWorkRead(
+            tasks=({**self.task.to_dict(), "open_todos": 0},),
+            roots=(self.agents[0].work_root,),
+        )
+
+    def list_task_todos(
+        self,
+        task_slug: str,
+        *,
+        status: str | None,
+        cursor: int,
+        limit: int,
+    ) -> TodoRead:
+        if task_slug != self.task.slug:
+            raise ValueError("unknown isolated task")
+        return TodoRead(todos=())
+
+    def list_agent_artifacts(self, **_filters) -> ArtifactRead:
+        return ArtifactRead(artifacts=())
+
+    def list_proposals(self) -> ProposalRead:
+        return ProposalRead(proposals=())
+
+    def list_system_tickets(self, *, include_completed: bool = False) -> SystemTicketRead:
+        return SystemTicketRead(tickets=())
 
     def create_goal(self, goal) -> GoalMutationReceipt:
         self.goals = (*self.goals, goal)
@@ -134,31 +221,193 @@ class IsolatedProjectAdapter:
         )
 
 
+def _seed_handoff_events(
+    store: DurableHandoffStore,
+    adapter: IsolatedProjectAdapter,
+    *,
+    now: datetime,
+) -> None:
+    registration = AgentRegistration(
+        registration_id="fixture-registration",
+        agent_slug="agents/tammy",
+        route="hosts/tammy",
+        verified=True,
+    )
+    dispatcher = HandoffDispatcher(store, registrations=(registration,))
+    long_summary = (
+        "This intentionally long privacy safe summary verifies narrow viewport wrapping "
+        "without exposing private payloads and remains readable across the event card."
+    )
+    for sequence in range(1, 45):
+        dispatcher.record(
+            ActionableChange(
+                task_slug=adapter.task.slug,
+                canonical_event_id=f"events/fixture-{sequence:03d}",
+                canonical_version=f"v{sequence:03d}",
+                trigger=("task_activated", "todo_added", "answer_received")[sequence % 3],
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary=long_summary if sequence == 1 else f"Synthetic queued handoff event {sequence}.",
+                occurred_at=now,
+                correlation_id=(
+                    "correlation-redacted-display"
+                    if sequence == 1
+                    else "correlation-fixture-task"
+                ),
+            ),
+            now=now,
+        )
+    for offset, trigger in enumerate(
+        ("presentation_only", "duplicate_save", "stale_cache_refresh", "stable_blocker"),
+        start=45,
+    ):
+        dispatcher.record(
+            ActionableChange(
+                task_slug=adapter.task.slug,
+                canonical_event_id=f"events/fixture-{offset:03d}",
+                canonical_version=f"v{offset:03d}",
+                trigger=trigger,
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary=f"Synthetic suppressed handoff event for {trigger.replace('_', ' ')}.",
+                occurred_at=now,
+                correlation_id="correlation-fixture-task",
+            ),
+            now=now,
+        )
+
+    completed = store.claim(registration.registration_id, now=now, lease_seconds=30)
+    if completed is not None:
+        for index, (status, detail) in enumerate(
+            (
+                ("received", None),
+                ("actively_executing", None),
+                ("still_blocked", "Waiting for the synthetic QA dependency."),
+                ("actively_executing", None),
+                ("completed", None),
+            ),
+            start=1,
+        ):
+            store.acknowledge(
+                completed.record.handoff_id,
+                status,
+                registration_id=registration.registration_id,
+                lease_token=completed.lease_token,
+                lease_generation=completed.lease_generation,
+                mutation_id=f"mutations/fixture-ack-{index}",
+                detail=detail,
+                now=now,
+            )
+
+    rotated = store.claim(registration.registration_id, now=now, lease_seconds=30)
+    if rotated is not None:
+        store.recover_in_progress(
+            rotated.record.handoff_id,
+            registration=registration,
+            expected_generation=rotated.lease_generation,
+            now=now,
+        )
+
+    expiring = store.claim(registration.registration_id, now=now, lease_seconds=1)
+    if expiring is not None:
+        store.reconcile_expired_leases(now=now + timedelta(seconds=2))
+
+    retrying = store.claim(
+        registration.registration_id,
+        now=now + timedelta(seconds=2),
+        lease_seconds=30,
+    )
+    if retrying is not None:
+        store.record_failure(
+            retrying.record.handoff_id,
+            registration_id=registration.registration_id,
+            lease_token=retrying.lease_token,
+            lease_generation=retrying.lease_generation,
+            mutation_id="mutations/fixture-retrying",
+            retryable=True,
+            summary="Synthetic delivery will retry after a safe delay.",
+            now=now + timedelta(seconds=2),
+        )
+
+    terminal = store.claim(
+        registration.registration_id,
+        now=now + timedelta(seconds=2),
+        lease_seconds=30,
+    )
+    if terminal is not None:
+        store.record_failure(
+            terminal.record.handoff_id,
+            registration_id=registration.registration_id,
+            lease_token=terminal.lease_token,
+            lease_generation=terminal.lease_generation,
+            mutation_id="mutations/fixture-terminal",
+            retryable=False,
+            summary="Synthetic delivery reached the final safe retry.",
+            now=now + timedelta(seconds=2),
+        )
+
+    first_event = store.query_events(
+        limit=1,
+        after_sequence=0,
+        task_slug=adapter.task.slug,
+    ).events[0]
+    store.append_correction(
+        first_event.handoff_id,
+        supersedes_event_id=first_event.event_id,
+        summary="Correction preserves the immutable original event for audit.",
+        now=now + timedelta(seconds=3),
+    )
+
+
+def build_fixture_server(runtime_directory: Path, *, port: int = 4182):
+    runtime_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fixture_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+    read_cache_path = runtime_directory / "read-snapshots.json"
+    calendar_preferences_path = runtime_directory / "calendar-preferences.json"
+    adapter = IsolatedProjectAdapter(read_cache_path=read_cache_path)
+    adapter.calendar_preferences_path = calendar_preferences_path
+    adapter.calendar_reader = SyntheticCalendarReader()
+    handoff_store = DurableHandoffStore(
+        str(runtime_directory / "handoff-events.sqlite3"),
+        retention_days=30,
+    )
+    _seed_handoff_events(handoff_store, adapter, now=fixture_now)
+    server = build_server(
+        host="127.0.0.1",
+        port=port,
+        adapter=adapter,
+        identity_factory=lambda: "fixture2",
+        clock=lambda: fixture_now,
+        warning_store=WarningDismissalStore(
+            runtime_directory / "warning-state.json",
+            user_id="fixture-user",
+        ),
+        log_reader=OperationalLogReader(
+            gtasks_store=OperationalLogStore(
+                runtime_directory / "operational-events.jsonl"
+            ),
+            queue_path=runtime_directory / "reader-observability.json",
+            queue_health=lambda: {
+                "status": "unavailable",
+                "broker_connected": False,
+                "message": (
+                    "Event Queue Reader status is unavailable. "
+                    "GTasks remains available."
+                ),
+            },
+        ),
+        read_cache=ReadSurfaceCache(
+            ReadSnapshotStore(read_cache_path),
+            background=False,
+        ),
+        ical_reader=adapter.calendar_reader,
+        calendar_preferences=CalendarPreferences(calendar_preferences_path),
+        handoff_store=handoff_store,
+    )
+    return server, adapter
+
+
 if __name__ == "__main__":
     with TemporaryDirectory() as directory:
-        server = build_server(
-            host="127.0.0.1",
-            port=4182,
-            adapter=IsolatedProjectAdapter(),
-            identity_factory=lambda: "fixture2",
-            clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
-            warning_store=WarningDismissalStore(
-                Path(directory) / "warning-state.json",
-                user_id="fixture-user",
-            ),
-            log_reader=OperationalLogReader(
-                gtasks_store=OperationalLogStore(
-                    Path(directory) / "operational-events.jsonl"
-                ),
-                queue_path=Path(directory) / "reader-observability.json",
-                queue_health=lambda: {
-                    "status": "unavailable",
-                    "broker_connected": False,
-                    "message": (
-                        "Event Queue Reader status is unavailable. "
-                        "GTasks remains available."
-                    ),
-                },
-            ),
-        )
+        server, _adapter = build_fixture_server(Path(directory))
         server.serve_forever()

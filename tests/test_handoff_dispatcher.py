@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import inspect
 import os
 import sqlite3
 import tempfile
@@ -1282,6 +1283,41 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(len(final.events), 1)
         self.assertIsNone(final.next_sequence)
         self.assertEqual([event.correlation_id for event in filtered.events], ["corr-b"])
+
+    def test_timestamp_range_preserves_filtered_totals_order_and_pagination(self) -> None:
+        parameters = inspect.signature(self.store.query_events).parameters
+        self.assertIn("occurred_after", parameters)
+        self.assertIn("occurred_before", parameters)
+        self.record(canonical_event_id="events/old", occurred_at=NOW - timedelta(days=8))
+        self.record(canonical_event_id="events/recent-1", occurred_at=NOW - timedelta(minutes=50))
+        self.record(canonical_event_id="events/recent-2", occurred_at=NOW - timedelta(minutes=20))
+        self.record(canonical_event_id="events/future", occurred_at=NOW + timedelta(minutes=1))
+
+        query = {
+            "occurred_after": NOW - timedelta(hours=1),
+            "occurred_before": NOW,
+        }
+        first = self.store.query_events(limit=1, after_sequence=0, **query)
+        final = self.store.query_events(
+            limit=1,
+            after_sequence=first.next_sequence,
+            **query,
+        )
+
+        self.assertEqual(first.total, 2)
+        self.assertEqual([event.sequence for event in first.events], [2])
+        self.assertEqual(first.next_sequence, 2)
+        self.assertEqual(final.total, 1)
+        self.assertEqual([event.sequence for event in final.events], [3])
+        self.assertIsNone(final.next_sequence)
+
+        with self.assertRaisesRegex(ValueError, "occurred_after must not exceed"):
+            self.store.query_events(
+                limit=50,
+                after_sequence=0,
+                occurred_after=NOW,
+                occurred_before=NOW - timedelta(seconds=1),
+            )
 
     def test_correction_is_append_only_and_export_metadata_declares_retention(self) -> None:
         record = self.record()
