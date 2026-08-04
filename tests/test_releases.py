@@ -366,6 +366,11 @@ class ReleaseCatalogTests(unittest.TestCase):
         )
         self.assertIn("Final dashboard-managed repair deploy/readback: PASS", normalized)
         self.assertIn("Final independent live desktop/mobile UI QA: PASS", normalized)
+        self.assertIn("Canonical System Ticket evidence/completion: PASS", normalized)
+        self.assertIn(
+            "`e81b6f003a0ea3361f7cf606343e7182065351b3c946a9caea9bf0106951c4c0`",
+            evidence,
+        )
         self.assertIn(
             "`be4eee74ff413cd88194dcdff025a58c18e81e916b66a78c489c2bab9c4bb00e`",
             evidence,
