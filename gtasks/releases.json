@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.74",
+  "current_version": "V0.0.75",
   "releases": [
     {
       "version": "V0.0.1",
@@ -444,6 +444,12 @@
       "date": "2026-08-03",
       "title": "Verified job-application progress",
       "summary": "Restores the durable job_applied consumer in the canonical repository with one explicit task binding, restart-safe idempotency, verified GBrain readback, preserved manual baseline and target values, privacy-safe activity receipts, recoverable binding warnings, and a clear scoped progress breakdown in Task Edit. Task Edit and Duplicate now open on the first activation while canonical choices load, legacy verified evidence stays visibly protected, and concurrent read-only Calendar helper calls recover from transient LaunchServices failures."
+    },
+    {
+      "version": "V0.0.75",
+      "date": "2026-08-04",
+      "title": "Focused Artifact navigation and Calendar controls",
+      "summary": "Artifact details now open their canonical producing Task and return to the same Artifact context, while the hierarchy uses compact title-only Task rows with clear Default Goal and Default Project labels. A healthy Calendar connection shows one concise Manage action and transient verified-selection feedback."
     }
   ]
 }

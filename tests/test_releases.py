@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.74")
+        self.assertEqual(__version__, "V0.0.75")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -88,7 +88,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("preserving its original completion time", release["summary"])
 
     def test_v0_0_74_records_verified_job_application_progress(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.74")
 
         self.assertEqual(release["version"], "V0.0.74")
         self.assertIn("explicit task binding", release["summary"])
@@ -96,6 +96,15 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("privacy-safe activity receipts", release["summary"])
         self.assertIn("first activation", release["summary"])
         self.assertIn("legacy verified evidence", release["summary"])
+
+    def test_v0_0_75_records_focused_artifact_and_calendar_navigation(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.75")
+        self.assertIn("producing Task", release["summary"])
+        self.assertIn("compact title-only", release["summary"])
+        self.assertIn("Default Goal", release["summary"])
+        self.assertIn("healthy Calendar", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -202,6 +211,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.72",
                 "V0.0.73",
                 "V0.0.74",
+                "V0.0.75",
             ],
         )
 

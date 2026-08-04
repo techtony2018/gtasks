@@ -4810,8 +4810,8 @@ a {
 }
 
 .app-shell:has(.artifact-detail-content:not(.is-hidden)) {
-  --artifact-reader-default: minmax(0, 68vw);
-  grid-template-columns: 92px minmax(320px, 1fr) var(--detail-panel-width, var(--artifact-reader-default));
+  --artifact-reader-default: minmax(0, 78vw);
+  grid-template-columns: 92px minmax(220px, 1fr) var(--detail-panel-width, var(--artifact-reader-default));
 }
 
 .nav-label,
@@ -5281,6 +5281,14 @@ button:active {
   background: rgba(56, 189, 248, 0.08);
 }
 
+.artifact-hierarchy-toggle.is-task-title-only {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.artifact-hierarchy-toggle.is-task-title-only .artifact-hierarchy-count {
+  display: none;
+}
+
 .artifact-hierarchy-label {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -5389,6 +5397,12 @@ button:active {
 .artifact-detail-content {
   padding: 24px 20px;
   min-width: 0;
+}
+
+.artifact-producing-task-link {
+  width: fit-content;
+  max-width: 100%;
+  margin: 12px 0;
 }
 
 .artifact-detail-content .detail-copy,
