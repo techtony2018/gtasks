@@ -27,6 +27,12 @@ page into Agent pages, work collections, Artifact collections, or
 identity-specific prompts. Documentation membership is read-only context and
 never execution authority. The global GBrain `index` is out of scope.
 
+Direct read availability and installed prompt deployment are separate gates.
+Verify the collection, Overview hash, and typed edge from every Agent host.
+Then inspect installed prompts independently; a pushed template does not prove
+that an installed automation has received it. Do not update external
+automations from this documentation task without separate authority.
+
 ## When to refresh documentation
 
 Refresh after a material Mission Control feature or architecture change is
@@ -126,6 +132,11 @@ to the reviewed source before updating relationships.
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
+- Cross-host readback: Tammy, Timmy, and Toddy each returned the same canonical
+  collection hash, Overview hash, and one discovery edge on `2026-08-03`.
+- Installed prompt state: all six active fixed-target Agent automations lacked
+  the shared collection reference at the same snapshot. The pushed source
+  contract is current; installed rollout remains a separately authorized step.
 
 Known documentation-quality issue at this baseline:
 `collections/mission-control-system-tickets` still lists legacy `waiting` in

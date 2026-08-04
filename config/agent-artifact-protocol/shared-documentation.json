@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "access": "read_only_reference",
   "collection_slug": "collections/mission-control-documentation",
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
@@ -7,5 +7,23 @@
   "last_verified_version": "V0.0.73",
   "last_verified_commit": "301adadcc15189942757d8bea0b20b2f2677664b",
   "last_verified_date": "2026-08-03",
-  "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts."
+  "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
+  "cross_host_readback": {
+    "verified_at": "2026-08-03T23:57:01-07:00",
+    "agents": [
+      "tammy",
+      "timmy",
+      "toddy"
+    ],
+    "collection_content_hash": "7df109b3c0186cf407fd3dc66cc827743d882697d2fc609603df80a5d70f3a5d",
+    "overview_content_hash": "638def2e2314d09282f9844d101963997ba9c95431bdd63bf96fab3826a94500",
+    "exact_discovery_edges_per_agent": 1
+  },
+  "installed_prompt_reference": {
+    "verified_at": "2026-08-03T23:57:01-07:00",
+    "status": "not_deployed",
+    "active_fixed_target_automations_checked": 6,
+    "automations_with_shared_reference": 0,
+    "external_automation_mutation_performed": false
+  }
 }
