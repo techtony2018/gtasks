@@ -37,6 +37,7 @@ from gtasks.domain import (
 import gtasks.gbrain as gbrain_module
 from gtasks.gbrain import (
     GBrainAdapter,
+    CanonicalHandoffEventBridge,
     AgentWorkRead,
     GBrainCommandError,
     GBrainProtocolError,
@@ -191,6 +192,138 @@ class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
                 "agents/tammy", registration_id
             )
         )
+
+
+class HandoffMutationReadbackTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 4, 19, 0, tzinfo=timezone.utc)
+    TASK = "tasks/11111111-1111-4111-8111-111111111111"
+    TODO = "todos/22222222-2222-4222-8222-222222222222"
+
+    class RecordingDispatcher:
+        def __init__(self) -> None:
+            self.changes = []
+
+        def record(self, change, *, now):
+            self.changes.append((change, now))
+            return change
+
+    def snapshot(self, **overrides):
+        value = {
+            "task_slug": self.TASK,
+            "task": {
+                "slug": self.TASK,
+                "status": "active",
+                "title": "Ship the bridge",
+                "detail": "Verified canonical work.",
+                "priority": "normal",
+                "blockers": [],
+                "assigned_to": ["agents/tammy"],
+                "authorization": "granted",
+                "system_dependencies": {"gbrain": "available"},
+                "updated_at": self.NOW.isoformat(),
+            },
+            "todo": None,
+            "route": "hosts/tammy",
+        }
+        value.update(overrides)
+        return value
+
+    def receipt(self, **overrides):
+        value = {
+            "verified": True,
+            "canonical_event_id": "events/bridge-1",
+            "canonical_version": "versions/2",
+            "idempotent": False,
+        }
+        value.update(overrides)
+        return value
+
+    def test_normalizes_every_actionable_verified_canonical_change(self) -> None:
+        todo = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Use the verified answer",
+            "detail": "",
+            "status": "not_done",
+            "updated_at": self.NOW.isoformat(),
+        }
+        cases = (
+            (
+                self.snapshot(task={**self.snapshot()["task"], "handoff": {"state": "waiting_for_input"}}),
+                self.snapshot(task={**self.snapshot()["task"], "handoff": {"state": "ready_for_agent"}}, todo={**todo, "status": "done"}),
+                self.receipt(mutation_kind="answer_agent_question"),
+                "answer_received",
+            ),
+            (self.snapshot(), self.snapshot(todo=todo), self.receipt(mutation_kind="todo_created"), "todo_added"),
+            (self.snapshot(todo=todo), self.snapshot(todo={**todo, "text": "Use the final verified answer"}), self.receipt(mutation_kind="todo_edited"), "todo_materially_changed"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "planned"}), self.snapshot(), self.receipt(), "task_activated"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["people/tony-guan"]}), self.snapshot(), self.receipt(), "blocker_resolved"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["systems/gbrain"], "system_dependencies": {"gbrain": "unavailable"}}), self.snapshot(), self.receipt(), "system_dependency_recovered"),
+            (self.snapshot(task={**self.snapshot()["task"], "authorization": "pending"}), self.snapshot(), self.receipt(), "authorization_granted"),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": ["agents/timmy"]}), self.snapshot(), self.receipt(), "ownership_changed"),
+        )
+
+        for before, after, receipt, expected in cases:
+            with self.subTest(trigger=expected):
+                dispatcher = self.RecordingDispatcher()
+                change = CanonicalHandoffEventBridge(dispatcher).after_verified_mutation(
+                    before, after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, expected)
+                self.assertEqual(change.task_slug, self.TASK)
+                self.assertEqual(change.assigned_to, ("agents/tammy",))
+                self.assertEqual(dispatcher.changes, [(change, self.NOW)])
+
+    def test_normalizes_explicit_non_actionable_canonical_changes(self) -> None:
+        task = self.snapshot()["task"]
+        cases = (
+            (self.snapshot(), self.snapshot(task={**task, "title": "Ship the verified bridge"}), self.receipt(), "presentation_only"),
+            (self.snapshot(), self.snapshot(), self.receipt(idempotent=True), "duplicate_save"),
+            (self.snapshot(), self.snapshot(task={**task, "progress_metric": {"current": 2}}), self.receipt(mutation_kind="derived_count"), "derived_count"),
+            (self.snapshot(), self.snapshot(), self.receipt(mutation_kind="stale_cache_refresh"), "stale_cache_refresh"),
+            (self.snapshot(task={**task, "status": "blocked", "blockers": ["people/tony-guan"]}), self.snapshot(task={**task, "status": "blocked", "blockers": ["people/tony-guan"]}), self.receipt(), "unchanged_blocker"),
+        )
+
+        for before, after, receipt, expected in cases:
+            with self.subTest(trigger=expected):
+                change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+                    before, after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, expected)
+
+    def test_preserves_task_and_todo_identity_from_verified_readback(self) -> None:
+        todo = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Use the verified answer",
+            "detail": "",
+            "status": "not_done",
+            "updated_at": self.NOW.isoformat(),
+        }
+        change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+            self.snapshot(),
+            self.snapshot(todo=todo),
+            self.receipt(mutation_kind="todo_created", canonical_event_id=self.TODO),
+            self.NOW,
+        )
+
+        self.assertEqual(change.task_slug, self.TASK)
+        self.assertEqual(change.canonical_event_id, self.TODO)
+
+    def test_unverified_partial_or_ambiguous_routing_is_system_attention(self) -> None:
+        cases = (
+            (self.snapshot(), self.receipt(verified=False)),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": []}), self.receipt()),
+            (self.snapshot(task={**self.snapshot()["task"], "assigned_to": ["agents/tammy", "agents/timmy"]}), self.receipt()),
+            (self.snapshot(route=None), self.receipt()),
+        )
+        for after, receipt in cases:
+            with self.subTest(after=after, receipt=receipt):
+                change = CanonicalHandoffEventBridge(self.RecordingDispatcher()).after_verified_mutation(
+                    self.snapshot(), after, receipt, self.NOW
+                )
+                self.assertEqual(change.trigger, "system_attention")
+                self.assertNotEqual(change.blocker, "Tony")
 
 
 def stored_goal(slug: str, title: str) -> dict:

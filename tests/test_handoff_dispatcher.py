@@ -19,6 +19,7 @@ from gtasks.handoff_dispatcher import (
     HandoffGuardian,
     LocalAgentDispatcher,
 )
+from gtasks.gbrain import CanonicalHandoffEventBridge
 
 
 NOW = datetime(2026, 8, 4, 17, 0, tzinfo=timezone.utc)
@@ -183,6 +184,43 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(record.status, "suppressed")
         self.assertEqual(record.reason, "stable_blocker")
         self.assertIsNone(self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30))
+
+    def test_canonical_bridge_persists_one_verified_record_or_attention_event(self) -> None:
+        bridge = CanonicalHandoffEventBridge(self.dispatcher)
+        snapshot = {
+            "task_slug": TASK,
+            "task": {
+                "slug": TASK,
+                "status": "active",
+                "assigned_to": [AGENT],
+                "blockers": [],
+                "updated_at": NOW.isoformat(),
+            },
+            "todo": None,
+            "route": "hosts/tammy",
+        }
+        receipt = {
+            "verified": True,
+            "canonical_event_id": "events/bridge-core",
+            "canonical_version": "versions/1",
+            "mutation_kind": "todo_created",
+        }
+        after = {**snapshot, "todo": {"slug": "todos/core", "parent_task": TASK}}
+
+        first = bridge.after_verified_mutation(snapshot, after, receipt, NOW)
+        replay = bridge.after_verified_mutation(snapshot, after, receipt, NOW)
+        attention = bridge.after_verified_mutation(
+            snapshot,
+            {**after, "task": {**after["task"], "assigned_to": []}},
+            {**receipt, "canonical_event_id": "events/bridge-attention"},
+            NOW,
+        )
+
+        self.assertEqual(first.handoff_id, replay.handoff_id)
+        self.assertEqual(first.status, "queued")
+        self.assertEqual(attention.status, "suppressed")
+        self.assertEqual(attention.trigger, "system_attention")
+        self.assertEqual(self.store.query_events(limit=50, after_sequence=0).total, 2)
 
     def test_acknowledgement_states_validate_blocked_detail(self) -> None:
         for index, status in enumerate(("received", "actively_executing", "completed")):

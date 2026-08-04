@@ -92,6 +92,7 @@ class FakeTodoReceipt:
     def __init__(self, todo: dict, *, idempotent: bool = False) -> None:
         self.todo = todo
         self.idempotent = idempotent
+        self.verified = True
 
     def to_dict(self) -> dict:
         return {
@@ -108,6 +109,8 @@ class FakeHandoffReceipt:
         self.todo = todo
         self.state = state
         self.next_owner = next_owner
+        self.verified = True
+        self.idempotent = False
 
     def to_dict(self) -> dict:
         return {
@@ -534,6 +537,9 @@ class FakeAdapter:
         ]
         return FakeTodoRead(tuple(values[cursor : cursor + limit]))
 
+    def get_todo(self, todo_slug: str) -> dict:
+        return dict(self.todos[todo_slug])
+
     def create_todo(self, task_slug: str, **payload) -> FakeTodoReceipt:
         self.todo_creates.append({"task_slug": task_slug, **payload})
         slug = f"todos/{len(self.todos) + 1:032d}"
@@ -784,6 +790,7 @@ class ServerHarness:
         handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
         handoff_registration_validator=None,
         handoff_waiter=None,
+        handoff_event_bridge=None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -836,6 +843,7 @@ class ServerHarness:
             handoff_dispatcher_auth=handoff_dispatcher_auth,
             handoff_registration_validator=handoff_registration_validator,
             handoff_waiter=handoff_waiter,
+            handoff_event_bridge=handoff_event_bridge,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -875,6 +883,141 @@ class ServerHarness:
         response_headers = {key: value for key, value in response.getheaders()}
         connection.close()
         return response.status, parsed, response_headers
+
+
+class HandoffMutationBridgeTests(unittest.TestCase):
+    TASK = "tasks/agent-work"
+    TODO = "todos/question"
+
+    class RecordingBridge:
+        def __init__(self, *, fail: bool = False) -> None:
+            self.calls = []
+            self.fail = fail
+
+        def after_verified_mutation(self, before, after, receipt, now):
+            self.calls.append((before, after, receipt, now))
+            if self.fail:
+                raise RuntimeError("synthetic dispatcher storage failure")
+            return {"recorded": True}
+
+    def adapter_with_question(self) -> FakeAdapter:
+        now = datetime(2026, 7, 30, 9, 0).astimezone()
+        task = replace(
+            new_task(
+                title="Agent work",
+                detail="",
+                priority="normal",
+                next_action="Use Tony's answer.",
+                due_day=now.date(),
+                project=None,
+                goal=None,
+                now=now,
+                identity="11111111-1111-4111-8111-111111111111",
+            ),
+            slug=self.TASK,
+            status="blocked",
+            owner_agent="agents/tammy",
+            blockers=("people/tony-guan",),
+        )
+        adapter = FakeAdapter(active=(task,))
+        adapter.todos[self.TODO] = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Which verified option?",
+            "detail": "Choose one.",
+            "status": "not_done",
+            "status_label": "Not Done",
+            "kind": "question",
+            "creator": "agents/tammy",
+            "source": "agent",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "comments": [],
+            "events": [],
+        }
+        adapter.handoff_questions.add(self.TODO)
+        return adapter
+
+    def test_answer_dispatches_only_after_verified_mutation_readback(self) -> None:
+        adapter = self.adapter_with_question()
+        bridge = self.RecordingBridge()
+        harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+
+        status, body, _ = harness.request(
+            "POST",
+            "/api/todos/todos%2Fquestion/answer",
+            {
+                "answer": "Use the verified option.",
+                "expected_updated_at": adapter.todos[self.TODO]["updated_at"],
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "answer-verified-option",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(bridge.calls), 1)
+        before, after, receipt, _now = bridge.calls[0]
+        self.assertTrue(receipt["verified"])
+        self.assertEqual(before["task_slug"], self.TASK)
+        self.assertEqual(after["task_slug"], self.TASK)
+        self.assertEqual(before["todo"]["slug"], self.TODO)
+        self.assertEqual(after["todo"]["slug"], self.TODO)
+        self.assertEqual(body["todo"]["slug"], self.TODO)
+
+    def test_partial_write_records_attention_without_dispatching_user_work(self) -> None:
+        class PartialAdapter(FakeAdapter):
+            def create_todo(self, task_slug: str, **payload) -> FakeTodoReceipt:
+                raise PartialMutationError(task_slug, "To Do write was not verified.")
+
+        task = new_inbox_task(
+            "Ship GTasks",
+            datetime(2026, 7, 30, 9, 0).astimezone(),
+            "partial1",
+        )
+        adapter = PartialAdapter(active=(task,))
+        bridge = self.RecordingBridge()
+        harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+
+        status, body, _ = harness.request(
+            "POST",
+            f"/api/tasks/{task.slug.replace('/', '%2F')}/todos",
+            {
+                "text": "Verify the write",
+                "detail": "",
+                "kind": "action",
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "partial-create",
+            },
+        )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(body["code"], "partial_write")
+        self.assertEqual(len(bridge.calls), 1)
+        self.assertFalse(bridge.calls[0][2]["verified"])
+
+    def test_dispatcher_failure_never_rolls_back_verified_canonical_answer(self) -> None:
+        adapter = self.adapter_with_question()
+        bridge = self.RecordingBridge(fail=True)
+        harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+
+        status, body, _ = harness.request(
+            "POST",
+            "/api/todos/todos%2Fquestion/answer",
+            {
+                "answer": "Use the verified option.",
+                "expected_updated_at": adapter.todos[self.TODO]["updated_at"],
+                "actor": "people/tony-guan",
+                "source": "mission_control",
+                "idempotency_key": "answer-verified-option",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["todo"]["status"], "done")
+        self.assertEqual(adapter.todos[self.TODO]["status"], "done")
+        self.assertEqual(len(bridge.calls), 1)
 
 
 class HandoffDispatcherApiTests(unittest.TestCase):

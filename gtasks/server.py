@@ -53,6 +53,7 @@ from .domain import (
 )
 from .gbrain import (
     ArtifactIdempotencyConflict,
+    CanonicalHandoffEventBridge,
     ConcurrentTodoUpdateError,
     GBrainAdapter,
     GBrainCommandError,
@@ -588,6 +589,7 @@ def _handler_class(
     ]
     | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
+    handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
@@ -600,6 +602,7 @@ def _handler_class(
         adapter, "read_handoff_dispatcher_registration", None
     )
     active_handoff_waiter = handoff_waiter or time.sleep
+    active_handoff_event_bridge = handoff_event_bridge
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -634,6 +637,83 @@ def _handler_class(
 
     def invalidate_system_tickets() -> None:
         active_read_cache.invalidate("system_tickets")
+
+    def canonical_mapping(value: object) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            rendered = to_dict()
+            if isinstance(rendered, dict):
+                return rendered
+        return {}
+
+    def mutation_snapshot(
+        task: object,
+        *,
+        todo: object | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        task_value = canonical_mapping(task)
+        owner = task_value.get("owner_agent")
+        handoff = task_value.get("handoff")
+        if not isinstance(owner, str) and isinstance(handoff, dict):
+            owner = handoff.get("resume_owner")
+        assigned_to = [owner] if isinstance(owner, str) else []
+        return {
+            "task_slug": task_value.get("slug"),
+            "task": {**task_value, "assigned_to": assigned_to},
+            "todo": canonical_mapping(todo) if todo is not None else None,
+            "route": route,
+        }
+
+    def read_todo_mutation_snapshot(todo_slug: str) -> dict[str, Any]:
+        todo = adapter.get_todo(todo_slug)
+        todo_value = canonical_mapping(todo)
+        task = adapter.get_task(str(todo_value.get("parent_task")))
+        return mutation_snapshot(task, todo=todo)
+
+    def after_canonical_mutation(
+        before: dict[str, Any],
+        after: dict[str, Any],
+        receipt: object,
+        *,
+        mutation_kind: str,
+    ) -> None:
+        if active_handoff_event_bridge is None:
+            return
+        receipt_value = canonical_mapping(receipt)
+        receipt_value["mutation_kind"] = mutation_kind
+        try:
+            active_handoff_event_bridge.after_verified_mutation(
+                before, after, receipt_value, clock()
+            )
+        except Exception:
+            # The canonical write is already verified. Dispatcher persistence or
+            # delivery is operational evidence and must never roll it back.
+            log_reader.append_gtasks(
+                severity="error",
+                message="Verified canonical mutation could not enter the handoff dispatcher.",
+                now=clock(),
+            )
+
+    def partial_mutation_attention(
+        before: dict[str, Any] | None,
+        *,
+        slug: str,
+        mutation_kind: str,
+    ) -> None:
+        if active_handoff_event_bridge is None or before is None:
+            return
+        after_canonical_mutation(
+            before,
+            before,
+            {
+                "verified": False,
+                "canonical_event_id": slug,
+            },
+            mutation_kind=mutation_kind,
+        )
 
     def read_snapshot(force: bool = False):
         return active_read_cache.read(
@@ -2026,6 +2106,7 @@ def _handler_class(
             answer_suffix = "/answer"
             if path.startswith(answer_prefix) and path.endswith(answer_suffix):
                 todo_slug = unquote(path[len(answer_prefix) : -len(answer_suffix)])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2050,6 +2131,15 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_todo = adapter.get_todo(todo_slug)
+                            before_todo_value = canonical_mapping(before_todo)
+                            before_task = adapter.get_task(
+                                str(before_todo_value.get("parent_task"))
+                            )
+                            before_snapshot = mutation_snapshot(
+                                before_task, todo=before_todo
+                            )
                         receipt = adapter.answer_agent_question(
                             todo_slug,
                             answer=payload["answer"],
@@ -2072,6 +2162,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="answer_agent_question",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -2083,6 +2178,16 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(
+                        receipt_value.get("task"),
+                        todo=receipt_value.get("todo"),
+                    ),
+                    receipt_value,
+                    mutation_kind="answer_agent_question",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, receipt.to_dict())
                 return
@@ -2132,6 +2237,7 @@ def _handler_class(
                 todo_slug = unquote(
                     path[len(todo_comment_prefix) : -len(todo_comment_suffix)]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2149,6 +2255,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         receipt = adapter.add_todo_comment(
                             todo_slug,
                             body=payload["body"],
@@ -2171,6 +2279,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_comment",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -2182,6 +2295,15 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    read_todo_mutation_snapshot(todo_slug)
+                    if active_handoff_event_bridge is not None
+                    else {},
+                    receipt_value,
+                    mutation_kind="todo_comment",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
                 return
@@ -2190,6 +2312,7 @@ def _handler_class(
                 task_slug = unquote(
                     path[len(task_todo_prefix) : -len(todo_create_suffix)]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2204,6 +2327,9 @@ def _handler_class(
                     return
                 try:
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_task = adapter.get_task(task_slug)
+                            before_snapshot = mutation_snapshot(before_task)
                         receipt = adapter.create_todo(
                             task_slug,
                             text=payload["text"],
@@ -2221,6 +2347,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_created",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -2232,6 +2363,15 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                if active_handoff_event_bridge is not None:
+                    after_task = adapter.get_task(task_slug)
+                    after_canonical_mutation(
+                        before_snapshot,
+                        mutation_snapshot(after_task, todo=receipt_value.get("todo")),
+                        receipt_value,
+                        mutation_kind="todo_created",
+                    )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
                 return
@@ -2954,6 +3094,7 @@ def _handler_class(
             todo_status_suffix = "/status"
             if path.startswith(todo_prefix) and path.endswith(todo_status_suffix):
                 todo_slug = unquote(path[len(todo_prefix) : -len(todo_status_suffix)])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2977,6 +3118,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         if (
                             payload["status"] == "done"
                             and adapter.is_active_handoff_question(todo_slug)
@@ -3016,6 +3159,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_status",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -3027,11 +3175,21 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    read_todo_mutation_snapshot(todo_slug)
+                    if active_handoff_event_bridge is not None
+                    else {},
+                    receipt_value,
+                    mutation_kind="todo_status",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if path.startswith(todo_prefix) and "/" not in path[len(todo_prefix) :]:
                 todo_slug = unquote(path[len(todo_prefix) :])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -3049,6 +3207,8 @@ def _handler_class(
                         str(payload["expected_updated_at"]).replace("Z", "+00:00")
                     )
                     with foreground_operation():
+                        if active_handoff_event_bridge is not None:
+                            before_snapshot = read_todo_mutation_snapshot(todo_slug)
                         receipt = adapter.edit_todo(
                             todo_slug,
                             text=payload["text"],
@@ -3072,6 +3232,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="todo_edited",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {"error": str(exc), "code": "partial_write", "slug": exc.slug},
@@ -3083,6 +3248,15 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    read_todo_mutation_snapshot(todo_slug)
+                    if active_handoff_event_bridge is not None
+                    else {},
+                    receipt_value,
+                    mutation_kind="todo_edited",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3327,6 +3501,7 @@ def _handler_class(
             prefix = "/api/tasks/"
             if path.startswith(prefix) and "/" not in path[len(prefix) :]:
                 task_slug = unquote(path[len(prefix) :])
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -3341,6 +3516,7 @@ def _handler_class(
                 try:
                     due_day = date.fromisoformat(payload.get("due_day", ""))
                     current = adapter.get_task(task_slug)
+                    before_snapshot = mutation_snapshot(current)
                     raw_metric = payload.get("progress_metric")
                     existing_verified_history = bool(
                         current.event_progress
@@ -3445,11 +3621,23 @@ def _handler_class(
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_task_edit"})
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="task_edit",
+                    )
                     self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc), "code": "partial_write", "slug": exc.slug})
                     return
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="task_edit",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3542,6 +3730,7 @@ def _handler_class(
                 )
                 return
             if action == "progress_metric":
+                before_snapshot = None
                 if set(payload) - {"progress_metric", "task_day", "progress_metric_revision"}:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -3584,6 +3773,7 @@ def _handler_class(
                         return
                 try:
                     current = adapter.get_task(task_slug)
+                    before_snapshot = mutation_snapshot(current)
                     existing_verified_history = bool(
                         current.event_progress
                         and (
@@ -3630,6 +3820,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="derived_count",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -3645,6 +3840,13 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="derived_count",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3692,6 +3894,7 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             if action == "status":
+                before_snapshot = None
                 requested_status = payload.get("status")
                 if (
                     not isinstance(requested_status, str)
@@ -3710,6 +3913,8 @@ def _handler_class(
                     )
                     return
                 try:
+                    if active_handoff_event_bridge is not None:
+                        before_snapshot = mutation_snapshot(adapter.get_task(task_slug))
                     receipt = adapter.set_task_status(
                         task_slug,
                         requested_status,
@@ -3725,6 +3930,11 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    partial_mutation_attention(
+                        before_snapshot,
+                        slug=exc.slug,
+                        mutation_kind="task_status",
+                    )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -3740,6 +3950,13 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                after_canonical_mutation(
+                    before_snapshot,
+                    mutation_snapshot(receipt_value.get("task")),
+                    receipt_value,
+                    mutation_kind="task_status",
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3887,6 +4104,7 @@ def build_server(
     ]
     | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
+    handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -3912,6 +4130,7 @@ def build_server(
         handoff_dispatcher_auth,
         handoff_registration_validator,
         handoff_waiter,
+        handoff_event_bridge,
     )
     return ThreadingHTTPServer((host, port), handler)
 

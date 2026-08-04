@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Condition, Lock, current_thread
 from time import sleep, time
@@ -56,7 +56,11 @@ from .domain import (
     new_task,
 )
 from .handoff import TaskHandoff
-from .handoff_dispatcher import AgentRegistration
+from .handoff_dispatcher import (
+    ActionableChange,
+    AgentRegistration,
+    HandoffDispatcher,
+)
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
@@ -812,6 +816,245 @@ class TaskEditReceipt:
             "task": self.task.to_dict(),
             "verified": self.verified,
         }
+
+
+class CanonicalHandoffEventBridge:
+    """Normalize verified canonical readback into one durable handoff record."""
+
+    _PRESENTATION_FIELDS = frozenset(
+        {"title", "summary", "detail", "priority", "due_day", "due_at", "scheduled_day"}
+    )
+    _DERIVED_FIELDS = frozenset({"progress_metric", "event_progress"})
+
+    def __init__(self, dispatcher: HandoffDispatcher) -> None:
+        self.dispatcher = dispatcher
+
+    @staticmethod
+    def _mapping(value: object) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, Mapping):
+            return dict(value)
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            rendered = to_dict()
+            if isinstance(rendered, Mapping):
+                return dict(rendered)
+        return {}
+
+    @classmethod
+    def _snapshot(
+        cls, value: object
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        outer = cls._mapping(value)
+        task = cls._mapping(outer.get("task"))
+        if not task and isinstance(outer.get("slug"), str):
+            task = outer
+        todo = cls._mapping(outer.get("todo"))
+        return outer, task, todo
+
+    @staticmethod
+    def _safe_identifier(value: object, *, namespace: str, seed: str) -> str:
+        if isinstance(value, str) and re.fullmatch(
+            r"[a-z0-9][a-z0-9._/-]{0,127}", value
+        ):
+            return value
+        return f"{namespace}/{hashlib.sha256(seed.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _assigned_to(outer: Mapping[str, Any], task: Mapping[str, Any]) -> tuple[str, ...]:
+        raw = outer.get("assigned_to", task.get("assigned_to"))
+        if raw is None:
+            owner = task.get("owner_agent")
+            if not isinstance(owner, str):
+                handoff = task.get("handoff")
+                owner = handoff.get("resume_owner") if isinstance(handoff, Mapping) else None
+            raw = [owner] if isinstance(owner, str) else []
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        return tuple(value for value in raw if isinstance(value, str))
+
+    @staticmethod
+    def _changed_fields(
+        before: Mapping[str, Any], after: Mapping[str, Any]
+    ) -> frozenset[str]:
+        ignored = {"updated_at", "created_at", "events", "event_slugs"}
+        return frozenset(
+            key
+            for key in set(before) | set(after)
+            if key not in ignored and before.get(key) != after.get(key)
+        )
+
+    def normalize(
+        self,
+        before: object,
+        after: object,
+        receipt: object,
+        now: datetime,
+    ) -> ActionableChange:
+        before_outer, before_task, before_todo = self._snapshot(before)
+        after_outer, after_task, after_todo = self._snapshot(after)
+        receipt_value = self._mapping(receipt)
+        task_slug = after_outer.get("task_slug") or after_task.get("slug")
+        before_task_slug = before_outer.get("task_slug") or before_task.get("slug")
+        todo_slug = after_todo.get("slug") or before_todo.get("slug")
+        todo_parent = after_todo.get("parent_task") or before_todo.get("parent_task")
+        assigned_to = self._assigned_to(after_outer, after_task)
+        route = after_outer.get("route")
+        registrations = tuple(getattr(self.dispatcher, "registrations", ()))
+        eligible_registrations = tuple(
+            registration
+            for registration in registrations
+            if len(assigned_to) == 1
+            and registration.verified
+            and registration.agent_slug == assigned_to[0]
+        )
+        if route is None and len(assigned_to) == 1:
+            matching_routes = {
+                registration.route
+                for registration in eligible_registrations
+            }
+            if len(matching_routes) == 1:
+                route = next(iter(matching_routes))
+
+        identity_error = (
+            not isinstance(task_slug, str)
+            or (isinstance(before_task_slug, str) and before_task_slug != task_slug)
+            or (isinstance(todo_parent, str) and todo_parent != task_slug)
+            or len(assigned_to) != 1
+            or not isinstance(route, str)
+            or (
+                bool(registrations)
+                and (
+                    len(eligible_registrations) != 1
+                    or eligible_registrations[0].route != route
+                )
+            )
+        )
+        verified = receipt_value.get("verified") is True
+        kind = receipt_value.get("mutation_kind")
+        before_status = before_task.get("status")
+        after_status = after_task.get("status")
+        before_blockers = tuple(before_task.get("blockers") or ())
+        after_blockers = tuple(after_task.get("blockers") or ())
+        before_handoff = self._mapping(before_task.get("handoff"))
+        after_handoff = self._mapping(after_task.get("handoff"))
+        task_changes = self._changed_fields(before_task, after_task)
+        todo_changes = self._changed_fields(before_todo, after_todo)
+
+        if not verified or identity_error:
+            trigger = "system_attention"
+            summary = "Canonical handoff data needs system attention."
+        elif receipt_value.get("idempotent") is True:
+            trigger = "duplicate_save"
+            summary = "A duplicate canonical save was verified."
+        elif kind == "stale_cache_refresh":
+            trigger = "stale_cache_refresh"
+            summary = "A stale canonical cache refresh changed no work."
+        elif kind == "derived_count" or (
+            task_changes and task_changes <= self._DERIVED_FIELDS and not todo_changes
+        ):
+            trigger = "derived_count"
+            summary = "A derived count changed without new work."
+        elif kind == "answer_agent_question" or (
+            before_handoff.get("state") == "waiting_for_input"
+            and after_handoff.get("state") == "ready_for_agent"
+        ):
+            trigger = "answer_received"
+            summary = "A verified answer is ready."
+        elif (not before_todo and after_todo) or kind == "todo_created":
+            trigger = "todo_added"
+            summary = "A verified To Do was added."
+        elif todo_changes or kind in {"todo_edited", "todo_status", "todo_comment"}:
+            trigger = "todo_materially_changed"
+            summary = "A verified To Do materially changed."
+        elif before_status in {"planned", "proposed"} and after_status == "active":
+            trigger = "task_activated"
+            summary = "The verified Task became active."
+        elif (
+            kind == "system_dependency_recovered"
+            or (
+                before_status == "blocked"
+                and after_status == "active"
+                and any(str(value).startswith("systems/") for value in before_blockers)
+            )
+        ):
+            trigger = "system_dependency_recovered"
+            summary = "A verified system dependency recovered."
+        elif before_status == "blocked" and after_status == "active" and (
+            set(before_blockers) - set(after_blockers)
+        ):
+            trigger = "blocker_resolved"
+            summary = "The verified blocker was resolved."
+        elif kind == "authorization_granted" or (
+            before_task.get("authorization") != "granted"
+            and after_task.get("authorization") == "granted"
+        ):
+            trigger = "authorization_granted"
+            summary = "Verified authorization was granted."
+        elif self._assigned_to(before_outer, before_task) != assigned_to:
+            trigger = "ownership_changed"
+            summary = "Verified Task ownership changed."
+        elif after_status == "blocked" and before_blockers == after_blockers:
+            trigger = "unchanged_blocker"
+            summary = "The canonical blocker is unchanged."
+        elif task_changes and task_changes <= self._PRESENTATION_FIELDS:
+            trigger = "presentation_only"
+            summary = "Presentation-only canonical fields changed."
+        else:
+            trigger = "duplicate_save"
+            summary = "A duplicate canonical save was verified."
+
+        safe_task_slug = self._safe_identifier(
+            task_slug, namespace="tasks", seed=repr((before_task_slug, task_slug))
+        )
+        event_value = (
+            receipt_value.get("canonical_event_id")
+            or self._mapping(receipt_value.get("event")).get("slug")
+            or todo_slug
+        )
+        canonical_event_id = self._safe_identifier(
+            event_value,
+            namespace="events",
+            seed=repr((safe_task_slug, todo_slug, kind, receipt_value)),
+        )
+        canonical_version = self._safe_identifier(
+            receipt_value.get("canonical_version"),
+            namespace="versions",
+            seed=json.dumps(after_outer, sort_keys=True, default=str),
+        )
+        route_value = self._safe_identifier(
+            route, namespace="routes", seed=repr((safe_task_slug, assigned_to))
+        )
+        correlation = receipt_value.get("correlation_id")
+        if not isinstance(correlation, str) or re.fullmatch(
+            r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}", correlation
+        ) is None:
+            correlation = "corr-" + hashlib.sha256(
+                f"{safe_task_slug}|{canonical_event_id}".encode("utf-8")
+            ).hexdigest()[:24]
+        return ActionableChange(
+            task_slug=safe_task_slug,
+            canonical_event_id=canonical_event_id,
+            canonical_version=canonical_version,
+            trigger=trigger,
+            assigned_to=assigned_to if not identity_error else (),
+            route=route_value,
+            summary=summary,
+            occurred_at=now.astimezone(timezone.utc),
+            correlation_id=correlation,
+            blocker=None,
+        )
+
+    def after_verified_mutation(
+        self,
+        before: object,
+        after: object,
+        receipt: object,
+        now: datetime,
+    ):
+        change = self.normalize(before, after, receipt, now)
+        return self.dispatcher.record(change, now=now.astimezone(timezone.utc))
 
 
 def _yaml_scalar(value: Any) -> str:
@@ -7818,6 +8061,10 @@ class GBrainAdapter:
             and task.handoff.question_todo == todo.slug
             and todo.status == "not_done"
         )
+
+    def get_todo(self, todo_slug: str) -> TodoItem:
+        """Return the authoritative hydrated To Do used for mutation snapshots."""
+        return self._read_todo(todo_slug)
 
     def _todo_mutation_snapshot(
         self,
