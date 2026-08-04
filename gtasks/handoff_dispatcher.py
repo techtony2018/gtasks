@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import re
 import sqlite3
 import threading
@@ -37,6 +38,13 @@ SUPPRESSED_TRIGGERS = {
 ACKNOWLEDGEMENT_STATES = frozenset(
     {"received", "actively_executing", "still_blocked", "completed"}
 )
+ACKNOWLEDGEMENT_TRANSITIONS = {
+    "leased": ACKNOWLEDGEMENT_STATES,
+    "received": frozenset({"actively_executing", "still_blocked", "completed"}),
+    "actively_executing": frozenset({"still_blocked", "completed"}),
+    "still_blocked": frozenset({"actively_executing", "completed"}),
+    "completed": frozenset(),
+}
 _STRUCTURED_ID = re.compile(r"[a-z0-9][a-z0-9._/-]{0,127}")
 _CORRELATION_ID = re.compile(r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}")
 _SAFE_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:!?()'/_-]{0,159}")
@@ -341,14 +349,17 @@ class DurableHandoffStore:
                     handoff_id TEXT PRIMARY KEY REFERENCES handoffs(handoff_id),
                     registration_id TEXT NOT NULL,
                     lease_until TEXT,
-                    lease_token TEXT,
+                    lease_capability_ref TEXT,
                     lease_generation INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS mutation_receipts (
-                    mutation_id TEXT PRIMARY KEY,
+                    mutation_ref TEXT PRIMARY KEY,
                     handoff_id TEXT NOT NULL REFERENCES handoffs(handoff_id),
                     operation TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
+                    registration_ref TEXT NOT NULL,
+                    lease_generation INTEGER NOT NULL,
+                    lease_capability_ref TEXT NOT NULL,
                     resulting_status TEXT NOT NULL,
                     event_id TEXT NOT NULL,
                     recorded_at TEXT NOT NULL
@@ -451,7 +462,8 @@ class DurableHandoffStore:
                 self._connection.execute(
                     """
                     INSERT INTO leases (
-                        handoff_id, registration_id, lease_until, lease_token, lease_generation
+                        handoff_id, registration_id, lease_until,
+                        lease_capability_ref, lease_generation
                     ) VALUES (?, ?, NULL, NULL, 0)
                     """,
                     (handoff_id, registration_id),
@@ -495,6 +507,7 @@ class DurableHandoffStore:
             if row is None:
                 return None
             lease_token = uuid4().hex
+            lease_capability_ref = _reference(lease_token)
             changed = self._connection.execute(
                 """
                 UPDATE handoffs SET status = 'leased', detail = NULL, attempt = attempt + 1
@@ -507,10 +520,16 @@ class DurableHandoffStore:
             self._connection.execute(
                 """
                 UPDATE leases
-                SET lease_until = ?, lease_token = ?, lease_generation = lease_generation + 1
+                SET lease_until = ?, lease_capability_ref = ?,
+                    lease_generation = lease_generation + 1
                 WHERE handoff_id = ? AND registration_id = ?
                 """,
-                (_timestamp(lease_until), lease_token, row["handoff_id"], registration_id),
+                (
+                    _timestamp(lease_until),
+                    lease_capability_ref,
+                    row["handoff_id"],
+                    registration_id,
+                ),
             )
             lease_row = self._connection.execute(
                 "SELECT lease_generation FROM leases WHERE handoff_id = ?",
@@ -535,10 +554,17 @@ class DurableHandoffStore:
         *,
         registration_id: str,
         lease_token: str,
+        lease_generation: int,
         mutation_id: str,
         now: datetime,
         detail: str | None = None,
     ) -> HandoffRecord:
+        """Advance a fenced acknowledgement lifecycle.
+
+        A lease may acknowledge any current state directly. Normal progression is
+        received -> actively_executing -> still_blocked or completed; blocked work
+        may resume actively_executing or complete. Completed work never regresses.
+        """
         now = _require_utc(now, "now")
         if status not in ACKNOWLEDGEMENT_STATES:
             raise ValueError("acknowledgement status is invalid")
@@ -552,6 +578,7 @@ class DurableHandoffStore:
             handoff_id,
             registration_id=registration_id,
             lease_token=lease_token,
+            lease_generation=lease_generation,
             mutation_id=mutation_id,
             operation="acknowledge",
             fingerprint=_reference(f"acknowledge|{status}|{detail or ''}"),
@@ -560,6 +587,7 @@ class DurableHandoffStore:
             summary=f"Agent acknowledged handoff as {status}.",
             detail=detail,
             now=now,
+            acknowledgement=True,
         )
 
     def record_failure(
@@ -568,6 +596,7 @@ class DurableHandoffStore:
         *,
         registration_id: str,
         lease_token: str,
+        lease_generation: int,
         mutation_id: str,
         retryable: bool,
         summary: str,
@@ -581,6 +610,7 @@ class DurableHandoffStore:
             handoff_id,
             registration_id=registration_id,
             lease_token=lease_token,
+            lease_generation=lease_generation,
             mutation_id=mutation_id,
             operation="record_failure",
             fingerprint=_reference(f"record_failure|{retryable}|{summary}"),
@@ -589,6 +619,7 @@ class DurableHandoffStore:
             summary=summary,
             detail=summary,
             now=now,
+            acknowledgement=False,
         )
 
     def _finish_lease(
@@ -597,6 +628,7 @@ class DurableHandoffStore:
         *,
         registration_id: str,
         lease_token: str,
+        lease_generation: int,
         mutation_id: str,
         operation: str,
         fingerprint: str,
@@ -605,11 +637,17 @@ class DurableHandoffStore:
         summary: str,
         detail: str | None,
         now: datetime,
+        acknowledgement: bool,
     ) -> HandoffRecord:
         _require_structured_id(mutation_id, "mutation_id")
+        if not isinstance(lease_generation, int) or lease_generation < 1:
+            raise ValueError("lease_generation must be a positive integer")
+        mutation_ref = _reference(mutation_id)
+        registration_ref = _registration_reference(registration_id)
+        lease_capability_ref = _reference(lease_token)
         with self._write_transaction():
             receipt = self._connection.execute(
-                "SELECT * FROM mutation_receipts WHERE mutation_id = ?", (mutation_id,)
+                "SELECT * FROM mutation_receipts WHERE mutation_ref = ?", (mutation_ref,)
             ).fetchone()
             if receipt is not None:
                 if (
@@ -618,10 +656,19 @@ class DurableHandoffStore:
                     or receipt["fingerprint"] != fingerprint
                 ):
                     raise ValueError("mutation_id was already used for another mutation")
+                if (
+                    not hmac.compare_digest(receipt["registration_ref"], registration_ref)
+                    or receipt["lease_generation"] != lease_generation
+                    or not hmac.compare_digest(
+                        receipt["lease_capability_ref"], lease_capability_ref
+                    )
+                ):
+                    raise ValueError("mutation receipt does not match the original lease")
                 return self.get(handoff_id)
             active = self._connection.execute(
                 """
-                SELECT h.status, l.registration_id, l.lease_token
+                SELECT h.status, l.registration_id, l.lease_capability_ref,
+                    l.lease_generation
                 FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
                 WHERE h.handoff_id = ?
                 """,
@@ -629,52 +676,86 @@ class DurableHandoffStore:
             ).fetchone()
             if (
                 active is None
-                or active["status"] != "leased"
                 or active["registration_id"] != registration_id
-                or active["lease_token"] != lease_token
+                or active["lease_generation"] != lease_generation
+                or active["lease_capability_ref"] is None
+                or not hmac.compare_digest(
+                    active["lease_capability_ref"], lease_capability_ref
+                )
             ):
                 raise ValueError("mutation requires the active lease owner and token")
+            current_status = active["status"]
+            if acknowledgement:
+                if status not in ACKNOWLEDGEMENT_TRANSITIONS.get(
+                    current_status, frozenset()
+                ):
+                    raise ValueError(
+                        f"invalid acknowledgement transition: {current_status} -> {status}"
+                    )
+            elif current_status != "leased":
+                raise ValueError("delivery failure requires an active leased handoff")
             changed = self._connection.execute(
                 """
                 UPDATE handoffs SET status = ?, detail = ?
-                WHERE handoff_id = ? AND status = 'leased'
+                WHERE handoff_id = ? AND status = ?
                     AND EXISTS (
                         SELECT 1 FROM leases
-                        WHERE handoff_id = ? AND registration_id = ? AND lease_token = ?
+                        WHERE handoff_id = ? AND registration_id = ?
+                            AND lease_generation = ? AND lease_capability_ref = ?
                     )
                 """,
-                (status, detail, handoff_id, handoff_id, registration_id, lease_token),
+                (
+                    status,
+                    detail,
+                    handoff_id,
+                    current_status,
+                    handoff_id,
+                    registration_id,
+                    lease_generation,
+                    lease_capability_ref,
+                ),
             ).rowcount
             if changed != 1:
                 raise ValueError("mutation requires the active lease owner and token")
-            self._connection.execute(
-                """
-                UPDATE leases SET lease_until = NULL, lease_token = NULL
-                WHERE handoff_id = ? AND registration_id = ? AND lease_token = ?
-                """,
-                (handoff_id, registration_id, lease_token),
-            )
+            if not acknowledgement or status == "completed":
+                self._connection.execute(
+                    """
+                    UPDATE leases SET lease_until = NULL, lease_capability_ref = NULL
+                    WHERE handoff_id = ? AND registration_id = ?
+                        AND lease_generation = ? AND lease_capability_ref = ?
+                    """,
+                    (
+                        handoff_id,
+                        registration_id,
+                        lease_generation,
+                        lease_capability_ref,
+                    ),
+                )
             event = self._append_event_from_record(
                 self.get(handoff_id),
                 event_type=event_type,
                 summary=summary,
                 detail=detail if event_type == "acknowledgement" else None,
-                mutation_ref=_reference(mutation_id),
+                mutation_ref=mutation_ref,
                 occurred_at=now,
                 recorded_at=now,
             )
             self._connection.execute(
                 """
                 INSERT INTO mutation_receipts (
-                    mutation_id, handoff_id, operation, fingerprint,
+                    mutation_ref, handoff_id, operation, fingerprint,
+                    registration_ref, lease_generation, lease_capability_ref,
                     resulting_status, event_id, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    mutation_id,
+                    mutation_ref,
                     handoff_id,
                     operation,
                     fingerprint,
+                    registration_ref,
+                    lease_generation,
+                    lease_capability_ref,
                     status,
                     event.event_id,
                     _timestamp(now),
@@ -704,7 +785,11 @@ class DurableHandoffStore:
                 if changed != 1:
                     continue
                 self._connection.execute(
-                    "UPDATE leases SET lease_until = NULL, lease_token = NULL WHERE handoff_id = ?",
+                    """
+                    UPDATE leases
+                    SET lease_until = NULL, lease_capability_ref = NULL
+                    WHERE handoff_id = ?
+                    """,
                     (handoff_id,),
                 )
                 self._append_event_from_record(
@@ -965,7 +1050,7 @@ class LocalAgentDispatcher:
         self.wake = wake
         self.lease_seconds = lease_seconds
 
-    def run_once(self, *, now: datetime) -> HandoffRecord | None:
+    def run_once(self, *, now: datetime) -> LeaseClaim | None:
         claim = self.store.claim(
             self.registration_id, now=now, lease_seconds=self.lease_seconds
         )
@@ -978,32 +1063,47 @@ class LocalAgentDispatcher:
                 record.handoff_id,
                 registration_id=self.registration_id,
                 lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 mutation_id=mutation_id,
                 retryable=False,
                 summary="Registered route verification failed.",
                 now=now,
             )
-            return record
+            return LeaseClaim(
+                self.store.get(record.handoff_id),
+                claim.lease_token,
+                claim.lease_generation,
+            )
         if not self.wake(record):
             self.store.record_failure(
                 record.handoff_id,
                 registration_id=self.registration_id,
                 lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 mutation_id=mutation_id,
                 retryable=True,
                 summary="Local dispatcher wake attempt failed.",
                 now=now,
             )
-            return record
+            return LeaseClaim(
+                self.store.get(record.handoff_id),
+                claim.lease_token,
+                claim.lease_generation,
+            )
         self.store.acknowledge(
             record.handoff_id,
             "received",
             registration_id=self.registration_id,
             lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
             mutation_id=mutation_id,
             now=now,
         )
-        return record
+        return LeaseClaim(
+            self.store.get(record.handoff_id),
+            claim.lease_token,
+            claim.lease_generation,
+        )
 
 
 class HandoffGuardian:

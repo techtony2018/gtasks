@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -193,6 +194,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                     status,
                     registration_id=REGISTRATION_ID,
                     lease_token=claim.lease_token,
+                    lease_generation=claim.lease_generation,
                     mutation_id=f"mutation-ack-{index}",
                     now=NOW,
                 )
@@ -205,6 +207,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 "still_blocked",
                 registration_id=REGISTRATION_ID,
                 lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 mutation_id="mutation-blocked-empty",
                 now=NOW,
             )
@@ -214,6 +217,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 "still_blocked",
                 registration_id=REGISTRATION_ID,
                 lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 mutation_id="mutation-blocked-private",
                 detail="token is missing",
                 now=NOW,
@@ -223,6 +227,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             "still_blocked",
             registration_id=REGISTRATION_ID,
             lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
             mutation_id="mutation-blocked-valid",
             detail="Waiting for a release decision.",
             now=NOW,
@@ -235,6 +240,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 "invented",
                 registration_id=REGISTRATION_ID,
                 lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
                 mutation_id="mutation-invented",
                 now=NOW,
             )
@@ -246,6 +252,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             record.handoff_id,
             registration_id=REGISTRATION_ID,
             lease_token=first_claim.lease_token,
+            lease_generation=first_claim.lease_generation,
             mutation_id="mutation-retry",
             retryable=True,
             summary="Network unavailable.",
@@ -256,6 +263,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             record.handoff_id,
             registration_id=REGISTRATION_ID,
             lease_token=second_claim.lease_token,
+            lease_generation=second_claim.lease_generation,
             mutation_id="mutation-terminal",
             retryable=False,
             summary="Route revoked.",
@@ -293,6 +301,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 "completed",
                 registration_id=REGISTRATION_ID,
                 lease_token=stale.lease_token,
+                lease_generation=stale.lease_generation,
                 mutation_id="mutation-stale-ack",
                 now=NOW + timedelta(seconds=6),
             ),
@@ -300,6 +309,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 record.handoff_id,
                 registration_id=REGISTRATION_ID,
                 lease_token=stale.lease_token,
+                lease_generation=stale.lease_generation,
                 mutation_id="mutation-stale-failure",
                 retryable=False,
                 summary="Route revoked.",
@@ -315,6 +325,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             "completed",
             registration_id=REGISTRATION_ID,
             lease_token=current.lease_token,
+            lease_generation=current.lease_generation,
             mutation_id="mutation-completed",
             now=NOW + timedelta(seconds=6),
         )
@@ -323,6 +334,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             "completed",
             registration_id=REGISTRATION_ID,
             lease_token=current.lease_token,
+            lease_generation=current.lease_generation,
             mutation_id="mutation-completed",
             now=NOW + timedelta(seconds=7),
         )
@@ -336,6 +348,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
                 record.handoff_id,
                 registration_id=REGISTRATION_ID,
                 lease_token=current.lease_token,
+                lease_generation=current.lease_generation,
                 mutation_id="mutation-after-completed",
                 retryable=True,
                 summary="Network unavailable.",
@@ -349,6 +362,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             failure_record.handoff_id,
             registration_id=REGISTRATION_ID,
             lease_token=failure_claim.lease_token,
+            lease_generation=failure_claim.lease_generation,
             mutation_id="mutation-failure-replay",
             retryable=True,
             summary="Network unavailable.",
@@ -358,6 +372,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             failure_record.handoff_id,
             registration_id=REGISTRATION_ID,
             lease_token=failure_claim.lease_token,
+            lease_generation=failure_claim.lease_generation,
             mutation_id="mutation-failure-replay",
             retryable=True,
             summary="Network unavailable.",
@@ -370,6 +385,190 @@ class DurableHandoffStoreTests(unittest.TestCase):
             event_type="delivery_retry",
         ).events
         self.assertEqual(len(failure_events), 1)
+
+    def test_hashes_lease_capability_and_caller_mutation_id_at_rest(self) -> None:
+        record = self.record()
+        claim = self.claim()
+        mutation_id = "thread-019fc0e2-5a9b-78a0-b989-27e590890fd8"
+
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id=mutation_id,
+            now=NOW,
+        )
+
+        with sqlite3.connect(self.path) as inspection:
+            capability_ref, generation = inspection.execute(
+                "SELECT lease_capability_ref, lease_generation FROM leases WHERE handoff_id = ?",
+                (record.handoff_id,),
+            ).fetchone()
+            mutation_ref, receipt_registration_ref, receipt_generation, receipt_capability_ref = (
+                inspection.execute(
+                    """
+                    SELECT mutation_ref, registration_ref, lease_generation, lease_capability_ref
+                    FROM mutation_receipts WHERE handoff_id = ?
+                    """,
+                    (record.handoff_id,),
+                ).fetchone()
+            )
+            lease_columns = {
+                row[1] for row in inspection.execute("PRAGMA table_info(leases)").fetchall()
+            }
+
+        self.assertEqual(capability_ref, hashlib.sha256(claim.lease_token.encode()).hexdigest())
+        self.assertEqual(generation, claim.lease_generation)
+        self.assertEqual(mutation_ref, hashlib.sha256(mutation_id.encode()).hexdigest())
+        self.assertEqual(receipt_registration_ref, registration().reference)
+        self.assertEqual(receipt_generation, claim.lease_generation)
+        self.assertEqual(receipt_capability_ref, capability_ref)
+        self.assertNotIn("lease_token", lease_columns)
+        with open(self.path, "rb") as database_file:
+            database_bytes = database_file.read()
+        self.assertNotIn(claim.lease_token.encode(), database_bytes)
+        self.assertNotIn(mutation_id.encode(), database_bytes)
+
+    def test_replay_requires_original_owner_generation_and_capability(self) -> None:
+        record = self.record()
+        claim = self.claim()
+        mutation_id = "mutation-authorized-replay"
+        self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id=mutation_id,
+            now=NOW,
+        )
+
+        invalid_replays = (
+            {
+                "registration_id": "private-registration-wrong-owner",
+                "lease_token": claim.lease_token,
+                "lease_generation": claim.lease_generation,
+            },
+            {
+                "registration_id": REGISTRATION_ID,
+                "lease_token": claim.lease_token,
+                "lease_generation": claim.lease_generation + 1,
+            },
+            {
+                "registration_id": REGISTRATION_ID,
+                "lease_token": "stale-lease-capability",
+                "lease_generation": claim.lease_generation,
+            },
+        )
+        for credentials in invalid_replays:
+            with self.subTest(credentials=credentials), self.assertRaisesRegex(
+                ValueError,
+                "receipt.*lease",
+            ):
+                self.store.acknowledge(
+                    record.handoff_id,
+                    "completed",
+                    mutation_id=mutation_id,
+                    now=NOW + timedelta(seconds=1),
+                    **credentials,
+                )
+
+        replay = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id=mutation_id,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(replay.status, "completed")
+        self.assertEqual(
+            len(
+                self.store.query_events(
+                    limit=50,
+                    after_sequence=0,
+                    event_type="acknowledgement",
+                ).events
+            ),
+            1,
+        )
+
+    def test_one_handoff_runs_received_active_blocked_completed_lifecycle(self) -> None:
+        record = self.record()
+        local_dispatcher = LocalAgentDispatcher(
+            self.store,
+            registration_id=REGISTRATION_ID,
+            verify_route=lambda claimed: claimed.agent_slug == AGENT,
+            wake=lambda claimed: True,
+        )
+        claim = local_dispatcher.run_once(now=NOW)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.status, "received")
+
+        active = self.store.acknowledge(
+            record.handoff_id,
+            "actively_executing",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-active",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(active.status, "actively_executing")
+        with self.assertRaisesRegex(ValueError, "transition"):
+            self.store.acknowledge(
+                record.handoff_id,
+                "received",
+                registration_id=REGISTRATION_ID,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
+                mutation_id="mutation-regress-received",
+                now=NOW + timedelta(seconds=2),
+            )
+        blocked = self.store.acknowledge(
+            record.handoff_id,
+            "still_blocked",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-blocked",
+            detail="Waiting for a release decision.",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.assertEqual(blocked.status, "still_blocked")
+        completed = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-completed-lifecycle",
+            now=NOW + timedelta(seconds=4),
+        )
+        self.assertEqual(completed.status, "completed")
+        with self.assertRaisesRegex(ValueError, "transition|active lease"):
+            self.store.acknowledge(
+                record.handoff_id,
+                "still_blocked",
+                registration_id=REGISTRATION_ID,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
+                mutation_id="mutation-regress-completed",
+                detail="Waiting for a release decision.",
+                now=NOW + timedelta(seconds=5),
+            )
+        events = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="acknowledgement",
+        ).events
+        self.assertEqual(
+            [event.status for event in events],
+            ["received", "actively_executing", "still_blocked", "completed"],
+        )
 
     def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:
         other_store = DurableHandoffStore(self.path, retention_days=30)
@@ -427,6 +626,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             "received",
             registration_id=REGISTRATION_ID,
             lease_token=first_claim.lease_token,
+            lease_generation=first_claim.lease_generation,
             mutation_id="mutation-received",
             now=NOW,
         )
@@ -448,6 +648,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             terminal_record.handoff_id,
             registration_id=REGISTRATION_ID,
             lease_token=terminal_claim.lease_token,
+            lease_generation=terminal_claim.lease_generation,
             mutation_id="mutation-terminal-audit",
             retryable=False,
             summary="Route revoked.",
