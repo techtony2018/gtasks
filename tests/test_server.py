@@ -1,10 +1,12 @@
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import gtasks.gbrain as gbrain
@@ -57,9 +59,16 @@ from gtasks.gbrain import (
 )
 from gtasks.server import (
     ArtifactPublisherAuth,
+    HandoffDispatcherAuth,
     build_task_snapshot,
     build_server,
     load_artifact_publisher_auth,
+)
+from gtasks.handoff_dispatcher import (
+    ActionableChange,
+    AgentRegistration,
+    DurableHandoffStore,
+    HandoffDispatcher,
 )
 from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 from gtasks.ical import CalendarPreferences
@@ -771,6 +780,10 @@ class ServerHarness:
         log_reader: OperationalLogReader | None = None,
         ical_reader=None,
         read_cache: ReadSurfaceCache | None = None,
+        handoff_store: DurableHandoffStore | None = None,
+        handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
+        handoff_registration_validator=None,
+        handoff_waiter=None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -819,6 +832,10 @@ class ServerHarness:
                     "agents/toddy": "toddy-test-publisher-token",
                 }
             ),
+            handoff_store=handoff_store,
+            handoff_dispatcher_auth=handoff_dispatcher_auth,
+            handoff_registration_validator=handoff_registration_validator,
+            handoff_waiter=handoff_waiter,
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -858,6 +875,332 @@ class ServerHarness:
         response_headers = {key: value for key, value in response.getheaders()}
         connection.close()
         return response.status, parsed, response_headers
+
+
+class HandoffDispatcherApiTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 4, 17, 0, tzinfo=timezone.utc)
+    TASK = "tasks/11111111-1111-4111-8111-111111111111"
+    REGISTRATION = "private-registration-tammy"
+
+    def setUp(self) -> None:
+        handle, self.store_path = tempfile.mkstemp(
+            prefix="handoff-api-", suffix=".sqlite3"
+        )
+        os.close(handle)
+        Path(self.store_path).unlink()
+        self.store = DurableHandoffStore(self.store_path, retention_days=30)
+        self.addCleanup(self._cleanup_store)
+        self.registration = AgentRegistration(
+            registration_id=self.REGISTRATION,
+            agent_slug="agents/tammy",
+            route="hosts/tammy",
+            verified=True,
+        )
+        self.dispatcher = HandoffDispatcher(
+            self.store, registrations=(self.registration,)
+        )
+        self.auth = HandoffDispatcherAuth.from_plaintext_tokens_for_tests(
+            {
+                "agents/tammy": (
+                    self.REGISTRATION,
+                    "tammy-handoff-api-token",
+                ),
+                "agents/timmy": (
+                    "private-registration-timmy",
+                    "timmy-handoff-api-token",
+                ),
+            }
+        )
+        self.harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                agent == "agents/tammy" and registration == self.REGISTRATION
+            ),
+            handoff_waiter=lambda _seconds: None,
+        )
+
+    def _cleanup_store(self) -> None:
+        self.store.close()
+        Path(self.store_path).unlink(missing_ok=True)
+
+    def _record(self, *, event: str = "events/100", task: str | None = None):
+        return self.dispatcher.record(
+            ActionableChange(
+                task_slug=task or self.TASK,
+                canonical_event_id=event,
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id=f"correlation-{event.rsplit('/', 1)[-1]}",
+            ),
+            now=self.NOW,
+        )
+
+    def _event_count(self) -> int:
+        return self.store.query_events(limit=200, after_sequence=0).total
+
+    @staticmethod
+    def _auth(token: str = "tammy-handoff-api-token") -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}"}
+
+    def _claim(self, **overrides):
+        body = {
+            "registration_id": self.REGISTRATION,
+            "wait_seconds": 0,
+            "lease_seconds": 30,
+        }
+        body.update(overrides)
+        return self.harness.request(
+            "POST", "/api/handoffs/claim", body, self._auth()
+        )
+
+    def _lease_headers(self, claim: dict, *, token: str = "tammy-handoff-api-token"):
+        return {
+            **self._auth(token),
+            "X-Handoff-Registration-ID": self.REGISTRATION,
+            "X-Handoff-Lease-Capability": claim["lease_capability"],
+            "X-Handoff-Lease-Generation": str(claim["lease_generation"]),
+            "Idempotency-Key": "mutation-api-1",
+        }
+
+    def test_claim_auth_is_identity_scoped_and_rejected_requests_do_not_write(self) -> None:
+        self._record()
+        baseline = self._event_count()
+        cases = (
+            ({}, {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30}),
+            (self._auth("invalid-token"), {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30}),
+            (self._auth("timmy-handoff-api-token"), {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30}),
+            (self._auth(), {"registration_id": "private-registration-other", "wait_seconds": 0, "lease_seconds": 30}),
+        )
+
+        for headers, body in cases:
+            with self.subTest(headers=headers, registration=body["registration_id"]):
+                status, payload, _ = self.harness.request(
+                    "POST", "/api/handoffs/claim", body, headers
+                )
+                self.assertIn(status, {401, 403})
+                self.assertIn("code", payload)
+                self.assertEqual(self._event_count(), baseline)
+                self.assertEqual(self.store.get(self._record().handoff_id).status, "queued")
+
+    def test_shared_tokens_are_rejected_by_the_auth_contract(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unique"):
+            HandoffDispatcherAuth.from_plaintext_tokens_for_tests(
+                {
+                    "agents/tammy": (self.REGISTRATION, "shared-token"),
+                    "agents/timmy": ("private-registration-timmy", "shared-token"),
+                }
+            )
+
+    def test_claim_validates_wait_and_lease_bounds_without_mutation(self) -> None:
+        self._record()
+        baseline = self._event_count()
+        for field, value in (
+            ("wait_seconds", -1),
+            ("wait_seconds", 26),
+            ("wait_seconds", True),
+            ("lease_seconds", 4),
+            ("lease_seconds", 121),
+            ("lease_seconds", 30.5),
+        ):
+            with self.subTest(field=field, value=value):
+                status, payload, _ = self._claim(**{field: value})
+                self.assertEqual(status, 422)
+                self.assertEqual(payload["code"], "invalid_handoff_claim")
+                self.assertEqual(self._event_count(), baseline)
+
+        empty_store_path = Path(self.harness.runtime_directory.name) / "empty.sqlite3"
+        empty_store = DurableHandoffStore(str(empty_store_path))
+        self.addCleanup(empty_store.close)
+        waits: list[float] = []
+        empty_harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=empty_store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda *_args: True,
+            handoff_waiter=waits.append,
+        )
+        for wait_seconds, lease_seconds in ((0, 5), (25, 120)):
+            status, payload, _ = empty_harness.request(
+                "POST",
+                "/api/handoffs/claim",
+                {
+                    "registration_id": self.REGISTRATION,
+                    "wait_seconds": wait_seconds,
+                    "lease_seconds": lease_seconds,
+                },
+                self._auth(),
+            )
+            self.assertEqual((status, payload), (204, {}))
+        self.assertEqual(waits, [25])
+
+    def test_route_readback_failure_fails_closed_without_claiming(self) -> None:
+        record = self._record()
+
+        def unavailable(_agent: str, _registration: str) -> bool:
+            raise RuntimeError("private route source unavailable")
+
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=unavailable,
+            handoff_waiter=lambda _seconds: None,
+        )
+        baseline = self._event_count()
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "handoff_route_unavailable")
+        self.assertEqual(self._event_count(), baseline)
+        self.assertEqual(self.store.get(record.handoff_id).status, "queued")
+
+    def test_claim_is_atomic_and_payload_is_redacted(self) -> None:
+        self._record()
+
+        def claim_once():
+            return self._claim()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _index: claim_once(), range(2)))
+
+        self.assertEqual(sorted(response[0] for response in responses), [200, 204])
+        payload = next(response[1] for response in responses if response[0] == 200)
+        self.assertEqual(payload["task_slug"], self.TASK)
+        self.assertEqual(payload["trigger"], "answer_received")
+        self.assertEqual(payload["summary"], "A verified answer is ready.")
+        self.assertEqual(payload["correlation_id"], "correlation-100")
+        self.assertIn("idempotency_key", payload)
+        self.assertIn("registration_ref", payload)
+        self.assertIn("lease_capability", payload)
+        self.assertEqual(payload["lease_generation"], 1)
+        rendered = json.dumps(payload)
+        self.assertNotIn(self.REGISTRATION, rendered)
+        self.assertNotIn("tammy-handoff-api-token", rendered)
+        self.assertNotIn("thread", rendered.lower())
+
+    def test_acknowledgements_enforce_owner_state_and_blocked_detail(self) -> None:
+        allowed = ("received", "actively_executing", "still_blocked", "completed")
+        for index, state in enumerate(allowed):
+            with self.subTest(state=state):
+                record = self._record(event=f"events/ack-{index}")
+                status, claim, _ = self._claim()
+                self.assertEqual(status, 200)
+                headers = self._lease_headers(claim)
+                headers["Idempotency-Key"] = f"mutation-ack-{index}"
+                detail = "Waiting on verified approval." if state == "still_blocked" else None
+                status, payload, _ = self.harness.request(
+                    "POST",
+                    f"/api/handoffs/{record.handoff_id}/ack",
+                    {"status": state, "detail": detail},
+                    headers,
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["status"], state)
+
+        record = self._record(event="events/blocked-empty")
+        _status, claim, _ = self._claim()
+        baseline = self._event_count()
+        status, payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "still_blocked", "detail": None},
+            self._lease_headers(claim),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_handoff_ack")
+        self.assertEqual(self._event_count(), baseline)
+        self.assertEqual(self.store.get(record.handoff_id).status, "leased")
+
+        status, payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "completed", "detail": None},
+            self._lease_headers(claim, token="timmy-handoff-api-token"),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertEqual(self._event_count(), baseline)
+
+    def test_retryable_and_terminal_failure_routes_are_distinct(self) -> None:
+        # Terminal first keeps the retryable handoff from being reclaimed ahead
+        # of the second fixture under the store's oldest-first retry contract.
+        for index, failure_class in enumerate(("terminal", "retryable")):
+            record = self._record(event=f"events/failure-{index}")
+            _status, claim, _ = self._claim()
+            headers = self._lease_headers(claim)
+            headers["Idempotency-Key"] = f"mutation-failure-{index}"
+            status, payload, _ = self.harness.request(
+                "POST",
+                f"/api/handoffs/{record.handoff_id}/failure",
+                {"failure_class": failure_class},
+                headers,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                payload["status"],
+                "retrying" if failure_class == "retryable" else "dead_letter",
+            )
+
+        record = self._record(event="events/failure-invalid")
+        _status, claim, _ = self._claim()
+        baseline = self._event_count()
+        status, payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/failure",
+            {"failure_class": "unknown"},
+            self._lease_headers(claim),
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_handoff_failure")
+        self.assertEqual(self._event_count(), baseline)
+
+    def test_event_endpoints_share_deterministic_filters_counts_cursors_and_export(self) -> None:
+        second_task = "tasks/22222222-2222-4222-8222-222222222222"
+        self._record(event="events/log-1")
+        self._record(event="events/log-2", task=second_task)
+        status, page, _ = self.harness.request(
+            "GET", "/api/handoff-events?limit=1&after_sequence=0&agent_slug=agents%2Ftammy"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(page["total"], 2)
+        self.assertEqual(len(page["events"]), 1)
+        self.assertIn("next_sequence", page)
+        status, tail, _ = self.harness.request(
+            "GET",
+            f"/api/handoff-events?limit=1&after_sequence={page['next_sequence']}&agent_slug=agents%2Ftammy",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(tail["total"], 1)
+        self.assertNotIn("next_sequence", tail)
+
+        encoded = self.TASK.replace("/", "%2F")
+        status, scoped, _ = self.harness.request(
+            "GET", f"/api/tasks/{encoded}/handoff-events?limit=50&after_sequence=0"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(scoped["total"], 1)
+        self.assertEqual(scoped["events"][0]["task_slug"], self.TASK)
+
+        before = self._event_count()
+        status, exported, _ = self.harness.request(
+            "GET", "/api/handoff-events?limit=50&after_sequence=0&export=1"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(exported["metadata"]["format"], "handoff-audit-v1")
+        self.assertEqual(self._event_count(), before)
 
 
 class CalendarApiTests(unittest.TestCase):

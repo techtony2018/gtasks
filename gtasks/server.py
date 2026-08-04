@@ -7,11 +7,12 @@ import json
 import mimetypes
 import os
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from dataclasses import replace
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -67,6 +68,7 @@ from .job_application_binding import (
     JOB_APPLIED_TIMEZONE,
     progress_revision,
 )
+from .handoff_dispatcher import DurableHandoffStore
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -96,6 +98,139 @@ DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     / "gtasks"
     / "artifact-publisher-credentials.json"
 )
+DEFAULT_HANDOFF_STORE = (
+    Path.home()
+    / ".codex"
+    / "services"
+    / "all-things-codex-dashboard"
+    / "state"
+    / "gtasks"
+    / "handoff-dispatcher.sqlite3"
+)
+DEFAULT_HANDOFF_DISPATCHER_CREDENTIALS = (
+    Path.home()
+    / ".codex"
+    / "services"
+    / "all-things-codex-dashboard"
+    / "state"
+    / "gtasks"
+    / "handoff-dispatcher-credentials.json"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class HandoffDispatcherIdentity:
+    agent_slug: str
+    registration_id: str
+
+
+class HandoffDispatcherAuth:
+    """Resolve a bearer credential to one pseudonymized dispatcher identity."""
+
+    def __init__(
+        self,
+        identities: tuple[tuple[HandoffDispatcherIdentity, str], ...] = (),
+    ) -> None:
+        registration_hashes = [identity.registration_id for identity, _ in identities]
+        token_hashes = [token_hash for _, token_hash in identities]
+        agent_slugs = [identity.agent_slug for identity, _ in identities]
+        if (
+            len(set(registration_hashes)) != len(registration_hashes)
+            or len(set(token_hashes)) != len(token_hashes)
+            or len(set(agent_slugs)) != len(agent_slugs)
+        ):
+            raise ValueError(
+                "Dispatcher identity, registration, and token hashes must be unique"
+            )
+        self._identities = identities
+
+    @staticmethod
+    def _digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _valid_digest(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    @classmethod
+    def from_plaintext_tokens_for_tests(
+        cls,
+        credentials: dict[str, tuple[str, str]],
+    ) -> "HandoffDispatcherAuth":
+        return cls(
+            tuple(
+                (
+                    HandoffDispatcherIdentity(
+                        agent_slug, cls._digest(registration_id)
+                    ),
+                    cls._digest(token),
+                )
+                for agent_slug, (registration_id, token) in credentials.items()
+            )
+        )
+
+    @classmethod
+    def from_file(cls, path: Path) -> "HandoffDispatcherAuth":
+        try:
+            mode = path.stat().st_mode & 0o777
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Handoff dispatcher credentials are unavailable") from exc
+        if mode != 0o600:
+            raise ValueError("Handoff dispatcher credentials must use mode 0600")
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"schema_version", "identities"}
+            or payload.get("schema_version") != 1
+        ):
+            raise ValueError("Handoff dispatcher credentials have the wrong schema")
+        entries = payload.get("identities")
+        if not isinstance(entries, list) or len(entries) != 3:
+            raise ValueError("Handoff dispatcher credentials have the wrong schema")
+        identities: list[tuple[HandoffDispatcherIdentity, str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {
+                "agent_slug",
+                "registration_sha256",
+                "token_sha256",
+            }:
+                raise ValueError("Handoff dispatcher credential entry is invalid")
+            agent_slug = entry.get("agent_slug")
+            registration_hash = entry.get("registration_sha256")
+            token_hash = entry.get("token_sha256")
+            if (
+                not isinstance(agent_slug, str)
+                or re.fullmatch(r"agents/[a-z0-9][a-z0-9._-]{0,63}", agent_slug)
+                is None
+                or not cls._valid_digest(registration_hash)
+                or not cls._valid_digest(token_hash)
+            ):
+                raise ValueError("Handoff dispatcher credential entry is invalid")
+            identities.append(
+                (HandoffDispatcherIdentity(agent_slug, registration_hash), token_hash)
+            )
+        return cls(tuple(identities))
+
+    def resolve(
+        self, authorization: str | None
+    ) -> HandoffDispatcherIdentity | None:
+        if not isinstance(authorization, str) or not authorization.startswith(
+            "Bearer "
+        ):
+            return None
+        token = authorization[7:]
+        if not token or len(token) > 512 or "\n" in token or "\r" in token:
+            return None
+        supplied = self._digest(token)
+        match = None
+        for identity, expected in self._identities:
+            if hmac.compare_digest(supplied, expected):
+                match = identity
+        return match
 
 
 class ArtifactPublisherAuth:
@@ -170,6 +305,15 @@ def load_artifact_publisher_auth(
     if not path.exists() and configured_path is None:
         return ArtifactPublisherAuth()
     return ArtifactPublisherAuth.from_file(path)
+
+
+def load_handoff_dispatcher_auth(
+    configured_path: Path | None,
+) -> HandoffDispatcherAuth:
+    path = configured_path or DEFAULT_HANDOFF_DISPATCHER_CREDENTIALS
+    if not path.exists() and configured_path is None:
+        return HandoffDispatcherAuth()
+    return HandoffDispatcherAuth.from_file(path)
 
 
 def _canonical_uuid_slug(
@@ -429,6 +573,10 @@ def _handler_class(
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
+    handoff_store: DurableHandoffStore | None = None,
+    handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
+    handoff_registration_validator: Callable[[str, str], bool] | None = None,
+    handoff_waiter: Callable[[float], None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
@@ -436,6 +584,11 @@ def _handler_class(
     active_artifact_publisher_auth = (
         artifact_publisher_auth or ArtifactPublisherAuth()
     )
+    active_handoff_auth = handoff_dispatcher_auth or HandoffDispatcherAuth()
+    active_handoff_registration_validator = (
+        handoff_registration_validator or (lambda _agent, _registration: True)
+    )
+    active_handoff_waiter = handoff_waiter or time.sleep
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -543,6 +696,123 @@ def _handler_class(
             self._security_headers()
             self.end_headers()
             self.wfile.write(body)
+
+        def _empty(self, status: int) -> None:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.end_headers()
+
+        def _handoff_identity(self) -> HandoffDispatcherIdentity | None:
+            identity = active_handoff_auth.resolve(self.headers.get("Authorization"))
+            if identity is None:
+                self._json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {
+                        "error": "A valid dispatcher bearer credential is required.",
+                        "code": "handoff_auth_required",
+                    },
+                )
+            return identity
+
+        def _handoff_mutation_headers(
+            self,
+            identity: HandoffDispatcherIdentity,
+        ) -> tuple[str, str, int, str] | None:
+            registration_id = self.headers.get("X-Handoff-Registration-ID")
+            capability = self.headers.get("X-Handoff-Lease-Capability")
+            raw_generation = self.headers.get("X-Handoff-Lease-Generation")
+            mutation_id = self.headers.get("Idempotency-Key")
+            try:
+                generation = int(raw_generation or "")
+            except ValueError:
+                generation = 0
+            if (
+                not isinstance(registration_id, str)
+                or not registration_id
+                or not hmac.compare_digest(
+                    hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+                    identity.registration_id,
+                )
+                or not isinstance(capability, str)
+                or not capability
+                or len(capability) > 512
+                or generation < 1
+                or not isinstance(mutation_id, str)
+                or not mutation_id
+            ):
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {
+                        "error": "A valid lease capability, generation, and idempotency key are required.",
+                        "code": "invalid_handoff_lease",
+                    },
+                )
+                return None
+            return registration_id, capability, generation, mutation_id
+
+        def _read_handoff_events(
+            self,
+            *,
+            task_slug: str | None,
+        ) -> None:
+            if handoff_store is None:
+                self._json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {
+                        "error": "Handoff audit storage is unavailable.",
+                        "code": "handoff_store_unavailable",
+                    },
+                )
+                return
+            query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            allowed = {
+                "limit",
+                "after_sequence",
+                "agent_slug",
+                "status",
+                "event_type",
+                "correlation_id",
+                "export",
+            }
+            if any(key not in allowed or len(values) != 1 for key, values in query.items()):
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "error": "Unsupported or repeated handoff event filter.",
+                        "code": "invalid_handoff_event_filter",
+                    },
+                )
+                return
+            try:
+                limit = int(query.get("limit", ["50"])[0])
+                after_sequence = int(query.get("after_sequence", ["0"])[0])
+                export = query.get("export", ["0"])[0]
+                if export not in {"0", "1"}:
+                    raise ValueError("export must be 0 or 1")
+                filters = {
+                    "limit": limit,
+                    "after_sequence": after_sequence,
+                    "task_slug": task_slug,
+                    "agent_slug": query.get("agent_slug", [None])[0] or None,
+                    "status": query.get("status", [None])[0] or None,
+                    "event_type": query.get("event_type", [None])[0] or None,
+                    "correlation_id": query.get("correlation_id", [None])[0]
+                    or None,
+                }
+                payload = (
+                    handoff_store.export_events(**filters)
+                    if export == "1"
+                    else handoff_store.query_events(**filters).to_dict()
+                )
+            except ValueError as exc:
+                self._json(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    {"error": str(exc), "code": "invalid_handoff_event_filter"},
+                )
+                return
+            self._json(HTTPStatus.OK, payload)
 
         def _read_json(self) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length", "0")
@@ -672,6 +942,21 @@ def _handler_class(
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            if path == "/api/handoff-events":
+                self._read_handoff_events(task_slug=None)
+                return
+            handoff_event_prefix = "/api/tasks/"
+            handoff_event_suffix = "/handoff-events"
+            if path.startswith(handoff_event_prefix) and path.endswith(
+                handoff_event_suffix
+            ):
+                task_slug = unquote(
+                    path[
+                        len(handoff_event_prefix) : -len(handoff_event_suffix)
+                    ]
+                )
+                self._read_handoff_events(task_slug=task_slug)
                 return
             todo_list_prefix = "/api/tasks/"
             todo_list_suffix = "/todos"
@@ -1113,6 +1398,233 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/handoffs/claim":
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {
+                    "registration_id",
+                    "wait_seconds",
+                    "lease_seconds",
+                }:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "A handoff claim requires the exact supported fields.",
+                            "code": "invalid_handoff_claim",
+                        },
+                    )
+                    return
+                registration_id = payload.get("registration_id")
+                wait_seconds = payload.get("wait_seconds")
+                lease_seconds = payload.get("lease_seconds")
+                if (
+                    not isinstance(registration_id, str)
+                    or not registration_id
+                    or isinstance(wait_seconds, bool)
+                    or not isinstance(wait_seconds, int)
+                    or wait_seconds < 0
+                    or wait_seconds > 25
+                    or isinstance(lease_seconds, bool)
+                    or not isinstance(lease_seconds, int)
+                    or lease_seconds < 5
+                    or lease_seconds > 120
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Claim wait must be 0 to 25 seconds and lease must be 5 to 120 seconds.",
+                            "code": "invalid_handoff_claim",
+                        },
+                    )
+                    return
+                registration_ref = hashlib.sha256(
+                    registration_id.encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(
+                    identity.registration_id, registration_ref
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher registration does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                try:
+                    route_matches = active_handoff_registration_validator(
+                        identity.agent_slug, registration_id
+                    )
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                if route_matches is not True:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                now = clock().astimezone(timezone.utc)
+                claim = handoff_store.claim(
+                    registration_id,
+                    now=now,
+                    lease_seconds=lease_seconds,
+                )
+                if claim is None and wait_seconds:
+                    active_handoff_waiter(wait_seconds)
+                    claim = handoff_store.claim(
+                        registration_id,
+                        now=clock().astimezone(timezone.utc),
+                        lease_seconds=lease_seconds,
+                    )
+                if claim is None:
+                    self._empty(HTTPStatus.NO_CONTENT)
+                    return
+                if (
+                    claim.record.agent_slug != identity.agent_slug
+                    or claim.record.registration_ref is None
+                    or not hmac.compare_digest(
+                        claim.record.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {
+                            "error": "Claimed handoff did not match its authenticated identity.",
+                            "code": "handoff_claim_race",
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        **claim.record.to_dict(),
+                        "lease_capability": claim.lease_token,
+                        "lease_generation": claim.lease_generation,
+                    },
+                )
+                return
+            ack_match = re.fullmatch(r"/api/handoffs/([^/]+)/ack", path)
+            failure_match = re.fullmatch(r"/api/handoffs/([^/]+)/failure", path)
+            if ack_match or failure_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote((ack_match or failure_match).group(1))
+                try:
+                    current = handoff_store.get(handoff_id)
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    current.agent_slug != identity.agent_slug
+                    or current.registration_ref is None
+                    or not hmac.compare_digest(
+                        current.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                lease = self._handoff_mutation_headers(identity)
+                if lease is None:
+                    return
+                registration_id, capability, generation, mutation_id = lease
+                try:
+                    if ack_match:
+                        if set(payload) != {"status", "detail"}:
+                            raise ValueError(
+                                "Acknowledgement requires exactly status and detail"
+                            )
+                        result = handoff_store.acknowledge(
+                            handoff_id,
+                            payload.get("status"),
+                            registration_id=registration_id,
+                            lease_token=capability,
+                            lease_generation=generation,
+                            mutation_id=mutation_id,
+                            now=clock().astimezone(timezone.utc),
+                            detail=payload.get("detail"),
+                        )
+                    else:
+                        if set(payload) != {"failure_class"} or payload.get(
+                            "failure_class"
+                        ) not in {"retryable", "terminal"}:
+                            raise ValueError(
+                                "Failure class must be retryable or terminal"
+                            )
+                        retryable = payload["failure_class"] == "retryable"
+                        result = handoff_store.record_failure(
+                            handoff_id,
+                            registration_id=registration_id,
+                            lease_token=capability,
+                            lease_generation=generation,
+                            mutation_id=mutation_id,
+                            retryable=retryable,
+                            summary=(
+                                "Dispatcher delivery will retry."
+                                if retryable
+                                else "Dispatcher delivery stopped after terminal failure."
+                            ),
+                            now=clock().astimezone(timezone.utc),
+                        )
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": (
+                                "invalid_handoff_ack"
+                                if ack_match
+                                else "invalid_handoff_failure"
+                            ),
+                        },
+                    )
+                    return
+                self._json(HTTPStatus.OK, result.to_dict())
+                return
             if path == "/api/artifacts":
                 payload = self._read_json()
                 if payload is None:
@@ -3194,6 +3706,10 @@ def build_server(
     calendar_preferences: CalendarPreferences | None = None,
     read_cache: ReadSurfaceCache | None = None,
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
+    handoff_store: DurableHandoffStore | None = None,
+    handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
+    handoff_registration_validator: Callable[[str, str], bool] | None = None,
+    handoff_waiter: Callable[[float], None] | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -3215,6 +3731,10 @@ def build_server(
         calendar_preferences,
         read_cache,
         artifact_publisher_auth,
+        handoff_store,
+        handoff_dispatcher_auth,
+        handoff_registration_validator,
+        handoff_waiter,
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -3229,9 +3749,16 @@ def main() -> None:
     parser.add_argument("--operation-log-file", type=Path)
     parser.add_argument("--queue-log-file", type=Path)
     parser.add_argument("--artifact-publisher-credentials-file", type=Path)
+    parser.add_argument("--handoff-store", type=Path)
+    parser.add_argument("--handoff-dispatcher-credentials-file", type=Path)
     parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
+    handoff_store = (
+        DurableHandoffStore(str(args.handoff_store))
+        if args.handoff_store
+        else None
+    )
     server = build_server(
         host=args.host,
         port=args.port,
@@ -3250,6 +3777,10 @@ def main() -> None:
         artifact_publisher_auth=load_artifact_publisher_auth(
             args.artifact_publisher_credentials_file
         ),
+        handoff_store=handoff_store,
+        handoff_dispatcher_auth=load_handoff_dispatcher_auth(
+            args.handoff_dispatcher_credentials_file
+        ),
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:
@@ -3258,6 +3789,8 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        if handoff_store is not None:
+            handoff_store.close()
 
 
 if __name__ == "__main__":

@@ -20,7 +20,11 @@
     "--port",
     "4179",
     "--artifact-publisher-credentials-file",
-    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/artifact-publisher-credentials.json"
+    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/artifact-publisher-credentials.json",
+    "--handoff-store",
+    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher.sqlite3",
+    "--handoff-dispatcher-credentials-file",
+    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher-credentials.json"
   ],
   "managed_actions": [
     "start",
@@ -36,6 +40,12 @@
     "consumer_observability_artifact": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events/reader-observability.json",
     "runtime_root": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events",
     "producer_binding": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events/career-path-producer-binding.json"
+  },
+  "handoff_dispatcher": {
+    "store": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher.sqlite3",
+    "credentials": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher-credentials.json",
+    "credentials_mode": "0600",
+    "credential_contents": "private_runtime_only"
   },
   "canonical_store": "gbrain",
   "vendored_copy": false,
