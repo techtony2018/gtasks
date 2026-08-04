@@ -1521,6 +1521,47 @@ def _handler_class(
                     ),
                 )
                 return
+            exact_task_prefix = "/api/tasks/"
+            if (
+                path.startswith(exact_task_prefix)
+                and "/" not in path[len(exact_task_prefix) :]
+            ):
+                task_slug = unquote(path[len(exact_task_prefix) :])
+                if not task_slug.startswith("tasks/"):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": "A canonical task slug is required.", "code": "invalid_task"},
+                    )
+                    return
+                try:
+                    with foreground_operation():
+                        task = adapter.get_task(task_slug)
+                except GBrainCommandError as exc:
+                    if is_page_not_found_error(exc):
+                        self._json(
+                            HTTPStatus.NOT_FOUND,
+                            {"error": "Task not found.", "code": "task_not_found"},
+                        )
+                        return
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_task"},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"task": task.to_dict()})
+                return
             if path == "/api/projects":
                 try:
                     payload = adapter.list_projects().to_dict()

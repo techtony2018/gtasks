@@ -3052,6 +3052,38 @@ class LogsApiTests(unittest.TestCase):
 
 
 class TasksApiTests(unittest.TestCase):
+    def test_reads_one_canonical_qa_fixture_for_handoff_timeline(self) -> None:
+        now = datetime(2026, 8, 4, 15, 0, tzinfo=timezone.utc)
+        fixture = replace(
+            new_task(
+                title="Dispatcher release canary fixture",
+                detail="Isolated canonical QA fixture.",
+                due_day=now.date(),
+                now=now,
+                identity="canaryfixture",
+            ),
+            slug="tasks/70cf1aeb-ac30-4d78-995a-a1fea9d5bea9",
+            status="completed",
+            lifecycle_root=QA_FIXTURES_ROOT,
+            qa_fixture=True,
+            qa_owner="mission_control_release_canary",
+            qa_release="V0.0.76",
+            owner_agent="agents/tammy",
+            inbox=False,
+            completed_at=now,
+        )
+        harness = ServerHarness(self, FakeAdapter(completed=(fixture,)))
+
+        encoded = fixture.slug.replace("/", "%2F")
+        status, payload, headers = harness.request("GET", f"/api/tasks/{encoded}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["slug"], fixture.slug)
+        self.assertEqual(payload["task"]["lifecycle_root"], QA_FIXTURES_ROOT)
+        self.assertTrue(payload["task"]["qa_fixture"])
+        self.assertEqual(payload["task"]["owner_agent"], "agents/tammy")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+
     def test_initial_reads_coalesce_through_short_cache_and_refresh_bypasses(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)

@@ -6286,7 +6286,19 @@ async function loadCorrelatedHandoffTask(taskSlug) {
   task = findTaskBySlug(taskSlug);
   if (task) return task;
   await loadAgentWork();
-  return findTaskBySlug(taskSlug);
+  task = findTaskBySlug(taskSlug);
+  if (task) return task;
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(taskSlug)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok || payload?.task?.slug !== taskSlug) return null;
+    return payload.task;
+  } catch (_error) {
+    return null;
+  }
 }
 
 async function openHandoffCorrelation(correlationId, taskSlug, originControl = null) {
@@ -6304,7 +6316,7 @@ async function openHandoffCorrelation(correlationId, taskSlug, originControl = n
   const logRead = loadHandoffLog({ reset: true });
   const task = taskSlug ? await loadCorrelatedHandoffTask(taskSlug) : null;
   if (task) {
-    selectTask(taskSlug, null, originControl);
+    selectTask(taskSlug, task, originControl);
     await logRead;
     return;
   }

@@ -2087,7 +2087,7 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
             javascript.index("function renderHandoffLogView")
         ]
         self.assertIn('state.activeView = "handoff-log"', opener)
-        self.assertIn("selectTask(taskSlug, null, originControl)", opener)
+        self.assertIn("selectTask(taskSlug, task, originControl)", opener)
         self.assertIn('document.querySelectorAll(".handoff-event-task")', javascript)
         self.assertIn("loadTaskHandoffTimeline(task.slug)", javascript)
         self.assertIn("DurableHandoffStore", fixture)
@@ -2163,6 +2163,47 @@ await openHandoffCorrelation("correlation-missing", "tasks/runtime-missing", new
 assert(selected === null, "missing task opened an unrelated detail");
 assert(state.handoffLogError.includes("Linked Task"), "missing linked task had no explicit read error");
 assert(state.handoffLogFocusKey === "load-status", "missing linked task did not target stable status focus");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_correlation_reads_exact_canonical_qa_fixture(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/70cf1aeb-ac30-4d78-995a-a1fea9d5bea9";
+const fixture = {
+  slug: taskSlug,
+  status: "completed",
+  title: "Dispatcher release canary fixture",
+  lifecycle_root: "collections/mission-control-qa-fixtures",
+  qa_fixture: true,
+};
+state.snapshot = { tasks: [], goals: [], views: {} };
+state.agentTasks = [];
+state.tasksLoadPromise = null;
+state.agentWorkLoading = false;
+state.agentWorkLoadPromise = null;
+loadTasks = async () => {};
+loadAgentWork = async () => {};
+loadHandoffLog = async () => {};
+render = () => {};
+let requested = null;
+globalThis.fetch = async (url) => {
+  requested = url;
+  return { ok: true, json: async () => ({ task: fixture }) };
+};
+let selected = null;
+selectTask = (slug, fallback, focus) => { selected = { slug, fallback, focus }; };
+const origin = new FakeElement("button");
+
+await openHandoffCorrelation("corr-v0076-canary-4", taskSlug, origin);
+
+assert(requested === `/api/tasks/${encodeURIComponent(taskSlug)}`, `unexpected exact task URL: ${requested}`);
+assert(selected?.slug === taskSlug, "exact canonical fixture did not open");
+assert(selected?.fallback?.qa_fixture === true, "QA fixture readback was not passed to Task detail");
+assert(selected?.focus === origin, "correlation origin focus context was not preserved");
+assert(state.handoffLogError === "", `unexpected correlation error: ${state.handoffLogError}`);
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)

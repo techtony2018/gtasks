@@ -331,19 +331,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("independent paths", normalized)
         self.assertIn("WorkingDirectory", runbook)
 
-    def test_release_evidence_keeps_install_and_canary_work_explicitly_pending(self) -> None:
+    def test_release_evidence_records_verified_install_and_canary(self) -> None:
         self.assertTrue(RELEASE_EVIDENCE.is_file(), "V0.0.76 release evidence must exist")
         evidence = RELEASE_EVIDENCE.read_text(encoding="utf-8")
         normalized = " ".join(evidence.split())
 
-        self.assertIn("PRECOMMIT_QA_PASSED", normalized)
-        self.assertIn("Tammy, Timmy, and Toddy installations: NOT RUN", normalized)
-        self.assertIn("Tammy-only canary: NOT RUN", normalized)
+        self.assertIn("PRECOMMIT_REPAIR_QA_PASSED", normalized)
+        self.assertIn("Tammy, Timmy, and Toddy installations: PASS", normalized)
+        self.assertIn("Tammy-only canary: PASS", normalized)
         self.assertIn("Do not canary Timmy or Toddy in V0.0.76", normalized)
-        self.assertIn("No live Agent wake", normalized)
-        self.assertIn("709 passed", normalized)
+        self.assertIn("Tony personal tasks and Agent work were not mutated", normalized)
+        self.assertIn("715 passed", normalized)
         self.assertIn("5 skipped", normalized)
-        self.assertIn("Ran 52 tests", evidence)
+        self.assertIn("Ran 100 tests", evidence)
         self.assertIn("git diff --check", evidence)
         self.assertIn("Source review: `APPROVED`", evidence)
         self.assertIn("no Critical or Important findings", normalized)
@@ -351,6 +351,15 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("explicit `PASS`", evidence)
         self.assertIn("desktop `1440x1000`", evidence)
         self.assertIn("genuine mobile `390x844`", evidence)
+        self.assertIn("`corr-v0076-canary-4`", evidence)
+        self.assertIn("`actively_executing`", evidence)
+        self.assertIn("`b9948bb2eeed467b980ca9e323a6444fb17de8e2`", evidence)
+        self.assertIn("`fa762518de541d5ccf372ada95c2666fecc7dff50e3d94025608e2d578527aef`", evidence)
+        self.assertIn("Independent pre-commit UI repair re-QA: PASS", normalized)
+        self.assertIn(
+            "`37bbcd1dc0f6407850024258a1bb554c9dcd0b4a3912a512b900f1dca86dd817`",
+            evidence,
+        )
         self.assertIn(
             "`be4eee74ff413cd88194dcdff025a58c18e81e916b66a78c489c2bab9c4bb00e`",
             evidence,
