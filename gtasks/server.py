@@ -68,7 +68,7 @@ from .job_application_binding import (
     JOB_APPLIED_TIMEZONE,
     progress_revision,
 )
-from .handoff_dispatcher import DurableHandoffStore
+from .handoff_dispatcher import AgentRegistration, DurableHandoffStore
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -231,6 +231,10 @@ class HandoffDispatcherAuth:
             if hmac.compare_digest(supplied, expected):
                 match = identity
         return match
+
+
+class _HandoffIdentityMismatch(ValueError):
+    pass
 
 
 class ArtifactPublisherAuth:
@@ -575,7 +579,10 @@ def _handler_class(
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
     handoff_store: DurableHandoffStore | None = None,
     handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
-    handoff_registration_validator: Callable[[str, str], bool] | None = None,
+    handoff_registration_validator: Callable[
+        [str, str], AgentRegistration | None
+    ]
+    | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
@@ -585,8 +592,8 @@ def _handler_class(
         artifact_publisher_auth or ArtifactPublisherAuth()
     )
     active_handoff_auth = handoff_dispatcher_auth or HandoffDispatcherAuth()
-    active_handoff_registration_validator = (
-        handoff_registration_validator or (lambda _agent, _registration: True)
+    active_handoff_registration_validator = handoff_registration_validator or getattr(
+        adapter, "read_handoff_dispatcher_registration", None
     )
     active_handoff_waiter = handoff_waiter or time.sleep
 
@@ -715,6 +722,28 @@ def _handler_class(
                     },
                 )
             return identity
+
+        def _canonical_handoff_registration(
+            self,
+            identity: HandoffDispatcherIdentity,
+            registration_id: str,
+        ) -> AgentRegistration:
+            if not callable(active_handoff_registration_validator):
+                raise RuntimeError("canonical registration reader unavailable")
+            canonical = active_handoff_registration_validator(
+                identity.agent_slug, registration_id
+            )
+            if (
+                not isinstance(canonical, AgentRegistration)
+                or canonical.verified is not True
+                or canonical.agent_slug != identity.agent_slug
+                or canonical.registration_id != registration_id
+                or canonical.reference != identity.registration_id
+            ):
+                raise _HandoffIdentityMismatch(
+                    "canonical dispatcher registration does not match"
+                )
+            return canonical
 
         def _handoff_mutation_headers(
             self,
@@ -1464,10 +1493,33 @@ def _handler_class(
                         },
                     )
                     return
-                try:
-                    route_matches = active_handoff_registration_validator(
-                        identity.agent_slug, registration_id
+                def verified_claim():
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
                     )
+                    return handoff_store.claim(
+                        registration_id,
+                        now=clock().astimezone(timezone.utc),
+                        lease_seconds=lease_seconds,
+                        expected_agent_slug=canonical.agent_slug,
+                        expected_registration_ref=canonical.reference,
+                        expected_route=canonical.route,
+                    )
+
+                try:
+                    claim = verified_claim()
+                    if claim is None and wait_seconds:
+                        active_handoff_waiter(wait_seconds)
+                        claim = verified_claim()
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
                 except Exception:
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
@@ -1477,7 +1529,86 @@ def _handler_class(
                         },
                     )
                     return
-                if route_matches is not True:
+                if claim is None:
+                    self._empty(HTTPStatus.NO_CONTENT)
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        **claim.record.to_dict(),
+                        "lease_capability": claim.lease_token,
+                        "lease_generation": claim.lease_generation,
+                    },
+                )
+                return
+            recover_match = re.fullmatch(r"/api/handoffs/([^/]+)/recover", path)
+            if recover_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {"registration_id", "expected_generation"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Recovery requires exactly registration_id and expected_generation.",
+                            "code": "invalid_handoff_recovery",
+                        },
+                    )
+                    return
+                registration_id = payload.get("registration_id")
+                expected_generation = payload.get("expected_generation")
+                if (
+                    not isinstance(registration_id, str)
+                    or not registration_id
+                    or isinstance(expected_generation, bool)
+                    or not isinstance(expected_generation, int)
+                    or expected_generation < 1
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Recovery registration and generation are invalid.",
+                            "code": "invalid_handoff_recovery",
+                        },
+                    )
+                    return
+                registration_ref = hashlib.sha256(
+                    registration_id.encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(
+                    identity.registration_id, registration_ref
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher registration does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                try:
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
+                    recovered = handoff_store.recover_in_progress(
+                        unquote(recover_match.group(1)),
+                        registration=canonical,
+                        expected_generation=expected_generation,
+                        now=clock().astimezone(timezone.utc),
+                    )
+                except _HandoffIdentityMismatch:
                     self._json(
                         HTTPStatus.FORBIDDEN,
                         {
@@ -1486,43 +1617,33 @@ def _handler_class(
                         },
                     )
                     return
-                now = clock().astimezone(timezone.utc)
-                claim = handoff_store.claim(
-                    registration_id,
-                    now=now,
-                    lease_seconds=lease_seconds,
-                )
-                if claim is None and wait_seconds:
-                    active_handoff_waiter(wait_seconds)
-                    claim = handoff_store.claim(
-                        registration_id,
-                        now=clock().astimezone(timezone.utc),
-                        lease_seconds=lease_seconds,
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
                     )
-                if claim is None:
-                    self._empty(HTTPStatus.NO_CONTENT)
                     return
-                if (
-                    claim.record.agent_slug != identity.agent_slug
-                    or claim.record.registration_ref is None
-                    or not hmac.compare_digest(
-                        claim.record.registration_ref, identity.registration_id
-                    )
-                ):
+                except ValueError as exc:
                     self._json(
                         HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "handoff_recovery_conflict"},
+                    )
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
                         {
-                            "error": "Claimed handoff did not match its authenticated identity.",
-                            "code": "handoff_claim_race",
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
                         },
                     )
                     return
                 self._json(
                     HTTPStatus.OK,
                     {
-                        **claim.record.to_dict(),
-                        "lease_capability": claim.lease_token,
-                        "lease_generation": claim.lease_generation,
+                        **recovered.record.to_dict(),
+                        "lease_capability": recovered.lease_token,
+                        "lease_generation": recovered.lease_generation,
                     },
                 )
                 return
@@ -3708,7 +3829,10 @@ def build_server(
     artifact_publisher_auth: ArtifactPublisherAuth | None = None,
     handoff_store: DurableHandoffStore | None = None,
     handoff_dispatcher_auth: HandoffDispatcherAuth | None = None,
-    handoff_registration_validator: Callable[[str, str], bool] | None = None,
+    handoff_registration_validator: Callable[
+        [str, str], AgentRegistration | None
+    ]
+    | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import threading
@@ -99,6 +100,67 @@ class EntityTypePreservationTests(unittest.TestCase):
         content = _render_preserved_page(page, page["frontmatter"])
 
         self.assertIn('type: "task"', content)
+
+
+class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
+    def test_reads_exact_verified_canonical_agent_registration_and_route(self) -> None:
+        registration_id = "private-registration-tammy"
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": hashlib.sha256(
+                                    registration_id.encode("utf-8")
+                                ).hexdigest(),
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+        registration = GBrainAdapter(runner).read_handoff_dispatcher_registration(
+            "agents/tammy", registration_id
+        )
+
+        self.assertEqual(registration.agent_slug, "agents/tammy")
+        self.assertEqual(registration.registration_id, registration_id)
+        self.assertEqual(registration.route, "hosts/tammy")
+        self.assertTrue(registration.verified)
+
+    def test_rejects_revoked_or_mismatched_canonical_registration(self) -> None:
+        registration_id = "private-registration-tammy"
+        digest = hashlib.sha256(registration_id.encode("utf-8")).hexdigest()
+        for dispatcher in (
+            {"registration_sha256": digest, "route": "hosts/tammy", "verified": False},
+            {"registration_sha256": "0" * 64, "route": "hosts/tammy", "verified": True},
+            {"registration_sha256": digest, "route": "invalid route", "verified": True},
+        ):
+            with self.subTest(dispatcher=dispatcher):
+                runner = FakeRunner(
+                    {
+                        "get_page": [
+                            {
+                                "slug": "agents/tammy",
+                                "type": "agent",
+                                "title": "Agent Tammy",
+                                "frontmatter": {"handoff_dispatcher": dispatcher},
+                            }
+                        ]
+                    }
+                )
+                self.assertIsNone(
+                    GBrainAdapter(runner).read_handoff_dispatcher_registration(
+                        "agents/tammy", registration_id
+                    )
+                )
 
 
 def stored_goal(slug: str, title: str) -> dict:

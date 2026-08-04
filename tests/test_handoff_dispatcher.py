@@ -901,6 +901,52 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(self.store.get(record.handoff_id).status, "retrying")
 
+    def test_store_file_is_created_and_read_back_private(self) -> None:
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+        os.chmod(self.path, 0o644)
+        self.store.close()
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_atomic_claim_identity_predicates_reject_without_mutation(self) -> None:
+        record = self.record()
+        baseline = self.store.query_events(limit=50, after_sequence=0).total
+        current_registration = registration()
+        cases = (
+            {
+                "expected_agent_slug": "agents/timmy",
+                "expected_registration_ref": current_registration.reference,
+                "expected_route": current_registration.route,
+            },
+            {
+                "expected_agent_slug": current_registration.agent_slug,
+                "expected_registration_ref": "0" * 64,
+                "expected_route": current_registration.route,
+            },
+            {
+                "expected_agent_slug": current_registration.agent_slug,
+                "expected_registration_ref": current_registration.reference,
+                "expected_route": "hosts/timmy",
+            },
+        )
+
+        for expected in cases:
+            with self.subTest(expected=expected):
+                claimed = self.store.claim(
+                    REGISTRATION_ID,
+                    now=NOW,
+                    lease_seconds=30,
+                    **expected,
+                )
+                self.assertIsNone(claimed)
+                self.assertEqual(self.store.get(record.handoff_id).status, "queued")
+                self.assertEqual(
+                    self.store.query_events(limit=50, after_sequence=0).total,
+                    baseline,
+                )
+
     def test_local_dispatcher_claims_only_its_exact_registration_and_acknowledges_received(self) -> None:
         record = self.record()
         dispatcher = LocalAgentDispatcher(

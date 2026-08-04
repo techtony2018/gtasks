@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import os
 import re
 import sqlite3
+import stat
 import threading
 import time
 from typing import Callable, Iterable, Iterator
@@ -312,6 +314,20 @@ class DurableHandoffStore:
             raise ValueError("retention_days must be positive")
         self.path = path
         self.retention_days = retention_days
+        if path != ":memory:":
+            flags = os.O_RDWR | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError("handoff store must be a regular private file")
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+            if os.stat(path, follow_symlinks=False).st_mode & 0o777 != 0o600:
+                raise ValueError("handoff store must use mode 0600")
         self._connection = sqlite3.connect(
             path,
             check_same_thread=False,
@@ -499,21 +515,57 @@ class DurableHandoffStore:
         return self._record_from_row(row)
 
     def claim(
-        self, registration_id: str, *, now: datetime, lease_seconds: int
+        self,
+        registration_id: str,
+        *,
+        now: datetime,
+        lease_seconds: int,
+        expected_agent_slug: str | None = None,
+        expected_registration_ref: str | None = None,
+        expected_route: str | None = None,
     ) -> LeaseClaim | None:
         now = _require_utc(now, "now")
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
+        identity_values = (
+            expected_agent_slug,
+            expected_registration_ref,
+            expected_route,
+        )
+        if any(value is not None for value in identity_values):
+            if not all(value is not None for value in identity_values):
+                raise ValueError("atomic claim identity requires agent, reference, and route")
+            _require_structured_id(expected_agent_slug, "expected_agent_slug")
+            _require_structured_id(expected_route, "expected_route")
+            if (
+                not isinstance(expected_registration_ref, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_registration_ref) is None
+            ):
+                raise ValueError("expected_registration_ref must be a SHA-256 digest")
         lease_until = now + timedelta(seconds=lease_seconds)
+        identity_clause = ""
+        identity_parameters: tuple[object, ...] = ()
+        if expected_agent_slug is not None:
+            identity_clause = (
+                " AND h.agent_slug = ? AND h.registration_ref = ?"
+                " AND l.registration_agent_slug = ? AND l.registration_route = ?"
+            )
+            identity_parameters = (
+                expected_agent_slug,
+                expected_registration_ref,
+                expected_agent_slug,
+                expected_route,
+            )
         with self._write_transaction():
             row = self._connection.execute(
-                """
+                f"""
                 SELECT h.handoff_id FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
                 WHERE l.registration_id = ? AND h.status IN ('queued', 'retrying')
                     AND (l.lease_until IS NULL OR l.lease_until <= ?)
+                    {identity_clause}
                 ORDER BY h.created_at, h.handoff_id LIMIT 1
                 """,
-                (registration_id, _timestamp(now)),
+                (registration_id, _timestamp(now), *identity_parameters),
             ).fetchone()
             if row is None:
                 return None

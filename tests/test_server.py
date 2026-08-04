@@ -917,7 +917,9 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             handoff_store=self.store,
             handoff_dispatcher_auth=self.auth,
             handoff_registration_validator=lambda agent, registration: (
-                agent == "agents/tammy" and registration == self.REGISTRATION
+                self.registration
+                if agent == "agents/tammy" and registration == self.REGISTRATION
+                else None
             ),
             handoff_waiter=lambda _seconds: None,
         )
@@ -1024,7 +1026,7 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             FakeAdapter(),
             handoff_store=empty_store,
             handoff_dispatcher_auth=self.auth,
-            handoff_registration_validator=lambda *_args: True,
+            handoff_registration_validator=lambda *_args: self.registration,
             handoff_waiter=waits.append,
         )
         for wait_seconds, lease_seconds in ((0, 5), (25, 120)):
@@ -1044,7 +1046,7 @@ class HandoffDispatcherApiTests(unittest.TestCase):
     def test_route_readback_failure_fails_closed_without_claiming(self) -> None:
         record = self._record()
 
-        def unavailable(_agent: str, _registration: str) -> bool:
+        def unavailable(_agent: str, _registration: str):
             raise RuntimeError("private route source unavailable")
 
         harness = ServerHarness(
@@ -1066,6 +1068,157 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], "handoff_route_unavailable")
         self.assertEqual(self._event_count(), baseline)
         self.assertEqual(self.store.get(record.handoff_id).status, "queued")
+
+    def test_production_route_reader_is_wired_and_required_when_runtime_is_enabled(self) -> None:
+        record = self._record()
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_waiter=lambda _seconds: None,
+        )
+        baseline = self._event_count()
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["code"], "handoff_route_unavailable")
+        self.assertEqual(self.store.get(record.handoff_id).status, "queued")
+        self.assertEqual(self._event_count(), baseline)
+
+        class CanonicalAdapter(FakeAdapter):
+            def read_handoff_dispatcher_registration(
+                _self, agent_slug: str, registration_id: str
+            ):
+                if (
+                    agent_slug == self.registration.agent_slug
+                    and registration_id == self.registration.registration_id
+                ):
+                    return self.registration
+                return None
+
+        wired = ServerHarness(
+            self,
+            CanonicalAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_waiter=lambda _seconds: None,
+        )
+        status, payload, _ = wired.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["handoff_id"], record.handoff_id)
+
+    def test_route_is_revalidated_after_wait_before_delayed_claim(self) -> None:
+        route_available = True
+        callback_count = 0
+
+        def read_registration(_agent: str, _registration: str):
+            nonlocal callback_count
+            callback_count += 1
+            return self.registration if route_available else None
+
+        def during_wait(_seconds: float) -> None:
+            nonlocal route_available
+            self._record(event="events/during-wait")
+            route_available = False
+
+        empty_path = Path(self.harness.runtime_directory.name) / "wait.sqlite3"
+        waiting_store = DurableHandoffStore(str(empty_path))
+        self.addCleanup(waiting_store.close)
+        waiting_dispatcher = HandoffDispatcher(
+            waiting_store, registrations=(self.registration,)
+        )
+        original_dispatcher = self.dispatcher
+        original_store = self.store
+        self.dispatcher = waiting_dispatcher
+        self.store = waiting_store
+        self.addCleanup(setattr, self, "dispatcher", original_dispatcher)
+        self.addCleanup(setattr, self, "store", original_store)
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=waiting_store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=read_registration,
+            handoff_waiter=during_wait,
+        )
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 25, "lease_seconds": 30},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        events = waiting_store.query_events(limit=50, after_sequence=0)
+        self.assertEqual(events.total, 1)
+        record = events.events[0]
+        self.assertEqual(record.status, "queued")
+        self.assertEqual(callback_count, 2)
+
+    def test_atomic_claim_mismatch_never_adds_lease_event(self) -> None:
+        private_path = Path(self.harness.runtime_directory.name) / "mismatch.sqlite3"
+        private_store = DurableHandoffStore(str(private_path))
+        self.addCleanup(private_store.close)
+        private_registration = AgentRegistration(
+            registration_id=self.REGISTRATION,
+            agent_slug="agents/timmy",
+            route="hosts/timmy",
+            verified=True,
+        )
+        private_dispatcher = HandoffDispatcher(
+            private_store, registrations=(private_registration,)
+        )
+        record = private_dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/mismatched-owner",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/timmy",),
+                route="hosts/timmy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-mismatched-owner",
+            ),
+            now=self.NOW,
+        )
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=private_store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda *_args: self.registration,
+            handoff_waiter=lambda _seconds: None,
+        )
+        baseline = private_store.query_events(limit=50, after_sequence=0).total
+
+        status, _payload, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 204)
+        self.assertEqual(private_store.get(record.handoff_id).status, "queued")
+        self.assertEqual(
+            private_store.query_events(limit=50, after_sequence=0).total,
+            baseline,
+        )
 
     def test_claim_is_atomic_and_payload_is_redacted(self) -> None:
         self._record()
@@ -1165,6 +1318,120 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "invalid_handoff_failure")
+        self.assertEqual(self._event_count(), baseline)
+
+    def test_recover_rotates_authenticated_in_progress_capability(self) -> None:
+        record = self._record(event="events/recover")
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-recover-received"
+        status, received, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "received", "detail": None},
+            headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(received["status"], "received")
+
+        status, recovered, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(recovered["handoff_id"], record.handoff_id)
+        self.assertEqual(recovered["status"], "received")
+        self.assertEqual(
+            recovered["lease_generation"], claim["lease_generation"] + 1
+        )
+        self.assertNotEqual(
+            recovered["lease_capability"], claim["lease_capability"]
+        )
+        rendered = json.dumps(recovered)
+        self.assertNotIn(self.REGISTRATION, rendered)
+        self.assertNotIn("tammy-handoff-api-token", rendered)
+        self.assertNotIn("thread", rendered.lower())
+
+    def test_recover_rejects_stale_wrong_or_revoked_identity_without_mutation(self) -> None:
+        record = self._record(event="events/recover-rejected")
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-recover-active"
+        status, _payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "actively_executing", "detail": None},
+            headers,
+        )
+        self.assertEqual(status, 200)
+
+        baseline = self._event_count()
+        cases = (
+            (
+                self._auth("timmy-handoff-api-token"),
+                {"registration_id": self.REGISTRATION, "expected_generation": 1},
+                403,
+            ),
+            (
+                self._auth(),
+                {
+                    "registration_id": "private-registration-other",
+                    "expected_generation": 1,
+                },
+                403,
+            ),
+            (
+                self._auth(),
+                {
+                    "registration_id": self.REGISTRATION,
+                    "expected_generation": 99,
+                },
+                409,
+            ),
+            (
+                self._auth(),
+                {
+                    "registration_id": self.REGISTRATION,
+                    "expected_generation": 1,
+                    "extra": True,
+                },
+                422,
+            ),
+        )
+        for auth_headers, body, expected_status in cases:
+            with self.subTest(body=body, expected_status=expected_status):
+                status, _payload, _ = self.harness.request(
+                    "POST",
+                    f"/api/handoffs/{record.handoff_id}/recover",
+                    body,
+                    auth_headers,
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(self._event_count(), baseline)
+                self.assertEqual(self.store.get(record.handoff_id).status, "actively_executing")
+
+        revoked = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda *_args: None,
+            handoff_waiter=lambda _seconds: None,
+        )
+        status, payload, _ = revoked.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {"registration_id": self.REGISTRATION, "expected_generation": 1},
+            self._auth(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
         self.assertEqual(self._event_count(), baseline)
 
     def test_event_endpoints_share_deterministic_filters_counts_cursors_and_export(self) -> None:
