@@ -73,14 +73,14 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="task-artifacts"', html)
         self.assertIn("function renderArtifactsView()", javascript)
         self.assertIn(
-            "function selectArtifact(artifactSlug, originControl = null)",
+            "function selectArtifact(artifactSlug, originControl = null,",
             javascript,
         )
         self.assertIn("function loadArtifacts(", javascript)
         self.assertIn("No artifacts yet", javascript)
         self.assertIn("renderSafeMarkdown(elements.artifactDetailMarkdown", javascript)
         artifact_selector = javascript[
-            javascript.index("function selectArtifact(artifactSlug, originControl = null)") :
+            javascript.index("function selectArtifact(artifactSlug, originControl = null,") :
             javascript.index("function selectTask(")
         ]
         self.assertNotIn("innerHTML", artifact_selector)
@@ -101,8 +101,12 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("function artifactHierarchyNode", javascript)
         self.assertIn('"Hierarchy"', javascript)
         self.assertIn('"Recent"', javascript)
-        self.assertIn('"No Goal"', javascript)
-        self.assertIn('"No Project"', javascript)
+        self.assertIn('"Default Goal"', javascript)
+        self.assertIn('"Default Project"', javascript)
+        self.assertIn("Items without an explicit Goal relationship", javascript)
+        self.assertIn("Items without an explicit Project relationship", javascript)
+        self.assertNotIn('return "No Goal"', javascript)
+        self.assertNotIn('return "No Project"', javascript)
         self.assertIn('"No producing Task"', javascript)
         self.assertIn('setAttribute("aria-expanded"', javascript)
         self.assertIn('setAttribute("aria-controls"', javascript)
@@ -114,8 +118,25 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn(".artifact-hierarchy", mobile)
         self.assertIn("overflow-x: hidden", mobile)
 
+    def test_artifact_hierarchy_is_compact_and_task_rows_are_title_only(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        hierarchy_node = javascript[
+            javascript.index("function artifactHierarchyNode") :
+            javascript.index("function artifactViewModeButton")
+        ]
+        self.assertIn('entry.kind !== "task"', hierarchy_node)
+        self.assertIn('classList.add("is-task-title-only")', hierarchy_node)
+        self.assertIn("--artifact-reader-default: minmax(0, 78vw)", stylesheet)
+        self.assertIn(".artifact-hierarchy-toggle.is-task-title-only", stylesheet)
+        self.assertIn("grid-template-columns: 18px minmax(0, 1fr)", stylesheet)
+        self.assertIn(".artifact-hierarchy-toggle.is-task-title-only .artifact-hierarchy-count", stylesheet)
+        self.assertIn("display: none", stylesheet)
+
     def test_artifact_reader_uses_two_thirds_of_desktop_and_full_mobile_sheet(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
         self.assertIn('id="artifact-detail-gbrain-link"', html)
@@ -124,10 +145,40 @@ class FrontendContractTests(unittest.TestCase):
             ".app-shell:has(.artifact-detail-content:not(.is-hidden))",
             css,
         )
-        self.assertIn("minmax(0, 68vw)", css)
+        self.assertIn("minmax(0, 78vw)", css)
+        initializer = javascript[
+            javascript.index("function initializeDetailPanelResize") :
+            javascript.index("function syncMobileDetailModalState")
+        ]
+        self.assertIn(
+            "setDetailPanelWidth(readDetailPanelWidth(), { persist: false })",
+            initializer,
+        )
+        self.assertIn(
+            'window.addEventListener("resize", () => setDetailPanelWidth(\n'
+            "    readDetailPanelWidth(),\n"
+            "    { persist: false },",
+            initializer,
+        )
         mobile = css[css.index("@media (max-width: 760px)") :]
         self.assertIn(".artifact-detail-content", mobile)
         self.assertIn("max-width: 100%", mobile)
+
+    def test_artifact_detail_opens_verified_producing_task_in_same_detail_panel(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="artifact-detail-task-link"', html)
+        selector = javascript[
+            javascript.index("function selectArtifact(artifactSlug, originControl = null,") :
+            javascript.index("function renderTaskArtifacts")
+        ]
+        self.assertIn("artifact.produced_for", selector)
+        self.assertIn("artifactDetailTaskLink", selector)
+        self.assertIn("Open producing Task", selector)
+        self.assertIn("selectTask(task.slug", selector)
+        self.assertIn("artifactProducingTaskReturn", javascript)
+        self.assertIn("state.artifactExpanded", javascript)
 
     def test_artifact_git_links_use_the_same_explicit_commit_allowlist(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -205,7 +256,10 @@ class FrontendContractTests(unittest.TestCase):
 
         self.assertIn("selectArtifact(artifact.slug, button)", card)
         self.assertIn('document.querySelectorAll(".artifact-card")', close_details)
-        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
+        self.assertIn("candidate.dataset.slug === anchor.slug", close_details)
+        self.assertIn("detailFocusReturnAnchor", javascript)
+        self.assertIn("restorePendingDetailFocus", javascript)
+        self.assertIn('document.addEventListener("focusin"', javascript)
 
     def test_safe_markdown_formats_fences_tables_and_contains_long_tokens(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -817,8 +871,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.detailReturnFocus", select_task)
         self.assertIn("elements.detailTitle.focus({ preventScroll: true })", select_task)
         self.assertIn('document.querySelectorAll(".proposal-card")', close_details)
-        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
-        self.assertIn("target?.focus({ preventScroll: true })", close_details)
+        self.assertIn("candidate.dataset.slug === anchor.slug", close_details)
+        self.assertIn("detailFocusReturnTarget(anchor)?.focus({ preventScroll: true })", close_details)
 
     def test_task_keyboard_detail_returns_to_origin_after_list_rerender(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -836,8 +890,8 @@ class FrontendContractTests(unittest.TestCase):
             task_row,
         )
         self.assertIn('document.querySelectorAll(".task-row-open")', close_details)
-        self.assertIn("candidate.dataset.slug === returnFocus.slug", close_details)
-        self.assertIn("target?.focus({ preventScroll: true })", close_details)
+        self.assertIn("candidate.dataset.slug === anchor.slug", close_details)
+        self.assertIn("detailFocusReturnTarget(anchor)?.focus({ preventScroll: true })", close_details)
 
     def test_proposal_decision_notes_are_not_styled_as_completed_actions(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1110,7 +1164,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('"Show iCal Events"', javascript)
         self.assertIn("input.checked = state.showIcalEvents", javascript)
         self.assertIn("Connect Calendar", javascript)
-        self.assertIn("Manage calendars", javascript)
+        self.assertIn('"Manage"', javascript)
         self.assertIn('fetch("/api/ical-access", { method: "POST"', javascript)
         self.assertIn('fetch("/api/ical-calendars"', javascript)
         self.assertIn('fetch("/api/ical-preferences"', javascript)
@@ -1127,10 +1181,10 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="calendar-picker-saving"', html)
         self.assertIn('id="calendar-picker-submit"', html)
         self.assertIn("Saving calendar selection…", html)
-        self.assertIn("Calendar selection saved and verified.", javascript)
+        self.assertIn('showToast("Calendar selection saved and verified.")', javascript)
         self.assertIn("await loadCalendarPicker()", javascript)
         self.assertIn("Calendar selection readback did not match", javascript)
-        self.assertIn("calendarPreferencesNotice", javascript)
+        self.assertNotIn("state.calendarPreferencesNotice = `Calendar selection saved and verified.", javascript)
         self.assertIn(".calendar-picker-option input", css)
         self.assertIn("width: 14px", css)
         self.assertIn("grid-template-columns: 14px minmax(0, 1fr)", css)
@@ -1181,8 +1235,10 @@ class FrontendContractTests(unittest.TestCase):
             calendar_filter.index("} else {") :
         ]
 
-        self.assertIn('node("button", "secondary-button", "Manage calendars")', authorized_branch)
+        self.assertIn('node("button", "secondary-button", "Manage")', authorized_branch)
         self.assertNotIn('node("button", "secondary-button", "Reconnect")', authorized_branch)
+        self.assertNotIn("selected read-only calendar", authorized_branch)
+        self.assertNotIn("calendar-preferences-notice", authorized_branch)
         self.assertIn('state.icalStatus !== "authorized"', calendar_filter)
         self.assertIn('"Reconnect"', calendar_filter)
 

@@ -169,7 +169,9 @@ const state = {
   selectedSlug: null,
   selectedKind: null,
   detailReturnFocus: null,
+  detailFocusReturnAnchor: null,
   artifactTaskReturn: null,
+  artifactProducingTaskReturn: null,
   showCompletedTodos: false,
   allTaskSearch: "",
   showAllTaskDates: false,
@@ -289,10 +291,14 @@ function setHudTooltip(element, text) {
   element.classList.add("has-tooltip");
 }
 
-function detailPanelWidthBounds() {
+function detailPanelWidthBounds(kind = state.selectedKind) {
+  const minimumMainWidth = kind === "artifact" ? 220 : 320;
+  const configuredMaximum = kind === "artifact"
+    ? window.innerWidth - 92 - minimumMainWidth
+    : DETAIL_WIDTH_MAX;
   const maximum = Math.max(
     DETAIL_WIDTH_MIN,
-    Math.min(DETAIL_WIDTH_MAX, window.innerWidth - 92 - 320),
+    Math.min(configuredMaximum, window.innerWidth - 92 - minimumMainWidth),
   );
   return { minimum: DETAIL_WIDTH_MIN, maximum };
 }
@@ -321,7 +327,7 @@ function prepareDetailPanelWidth(kind) {
     return;
   }
   setDetailPanelWidth(
-    kind === "artifact" ? Math.round(window.innerWidth * 0.68) : DETAIL_WIDTH_DEFAULT,
+    kind === "artifact" ? Math.round(window.innerWidth * 0.78) : DETAIL_WIDTH_DEFAULT,
     { persist: false },
   );
 }
@@ -349,7 +355,7 @@ function setDetailPanelWidth(value, { persist = true } = {}) {
 
 function initializeDetailPanelResize() {
   const handle = elements.detailResizeHandle;
-  setDetailPanelWidth(readDetailPanelWidth());
+  setDetailPanelWidth(readDetailPanelWidth(), { persist: false });
   handle.addEventListener("pointerdown", (event) => {
     if (window.matchMedia("(max-width: 760px)").matches) return;
     event.preventDefault();
@@ -387,7 +393,10 @@ function initializeDetailPanelResize() {
     setDetailPanelWidth(next);
   });
   handle.addEventListener("dblclick", () => setDetailPanelWidth(DETAIL_WIDTH_DEFAULT));
-  window.addEventListener("resize", () => setDetailPanelWidth(readDetailPanelWidth()));
+  window.addEventListener("resize", () => setDetailPanelWidth(
+    readDetailPanelWidth(),
+    { persist: false },
+  ));
 }
 
 function syncMobileDetailModalState() {
@@ -762,6 +771,7 @@ const elements = {
   artifactDetailAttachments: document.querySelector("#artifact-detail-attachments"),
   artifactDetailAgent: document.querySelector("#artifact-detail-agent"),
   artifactDetailTask: document.querySelector("#artifact-detail-task"),
+  artifactDetailTaskLink: document.querySelector("#artifact-detail-task-link"),
   artifactDetailProject: document.querySelector("#artifact-detail-project"),
   artifactDetailGoal: document.querySelector("#artifact-detail-goal"),
   artifactDetailCreated: document.querySelector("#artifact-detail-created"),
@@ -2029,19 +2039,25 @@ function calendarEventsFilter() {
   });
   checkboxLabel.append(input, node("span", "", "Show iCal Events"));
   wrapper.append(checkboxLabel);
+  const healthyConnectedCalendar =
+    state.icalStatus === "authorized" &&
+    state.selectedCalendarIds.length > 0 &&
+    !state.icalEventsError;
   const calendarStatus = state.icalConnectionLoading
     ? "Checking Calendar access…"
     : state.icalLoading
       ? "Reading local Calendar…"
       : state.icalStatus === "authorized"
-        ? (state.icalEventsError || (state.selectedCalendarIds.length ? `${state.selectedCalendarIds.length} selected read-only calendar${state.selectedCalendarIds.length === 1 ? "" : "s"}` : "Connected · choose calendars to show events"))
+        ? (state.icalEventsError || (state.selectedCalendarIds.length ? "" : "Connected · choose calendars to show events"))
         : state.icalStatus === "denied" || state.icalStatus === "restricted"
           ? "Calendar permission was not granted"
           : state.icalStatus === "unavailable"
             ? (state.icalConnectionError || "Local Calendar is unavailable")
             : "Calendar is not connected";
-  wrapper.append(node("small", "calendar-events-status", calendarStatus));
-  if (state.calendarPreferencesNotice) {
+  if (!healthyConnectedCalendar && calendarStatus) {
+    wrapper.append(node("small", "calendar-events-status", calendarStatus));
+  }
+  if (!healthyConnectedCalendar && state.calendarPreferencesNotice) {
     const notice = node("p", "calendar-preferences-notice", state.calendarPreferencesNotice);
     notice.setAttribute("role", "status");
     wrapper.append(notice);
@@ -2055,8 +2071,9 @@ function calendarEventsFilter() {
     connect.addEventListener("click", state.icalStatus === "not_determined" ? openCalendarAccessDialog : reconnectCalendar);
     wrapper.append(connect);
   } else {
-    const manage = node("button", "secondary-button", "Manage calendars");
+    const manage = node("button", "secondary-button", "Manage");
     manage.type = "button";
+    manage.setAttribute("aria-label", "Manage connected calendars");
     manage.addEventListener("click", openCalendarPicker);
     wrapper.append(manage);
   }
@@ -4432,6 +4449,7 @@ function render() {
   const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
   hideHudTooltip();
   window.requestAnimationFrame(() => {
+    restorePendingDetailFocus();
     if (focusedSystemTicketSlug && document.activeElement === document.body) {
       document.querySelector(
         `.system-ticket-card[data-slug="${CSS.escape(focusedSystemTicketSlug)}"]`,
@@ -5385,15 +5403,22 @@ function artifactLoadedCountLabel(count) {
 function artifactHierarchyLabel(kind, slug) {
   if (kind === "agent") return artifactAgent({ created_by: slug }).name;
   if (kind === "goal") {
-    if (!slug) return "No Goal";
+    if (!slug) return "Default Goal";
     return state.snapshot?.goals?.find((goal) => goal.slug === slug)?.title || slug;
   }
   if (kind === "project") {
-    if (!slug) return "No Project";
+    if (!slug) return "Default Project";
     return state.projects.find((project) => project.slug === slug)?.title || slug;
   }
   if (!slug) return "No producing Task";
   return findTaskBySlug(slug)?.title || slug;
+}
+
+function artifactHierarchyHelp(kind, slug) {
+  if (slug) return "";
+  if (kind === "goal") return "Items without an explicit Goal relationship";
+  if (kind === "project") return "Items without an explicit Project relationship";
+  return "";
 }
 
 function artifactHierarchyKey(kind, slug, parentKey = "") {
@@ -5471,14 +5496,23 @@ function artifactHierarchyNode(entry, level = 1) {
   const contentId = `artifact-hierarchy-${entry.key.replace(/[^a-z0-9_-]+/gi, "-")}`;
   const expanded = state.artifactExpanded.has(entry.key);
   const toggle = node("button", "artifact-hierarchy-toggle");
+  if (entry.kind === "task") toggle.classList.add("is-task-title-only");
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.setAttribute("aria-controls", contentId);
-  toggle.append(
+  const toggleItems = [
     node("span", "artifact-hierarchy-chevron", expanded ? "−" : "+"),
     node("strong", "artifact-hierarchy-label", entry.label),
-    node("span", "artifact-hierarchy-count", artifactLoadedCountLabel(entry.count)),
-  );
+  ];
+  if (entry.kind !== "task") {
+    toggleItems.push(node("span", "artifact-hierarchy-count", artifactLoadedCountLabel(entry.count)));
+  }
+  toggle.append(...toggleItems);
+  const helper = artifactHierarchyHelp(entry.kind, entry.slug);
+  if (helper) {
+    toggle.setAttribute("aria-description", helper);
+    setHudTooltip(toggle, helper);
+  }
   const content = node("div", "artifact-hierarchy-children");
   content.id = contentId;
   content.hidden = !expanded;
@@ -5712,7 +5746,7 @@ function renderArtifactAttachments(artifact) {
   }
 }
 
-function selectArtifact(artifactSlug, originControl = null) {
+function selectArtifact(artifactSlug, originControl = null, { preserveReturnContext = false } = {}) {
   const taskEntries = Array.from(state.taskArtifacts.values()).flatMap((entry) => entry.artifacts || []);
   const artifact = [...state.artifacts, ...taskEntries].find((item) => item.slug === artifactSlug);
   if (!artifact) return;
@@ -5721,16 +5755,19 @@ function selectArtifact(artifactSlug, originControl = null) {
     : document.activeElement instanceof HTMLElement
       ? document.activeElement
     : null;
-  state.artifactTaskReturn = state.selectedKind === "task" && state.selectedSlug
-    ? {
-      taskSlug: state.selectedSlug,
-      element: returnFocus,
-      artifactSlug,
-      detailReturnFocus: state.detailReturnFocus,
+  if (!preserveReturnContext) {
+    state.artifactProducingTaskReturn = null;
+    state.artifactTaskReturn = state.selectedKind === "task" && state.selectedSlug
+      ? {
+        taskSlug: state.selectedSlug,
+        element: returnFocus,
+        artifactSlug,
+        detailReturnFocus: state.detailReturnFocus,
+      }
+      : null;
+    if (!state.artifactTaskReturn && returnFocus) {
+      state.detailReturnFocus = { element: returnFocus, slug: artifactSlug };
     }
-    : null;
-  if (!state.artifactTaskReturn && returnFocus) {
-    state.detailReturnFocus = { element: returnFocus, slug: artifactSlug };
   }
   state.selectedSlug = artifactSlug;
   state.selectedKind = "artifact";
@@ -5755,6 +5792,29 @@ function selectArtifact(artifactSlug, originControl = null) {
   renderArtifactAttachments(artifact);
   elements.artifactDetailAgent.textContent = owner.name;
   elements.artifactDetailTask.textContent = task?.title || artifact.produced_for;
+  elements.artifactDetailTaskLink.classList.toggle("is-hidden", !task);
+  elements.artifactDetailTaskLink.onclick = null;
+  if (!task) {
+    elements.artifactDetailTaskLink.textContent = "";
+    elements.artifactDetailTaskLink.removeAttribute("aria-label");
+    setHudTooltip(elements.artifactDetailTaskLink, "");
+  }
+  if (task) {
+    const actionLabel = `Open producing Task: ${task.title}`;
+    elements.artifactDetailTaskLink.textContent = "Open producing Task";
+    elements.artifactDetailTaskLink.setAttribute("aria-label", actionLabel);
+    setHudTooltip(elements.artifactDetailTaskLink, actionLabel);
+    elements.artifactDetailTaskLink.onclick = () => {
+      state.artifactProducingTaskReturn = {
+        artifactSlug: artifact.slug,
+        taskSlug: task.slug,
+        artifactTaskReturn: state.artifactTaskReturn,
+        detailReturnFocus: state.detailReturnFocus,
+        expanded: new Set(state.artifactExpanded),
+      };
+      selectTask(task.slug, task, elements.artifactDetailTaskLink);
+    };
+  }
   elements.artifactDetailProject.textContent = project?.title || artifact.project || "No project";
   elements.artifactDetailGoal.textContent = goal?.title || artifact.goal || "No goal";
   elements.artifactDetailCreated.textContent = new Date(artifact.created_at).toLocaleString();
@@ -6093,6 +6153,22 @@ function selectGoal(slug, returnFocus = undefined) {
 }
 
 function closeDetails() {
+  const producingTaskReturn = state.selectedKind === "task"
+    ? state.artifactProducingTaskReturn
+    : null;
+  if (producingTaskReturn?.taskSlug === state.selectedSlug) {
+    state.artifactProducingTaskReturn = null;
+    state.artifactExpanded = new Set(producingTaskReturn.expanded);
+    state.selectedKind = null;
+    state.selectedSlug = null;
+    selectArtifact(producingTaskReturn.artifactSlug, null, { preserveReturnContext: true });
+    state.artifactTaskReturn = producingTaskReturn.artifactTaskReturn;
+    state.detailReturnFocus = producingTaskReturn.detailReturnFocus;
+    window.requestAnimationFrame(() => {
+      elements.artifactDetailTaskLink.focus({ preventScroll: true });
+    });
+    return;
+  }
   const artifactReturn = state.selectedKind === "artifact"
     ? state.artifactTaskReturn
     : null;
@@ -6112,6 +6188,7 @@ function closeDetails() {
   }
   const returnFocus = state.detailReturnFocus;
   state.artifactTaskReturn = null;
+  state.artifactProducingTaskReturn = null;
   state.detailReturnFocus = null;
   state.selectedSlug = null;
   state.selectedKind = null;
@@ -6123,25 +6200,34 @@ function closeDetails() {
   elements.systemTicketDetailContent.classList.add("is-hidden");
   elements.calendarEventDetail.classList.add("is-hidden");
   elements.detailEmpty.classList.remove("is-hidden");
+  state.detailFocusReturnAnchor = returnFocus;
   render();
-  if (returnFocus) {
-    window.requestAnimationFrame(() => {
-      const target = returnFocus.element?.isConnected
-        ? returnFocus.element
-        : [
-          ...document.querySelectorAll(".proposal-card"),
-          ...document.querySelectorAll(".task-row-open"),
-          ...document.querySelectorAll(".project-card-open"),
-          ...document.querySelectorAll(".goal-card"),
-          ...document.querySelectorAll(".artifact-card"),
-          ...document.querySelectorAll(".system-ticket-card"),
-          ...document.querySelectorAll(".ical-event"),
-        ].find(
-          (candidate) => candidate.dataset.slug === returnFocus.slug,
-        );
-      target?.focus({ preventScroll: true });
-    });
-  }
+  restorePendingDetailFocus({ force: true });
+}
+
+function detailFocusReturnTarget(anchor) {
+  if (!anchor) return null;
+  if (anchor.element?.isConnected) return anchor.element;
+  return [
+    ...document.querySelectorAll(".proposal-card"),
+    ...document.querySelectorAll(".task-row-open"),
+    ...document.querySelectorAll(".project-card-open"),
+    ...document.querySelectorAll(".goal-card"),
+    ...document.querySelectorAll(".artifact-card"),
+    ...document.querySelectorAll(".system-ticket-card"),
+    ...document.querySelectorAll(".ical-event"),
+  ].find((candidate) => candidate.dataset.slug === anchor.slug) || null;
+}
+
+function restorePendingDetailFocus({ force = false } = {}) {
+  const anchor = state.detailFocusReturnAnchor;
+  if (!anchor || elements.detailPanel.getAttribute("aria-hidden") !== "true") return;
+  window.requestAnimationFrame(() => {
+    if (state.detailFocusReturnAnchor !== anchor) return;
+    const active = document.activeElement;
+    if (!force && active !== document.body && active?.isConnected) return;
+    detailFocusReturnTarget(anchor)?.focus({ preventScroll: true });
+  });
 }
 
 async function saveTaskGoal() {
@@ -6981,6 +7067,13 @@ elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.projectDetailClose.addEventListener("click", closeDetails);
 elements.systemTicketDetailClose.addEventListener("click", closeDetails);
 elements.calendarEventDetailClose.addEventListener("click", closeDetails);
+document.addEventListener("focusin", (event) => {
+  const anchor = state.detailFocusReturnAnchor;
+  if (!anchor || elements.detailPanel.getAttribute("aria-hidden") !== "true") return;
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (target && target === detailFocusReturnTarget(anchor)) return;
+  state.detailFocusReturnAnchor = null;
+});
 elements.projectEditButton.addEventListener("click", () => {
   const project = state.projects.find((item) => item.slug === state.selectedSlug);
   if (state.selectedKind === "project" && project) openEditProject(project);
@@ -7103,9 +7196,10 @@ elements.calendarPickerForm.addEventListener("submit", async (event) => {
       throw new Error("Calendar selection readback did not match the saved preference. Review the selection and try again.");
     }
     state.icalRange = "";
-    state.calendarPreferencesNotice = `Calendar selection saved and verified. ${saved.length} read-only calendar${saved.length === 1 ? "" : "s"} selected.`;
+    state.calendarPreferencesNotice = "";
     elements.calendarPickerDialog.close();
     render();
+    showToast("Calendar selection saved and verified.");
   } catch (error) {
     elements.calendarPickerError.textContent = error.message || "Calendar selections could not be saved.";
     elements.calendarPickerError.classList.remove("is-hidden");
