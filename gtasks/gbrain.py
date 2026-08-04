@@ -3375,6 +3375,8 @@ class GBrainAdapter:
             raise GBrainProtocolError(
                 "dispatcher registration Agent readback was not canonical"
             )
+        if page.get("deleted_at"):
+            return None
         frontmatter = page.get("frontmatter")
         if not isinstance(frontmatter, Mapping):
             raise GBrainProtocolError(

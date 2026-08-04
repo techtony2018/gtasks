@@ -785,6 +785,122 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertNotIn(blocked_claim.lease_token.encode(), database_bytes)
         self.assertNotIn(recovered_claim.lease_token.encode(), database_bytes)
 
+    def test_recovered_nonterminal_states_can_fail_retry_and_reclaim_same_handoff(self) -> None:
+        for index, status in enumerate(
+            ("received", "actively_executing", "still_blocked")
+        ):
+            with self.subTest(status=status):
+                record = self.record(canonical_event_id=f"events/recovered-failure-{index}")
+                claim = self.claim()
+                self.store.acknowledge(
+                    record.handoff_id,
+                    status,
+                    registration_id=REGISTRATION_ID,
+                    lease_token=claim.lease_token,
+                    lease_generation=claim.lease_generation,
+                    mutation_id=f"mutation-recovered-state-{index}",
+                    now=NOW,
+                    detail=(
+                        "Waiting on verified approval."
+                        if status == "still_blocked"
+                        else None
+                    ),
+                )
+                recovered = self.store.recover_in_progress(
+                    record.handoff_id,
+                    registration=registration(),
+                    expected_generation=claim.lease_generation,
+                    now=NOW,
+                )
+                baseline = self.store.query_events(limit=200, after_sequence=0).total
+                with self.assertRaisesRegex(ValueError, "active lease owner"):
+                    self.store.record_failure(
+                        record.handoff_id,
+                        registration_id=REGISTRATION_ID,
+                        lease_token=claim.lease_token,
+                        lease_generation=claim.lease_generation,
+                        mutation_id=f"mutation-recovered-stale-{index}",
+                        retryable=True,
+                        summary="Dispatcher delivery will retry.",
+                        now=NOW,
+                    )
+                self.assertEqual(
+                    self.store.query_events(limit=200, after_sequence=0).total,
+                    baseline,
+                )
+                retried = self.store.record_failure(
+                    record.handoff_id,
+                    registration_id=REGISTRATION_ID,
+                    lease_token=recovered.lease_token,
+                    lease_generation=recovered.lease_generation,
+                    mutation_id=f"mutation-recovered-retry-{index}",
+                    retryable=True,
+                    summary="Dispatcher delivery will retry.",
+                    now=NOW,
+                )
+                replay = self.store.record_failure(
+                    record.handoff_id,
+                    registration_id=REGISTRATION_ID,
+                    lease_token=recovered.lease_token,
+                    lease_generation=recovered.lease_generation,
+                    mutation_id=f"mutation-recovered-retry-{index}",
+                    retryable=True,
+                    summary="Dispatcher delivery will retry.",
+                    now=NOW,
+                )
+                self.assertEqual(retried.status, "retrying")
+                self.assertEqual(replay.status, "retrying")
+                reclaimed = self.claim()
+                self.assertEqual(reclaimed.handoff_id, record.handoff_id)
+                self.assertEqual(
+                    reclaimed.lease_generation,
+                    recovered.lease_generation + 1,
+                )
+                self.store.acknowledge(
+                    record.handoff_id,
+                    "completed",
+                    registration_id=REGISTRATION_ID,
+                    lease_token=reclaimed.lease_token,
+                    lease_generation=reclaimed.lease_generation,
+                    mutation_id=f"mutation-recovered-complete-{index}",
+                    now=NOW,
+                )
+
+    def test_recovered_nonterminal_state_can_fail_terminal_without_regression(self) -> None:
+        record = self.record(canonical_event_id="events/recovered-terminal")
+        claim = self.claim()
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-recovered-terminal-state",
+            now=NOW,
+        )
+        recovered = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=claim.lease_generation,
+            now=NOW,
+        )
+
+        terminal = self.store.record_failure(
+            record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=recovered.lease_token,
+            lease_generation=recovered.lease_generation,
+            mutation_id="mutation-recovered-terminal",
+            retryable=False,
+            summary="Dispatcher delivery stopped after terminal failure.",
+            now=NOW,
+        )
+
+        self.assertEqual(terminal.status, "dead_letter")
+        self.assertIsNone(
+            self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        )
+
     def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:
         other_store = DurableHandoffStore(self.path, retention_days=30)
         self.addCleanup(other_store.close)

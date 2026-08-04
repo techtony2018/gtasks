@@ -162,6 +162,36 @@ class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
                     )
                 )
 
+    def test_rejects_soft_deleted_canonical_agent_registration(self) -> None:
+        registration_id = "private-registration-tammy"
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Agent Tammy",
+                        "deleted_at": "2026-08-04T18:00:00Z",
+                        "frontmatter": {
+                            "handoff_dispatcher": {
+                                "registration_sha256": hashlib.sha256(
+                                    registration_id.encode("utf-8")
+                                ).hexdigest(),
+                                "route": "hosts/tammy",
+                                "verified": True,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertIsNone(
+            GBrainAdapter(runner).read_handoff_dispatcher_registration(
+                "agents/tammy", registration_id
+            )
+        )
+
 
 def stored_goal(slug: str, title: str) -> dict:
     return {

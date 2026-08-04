@@ -845,8 +845,15 @@ class DurableHandoffStore:
                     raise ValueError(
                         f"invalid acknowledgement transition: {current_status} -> {status}"
                     )
-            elif current_status != "leased":
-                raise ValueError("delivery failure requires an active leased handoff")
+            elif current_status not in {
+                "leased",
+                "received",
+                "actively_executing",
+                "still_blocked",
+            }:
+                raise ValueError(
+                    "delivery failure requires an active recoverable handoff"
+                )
             changed = self._connection.execute(
                 """
                 UPDATE handoffs SET status = ?, detail = ?

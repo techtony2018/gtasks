@@ -1434,6 +1434,114 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertEqual(payload["code"], "handoff_identity_mismatch")
         self.assertEqual(self._event_count(), baseline)
 
+    def test_soft_deleted_canonical_registration_blocks_claim_and_recover_without_mutation(self) -> None:
+        class DeletedAgentRunner:
+            def run(_self, command: str, params: dict):
+                self.assertEqual(command, "get_page")
+                self.assertEqual(params, {"slug": "agents/tammy"})
+                return {
+                    "slug": "agents/tammy",
+                    "type": "agent",
+                    "title": "Agent Tammy",
+                    "deleted_at": "2026-08-04T18:00:00Z",
+                    "frontmatter": {
+                        "handoff_dispatcher": {
+                            "registration_sha256": self.registration.reference,
+                            "route": "hosts/tammy",
+                            "verified": True,
+                        }
+                    },
+                }
+
+        deleted_reader = gbrain.GBrainAdapter(
+            DeletedAgentRunner()
+        ).read_handoff_dispatcher_registration
+        queued = self._record(event="events/deleted-claim")
+        deleted_harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=deleted_reader,
+            handoff_waiter=lambda _seconds: None,
+        )
+        baseline = self._event_count()
+        status, payload, _ = deleted_harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {"registration_id": self.REGISTRATION, "wait_seconds": 0, "lease_seconds": 30},
+            self._auth(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertEqual(self.store.get(queued.handoff_id).status, "queued")
+        self.assertEqual(self._event_count(), baseline)
+
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-deleted-recover-state"
+        status, _payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{claim['handoff_id']}/ack",
+            {"status": "received", "detail": None},
+            headers,
+        )
+        self.assertEqual(status, 200)
+        baseline = self._event_count()
+        status, payload, _ = deleted_harness.request(
+            "POST",
+            f"/api/handoffs/{claim['handoff_id']}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertEqual(self._event_count(), baseline)
+        self.assertEqual(self.store.get(claim["handoff_id"]).status, "received")
+
+    def test_recovered_api_failure_retries_and_reclaims_same_handoff(self) -> None:
+        record = self._record(event="events/api-recovered-retry")
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-api-recovered-active"
+        status, _payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "actively_executing", "detail": None},
+            headers,
+        )
+        self.assertEqual(status, 200)
+        status, recovered, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        failure_headers = self._lease_headers(recovered)
+        failure_headers["Idempotency-Key"] = "mutation-api-recovered-retry"
+
+        status, retried, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/failure",
+            {"failure_class": "retryable"},
+            failure_headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(retried["status"], "retrying")
+        status, reclaimed, _ = self._claim()
+        self.assertEqual(status, 200)
+        self.assertEqual(reclaimed["handoff_id"], record.handoff_id)
+        self.assertEqual(
+            reclaimed["lease_generation"], recovered["lease_generation"] + 1
+        )
+
     def test_event_endpoints_share_deterministic_filters_counts_cursors_and_export(self) -> None:
         second_task = "tasks/22222222-2222-4222-8222-222222222222"
         self._record(event="events/log-1")
