@@ -68,7 +68,11 @@ from .job_application_binding import (
     JOB_APPLIED_TIMEZONE,
     progress_revision,
 )
-from .handoff_dispatcher import AgentRegistration, DurableHandoffStore
+from .handoff_dispatcher import (
+    AgentRegistration,
+    DurableHandoffStore,
+    HandoffOwnershipError,
+)
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -1602,12 +1606,6 @@ def _handler_class(
                     canonical = self._canonical_handoff_registration(
                         identity, registration_id
                     )
-                    recovered = handoff_store.recover_in_progress(
-                        unquote(recover_match.group(1)),
-                        registration=canonical,
-                        expected_generation=expected_generation,
-                        now=clock().astimezone(timezone.utc),
-                    )
                 except _HandoffIdentityMismatch:
                     self._json(
                         HTTPStatus.FORBIDDEN,
@@ -1615,18 +1613,6 @@ def _handler_class(
                             "error": "Dispatcher route no longer matches its registration.",
                             "code": "handoff_identity_mismatch",
                         },
-                    )
-                    return
-                except KeyError:
-                    self._json(
-                        HTTPStatus.NOT_FOUND,
-                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
-                    )
-                    return
-                except ValueError as exc:
-                    self._json(
-                        HTTPStatus.CONFLICT,
-                        {"error": str(exc), "code": "handoff_recovery_conflict"},
                     )
                     return
                 except Exception:
@@ -1637,6 +1623,73 @@ def _handler_class(
                             "code": "handoff_route_unavailable",
                         },
                     )
+                    return
+                handoff_id = unquote(recover_match.group(1))
+
+                def reconcile(state) -> None:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {
+                            "error": "Persisted handoff claim requires authoritative reconciliation.",
+                            "code": "handoff_recovery_reconcile",
+                            **state.to_dict(),
+                        },
+                    )
+
+                try:
+                    state = handoff_store.read_recovery_state(
+                        handoff_id,
+                        registration=canonical,
+                    )
+                except HandoffOwnershipError:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    state.lease_generation != expected_generation
+                    or state.status
+                    not in {
+                        "leased",
+                        "received",
+                        "actively_executing",
+                        "still_blocked",
+                    }
+                ):
+                    reconcile(state)
+                    return
+                try:
+                    recovered = handoff_store.recover_in_progress(
+                        handoff_id,
+                        registration=canonical,
+                        expected_generation=expected_generation,
+                        now=clock().astimezone(timezone.utc),
+                    )
+                except HandoffOwnershipError:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except ValueError:
+                    state = handoff_store.read_recovery_state(
+                        handoff_id,
+                        registration=canonical,
+                    )
+                    reconcile(state)
                     return
                 self._json(
                     HTTPStatus.OK,

@@ -696,6 +696,53 @@ class DurableHandoffStoreTests(unittest.TestCase):
         ):
             self.assertNotIn(capability.encode(), database_bytes)
 
+    def test_authoritative_recovery_state_validates_and_rotates_leased_claim(self) -> None:
+        record = self.record(canonical_event_id="events/leased-recovery")
+        claim = self.claim()
+        baseline = self.store.query_events(limit=50, after_sequence=0).total
+
+        state = self.store.read_recovery_state(
+            record.handoff_id,
+            registration=registration(),
+        )
+
+        self.assertEqual(state.handoff_id, record.handoff_id)
+        self.assertEqual(state.status, "leased")
+        self.assertEqual(state.lease_generation, claim.lease_generation)
+        rendered = repr(state.to_dict())
+        self.assertNotIn(REGISTRATION_ID, rendered)
+        self.assertNotIn(claim.lease_token, rendered)
+        self.assertEqual(
+            self.store.query_events(limit=50, after_sequence=0).total,
+            baseline,
+        )
+        with self.assertRaisesRegex(ValueError, "current owner"):
+            self.store.read_recovery_state(
+                record.handoff_id,
+                registration=registration(
+                    registration_id="private-registration-timmy",
+                    agent_slug="agents/timmy",
+                    route="hosts/timmy",
+                ),
+            )
+        self.assertEqual(
+            self.store.query_events(limit=50, after_sequence=0).total,
+            baseline,
+        )
+
+        recovered = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=claim.lease_generation,
+            now=NOW,
+        )
+        self.assertEqual(recovered.status, "leased")
+        self.assertEqual(
+            recovered.lease_generation,
+            claim.lease_generation + 1,
+        )
+        self.assertNotEqual(recovered.lease_token, claim.lease_token)
+
     def test_reopens_and_rotates_capability_for_still_blocked_handoff(self) -> None:
         record = self.record()
         blocked_claim = self.claim()

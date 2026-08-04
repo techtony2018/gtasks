@@ -206,6 +206,28 @@ class LeaseClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class HandoffRecoveryState:
+    handoff_id: str
+    status: str
+    lease_generation: int
+    agent_slug: str
+    registration_ref: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "handoff_id": self.handoff_id,
+            "status": self.status,
+            "lease_generation": self.lease_generation,
+            "agent_slug": self.agent_slug,
+            "registration_ref": self.registration_ref,
+        }
+
+
+class HandoffOwnershipError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
 class HandoffEvent:
     event_id: str
     sequence: int
@@ -644,6 +666,7 @@ class DurableHandoffStore:
             if current is None:
                 raise KeyError(handoff_id)
             if current["status"] not in {
+                "leased",
                 "received",
                 "actively_executing",
                 "still_blocked",
@@ -656,7 +679,9 @@ class DurableHandoffStore:
                 or current["agent_slug"] != registration.agent_slug
                 or current["registration_ref"] != registration.reference
             ):
-                raise ValueError("verified registration is not the current owner")
+                raise HandoffOwnershipError(
+                    "verified registration is not the current owner"
+                )
             if current["lease_generation"] != expected_generation:
                 raise ValueError("expected generation is not current")
             if current["lease_capability_ref"] is None:
@@ -699,6 +724,50 @@ class DurableHandoffStore:
                 lease_generation=lease_generation,
             )
             return LeaseClaim(record, lease_token, lease_generation)
+
+    def read_recovery_state(
+        self,
+        handoff_id: str,
+        *,
+        registration: AgentRegistration,
+    ) -> HandoffRecoveryState:
+        """Return safe authoritative state only to the exact durable owner."""
+        if registration.verified is not True:
+            raise ValueError("recovery state requires a verified registration")
+        _require_structured_id(registration.agent_slug, "registration.agent_slug")
+        _require_structured_id(registration.route, "registration.route")
+        if not isinstance(registration.registration_id, str) or not registration.registration_id:
+            raise ValueError("recovery state requires a verified registration")
+        with self._lock:
+            current = self._connection.execute(
+                """
+                SELECT h.status, h.agent_slug, h.registration_ref,
+                    l.registration_id, l.registration_agent_slug,
+                    l.registration_route, l.lease_generation
+                FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+        if current is None:
+            raise KeyError(handoff_id)
+        if (
+            current["registration_id"] != registration.registration_id
+            or current["registration_agent_slug"] != registration.agent_slug
+            or current["registration_route"] != registration.route
+            or current["agent_slug"] != registration.agent_slug
+            or current["registration_ref"] != registration.reference
+        ):
+            raise HandoffOwnershipError(
+                "verified registration is not the current owner"
+            )
+        return HandoffRecoveryState(
+            handoff_id=handoff_id,
+            status=current["status"],
+            lease_generation=current["lease_generation"],
+            agent_slug=current["agent_slug"],
+            registration_ref=current["registration_ref"],
+        )
 
     def acknowledge(
         self,

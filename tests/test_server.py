@@ -1358,6 +1358,170 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertNotIn("tammy-handoff-api-token", rendered)
         self.assertNotIn("thread", rendered.lower())
 
+    def test_recover_validates_leased_and_reconciles_crash_window_generation(self) -> None:
+        record = self._record(event="events/recover-leased")
+        _status, claim, _ = self._claim()
+
+        status, first_recovery, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(first_recovery["status"], "leased")
+        self.assertEqual(
+            first_recovery["lease_generation"], claim["lease_generation"] + 1
+        )
+
+        baseline = self._event_count()
+        status, authoritative, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(authoritative["code"], "handoff_recovery_reconcile")
+        self.assertEqual(authoritative["handoff_id"], record.handoff_id)
+        self.assertEqual(authoritative["status"], "leased")
+        self.assertEqual(
+            authoritative["lease_generation"],
+            first_recovery["lease_generation"],
+        )
+        self.assertEqual(authoritative["agent_slug"], "agents/tammy")
+        self.assertEqual(
+            authoritative["registration_ref"], self.registration.reference
+        )
+        self.assertNotIn("lease_capability", authoritative)
+        self.assertNotIn(self.REGISTRATION, json.dumps(authoritative))
+        self.assertEqual(self._event_count(), baseline)
+
+        status, second_recovery, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": authoritative["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            second_recovery["lease_generation"],
+            authoritative["lease_generation"] + 1,
+        )
+
+    def test_recover_reconciles_retrying_and_terminal_without_mutation(self) -> None:
+        cases = (("retryable", "retrying"), ("terminal", "dead_letter"))
+        for index, (failure_class, expected_status) in enumerate(cases):
+            with self.subTest(failure_class=failure_class):
+                record = self._record(event=f"events/reconcile-{index}")
+                _status, claim, _ = self._claim()
+                headers = self._lease_headers(claim)
+                headers["Idempotency-Key"] = f"mutation-reconcile-{index}"
+                status, _payload, _ = self.harness.request(
+                    "POST",
+                    f"/api/handoffs/{record.handoff_id}/failure",
+                    {"failure_class": failure_class},
+                    headers,
+                )
+                self.assertEqual(status, 200)
+                baseline = self._event_count()
+
+                status, authoritative, _ = self.harness.request(
+                    "POST",
+                    f"/api/handoffs/{record.handoff_id}/recover",
+                    {
+                        "registration_id": self.REGISTRATION,
+                        "expected_generation": claim["lease_generation"],
+                    },
+                    self._auth(),
+                )
+                self.assertEqual(status, 409)
+                self.assertEqual(
+                    authoritative["code"], "handoff_recovery_reconcile"
+                )
+                self.assertEqual(authoritative["status"], expected_status)
+                self.assertEqual(
+                    authoritative["lease_generation"], claim["lease_generation"]
+                )
+                self.assertNotIn("lease_capability", authoritative)
+                self.assertEqual(self._event_count(), baseline)
+
+                if failure_class == "retryable":
+                    _claim_status, reclaimed, _ = self._claim()
+                    reclaim_headers = self._lease_headers(reclaimed)
+                    reclaim_headers["Idempotency-Key"] = "mutation-reconcile-cleanup"
+                    self.harness.request(
+                        "POST",
+                        f"/api/handoffs/{record.handoff_id}/failure",
+                        {"failure_class": "terminal"},
+                        reclaim_headers,
+                    )
+
+    def test_recovery_wrong_owner_returns_no_authoritative_state_or_mutation(self) -> None:
+        private_path = Path(self.harness.runtime_directory.name) / "recovery-owner.sqlite3"
+        private_store = DurableHandoffStore(str(private_path))
+        self.addCleanup(private_store.close)
+        private_registration = AgentRegistration(
+            registration_id=self.REGISTRATION,
+            agent_slug="agents/timmy",
+            route="hosts/timmy",
+            verified=True,
+        )
+        private_dispatcher = HandoffDispatcher(
+            private_store, registrations=(private_registration,)
+        )
+        record = private_dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/recovery-owner",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/timmy",),
+                route="hosts/timmy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-recovery-owner",
+            ),
+            now=self.NOW,
+        )
+        private_store.claim(self.REGISTRATION, now=self.NOW, lease_seconds=30)
+        baseline = private_store.query_events(limit=50, after_sequence=0).total
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            handoff_store=private_store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda *_args: self.registration,
+            handoff_waiter=lambda _seconds: None,
+        )
+
+        status, payload, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {"registration_id": self.REGISTRATION, "expected_generation": 1},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "handoff_identity_mismatch")
+        self.assertNotIn("status", payload)
+        self.assertNotIn("lease_generation", payload)
+        self.assertNotIn("registration_ref", payload)
+        self.assertEqual(private_store.get(record.handoff_id).status, "leased")
+        self.assertEqual(
+            private_store.query_events(limit=50, after_sequence=0).total,
+            baseline,
+        )
+
     def test_recover_rejects_stale_wrong_or_revoked_identity_without_mutation(self) -> None:
         record = self._record(event="events/recover-rejected")
         _status, claim, _ = self._claim()
