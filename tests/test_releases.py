@@ -286,7 +286,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("https://tonys-macbook-pro.taildb46a7.ts.net", runbook)
         self.assertIn(
             "tailscale serve --bg --https=443 --set-path=/api/handoffs/ "
-            "http://127.0.0.1:4179",
+            "http://127.0.0.1:4179/api/handoffs/",
             normalized,
         )
         self.assertIn("only `/api/handoffs`", runbook)

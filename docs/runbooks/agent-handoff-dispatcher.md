@@ -133,12 +133,14 @@ readbacks pass, expose only `/api/handoffs` on the node Tailnet URL
 Tailscale Serve command:
 
 ```bash
-tailscale serve --bg --https=443 --set-path=/api/handoffs/ http://127.0.0.1:4179
+tailscale serve --bg --https=443 --set-path=/api/handoffs/ http://127.0.0.1:4179/api/handoffs/
 tailscale serve status --json
 ```
 
 The status readback must contain one HTTPS subtree handler at `/api/handoffs/` pointing
-to `http://127.0.0.1:4179` and no `/` handler. Prove that the Tailnet URL root,
+to `http://127.0.0.1:4179/api/handoffs/` and no `/` handler. The matching backend
+subtree is required because Tailscale Serve strips the mounted prefix before proxying.
+Prove that the Tailnet URL root,
 `/api/health`, `/api/releases`, `/api/handoff-events`, and every other
 non-handoff API return HTTP 404; they must not return a redirect or any GTasks
 content. Tailscale Serve is private to the tailnet; never configure Funnel.
