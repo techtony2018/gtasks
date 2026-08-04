@@ -161,19 +161,22 @@ exactly `agent_slug`, `registration_id`, `fixed_thread_id`,
 run the installer from the verified release checkout:
 
 ```bash
-/usr/local/bin/python3 scripts/install_local_handoff_dispatcher.py \
+/absolute/path/to/python3 scripts/install_local_handoff_dispatcher.py \
   --source-config /private/<agent>/handoff-dispatcher.json \
-  --python-path /usr/local/bin/python3 \
+  --python-path /absolute/path/to/python3 \
+  --module-root /absolute/path/to/gtasks \
   --runner-path /absolute/path/to/gtasks/gtasks/local_handoff_dispatcher.py \
   --codex-path /absolute/path/to/codex \
-  --working-directory /absolute/path/to/gtasks
+  --working-directory /absolute/path/to/agent-workspace
 ```
 
-Use this exact Python path on the three verified hosts, Tammy, Timmy, and
-Toddy. The installer and LaunchAgent must not use `/usr/bin/python3`.
-`--runner-path` verifies the checked-out module exists, while the rendered
-plist `WorkingDirectory` is the checkout root so `-m
-gtasks.local_handoff_dispatcher` resolves that same verified checkout.
+Resolve and verify the absolute compatible Python path independently on Tammy,
+Timmy, and Toddy; host package layouts are not assumed to match. The installer
+and LaunchAgent must not use `/usr/bin/python3`. `--module-root` and
+`--runner-path` verify the checked-out module and set `PYTHONPATH`, while the
+rendered plist `WorkingDirectory` remains the pre-existing Agent thread's
+workspace. The module checkout and resumed Agent workspace are independent
+paths and both must pass exact readback.
 
 The installer owns one label, `com.tony.gtasks-handoff-dispatcher`, and writes
 only these canonical destinations:
@@ -189,10 +192,10 @@ different identity or thread.
 The installed runner command is equivalent to:
 
 ```bash
-/usr/local/bin/python3 -m gtasks.local_handoff_dispatcher \
+/absolute/path/to/python3 -m gtasks.local_handoff_dispatcher \
   --config "$HOME/Library/Application Support/GTasks/handoff-dispatcher.json" \
   --codex-path /absolute/path/to/codex \
-  --working-directory /absolute/path/to/gtasks
+  --working-directory /absolute/path/to/agent-workspace
 ```
 
 Do not put a bearer token, registration id, lease capability, or fixed thread

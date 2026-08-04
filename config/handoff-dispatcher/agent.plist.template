@@ -18,6 +18,11 @@
   </array>
   <key>WorkingDirectory</key>
   <string>__WORKING_DIRECTORY__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>__MODULE_ROOT__</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

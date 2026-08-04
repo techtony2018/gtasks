@@ -322,10 +322,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         normalized = " ".join(runbook.split())
 
         self.assertIn("Tammy, Timmy, and Toddy", runbook)
-        self.assertIn("--python-path /usr/local/bin/python3", normalized)
+        self.assertIn("--python-path /absolute/path/to/python3", normalized)
+        self.assertIn("--module-root /absolute/path/to/gtasks", normalized)
         self.assertIn("--runner-path /absolute/path/to/gtasks/gtasks/local_handoff_dispatcher.py", normalized)
-        self.assertIn("/usr/local/bin/python3 -m gtasks.local_handoff_dispatcher", normalized)
+        self.assertIn("/absolute/path/to/python3 -m gtasks.local_handoff_dispatcher", normalized)
         self.assertIn("must not use `/usr/bin/python3`", runbook)
+        self.assertIn("pre-existing Agent thread's workspace", normalized)
+        self.assertIn("independent paths", normalized)
         self.assertIn("WorkingDirectory", runbook)
 
     def test_release_evidence_keeps_install_and_canary_work_explicitly_pending(self) -> None:

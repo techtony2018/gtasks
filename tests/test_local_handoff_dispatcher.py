@@ -6,8 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -1021,6 +1023,7 @@ class InstallerTests(unittest.TestCase):
         self.codex.parent.mkdir()
         self.codex.write_text("#!/bin/sh\n", encoding="utf-8")
         self.codex.chmod(0o755)
+        self.python_path = str(Path(sys.executable).resolve())
         self.config = {
             "schema_version": 1,
             "agent_slug": "agents/tammy",
@@ -1031,6 +1034,40 @@ class InstallerTests(unittest.TestCase):
         }
         self.write_source()
 
+    def launchctl_output(
+        self,
+        *,
+        working_directory: Path = ROOT,
+        python_path: str | None = None,
+        module_root: Path = ROOT,
+        arguments: list[str] | None = None,
+    ) -> str:
+        resolved_python = python_path or self.python_path
+        expected_arguments = arguments or [
+            resolved_python,
+            "-m",
+            "gtasks.local_handoff_dispatcher",
+            "--config",
+            str(self.destination.resolve()),
+            "--codex-path",
+            str(self.codex.resolve()),
+            "--working-directory",
+            str(working_directory.resolve()),
+        ]
+        argument_lines = "\n".join(f"\t\t{value}" for value in expected_arguments)
+        return (
+            "service = {\n"
+            "\targuments = {\n"
+            f"{argument_lines}\n"
+            "\t}\n"
+            f"\tworking directory = {working_directory.resolve()}\n"
+            "\tenvironment = {\n"
+            "\t\tXPC_SERVICE_NAME => com.tony.gtasks-handoff-dispatcher\n"
+            f"\t\tPYTHONPATH => {module_root.resolve()}\n"
+            "\t}\n"
+            "}\n"
+        )
+
     def write_source(self, values: dict[str, object] | None = None, mode: int = 0o600) -> None:
         self.source.write_text(json.dumps(values or self.config), encoding="utf-8")
         self.source.chmod(mode)
@@ -1040,16 +1077,20 @@ class InstallerTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             calls.append((arguments, kwargs))
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n",
+                    stderr="",
+                )
             if arguments[-1] == "--version":
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
             if arguments[1] == "print":
                 if self.plist.exists():
-                    stdout = (
-                        f"gtasks.local_handoff_dispatcher {self.destination} "
-                        f"{self.codex.resolve()}"
-                    )
+                    stdout = self.launchctl_output()
                     return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
                 return subprocess.CompletedProcess(arguments, 3, stdout="", stderr="not loaded")
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
@@ -1059,7 +1100,8 @@ class InstallerTests(unittest.TestCase):
             destination_config=self.destination,
             plist_template=TEMPLATE_PATH,
             plist_destination=self.plist,
-            python_path="/usr/bin/python3",
+            python_path=self.python_path,
+            module_root=ROOT,
             runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
             codex_path=str(self.codex),
             working_directory=ROOT,
@@ -1082,17 +1124,93 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("gtasks.local_handoff_dispatcher", plist_text)
         self.assertNotIn(str(ROOT / "gtasks" / "local_handoff_dispatcher.py"), plist_text)
         self.assertNotIn("bearer-token", plist_text)
-        self.assertEqual(calls[0][0], [str(self.codex.resolve()), "--version"])
-        self.assertEqual(calls[1][0], [str(self.codex.resolve()), "exec", "resume", "--help"])
+        self.assertEqual(calls[0][0][:2], [self.python_path, "-c"])
+        self.assertEqual(calls[1][0], [str(self.codex.resolve()), "--version"])
+        self.assertEqual(calls[2][0], [str(self.codex.resolve()), "exec", "resume", "--help"])
         launch_ref = f"gui/{os.getuid()}/com.tony.gtasks-handoff-dispatcher"
-        self.assertEqual(calls[2][0], ["/bin/launchctl", "print", launch_ref])
+        self.assertEqual(calls[3][0], ["/bin/launchctl", "print", launch_ref])
         self.assertEqual(
-            calls[3][0],
+            calls[4][0],
             ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist)],
         )
-        self.assertEqual(calls[4][0], ["/bin/launchctl", "print", launch_ref])
+        self.assertEqual(calls[5][0], ["/bin/launchctl", "print", launch_ref])
         for _, kwargs in calls:
             self.assertNotIn("shell", kwargs)
+
+    def test_verified_module_root_is_independent_from_agent_workspace(self) -> None:
+        agent_workspace = self.directory / "agent-workspace"
+        agent_workspace.mkdir()
+        python_path = self.python_path
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def run(arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            if arguments[:2] == [python_path, "-c"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n",
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+            if arguments[1] == "print":
+                if self.plist.exists():
+                    stdout = self.launchctl_output(
+                        working_directory=agent_workspace,
+                        python_path=python_path,
+                    )
+                    return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+                return subprocess.CompletedProcess(arguments, 3, stdout="", stderr="not loaded")
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        self.installer.install(
+            source_config=self.source,
+            destination_config=self.destination,
+            plist_template=TEMPLATE_PATH,
+            plist_destination=self.plist,
+            python_path=python_path,
+            module_root=ROOT,
+            runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+            codex_path=str(self.codex),
+            working_directory=agent_workspace,
+            run=run,
+            home_directory=self.home,
+        )
+
+        installed = plistlib.loads(self.plist.read_bytes())
+        self.assertEqual(installed["WorkingDirectory"], str(agent_workspace.resolve()))
+        self.assertEqual(installed["EnvironmentVariables"], {"PYTHONPATH": str(ROOT.resolve())})
+        self.assertEqual(installed["ProgramArguments"][:3], [
+            python_path, "-m", "gtasks.local_handoff_dispatcher",
+        ])
+        import_call = calls[0]
+        self.assertEqual(import_call[0][:2], [python_path, "-c"])
+        self.assertEqual(import_call[1]["cwd"], str(agent_workspace.resolve()))
+        self.assertEqual(import_call[1]["env"], {"PYTHONPATH": str(ROOT.resolve())})
+        codex_calls = [call for call in calls if call[0][0] == str(self.codex.resolve())]
+        self.assertTrue(codex_calls)
+        self.assertTrue(all(call[1]["cwd"] == str(agent_workspace.resolve()) for call in codex_calls))
+
+        rogue_runner = self.directory / "other" / "gtasks" / "local_handoff_dispatcher.py"
+        rogue_runner.parent.mkdir(parents=True)
+        rogue_runner.write_text("# wrong checkout\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "module root|runner"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path=python_path,
+                module_root=ROOT,
+                runner_path=rogue_runner,
+                codex_path=str(self.codex),
+                working_directory=agent_workspace,
+                run=lambda *_args, **_kwargs: self.fail("subprocess must not run"),
+                home_directory=self.home,
+            )
 
     def test_rejects_noncanonical_config_plist_or_label_before_install(self) -> None:
         cases = (
@@ -1107,7 +1225,8 @@ class InstallerTests(unittest.TestCase):
                     destination_config=overrides.get("destination_config", self.destination),
                     plist_template=TEMPLATE_PATH,
                     plist_destination=overrides.get("plist_destination", self.plist),
-                    python_path="/usr/bin/python3",
+                    python_path=self.python_path,
+                    module_root=ROOT,
                     runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
                     codex_path=str(self.codex),
                     working_directory=ROOT,
@@ -1121,15 +1240,19 @@ class InstallerTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             calls.append(arguments)
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n",
+                    stderr="",
+                )
             if arguments[-1] == "--version":
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
             if arguments[1] == "print":
-                stdout = (
-                    f"gtasks.local_handoff_dispatcher {self.destination} "
-                    f"{self.codex.resolve()}"
-                )
+                stdout = self.launchctl_output()
                 return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
@@ -1139,7 +1262,8 @@ class InstallerTests(unittest.TestCase):
                 destination_config=self.destination,
                 plist_template=TEMPLATE_PATH,
                 plist_destination=self.plist,
-                python_path="/usr/bin/python3",
+                python_path=self.python_path,
+                module_root=ROOT,
                 runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
                 codex_path=str(self.codex),
                 working_directory=ROOT,
@@ -1147,6 +1271,46 @@ class InstallerTests(unittest.TestCase):
                 home_directory=self.home,
             )
         self.assertFalse(any(call[1] == "bootout" for call in calls if call[0] == "/bin/launchctl"))
+
+    def test_rejects_system_python_and_wrong_but_containing_loaded_contract(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not use /usr/bin/python3"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path="/usr/bin/python3",
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=lambda *_args, **_kwargs: self.fail("subprocess must not run"),
+                home_directory=self.home,
+            )
+
+        expected_arguments = [
+            self.python_path,
+            "-m",
+            "gtasks.local_handoff_dispatcher",
+            "--config",
+            str(self.destination.resolve()),
+            "--codex-path",
+            str(self.codex.resolve()),
+            "--working-directory",
+            str(ROOT.resolve()),
+        ]
+        wrong_arguments = [*expected_arguments]
+        wrong_arguments[0] = f"{self.python_path}-old"
+        wrong_output = self.launchctl_output(arguments=wrong_arguments)
+        self.assertIn(self.python_path, wrong_output)
+        self.assertFalse(
+            self.installer._loaded_contract_matches(
+                wrong_output,
+                expected_arguments=expected_arguments,
+                expected_working_directory=str(ROOT.resolve()),
+                expected_module_root=str(ROOT.resolve()),
+            )
+        )
 
     def test_preserves_existing_fixed_thread_and_rejects_second_identity(self) -> None:
         self.install()
