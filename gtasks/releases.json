@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.72",
+  "current_version": "V0.0.73",
   "releases": [
     {
       "version": "V0.0.1",
@@ -432,6 +432,12 @@
       "date": "2026-08-03",
       "title": "Navigable artifacts and adaptive details",
       "summary": "Adds canonical Agent-to-Goal-to-Project-to-producing-Task Artifact browsing with a Recent alternative, read-only Calendar event time/details, a verified Manage-calendars connection state without redundant reconnect controls, and a desktop detail panel that can be resized and remembered while mobile keeps its full-sheet view."
+    },
+    {
+      "version": "V0.0.73",
+      "date": "2026-08-03",
+      "title": "Reliable agent handoff completion",
+      "summary": "Completing an acknowledged Agent handoff now clears the resolved handoff before canonical readback, and repeating completion safely repairs an already-partial terminal task while preserving its original completion time."
     }
   ]
 }

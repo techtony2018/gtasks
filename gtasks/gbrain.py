@@ -5498,10 +5498,33 @@ class GBrainAdapter:
             initial_root,
             legacy_untyped_backlink=False,
         )
+        recovering_terminal_handoff = False
         try:
             task = Task.from_page(normalized_page, edges=normalized_links)
         except DomainValidationError as exc:
-            raise ValueError(str(exc)) from exc
+            raw_frontmatter = normalized_page.get("frontmatter")
+            raw_handoff = (
+                raw_frontmatter.get("handoff")
+                if isinstance(raw_frontmatter, Mapping)
+                else None
+            )
+            if not (
+                status == "completed"
+                and isinstance(raw_frontmatter, Mapping)
+                and raw_frontmatter.get("status") == status
+                and isinstance(raw_handoff, Mapping)
+                and raw_handoff.get("state") == "agent_working"
+            ):
+                raise ValueError(str(exc)) from exc
+            recovery_page = deepcopy(dict(normalized_page))
+            recovery_frontmatter = deepcopy(dict(raw_frontmatter))
+            recovery_frontmatter["status"] = "active"
+            recovery_page["frontmatter"] = recovery_frontmatter
+            try:
+                task = Task.from_page(recovery_page, edges=normalized_links)
+            except DomainValidationError as recovery_exc:
+                raise ValueError(str(exc)) from recovery_exc
+            recovering_terminal_handoff = True
         existing_lifecycle_edges = initial_lifecycle_edges
         existing_lifecycle_edge = _require_single_lifecycle_edge(
             task_slug, raw_links
@@ -5509,7 +5532,7 @@ class GBrainAdapter:
         if existing_lifecycle_edge.get("to_slug") != task.lifecycle_root:
             raise LifecycleIntegrityError(task_slug, existing_lifecycle_edges)
 
-        if task.status == status:
+        if task.status == status and not recovering_terminal_handoff:
             return StatusMutationReceipt(
                 task_slug=task_slug,
                 status=status,
@@ -5525,7 +5548,10 @@ class GBrainAdapter:
             if task.lifecycle_root == COMPLETED_ROOT and unfinished
             else task.lifecycle_root
         )
-        completed_at = now if status == "completed" else None
+        if recovering_terminal_handoff:
+            completed_at = task.completed_at
+        else:
+            completed_at = now if status == "completed" else None
 
         raw_frontmatter = normalized_page.get("frontmatter")
         if not isinstance(raw_frontmatter, Mapping):
@@ -5537,6 +5563,12 @@ class GBrainAdapter:
             completed_at.isoformat() if completed_at else None
         )
         frontmatter["updated_at"] = now.isoformat()
+        if (
+            status == "completed"
+            and task.handoff is not None
+            and task.handoff.state == "agent_working"
+        ):
+            frontmatter["handoff"] = None
 
         if target_root != task.lifecycle_root:
             raw_frontmatter_links = frontmatter.get("links")

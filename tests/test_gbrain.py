@@ -4757,6 +4757,85 @@ class TodoAdapterTests(unittest.TestCase):
         self.assertEqual(follow_up.task.handoff.round, 2)
         self.assertNotEqual(follow_up.todo.slug, question.slug)
 
+    def test_completing_acknowledged_handoff_clears_handoff(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+        adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+        )
+        adapter.acknowledge_agent_handoff(
+            task.slug,
+            actor="agents/tammy",
+            now=datetime.fromisoformat("2026-08-02T11:00:00-07:00"),
+        )
+
+        receipt = adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-02T12:00:00-07:00"),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "completed")
+        self.assertIsNone(receipt.task.handoff)
+
+    def test_repeating_completion_repairs_partial_terminal_handoff(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/tammy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which translation?",
+            question_detail="Name it.",
+            resume_action="Draft the plan.",
+            agent_slug="agents/tammy",
+            idempotency_key="question-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+        adapter.answer_agent_question(
+            question.slug,
+            answer="Chinese Union Version.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="answer-round-1",
+            now=datetime.fromisoformat("2026-08-02T10:20:00-07:00"),
+        )
+        adapter.acknowledge_agent_handoff(
+            task.slug,
+            actor="agents/tammy",
+            now=datetime.fromisoformat("2026-08-02T11:00:00-07:00"),
+        )
+        partial_at = datetime.fromisoformat("2026-08-02T12:00:00-07:00")
+        frontmatter = runner.pages[task.slug]["frontmatter"]
+        frontmatter["status"] = "completed"
+        frontmatter["completed_at"] = partial_at.isoformat()
+        frontmatter["updated_at"] = partial_at.isoformat()
+
+        receipt = adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-02T12:05:00-07:00"),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "completed")
+        self.assertIsNone(receipt.task.handoff)
+
     def test_repairs_answered_legacy_question_into_verified_ready_handoff(self) -> None:
         runner, task = self._fixture(
             agent_slug="agents/tammy",

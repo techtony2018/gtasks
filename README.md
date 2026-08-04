@@ -48,10 +48,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-V0.0.72 adds canonical Artifact hierarchy browsing with a Recent alternative,
-read-only Calendar event time and detail inspection, an authorized Calendar
-state without a redundant Reconnect action, and remembered desktop detail-panel
-resizing while preserving the full-sheet mobile reader.
+V0.0.73 makes acknowledged Agent handoff completion atomic and recoverable:
+the resolved handoff is cleared before canonical readback, and repeating a
+completion safely repairs an already-partial terminal task without changing its
+original completion time.
 
 ### Independent UI/UX release gate
 

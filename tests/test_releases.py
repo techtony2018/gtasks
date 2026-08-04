@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.72")
+        self.assertEqual(__version__, "V0.0.73")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -73,12 +73,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("TODO wording", release["summary"])
 
     def test_v0_0_72_records_navigable_artifacts_and_adaptive_details(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.72")
 
         self.assertEqual(release["version"], "V0.0.72")
         self.assertIn("Agent-to-Goal-to-Project-to-producing-Task", release["summary"])
         self.assertIn("Calendar event time/details", release["summary"])
         self.assertIn("resized and remembered", release["summary"])
+
+    def test_v0_0_73_records_recoverable_agent_handoff_completion(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.73")
+        self.assertIn("clears the resolved handoff", release["summary"])
+        self.assertIn("preserving its original completion time", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -183,6 +190,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.70",
                 "V0.0.71",
                 "V0.0.72",
+                "V0.0.73",
             ],
         )
 
