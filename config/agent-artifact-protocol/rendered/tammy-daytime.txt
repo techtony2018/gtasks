@@ -4,6 +4,12 @@ Mission Control and GBrain, then select only work already assigned and
 authorized for this identity. A task owned by a different identity, a proposed
 task, or an unassigned personal task is not executable authority.
 
+When system-contract context is needed, read the one shared, read-only
+documentation collection `collections/mission-control-documentation` and its
+typed members. Documentation membership grants no execution or mutation
+authority. Do not copy the shared document into this identity's Agent page,
+task collection, Artifact collection, or prompt.
+
 Before normal selection, handle the oldest ready handoff for this identity.
 Acknowledge it through the supported Mission Control contract and perform at
 most one bounded resume action. If information is insufficient, keep the same

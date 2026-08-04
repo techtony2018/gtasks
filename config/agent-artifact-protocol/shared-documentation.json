@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "access": "read_only_reference",
+  "collection_slug": "collections/mission-control-documentation",
+  "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
+  "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
+  "last_verified_version": "V0.0.73",
+  "last_verified_commit": "301adadcc15189942757d8bea0b20b2f2677664b",
+  "last_verified_date": "2026-08-03",
+  "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts."
+}

@@ -17,6 +17,20 @@ python3 -m gtasks.server
 
 Open [http://127.0.0.1:4179](http://127.0.0.1:4179).
 
+## Canonical system documentation
+
+Mission Control Agents share one read-only documentation root instead of
+copying system instructions into identity-specific pages:
+
+- Collection: [`collections/mission-control-documentation`](http://127.0.0.1:8788/?slug=collections%2Fmission-control-documentation)
+- System Overview: [`docs/f2516aa8-89ae-4570-a205-118d5c038ad7`](http://127.0.0.1:8788/?slug=docs%2Ff2516aa8-89ae-4570-a205-118d5c038ad7)
+
+The Overview is a reference, not execution authority. Its shared registration
+is version controlled in
+[`config/agent-artifact-protocol/shared-documentation.json`](config/agent-artifact-protocol/shared-documentation.json),
+and the post-release maintenance and verification procedure is
+[`docs/runbooks/mission-control-system-documentation.md`](docs/runbooks/mission-control-system-documentation.md).
+
 ## Visual identity
 
 Mission Control uses a distinct North Star and Big Dipper mark within the

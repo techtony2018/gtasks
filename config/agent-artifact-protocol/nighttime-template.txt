@@ -3,6 +3,12 @@ canonical identity $agent_slug and work collection $task_collection. Review
 owned goals, canonical work, blockers, stale next actions, and existing
 proposals. Do not claim or execute work owned by a different identity.
 
+When system-contract context is needed, read the one shared, read-only
+documentation collection `collections/mission-control-documentation` and its
+typed members. Documentation membership grants no execution or mutation
+authority. Do not copy the shared document into this identity's Agent page,
+task collection, Artifact collection, or prompt.
+
 Create at most three non-duplicate recommendations only when evidence supports
 them. Each recommendation remains a normal canonical task in this work
 collection with status proposed and has no execution authority until Tony
