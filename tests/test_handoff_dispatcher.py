@@ -743,6 +743,89 @@ class DurableHandoffStoreTests(unittest.TestCase):
         )
         self.assertNotEqual(recovered.lease_token, claim.lease_token)
 
+    def test_guardian_requeues_leased_recovery_after_dispatcher_crashes(self) -> None:
+        record = self.record(canonical_event_id="events/leased-recovery-crash")
+        original = self.store.claim(
+            REGISTRATION_ID,
+            now=NOW,
+            lease_seconds=5,
+        )
+        self.assertIsNotNone(original)
+        recovered = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=original.lease_generation,
+            now=NOW + timedelta(seconds=4),
+        )
+
+        self.assertEqual(
+            HandoffGuardian(self.store).reconcile(
+                now=NOW + timedelta(seconds=33)
+            ),
+            0,
+        )
+        self.assertEqual(
+            HandoffGuardian(self.store).reconcile(
+                now=NOW + timedelta(seconds=35)
+            ),
+            1,
+        )
+        self.assertEqual(self.store.get(record.handoff_id).status, "retrying")
+        for label, claim in (("original", original), ("recovered", recovered)):
+            with self.subTest(capability=label), self.assertRaisesRegex(
+                ValueError,
+                "active lease",
+            ):
+                self.store.acknowledge(
+                    record.handoff_id,
+                    "completed",
+                    registration_id=REGISTRATION_ID,
+                    lease_token=claim.lease_token,
+                    lease_generation=claim.lease_generation,
+                    mutation_id=f"mutation-crashed-{label}",
+                    now=NOW + timedelta(seconds=35),
+                )
+
+        reclaimed = self.store.claim(
+            REGISTRATION_ID,
+            now=NOW + timedelta(seconds=35),
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(reclaimed)
+        self.assertEqual(reclaimed.handoff_id, record.handoff_id)
+        self.assertEqual(
+            reclaimed.lease_generation,
+            recovered.lease_generation + 1,
+        )
+
+    def test_nonleased_recovery_remains_guardian_independent(self) -> None:
+        record = self.record(canonical_event_id="events/received-recovery")
+        claim = self.claim()
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-received-before-recovery",
+            now=NOW,
+        )
+        recovered = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=claim.lease_generation,
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.assertEqual(recovered.status, "received")
+        self.assertEqual(
+            HandoffGuardian(self.store).reconcile(
+                now=NOW + timedelta(days=1)
+            ),
+            0,
+        )
+        self.assertEqual(self.store.get(record.handoff_id).status, "received")
+
     def test_reopens_and_rotates_capability_for_still_blocked_handoff(self) -> None:
         record = self.record()
         blocked_claim = self.claim()

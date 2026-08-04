@@ -47,6 +47,7 @@ ACKNOWLEDGEMENT_TRANSITIONS = {
     "still_blocked": frozenset({"actively_executing", "completed"}),
     "completed": frozenset(),
 }
+DEFAULT_RECOVERY_LEASE_SECONDS = 30
 _STRUCTURED_ID = re.compile(r"[a-z0-9][a-z0-9._/-]{0,127}")
 _CORRELATION_ID = re.compile(r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}")
 _SAFE_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:!?()'/_-]{0,159}")
@@ -639,6 +640,7 @@ class DurableHandoffStore:
         registration: AgentRegistration,
         expected_generation: int,
         now: datetime,
+        lease_seconds: int = DEFAULT_RECOVERY_LEASE_SECONDS,
     ) -> LeaseClaim:
         """Authenticate the durable owner and rotate a lost runtime capability."""
         now = _require_utc(now, "now")
@@ -650,6 +652,13 @@ class DurableHandoffStore:
             raise ValueError("recovery requires a verified registration")
         if not isinstance(expected_generation, int) or expected_generation < 1:
             raise ValueError("expected generation must be a positive integer")
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or lease_seconds < 5
+            or lease_seconds > 120
+        ):
+            raise ValueError("recovery lease must be 5 to 120 seconds")
 
         with self._write_transaction():
             current = self._connection.execute(
@@ -690,17 +699,23 @@ class DurableHandoffStore:
             previous_capability_ref = current["lease_capability_ref"]
             lease_token = uuid4().hex
             lease_capability_ref = _reference(lease_token)
+            lease_until = (
+                _timestamp(now + timedelta(seconds=lease_seconds))
+                if current["status"] == "leased"
+                else None
+            )
             changed = self._connection.execute(
                 """
                 UPDATE leases
                 SET lease_capability_ref = ?, lease_generation = lease_generation + 1,
-                    lease_until = NULL
+                    lease_until = ?
                 WHERE handoff_id = ? AND registration_id = ?
                     AND registration_agent_slug = ? AND registration_route = ?
                     AND lease_generation = ? AND lease_capability_ref = ?
                 """,
                 (
                     lease_capability_ref,
+                    lease_until,
                     handoff_id,
                     registration.registration_id,
                     registration.agent_slug,
