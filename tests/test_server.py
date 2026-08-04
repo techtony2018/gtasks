@@ -45,6 +45,7 @@ from gtasks.gbrain import (
     PartialMutationError,
     StatusMutationReceipt,
     TaskProgressMetricReceipt,
+    TaskEditReceipt,
     MembershipRepairReceipt,
     ProjectAssignmentReceipt,
     ProjectMutationReceipt,
@@ -189,6 +190,13 @@ class FakeAdapter:
         self.collection_reads.append(root_slug)
         tasks = self.active if root_slug == ACTIVE_ROOT else self.completed
         return CollectionRead(root_slug=root_slug, tasks=tasks)
+
+    def get_task(self, task_slug: str) -> Task:
+        return next(
+            task
+            for task in (*self.active, *self.completed)
+            if task.slug == task_slug
+        )
 
     def create_inbox(self, task: Task) -> MutationReceipt:
         self.created.append(task)
@@ -663,6 +671,25 @@ class FakeAdapter:
             verified=True,
         )
 
+    def edit_task(self, task_slug: str, **payload) -> TaskEditReceipt:
+        existing = next(
+            task for task in (*self.active, *self.completed) if task.slug == task_slug
+        )
+        updated = replace(
+            existing,
+            title=payload["title"],
+            summary=payload["title"],
+            detail=payload["detail"],
+            priority=payload["priority"],
+            due_day=payload["due_day"],
+            status=payload["status"],
+            progress_metric=payload["progress_metric"],
+            event_progress=payload["event_progress"],
+            updated_at=payload["now"],
+        )
+        self.active = tuple(updated if task.slug == task_slug else task for task in self.active)
+        return TaskEditReceipt(task_slug=task_slug, task=updated, verified=True)
+
 
 def sample_goal(slug: str = "goals/ship-product") -> Goal:
     return Goal(
@@ -905,6 +932,13 @@ class HealthApiTests(unittest.TestCase):
         by_slug = {task["slug"]: task for task in snapshot["tasks"]}
         self.assertTrue(by_slug[inside.slug]["in_default_display_window"])
         self.assertFalse(by_slug[outside.slug]["in_default_display_window"])
+        self.assertEqual(
+            snapshot["event_bindings"]["job_applied"],
+            {
+                "task_slug": "tasks/562466ac-3569-4013-b105-746a64816cc6",
+                "timezone": "America/Los_Angeles",
+            },
+        )
 
     def test_health_declares_read_cache_and_isolated_qa_scope(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -914,6 +948,10 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["qa_fixtures_root"], QA_FIXTURES_ROOT)
         self.assertEqual(payload["read_surfaces"], "last_verified_local_cache")
+        self.assertEqual(
+            payload["job_applied_bound_task"],
+            "tasks/562466ac-3569-4013-b105-746a64816cc6",
+        )
 
     def test_static_mission_control_identity_assets_are_allowlisted(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -959,7 +997,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.73")
+        self.assertEqual(payload["version"], "V0.0.74")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -967,11 +1005,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.73")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.73")
+        self.assertEqual(payload["current_version"], "V0.0.74")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.74")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.74",
                 "V0.0.73",
                 "V0.0.72",
                 "V0.0.71",
@@ -1781,15 +1820,10 @@ class FullTaskCreationApiTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(status, 201)
-        created = adapter.created[0]
-        self.assertEqual(created.progress_metric.target, 3)
-        self.assertEqual(created.progress_metric.current, 2)
-        self.assertEqual(created.event_progress.baseline_count, 2)
-        self.assertEqual(
-            payload["task"]["event_progress"],
-            {"baseline_count": 2, "evidence_slugs": [], "receipt_ids": []},
-        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_task")
+        self.assertIn("explicit bound task", payload["error"])
+        self.assertEqual(adapter.created, [])
 
     def test_creates_an_optional_manual_metric_without_auto_completion(self) -> None:
         adapter = FakeAdapter(
@@ -1886,8 +1920,8 @@ class FullTaskCreationApiTests(unittest.TestCase):
                     "label": "Job applications",
                     "target": 5,
                     "current": 0,
-                    "event_binding": "job_applied",
-                    "auto_complete": True,
+                    "event_binding": None,
+                    "auto_complete": False,
                 },
             },
         )
@@ -1900,9 +1934,9 @@ class FullTaskCreationApiTests(unittest.TestCase):
         self.assertIsNone(duplicate.completed_at)
         self.assertEqual(duplicate.due_day, date(2026, 7, 31))
         self.assertEqual(duplicate.progress_metric.current, 0)
-        self.assertEqual(duplicate.progress_metric.task_day, date(2026, 7, 31))
-        self.assertEqual(duplicate.event_progress.evidence_slugs, ())
-        self.assertEqual(duplicate.event_progress.receipt_ids, ())
+        self.assertIsNone(duplicate.progress_metric.task_day)
+        self.assertIsNone(duplicate.progress_metric.event_binding)
+        self.assertIsNone(duplicate.event_progress)
         self.assertEqual(adapter.todo_creates[0]["task_slug"], duplicate.slug)
         self.assertEqual(adapter.todo_creates[0]["text"], "Choose a fresh company")
         self.assertTrue(payload["receipt"]["verified"])
@@ -2368,15 +2402,15 @@ class TaskTodoApiTests(unittest.TestCase):
 class TaskProgressMetricApiTests(unittest.TestCase):
     def test_sets_custom_job_application_target_with_seeded_progress(self) -> None:
         now = datetime.fromisoformat("2026-07-30T09:00:00-07:00")
-        task = new_task(
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+        task = replace(new_task(
             title="Apply for more companies",
             due_day=date(2026, 7, 30),
             now=now,
             identity="metric00",
-        )
+        ), slug=JOB_APPLIED_BOUND_TASK_SLUG)
         adapter = FakeAdapter(active=(task,))
         harness = ServerHarness(self, adapter)
-
         status, payload, _ = harness.request(
             "PATCH",
             f"/api/tasks/{task.slug.replace('/', '%2F')}/progress-metric",
@@ -2405,7 +2439,8 @@ class TaskProgressMetricApiTests(unittest.TestCase):
         self,
     ) -> None:
         now = datetime.fromisoformat("2026-07-30T09:00:00-07:00")
-        task = new_task(
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+        task = replace(new_task(
             title="Apply for five more companies",
             detail="Submit five strong applications.",
             priority="high",
@@ -2417,9 +2452,12 @@ class TaskProgressMetricApiTests(unittest.TestCase):
             event_progress=None,
             now=now,
             identity="metric01",
-        )
+        ), slug=JOB_APPLIED_BOUND_TASK_SLUG)
         adapter = FakeAdapter(active=(task,))
         harness = ServerHarness(self, adapter)
+        revision = build_task_snapshot(adapter, now.date())["tasks"][0][
+            "progress_metric_revision"
+        ]
 
         status, payload, _ = harness.request(
             "PATCH",
@@ -2483,6 +2521,183 @@ class TaskProgressMetricApiTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "invalid_progress_metric")
         self.assertIsNone(adapter.active[0].progress_metric)
+
+    def test_full_edit_reports_scoped_verified_minimum_without_changing_inputs(self) -> None:
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+
+        now = datetime.fromisoformat("2026-08-03T20:00:00-07:00")
+        metric = ProgressMetric.from_value({
+            "kind": "count", "label": "Job applications", "unit": "job_application",
+            "target": 30, "current": 10, "event_binding": "job_applied",
+            "auto_complete": True, "task_day": "2026-08-05",
+            "timezone": "America/Los_Angeles",
+        })
+        task = replace(
+            new_task(title="Apply", due_day=date(2026, 8, 5), now=now, identity="bound001"),
+            slug=JOB_APPLIED_BOUND_TASK_SLUG,
+            progress_metric=metric,
+            event_progress=EventProgress(
+                baseline_count=8,
+                evidence_slugs=("applications/a", "applications/b"),
+                receipt_ids=("evt-a", "evt-b"),
+            ),
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+        revision = build_task_snapshot(adapter, now.date())["tasks"][0][
+            "progress_metric_revision"
+        ]
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{JOB_APPLIED_BOUND_TASK_SLUG.replace('/', '%2F')}",
+            {
+                "title": task.title, "detail": task.detail, "priority": task.priority,
+                "due_day": "2026-08-05", "project_slug": None, "goal_slug": None,
+                "status": "active", "assignee_slug": "tony",
+                "progress_metric_revision": revision,
+                "progress_metric": {
+                    "kind": "count", "label": "Job applications", "target": 30,
+                    "current": 1, "event_binding": "job_applied", "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_task_edit")
+        self.assertIn("2 distinct verified job-application events", payload["error"])
+        self.assertIn("2026-08-05 (America/Los_Angeles)", payload["error"])
+        self.assertIn("Set Current to 2 or higher", payload["error"])
+        self.assertEqual(adapter.active[0].progress_metric.current, 10)
+        self.assertEqual(adapter.active[0].progress_metric.target, 30)
+
+    def test_full_edit_preserves_verified_receipts_and_updates_manual_baseline(self) -> None:
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+
+        now = datetime.fromisoformat("2026-08-03T20:00:00-07:00")
+        metric = ProgressMetric.from_value({
+            "kind": "count", "label": "Job applications", "unit": "job_application",
+            "target": 30, "current": 10, "event_binding": "job_applied",
+            "auto_complete": True, "task_day": "2026-08-05",
+            "timezone": "America/Los_Angeles",
+        })
+        task = replace(
+            new_task(title="Apply", due_day=date(2026, 8, 5), now=now, identity="bound002"),
+            slug=JOB_APPLIED_BOUND_TASK_SLUG,
+            progress_metric=metric,
+            event_progress=EventProgress(
+                baseline_count=8,
+                evidence_slugs=("applications/a", "applications/b"),
+                receipt_ids=("evt-a", "evt-b"),
+            ),
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+        revision = build_task_snapshot(adapter, now.date())["tasks"][0][
+            "progress_metric_revision"
+        ]
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{JOB_APPLIED_BOUND_TASK_SLUG.replace('/', '%2F')}",
+            {
+                "title": task.title, "detail": task.detail, "priority": task.priority,
+                "due_day": "2026-08-05", "project_slug": None, "goal_slug": None,
+                "status": "active", "assignee_slug": "tony",
+                "progress_metric_revision": revision,
+                "progress_metric": {
+                    "kind": "count", "label": "Job applications", "target": 30,
+                    "current": 25, "event_binding": "job_applied", "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        stored = payload["receipt"]["task"]
+        self.assertEqual(stored["progress_metric"]["current"], 25)
+        self.assertEqual(stored["progress_metric"]["target"], 30)
+        self.assertEqual(stored["event_progress"]["baseline_count"], 23)
+        self.assertEqual(stored["event_progress"]["receipt_ids"], ["evt-a", "evt-b"])
+
+    def test_full_edit_rejects_removing_verified_event_history(self) -> None:
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+
+        now = datetime.fromisoformat("2026-08-03T20:00:00-07:00")
+        metric = ProgressMetric.from_value({
+            "kind": "count", "label": "Job applications", "unit": "job_application",
+            "target": 30, "current": 10, "event_binding": "job_applied",
+            "auto_complete": True, "task_day": "2026-08-05",
+            "timezone": "America/Los_Angeles",
+        })
+        task = replace(
+            new_task(title="Apply", due_day=date(2026, 8, 5), now=now, identity="bound003"),
+            slug=JOB_APPLIED_BOUND_TASK_SLUG,
+            progress_metric=metric,
+            event_progress=EventProgress(
+                baseline_count=8,
+                evidence_slugs=("applications/a", "applications/b"),
+                receipt_ids=("evt-a", "evt-b"),
+            ),
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{JOB_APPLIED_BOUND_TASK_SLUG.replace('/', '%2F')}",
+            {
+                "title": task.title, "detail": task.detail, "priority": task.priority,
+                "due_day": "2026-08-05", "project_slug": None, "goal_slug": None,
+                "status": "active", "assignee_slug": "tony",
+                "progress_metric": None,
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertIn("cannot be removed", payload["error"])
+        self.assertEqual(adapter.active[0].event_progress.receipt_ids, ("evt-a", "evt-b"))
+
+    def test_full_edit_rejects_stale_progress_revision(self) -> None:
+        from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG
+
+        now = datetime.fromisoformat("2026-08-03T20:00:00-07:00")
+        metric = ProgressMetric.from_value({
+            "kind": "count", "label": "Job applications", "unit": "job_application",
+            "target": 30, "current": 10, "event_binding": "job_applied",
+            "auto_complete": True, "task_day": "2026-08-05",
+            "timezone": "America/Los_Angeles",
+        })
+        task = replace(
+            new_task(title="Apply", due_day=date(2026, 8, 5), now=now, identity="bound004"),
+            slug=JOB_APPLIED_BOUND_TASK_SLUG,
+            progress_metric=metric,
+            event_progress=EventProgress(
+                baseline_count=8,
+                evidence_slugs=("applications/a", "applications/b"),
+                receipt_ids=("evt-a", "evt-b"),
+            ),
+        )
+        adapter = FakeAdapter(active=(task,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{JOB_APPLIED_BOUND_TASK_SLUG.replace('/', '%2F')}",
+            {
+                "title": task.title, "detail": task.detail, "priority": task.priority,
+                "due_day": "2026-08-05", "project_slug": None, "goal_slug": None,
+                "status": "active", "assignee_slug": "tony",
+                "progress_metric_revision": "stale",
+                "progress_metric": {
+                    "kind": "count", "label": "Job applications", "target": 30,
+                    "current": 25, "event_binding": "job_applied", "auto_complete": True,
+                },
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertIn("changed after Edit opened", payload["error"])
+        self.assertEqual(adapter.active[0].progress_metric.current, 10)
 
 
 class AgentApiTests(unittest.TestCase):

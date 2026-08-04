@@ -11,6 +11,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,8 @@ class CalendarPreferences:
 class ICalendarReader:
     """Runs a purpose-built read-only Mission Control EventKit app helper."""
 
+    _helper_lock = threading.Lock()
+
     def __init__(self, helper: Path | None = None) -> None:
         configured = os.environ.get("MISSION_CONTROL_CALENDAR_HELPER")
         self.helper = helper or (
@@ -92,29 +96,43 @@ class ICalendarReader:
             if start is None or end is None:
                 raise ValueError("Calendar event reads require a date range.")
             command_args.extend([start.isoformat(), end.isoformat(), json.dumps(calendar_ids)])
-        try:
-            with tempfile.NamedTemporaryFile(prefix="mission-control-calendar-", delete=False) as output:
-                output_path = Path(output.name)
-            output_path.chmod(0o600)
-            command = ["/usr/bin/open", "-W", str(bundle), "--args", *command_args, "--output", str(output_path)]
-            result = subprocess.run(
-                command, capture_output=True, text=True, timeout=35, check=False
-            )
-            text = output_path.read_text(encoding="utf-8")
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ICalendarError("Mission Control Calendar helper is unavailable.") from exc
-        finally:
-            if "output_path" in locals():
-                output_path.unlink(missing_ok=True)
-        if result.returncode != 0:
-            raise ICalendarError("Mission Control Calendar helper is unavailable.")
-        try:
-            value = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ICalendarError("Mission Control Calendar helper returned an invalid response.") from exc
-        if not isinstance(value, dict):
-            raise ICalendarError("Mission Control Calendar helper returned an invalid response.")
-        return value
+        attempts = 1 if action == "request_full_access" else 5
+        with self._helper_lock:
+            for attempt in range(attempts):
+                output_path: Path | None = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        prefix="mission-control-calendar-", delete=False
+                    ) as output:
+                        output_path = Path(output.name)
+                    output_path.chmod(0o600)
+                    command = [
+                        "/usr/bin/open", "-W", str(bundle), "--args",
+                        *command_args, "--output", str(output_path),
+                    ]
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=35,
+                        check=False,
+                    )
+                    text = output_path.read_text(encoding="utf-8")
+                    if result.returncode == 0:
+                        try:
+                            value = json.loads(text)
+                        except json.JSONDecodeError:
+                            value = None
+                        if isinstance(value, dict):
+                            return value
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+                finally:
+                    if output_path is not None:
+                        output_path.unlink(missing_ok=True)
+                if attempt + 1 < attempts:
+                    time.sleep(0.15 * (attempt + 1))
+        raise ICalendarError("Mission Control Calendar helper is unavailable.")
 
     def status(self) -> dict[str, Any]:
         return self._run("status")

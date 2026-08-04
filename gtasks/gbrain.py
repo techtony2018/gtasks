@@ -6070,9 +6070,6 @@ class GBrainAdapter:
             or progress is None
         ):
             raise ValueError("task progress event binding does not match")
-        if metric.task_day != now.date():
-            raise ValueError("task progress event does not match task_day")
-
         evidence_present = evidence_slug in progress.evidence_slugs
         receipt_present = receipt_id in progress.receipt_ids
         if evidence_present != receipt_present:

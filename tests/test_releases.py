@@ -11,7 +11,7 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.73")
+        self.assertEqual(__version__, "V0.0.74")
 
     def test_v0_0_65_records_canonical_per_task_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.65")
@@ -81,11 +81,21 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("resized and remembered", release["summary"])
 
     def test_v0_0_73_records_recoverable_agent_handoff_completion(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.73")
 
         self.assertEqual(release["version"], "V0.0.73")
         self.assertIn("clears the resolved handoff", release["summary"])
         self.assertIn("preserving its original completion time", release["summary"])
+
+    def test_v0_0_74_records_verified_job_application_progress(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.74")
+        self.assertIn("explicit task binding", release["summary"])
+        self.assertIn("preserved manual baseline", release["summary"])
+        self.assertIn("privacy-safe activity receipts", release["summary"])
+        self.assertIn("first activation", release["summary"])
+        self.assertIn("legacy verified evidence", release["summary"])
 
     def test_v0_0_2_records_the_verified_task_visibility_release(self) -> None:
         release = RELEASES[1]
@@ -191,6 +201,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.71",
                 "V0.0.72",
                 "V0.0.73",
+                "V0.0.74",
             ],
         )
 

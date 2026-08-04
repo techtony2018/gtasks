@@ -27,6 +27,16 @@
     "stop",
     "restart"
   ],
+  "event_queue": {
+    "broker_service_id": "gtasks-events",
+    "broker_health_url": "http://127.0.0.1:8222/healthz?js-enabled-only=true",
+    "consumer_service_id": "gtasks-event-consumer",
+    "consumer_health_url": "http://127.0.0.1:4181/api/health",
+    "consumer_observability_url": "http://127.0.0.1:4181/api/observability",
+    "consumer_observability_artifact": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events/reader-observability.json",
+    "runtime_root": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events",
+    "producer_binding": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events/career-path-producer-binding.json"
+  },
   "canonical_store": "gbrain",
   "vendored_copy": false,
   "summary": "Manages the Mission Control process while GBrain remains the canonical task and goal store."

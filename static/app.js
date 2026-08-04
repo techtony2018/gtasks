@@ -227,6 +227,7 @@ const state = {
   projectWarningStateError: "",
   projectsLoaded: false,
   projectsLoading: false,
+  projectsLoadPromise: null,
   projectsError: "",
   projectEditorSlug: null,
   goalAction: null,
@@ -235,9 +236,11 @@ const state = {
   showDismissedWarnings: false,
   taskEditorMode: "create",
   taskEditorSourceSlug: null,
+  taskEditorMetricContext: null,
   agents: [],
   agentsLoaded: false,
   agentsLoading: false,
+  agentsLoadPromise: null,
   agentTasks: [],
   agentIssues: [],
   agentWorkLoaded: false,
@@ -686,6 +689,7 @@ const elements = {
   taskMetricCurrent: document.querySelector("#task-metric-current"),
   taskMetricEventBinding: document.querySelector("#task-metric-event-binding"),
   taskMetricBindingCopy: document.querySelector("#task-metric-binding-copy"),
+  taskMetricUseMinimum: document.querySelector("#task-metric-use-minimum"),
   taskMetricPreview: document.querySelector("#task-metric-preview"),
   taskEditorError: document.querySelector("#task-editor-error"),
   taskEditorSubmit: document.querySelector("#task-editor-submit"),
@@ -3277,25 +3281,30 @@ function selectProject(slug, returnFocus = undefined) {
 }
 
 async function loadAgents() {
-  if (state.agentsLoading) return;
-  state.agentsLoading = true;
-  try {
-    const response = await fetch("/api/agents", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Agent profiles could not be read.");
+  if (state.agentsLoadPromise) return state.agentsLoadPromise;
+  state.agentsLoadPromise = (async () => {
+    state.agentsLoading = true;
+    try {
+      const response = await fetch("/api/agents", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Agent profiles could not be read.");
+      }
+      state.agents = Array.isArray(payload.agents) ? payload.agents : [];
+      state.agentsLoaded = true;
+      render();
+    } catch (_error) {
+      state.agents = [];
+    } finally {
+      state.agentsLoading = false;
     }
-    state.agents = Array.isArray(payload.agents) ? payload.agents : [];
-    state.agentsLoaded = true;
-    render();
-  } catch (_error) {
-    state.agents = [];
-  } finally {
-    state.agentsLoading = false;
-  }
+  })().finally(() => {
+    state.agentsLoadPromise = null;
+  });
+  return state.agentsLoadPromise;
 }
 
 async function loadAgentWork() {
@@ -3387,29 +3396,35 @@ function loadProposals(options = {}) {
 }
 
 async function loadProjects() {
-  state.projectsLoading = true;
-  state.projectsError = "";
-  if (state.snapshot) render();
-  try {
-    const response = await fetch("/api/projects", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || "Projects could not be read from GBrain.");
-    }
-    state.projects = payload.projects;
-    state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
-    state.projectWarningStateError = payload.warning_state_error || "";
-    state.projectsLoaded = true;
-  } catch (error) {
-    state.projectsError =
-      error.message || "Projects could not be read from GBrain.";
-  } finally {
-    state.projectsLoading = false;
+  if (state.projectsLoadPromise) return state.projectsLoadPromise;
+  state.projectsLoadPromise = (async () => {
+    state.projectsLoading = true;
+    state.projectsError = "";
     if (state.snapshot) render();
-  }
+    try {
+      const response = await fetch("/api/projects", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Projects could not be read from GBrain.");
+      }
+      state.projects = payload.projects;
+      state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
+      state.projectWarningStateError = payload.warning_state_error || "";
+      state.projectsLoaded = true;
+    } catch (error) {
+      state.projectsError =
+        error.message || "Projects could not be read from GBrain.";
+    } finally {
+      state.projectsLoading = false;
+      if (state.snapshot) render();
+    }
+  })().finally(() => {
+    state.projectsLoadPromise = null;
+  });
+  return state.projectsLoadPromise;
 }
 
 function openNewProject() {
@@ -5890,7 +5905,9 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     elements.taskProgressBar.style.width = `${percent}%`;
     elements.taskProgressBinding.textContent =
       metric.event_binding === "job_applied"
-        ? "Updated by distinct verified job-applied events. At 5 / 5, Mission Control completes this task after canonical readback."
+        ? metric.auto_complete
+          ? `Updated by distinct verified job-applied events. At ${metric.target} / ${metric.target}, Mission Control completes this task after canonical readback.`
+          : "Updated by distinct verified job-applied events; task completion remains manual."
         : "Manual count metric. Reaching the target does not automatically change task status.";
   }
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
@@ -6515,31 +6532,98 @@ function updateTaskMetricPreview() {
   const target = Number(elements.taskMetricTarget.value);
   const current = Number(elements.taskMetricCurrent.value || 0);
   const binding = elements.taskMetricEventBinding.value;
-  elements.taskMetricBindingCopy.textContent =
-    binding === "job_applied"
-      ? "Your current value is saved as the starting baseline. Each distinct verified job-applied queue event increments progress by 1, and reaching the target completes the task after GBrain readback."
-      : "Manual metrics never change task status just because current equals target.";
+  elements.taskMetricUseMinimum.classList.add("is-hidden");
+  if (binding === "job_applied") {
+    const context = state.taskEditorMetricContext || {};
+    const verified = Number(context.verifiedCount || 0);
+    const saved = Number(context.savedCurrent ?? current);
+    const baseline = Number(context.baselineCount ?? Math.max(0, saved - verified));
+    const taskDay = context.taskDay || elements.taskEditorDue.value || "the displayed task day";
+    const timezone = context.timezone || "America/Los_Angeles";
+    const bindingTask = state.snapshot?.event_bindings?.job_applied?.task_slug || "";
+    const isConfigured = Boolean(bindingTask) && context.taskSlug === bindingTask;
+    const bindingLabel = isConfigured
+      ? `Bound task: ${context.taskTitle || bindingTask}.`
+      : bindingTask
+        ? `Automatic delivery is configured only for ${bindingTask}; this task is not the queue target.`
+        : "Automatic delivery binding is unavailable; refresh canonical data before saving.";
+    elements.taskMetricBindingCopy.textContent =
+      `${bindingLabel} Scope: ${taskDay} (${timezone}). Saved Current ${saved} = ` +
+      `${baseline} baseline/manual + ${verified} distinct verified event${verified === 1 ? "" : "s"}. ` +
+      `Each distinct verified event increments progress by 1 after canonical readback. ` +
+      `The minimum allowed Current is ${verified}; this count belongs only to this bound task and scope, not a global queue total.`;
+    if (Number.isInteger(current) && current < verified) {
+      elements.taskMetricUseMinimum.textContent = `Use minimum ${verified}`;
+      elements.taskMetricUseMinimum.dataset.minimum = String(verified);
+      elements.taskMetricUseMinimum.classList.remove("is-hidden");
+    }
+  } else {
+    elements.taskMetricBindingCopy.textContent =
+      "Manual metrics never change task status just because current equals target.";
+  }
   elements.taskMetricPreview.textContent =
     label && Number.isInteger(target) && target > 0 && Number.isInteger(current)
       ? `${label}: ${current} / ${target}`
       : "Add a name and target to preview progress.";
 }
 
-function resetTaskEditorMetric(metric = null) {
+function updateTaskMetricBindingAvailability() {
+  const options = [...elements.taskMetricEventBinding.options];
+  const automatic = options.find((option) => option.value === "job_applied");
+  const manual = options.find((option) => option.value === "");
+  const context = state.taskEditorMetricContext || {};
+  const boundTask = state.snapshot?.event_bindings?.job_applied?.task_slug || "";
+  const editingBoundTask =
+    state.taskEditorMode === "edit" && context.taskSlug === boundTask;
+  if (automatic) automatic.disabled = !editingBoundTask;
+  if (manual) manual.disabled = Number(context.verifiedCount || 0) > 0;
+}
+
+function resetTaskEditorMetric(metric = null, task = null) {
+  const verifiedCount = Array.isArray(task?.event_progress?.receipt_ids)
+    ? task.event_progress.receipt_ids.length
+    : 0;
+  state.taskEditorMetricContext = task
+    ? {
+        taskSlug: task.slug,
+        taskTitle: task.title || task.summary,
+        taskDay: metric?.task_day || task.due_day,
+        timezone: metric?.timezone || "America/Los_Angeles",
+        savedCurrent: metric?.current || 0,
+        verifiedCount,
+        baselineCount: task.event_progress?.baseline_count ??
+          Math.max(0, (metric?.current || 0) - verifiedCount),
+        revision: task.progress_metric_revision || null,
+      }
+    : null;
   elements.taskTrackMetric.checked = Boolean(metric);
   elements.taskMetricLabel.value = metric?.label ||
     (metric?.unit === "job_application" ? "Job applications" : "");
   elements.taskMetricTarget.value = metric?.target || "";
   elements.taskMetricCurrent.value = metric ? String(metric.current) : "0";
   elements.taskMetricEventBinding.value = metric?.event_binding || "";
+  updateTaskMetricBindingAvailability();
   updateTaskMetricPreview();
 }
 
 async function loadTaskEditorReferenceData() {
   const loads = [];
-  if (!state.projectsLoaded && !state.projectsLoading) loads.push(loadProjects());
-  if (!state.agentsLoaded && !state.agentsLoading) loads.push(loadAgents());
+  if (!state.projectsLoaded) loads.push(loadProjects());
+  if (!state.agentsLoaded) loads.push(loadAgents());
   await Promise.all(loads);
+}
+
+function showTaskEditorLoading(mode, heading) {
+  state.taskEditorMode = mode;
+  elements.taskEditorForm.reset();
+  elements.taskEditorMode.textContent = "Reading canonical choices";
+  elements.taskEditorHeading.textContent = heading;
+  elements.taskEditorSafety.textContent =
+    "Loading Projects and Agents before editing. No GBrain write has started.";
+  elements.taskEditorSubmit.disabled = true;
+  elements.taskEditorError.classList.add("is-hidden");
+  if (!elements.taskEditorDialog.open) elements.taskEditorDialog.showModal();
+  window.setTimeout(() => elements.taskEditorClose.focus(), 0);
 }
 
 async function openCreateTask() {
@@ -6573,7 +6657,9 @@ async function openDuplicateTask() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
   const task = state.snapshot?.tasks.find((item) => item.slug === state.selectedSlug);
   if (!task) return;
+  showTaskEditorLoading("duplicate", "Preparing Duplicate…");
   await loadTaskEditorReferenceData();
+  if (!elements.taskEditorDialog.open) return;
   state.taskEditorMode = "duplicate";
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
@@ -6597,13 +6683,17 @@ async function openDuplicateTask() {
   elements.taskEditorHandoffReason.classList.add("is-hidden");
   elements.taskEditorDue.value = dayAfter(state.snapshot?.as_of);
   populateTaskEditorRelationships(task);
-  resetTaskEditorMetric(task.progress_metric);
+  resetTaskEditorMetric(
+    task.progress_metric?.event_binding === "job_applied"
+      ? { ...task.progress_metric, event_binding: null, auto_complete: false }
+      : task.progress_metric,
+  );
   if (task.progress_metric) {
     elements.taskMetricCurrent.value = "0";
     updateTaskMetricPreview();
   }
   elements.taskEditorError.classList.add("is-hidden");
-  elements.taskEditorDialog.showModal();
+  elements.taskEditorSubmit.disabled = false;
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
 }
 
@@ -6611,7 +6701,9 @@ async function openEditTask() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
   const task = findTaskBySlug(state.selectedSlug);
   if (!task) return;
+  showTaskEditorLoading("edit", "Preparing Edit…");
   await loadTaskEditorReferenceData();
+  if (!elements.taskEditorDialog.open) return;
   state.taskEditorMode = "edit";
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
@@ -6636,9 +6728,9 @@ async function openEditTask() {
   elements.taskEditorHandoffReason.classList.toggle("is-hidden", isProposed);
   elements.taskEditorHandoffReason.value = "";
   populateTaskEditorRelationships(task);
-  resetTaskEditorMetric(task.progress_metric);
+  resetTaskEditorMetric(task.progress_metric, task);
   elements.taskEditorError.classList.add("is-hidden");
-  elements.taskEditorDialog.showModal();
+  elements.taskEditorSubmit.disabled = false;
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
 }
 
@@ -6696,6 +6788,7 @@ async function submitTaskEditor(event) {
         status: findTaskBySlug(state.taskEditorSourceSlug)?.status === "proposed" ? "proposed" : elements.taskEditorStatus.value,
         assignee_slug: elements.taskEditorAssignee.value,
         handoff_reason: elements.taskEditorHandoffReason.value,
+        progress_metric_revision: state.taskEditorMetricContext?.revision || null,
       } : {}),
     };
     if (
@@ -6772,6 +6865,12 @@ async function submitTaskEditor(event) {
         ? `${error.message} Do not retry yet; inspect ${error.slug} first.`
         : error.message;
     elements.taskEditorError.classList.remove("is-hidden");
+    if (
+      elements.taskMetricEventBinding.value === "job_applied" &&
+      /verified job-application|explicitly bound|changed after Edit/i.test(elements.taskEditorError.textContent)
+    ) {
+      elements.taskMetricCurrent.focus();
+    }
     showMutationStatus(elements.taskEditorError.textContent, "error");
   } finally {
     elements.taskEditorSubmit.disabled = false;
@@ -6849,6 +6948,13 @@ elements.taskMetricEventBinding.addEventListener("change", () => {
     }
   }
   updateTaskMetricPreview();
+});
+elements.taskMetricUseMinimum.addEventListener("click", () => {
+  const minimum = Number(elements.taskMetricUseMinimum.dataset.minimum);
+  if (!Number.isInteger(minimum) || minimum < 0) return;
+  elements.taskMetricCurrent.value = String(minimum);
+  updateTaskMetricPreview();
+  elements.taskMetricCurrent.focus();
 });
 elements.refreshButton.addEventListener("click", () => {
   loadTasks({ reason: "manual" });

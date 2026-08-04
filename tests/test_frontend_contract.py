@@ -6,6 +6,37 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_job_applied_metric_editor_shows_scoped_breakdown_and_safe_minimum(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="task-metric-use-minimum"', html)
+        self.assertIn("state.snapshot?.event_bindings?.job_applied?.task_slug", javascript)
+        self.assertIn("distinct verified event", javascript)
+        self.assertIn("baseline/manual", javascript)
+        self.assertIn("not a global queue total", javascript)
+        self.assertIn("taskMetricUseMinimum.dataset.minimum", javascript)
+        self.assertIn("elements.taskMetricCurrent.focus()", javascript)
+        self.assertIn("function updateTaskMetricBindingAvailability()", javascript)
+        self.assertIn("automatic.disabled = !editingBoundTask", javascript)
+        self.assertIn("manual.disabled = Number(context.verifiedCount", javascript)
+        self.assertNotIn(
+            'elements.taskMetricEventBinding.value === "job_applied") {\n    elements.taskMetricEventBinding.value = ""',
+            javascript,
+        )
+        self.assertIn("progress_metric_revision", javascript)
+        self.assertIn("At ${metric.target} / ${metric.target}", javascript)
+        self.assertNotIn("At 5 / 5", javascript)
+
+    def test_task_editor_opens_immediately_and_coalesces_reference_reads(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function showTaskEditorLoading(mode, heading)", javascript)
+        self.assertIn('showTaskEditorLoading("edit", "Preparing Edit…")', javascript)
+        self.assertIn('showTaskEditorLoading("duplicate", "Preparing Duplicate…")', javascript)
+        self.assertIn("if (state.agentsLoadPromise) return state.agentsLoadPromise", javascript)
+        self.assertIn("if (state.projectsLoadPromise) return state.projectsLoadPromise", javascript)
+
 
     def test_user_facing_todo_labels_use_compact_todo_spelling(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

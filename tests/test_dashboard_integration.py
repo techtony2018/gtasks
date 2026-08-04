@@ -45,6 +45,38 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertFalse(contract["vendored_copy"])
         self.assertEqual(contract["managed_actions"], ["start", "stop", "restart"])
 
+    def test_contract_registers_independent_broker_and_consumer_services(self) -> None:
+        contract = json.loads(
+            (PROJECT_ROOT / "dashboard-integration.json").read_text(encoding="utf-8")
+        )
+
+        queue = contract["event_queue"]
+        self.assertEqual(queue["broker_service_id"], "gtasks-events")
+        self.assertEqual(queue["broker_health_url"], "http://127.0.0.1:8222/healthz?js-enabled-only=true")
+        self.assertEqual(
+            queue["consumer_service_id"],
+            "gtasks-event-consumer",
+        )
+        self.assertEqual(
+            queue["consumer_health_url"],
+            "http://127.0.0.1:4181/api/health",
+        )
+        self.assertEqual(
+            queue["runtime_root"],
+            "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-events",
+        )
+        self.assertEqual(
+            queue["consumer_observability_url"],
+            "http://127.0.0.1:4181/api/observability",
+        )
+        self.assertEqual(
+            queue["consumer_observability_artifact"],
+            (
+                "/Users/tony/.codex/services/all-things-codex-dashboard/state/"
+                "gtasks-events/reader-observability.json"
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

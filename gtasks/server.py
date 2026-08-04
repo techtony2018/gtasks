@@ -62,6 +62,11 @@ from .gbrain import (
     TONY_PROFILE_SLUG,
 )
 from .ical import CalendarPreferences, ICalendarError, ICalendarReader
+from .job_application_binding import (
+    JOB_APPLIED_BOUND_TASK_SLUG,
+    JOB_APPLIED_TIMEZONE,
+    progress_revision,
+)
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -208,6 +213,7 @@ def _progress_metric_from_request(
     raw: object,
     *,
     due_day: date,
+    task_slug: str | None = None,
 ) -> tuple[ProgressMetric | None, EventProgress | None]:
     if raw is None:
         return None, None
@@ -238,6 +244,11 @@ def _progress_metric_from_request(
             "job_applied is the only supported automatic event binding"
         )
     binding = binding or None
+    if binding == "job_applied" and task_slug != JOB_APPLIED_BOUND_TASK_SLUG:
+        raise DomainValidationError(
+            "Automatic job-applied events are available only for the explicit "
+            f"bound task {JOB_APPLIED_BOUND_TASK_SLUG}. This task was not changed."
+        )
     value = {
         "kind": kind,
         "label": label,
@@ -307,6 +318,7 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
     all_task_payloads = [
         {
             **task.to_dict(),
+            "progress_metric_revision": progress_revision(task),
             "in_default_display_window": task_is_in_default_display_window(
                 task,
                 today,
@@ -366,6 +378,12 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
             "active": ACTIVE_ROOT,
             "completed": COMPLETED_ROOT,
             "goals": GOALS_ROOT,
+        },
+        "event_bindings": {
+            "job_applied": {
+                "task_slug": JOB_APPLIED_BOUND_TASK_SLUG,
+                "timezone": JOB_APPLIED_TIMEZONE,
+            }
         },
         "owner": owner,
         "tasks": all_task_payloads,
@@ -642,6 +660,7 @@ def _handler_class(
                         "warning_dismissals": "user_scoped_local_state",
                         "operational_logs": "privacy_safe_read_only",
                         "queue_reader_dependency": "optional",
+                        "job_applied_bound_task": JOB_APPLIED_BOUND_TASK_SLUG,
                         "agent_work_roots": [
                             root for _agent, root in AGENT_SCOPES
                         ],
@@ -1973,6 +1992,7 @@ def _handler_class(
                         _progress_metric_from_request(
                             payload.get("progress_metric"),
                             due_day=due_day,
+                            task_slug=None,
                         )
                     )
                     task = new_task(
@@ -2129,6 +2149,7 @@ def _handler_class(
                         _progress_metric_from_request(
                             payload.get("progress_metric"),
                             due_day=due_day,
+                            task_slug=None,
                         )
                     )
                     project_slug = payload.get("project_slug") or None
@@ -2626,7 +2647,7 @@ def _handler_class(
                 allowed = {
                     "title", "detail", "priority", "due_day",
                     "project_slug", "goal_slug", "status", "assignee_slug",
-                    "progress_metric", "handoff_reason", "complete_when_target_reached",
+                    "progress_metric", "progress_metric_revision", "handoff_reason", "complete_when_target_reached",
                 }
                 if set(payload) - allowed:
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "task edit contains unsupported fields.", "code": "invalid_task_edit"})
@@ -2635,21 +2656,70 @@ def _handler_class(
                     due_day = date.fromisoformat(payload.get("due_day", ""))
                     current = adapter.get_task(task_slug)
                     raw_metric = payload.get("progress_metric")
+                    existing_verified_history = bool(
+                        current.event_progress
+                        and (
+                            current.event_progress.evidence_slugs
+                            or current.event_progress.receipt_ids
+                        )
+                    )
+                    requested_binding = (
+                        raw_metric.get("event_binding")
+                        if isinstance(raw_metric, dict)
+                        else None
+                    )
+                    if existing_verified_history and requested_binding != "job_applied":
+                        raise DomainValidationError(
+                            "Verified job-application evidence cannot be removed or converted "
+                            "to a manual metric. The task was not changed."
+                        )
                     if isinstance(raw_metric, dict) and raw_metric.get("event_binding") == "job_applied":
+                        if task_slug != JOB_APPLIED_BOUND_TASK_SLUG:
+                            raise DomainValidationError(
+                                "Automatic job-applied events are explicitly bound to "
+                                f"{JOB_APPLIED_BOUND_TASK_SLUG}. This task was not changed."
+                            )
                         event_progress = current.event_progress
+                        expected_revision = progress_revision(current)
+                        supplied_revision = payload.get("progress_metric_revision")
+                        if expected_revision is not None and supplied_revision != expected_revision:
+                            raise DomainValidationError(
+                                "Verified job-application progress changed after Edit opened. "
+                                "Your entered values were not changed; refresh or reopen Edit and try again."
+                            )
                         current_value = raw_metric.get("current")
+                        if (
+                            event_progress is None
+                            and current.progress_metric is not None
+                            and current.progress_metric.event_binding is None
+                        ):
+                            event_progress = EventProgress()
+                        verified_count = (
+                            len(event_progress.receipt_ids)
+                            if event_progress is not None
+                            else 0
+                        )
                         if (
                             event_progress is None
                             or isinstance(current_value, bool)
                             or not isinstance(current_value, int)
-                            or current_value < len(event_progress.receipt_ids)
+                            or current_value < verified_count
                         ):
+                            task_day = (
+                                current.progress_metric.task_day
+                                if current.progress_metric is not None
+                                else due_day
+                            )
                             raise DomainValidationError(
-                                "Automatic job-applied progress cannot be lower than its verified queue events."
+                                f"This task has {verified_count} distinct verified job-application "
+                                f"event{'s' if verified_count != 1 else ''} for {task_day.isoformat()} "
+                                f"({JOB_APPLIED_TIMEZONE}). Current progress cannot be lower than "
+                                f"{verified_count}. Set Current to {verified_count} or higher; "
+                                "your entered values were not changed."
                             )
                         event_progress = replace(
                             event_progress,
-                            baseline_count=current_value - len(event_progress.receipt_ids),
+                            baseline_count=current_value - verified_count,
                         )
                         progress_metric = ProgressMetric(
                             kind=raw_metric.get("kind", "count"), label=raw_metric.get("label"),
@@ -2658,7 +2728,9 @@ def _handler_class(
                             task_day=due_day, timezone="America/Los_Angeles",
                         )
                     else:
-                        progress_metric, event_progress = _progress_metric_from_request(raw_metric, due_day=due_day)
+                        progress_metric, event_progress = _progress_metric_from_request(
+                            raw_metric, due_day=due_day, task_slug=task_slug
+                        )
                     requested_status = payload.get("status")
                     if requested_status not in EDITABLE_TASK_STATUSES | {"proposed"}:
                         raise DomainValidationError("status must be a supported task status")
@@ -2784,7 +2856,7 @@ def _handler_class(
                 )
                 return
             if action == "progress_metric":
-                if set(payload) - {"progress_metric", "task_day"}:
+                if set(payload) - {"progress_metric", "task_day", "progress_metric_revision"}:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
@@ -2825,10 +2897,35 @@ def _handler_class(
                         )
                         return
                 try:
+                    current = adapter.get_task(task_slug)
+                    existing_verified_history = bool(
+                        current.event_progress
+                        and (
+                            current.event_progress.evidence_slugs
+                            or current.event_progress.receipt_ids
+                        )
+                    )
+                    requested_binding = (
+                        raw_metric.get("event_binding")
+                        if isinstance(raw_metric, dict)
+                        else None
+                    )
+                    if existing_verified_history and requested_binding != "job_applied":
+                        raise DomainValidationError(
+                            "Verified job-application evidence cannot be removed or converted "
+                            "to a manual metric. The task was not changed."
+                        )
+                    expected_revision = progress_revision(current)
+                    if expected_revision is not None and payload.get("progress_metric_revision") != expected_revision:
+                        raise DomainValidationError(
+                            "Verified job-application progress changed after Edit opened. "
+                            "Refresh canonical data and try again."
+                        )
                     progress_metric, event_progress = (
                         _progress_metric_from_request(
                             raw_metric,
                             due_day=task_day,
+                            task_slug=task_slug,
                         )
                     )
                     receipt = adapter.set_task_progress_metric(

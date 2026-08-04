@@ -2,7 +2,10 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -57,6 +60,55 @@ class CalendarHelperContractTests(unittest.TestCase):
         self.assertEqual(json.loads(command[7]), ["home"])
         self.assertEqual(command[8], "--output")
         self.assertEqual(result, {"status": "authorized", "events": []})
+
+    def test_helper_invocations_are_serialized_to_avoid_launchservices_output_races(self) -> None:
+        helper = Path("/tmp/Mission Control Calendar.app/Contents/MacOS/MissionControlCalendar")
+        reader = ICalendarReader(helper)
+        completed = type("Completed", (), {"returncode": 0, "stdout": ""})()
+        guard = threading.Lock()
+        active = 0
+        maximum = 0
+
+        def complete(command, **_kwargs):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.04)
+            Path(command[-1]).write_text('{"status":"authorized","calendars":[]}')
+            with guard:
+                active -= 1
+            return completed
+
+        with patch.object(Path, "is_file", return_value=True), patch(
+            "gtasks.ical.subprocess.run", side_effect=complete
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _index: reader.calendars(), range(2)))
+
+        self.assertEqual(maximum, 1)
+        self.assertEqual(len(results), 2)
+
+    def test_read_only_helper_recovers_from_repeated_transient_launchservices_failures(self) -> None:
+        helper = Path("/tmp/Mission Control Calendar.app/Contents/MacOS/MissionControlCalendar")
+        reader = ICalendarReader(helper)
+        calls = 0
+
+        def complete(command, **_kwargs):
+            nonlocal calls
+            calls += 1
+            Path(command[-1]).write_text(
+                '{}' if calls < 4 else '{"status":"authorized","calendars":[]}'
+            )
+            return type("Completed", (), {"returncode": 1 if calls < 4 else 0})()
+
+        with patch.object(Path, "is_file", return_value=True), patch(
+            "gtasks.ical.subprocess.run", side_effect=complete
+        ), patch("gtasks.ical.time.sleep"):
+            result = reader.calendars()
+
+        self.assertEqual(calls, 4)
+        self.assertEqual(result["status"], "authorized")
 
     def test_helper_parses_launchservices_output_option_separately_from_event_arguments(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "gtasks/mission_control_calendar_helper.swift").read_text()

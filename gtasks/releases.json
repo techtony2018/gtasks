@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.73",
+  "current_version": "V0.0.74",
   "releases": [
     {
       "version": "V0.0.1",
@@ -438,6 +438,12 @@
       "date": "2026-08-03",
       "title": "Reliable agent handoff completion",
       "summary": "Completing an acknowledged Agent handoff now clears the resolved handoff before canonical readback, and repeating completion safely repairs an already-partial terminal task while preserving its original completion time."
+    },
+    {
+      "version": "V0.0.74",
+      "date": "2026-08-03",
+      "title": "Verified job-application progress",
+      "summary": "Restores the durable job_applied consumer in the canonical repository with one explicit task binding, restart-safe idempotency, verified GBrain readback, preserved manual baseline and target values, privacy-safe activity receipts, recoverable binding warnings, and a clear scoped progress breakdown in Task Edit. Task Edit and Duplicate now open on the first activation while canonical choices load, legacy verified evidence stays visibly protected, and concurrent read-only Calendar helper calls recover from transient LaunchServices failures."
     }
   ]
 }
