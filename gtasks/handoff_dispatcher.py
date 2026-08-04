@@ -591,7 +591,11 @@ class DurableHandoffStore:
             ).fetchone()
             if current is None:
                 raise KeyError(handoff_id)
-            if current["status"] not in {"received", "actively_executing"}:
+            if current["status"] not in {
+                "received",
+                "actively_executing",
+                "still_blocked",
+            }:
                 raise ValueError("recovery requires an in-progress handoff")
             if (
                 current["registration_id"] != registration.registration_id

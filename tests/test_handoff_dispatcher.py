@@ -696,6 +696,95 @@ class DurableHandoffStoreTests(unittest.TestCase):
         ):
             self.assertNotIn(capability.encode(), database_bytes)
 
+    def test_reopens_and_rotates_capability_for_still_blocked_handoff(self) -> None:
+        record = self.record()
+        blocked_claim = self.claim()
+        lifecycle = (
+            ("received", "mutation-blocked-restart-received", None),
+            ("actively_executing", "mutation-blocked-restart-active", None),
+            (
+                "still_blocked",
+                "mutation-blocked-restart-blocked",
+                "Waiting for a release decision.",
+            ),
+        )
+        for index, (status, mutation_id, detail) in enumerate(lifecycle):
+            acknowledged = self.store.acknowledge(
+                record.handoff_id,
+                status,
+                registration_id=REGISTRATION_ID,
+                lease_token=blocked_claim.lease_token,
+                lease_generation=blocked_claim.lease_generation,
+                mutation_id=mutation_id,
+                detail=detail,
+                now=NOW + timedelta(seconds=index),
+            )
+            self.assertEqual(acknowledged.status, status)
+
+        self.store.close()
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+        with self.assertRaisesRegex(ValueError, "owner"):
+            self.store.recover_in_progress(
+                record.handoff_id,
+                registration=registration(route="hosts/timmy"),
+                expected_generation=blocked_claim.lease_generation,
+                now=NOW + timedelta(seconds=3),
+            )
+        recovered_claim = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=blocked_claim.lease_generation,
+            now=NOW + timedelta(seconds=3),
+        )
+        self.assertGreater(
+            recovered_claim.lease_generation,
+            blocked_claim.lease_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "active lease"):
+            self.store.acknowledge(
+                record.handoff_id,
+                "actively_executing",
+                registration_id=REGISTRATION_ID,
+                lease_token=blocked_claim.lease_token,
+                lease_generation=blocked_claim.lease_generation,
+                mutation_id="mutation-blocked-restart-stale",
+                now=NOW + timedelta(seconds=4),
+            )
+        active = self.store.acknowledge(
+            record.handoff_id,
+            "actively_executing",
+            registration_id=REGISTRATION_ID,
+            lease_token=recovered_claim.lease_token,
+            lease_generation=recovered_claim.lease_generation,
+            mutation_id="mutation-blocked-restart-resumed",
+            now=NOW + timedelta(seconds=4),
+        )
+        self.assertEqual(active.status, "actively_executing")
+        completed = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=recovered_claim.lease_token,
+            lease_generation=recovered_claim.lease_generation,
+            mutation_id="mutation-blocked-restart-completed",
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(completed.status, "completed")
+
+        recovery = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="capability_rotated",
+        ).events
+        self.assertEqual(len(recovery), 1)
+        self.assertEqual(recovery[0].status, "still_blocked")
+        self.assertEqual(recovery[0].lease_generation, recovered_claim.lease_generation)
+        self.assertEqual(recovery[0].registration_ref, registration().reference)
+        with open(self.path, "rb") as database_file:
+            database_bytes = database_file.read()
+        self.assertNotIn(blocked_claim.lease_token.encode(), database_bytes)
+        self.assertNotIn(recovered_claim.lease_token.encode(), database_bytes)
+
     def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:
         other_store = DurableHandoffStore(self.path, retention_days=30)
         self.addCleanup(other_store.close)
