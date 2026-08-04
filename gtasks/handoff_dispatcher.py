@@ -215,6 +215,7 @@ class HandoffEvent:
     classification_reason: str
     trigger: str
     attempt: int
+    lease_generation: int
     mutation_ref: str | None
     agent_slug: str | None
     registration_ref: str | None
@@ -248,6 +249,7 @@ class EventPage:
                     "classification_reason": event.classification_reason,
                     "trigger": event.trigger,
                     "attempt": event.attempt,
+                    "lease_generation": event.lease_generation,
                     "mutation_ref": event.mutation_ref,
                     "agent_slug": event.agent_slug,
                     "registration_ref": event.registration_ref,
@@ -348,6 +350,8 @@ class DurableHandoffStore:
                 CREATE TABLE IF NOT EXISTS leases (
                     handoff_id TEXT PRIMARY KEY REFERENCES handoffs(handoff_id),
                     registration_id TEXT NOT NULL,
+                    registration_agent_slug TEXT NOT NULL,
+                    registration_route TEXT NOT NULL,
                     lease_until TEXT,
                     lease_capability_ref TEXT,
                     lease_generation INTEGER NOT NULL DEFAULT 0
@@ -375,6 +379,7 @@ class DurableHandoffStore:
                     classification_reason TEXT NOT NULL,
                     trigger TEXT NOT NULL,
                     attempt INTEGER NOT NULL,
+                    lease_generation INTEGER NOT NULL,
                     mutation_ref TEXT,
                     agent_slug TEXT,
                     registration_ref TEXT,
@@ -462,11 +467,17 @@ class DurableHandoffStore:
                 self._connection.execute(
                     """
                     INSERT INTO leases (
-                        handoff_id, registration_id, lease_until,
+                        handoff_id, registration_id, registration_agent_slug,
+                        registration_route, lease_until,
                         lease_capability_ref, lease_generation
-                    ) VALUES (?, ?, NULL, NULL, 0)
+                    ) VALUES (?, ?, ?, ?, NULL, NULL, 0)
                     """,
-                    (handoff_id, registration_id),
+                    (
+                        handoff_id,
+                        registration_id,
+                        classification.agent_slug,
+                        change.route,
+                    ),
                 )
             self._append_event_from_record(
                 self.get(handoff_id),
@@ -546,6 +557,92 @@ class DurableHandoffStore:
                 recorded_at=now,
             )
             return LeaseClaim(record, lease_token, lease_row["lease_generation"])
+
+    def recover_in_progress(
+        self,
+        handoff_id: str,
+        *,
+        registration: AgentRegistration,
+        expected_generation: int,
+        now: datetime,
+    ) -> LeaseClaim:
+        """Authenticate the durable owner and rotate a lost runtime capability."""
+        now = _require_utc(now, "now")
+        if registration.verified is not True:
+            raise ValueError("recovery requires a verified registration")
+        _require_structured_id(registration.agent_slug, "registration.agent_slug")
+        _require_structured_id(registration.route, "registration.route")
+        if not isinstance(registration.registration_id, str) or not registration.registration_id:
+            raise ValueError("recovery requires a verified registration")
+        if not isinstance(expected_generation, int) or expected_generation < 1:
+            raise ValueError("expected generation must be a positive integer")
+
+        with self._write_transaction():
+            current = self._connection.execute(
+                """
+                SELECT h.status, h.agent_slug, h.registration_ref,
+                    l.registration_id, l.registration_agent_slug,
+                    l.registration_route, l.lease_generation,
+                    l.lease_capability_ref
+                FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(handoff_id)
+            if current["status"] not in {"received", "actively_executing"}:
+                raise ValueError("recovery requires an in-progress handoff")
+            if (
+                current["registration_id"] != registration.registration_id
+                or current["registration_agent_slug"] != registration.agent_slug
+                or current["registration_route"] != registration.route
+                or current["agent_slug"] != registration.agent_slug
+                or current["registration_ref"] != registration.reference
+            ):
+                raise ValueError("verified registration is not the current owner")
+            if current["lease_generation"] != expected_generation:
+                raise ValueError("expected generation is not current")
+            if current["lease_capability_ref"] is None:
+                raise ValueError("current owner capability is unavailable")
+
+            previous_capability_ref = current["lease_capability_ref"]
+            lease_token = uuid4().hex
+            lease_capability_ref = _reference(lease_token)
+            changed = self._connection.execute(
+                """
+                UPDATE leases
+                SET lease_capability_ref = ?, lease_generation = lease_generation + 1,
+                    lease_until = NULL
+                WHERE handoff_id = ? AND registration_id = ?
+                    AND registration_agent_slug = ? AND registration_route = ?
+                    AND lease_generation = ? AND lease_capability_ref = ?
+                """,
+                (
+                    lease_capability_ref,
+                    handoff_id,
+                    registration.registration_id,
+                    registration.agent_slug,
+                    registration.route,
+                    expected_generation,
+                    previous_capability_ref,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("recovery owner or generation changed")
+            lease_generation = expected_generation + 1
+            record = self.get(handoff_id)
+            self._append_event_from_record(
+                record,
+                event_type="capability_rotated",
+                summary="Dispatcher capability rotated after authenticated recovery.",
+                detail=None,
+                mutation_ref=None,
+                occurred_at=now,
+                recorded_at=now,
+                lease_generation=lease_generation,
+            )
+            return LeaseClaim(record, lease_token, lease_generation)
 
     def acknowledge(
         self,
@@ -895,7 +992,14 @@ class DurableHandoffStore:
         occurred_at: datetime,
         recorded_at: datetime,
         supersedes_event_id: str | None = None,
+        lease_generation: int | None = None,
     ) -> HandoffEvent:
+        if lease_generation is None:
+            lease_row = self._connection.execute(
+                "SELECT lease_generation FROM leases WHERE handoff_id = ?",
+                (record.handoff_id,),
+            ).fetchone()
+            lease_generation = lease_row["lease_generation"] if lease_row else 0
         return self._append_event(
             handoff_id=record.handoff_id,
             task_slug=record.task_slug,
@@ -905,6 +1009,7 @@ class DurableHandoffStore:
             classification_reason=record.reason,
             trigger=record.trigger,
             attempt=record.attempt,
+            lease_generation=lease_generation,
             mutation_ref=mutation_ref,
             agent_slug=record.agent_slug,
             registration_ref=record.registration_ref,
@@ -924,10 +1029,11 @@ class DurableHandoffStore:
             """
             INSERT INTO handoff_events (
                 event_id, handoff_id, task_slug, canonical_event_id, canonical_version,
-                idempotency_key, classification_reason, trigger, attempt, mutation_ref,
+                idempotency_key, classification_reason, trigger, attempt,
+                lease_generation, mutation_ref,
                 agent_slug, registration_ref, status, event_type, summary, detail,
                 correlation_id, occurred_at, recorded_at, supersedes_event_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
@@ -939,6 +1045,7 @@ class DurableHandoffStore:
                 values["classification_reason"],
                 values["trigger"],
                 values["attempt"],
+                values["lease_generation"],
                 values["mutation_ref"],
                 values["agent_slug"],
                 values["registration_ref"],
@@ -991,6 +1098,7 @@ class DurableHandoffStore:
             classification_reason=row["classification_reason"],
             trigger=row["trigger"],
             attempt=row["attempt"],
+            lease_generation=row["lease_generation"],
             mutation_ref=row["mutation_ref"],
             agent_slug=row["agent_slug"],
             registration_ref=row["registration_ref"],

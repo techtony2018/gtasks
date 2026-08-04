@@ -570,6 +570,132 @@ class DurableHandoffStoreTests(unittest.TestCase):
             ["received", "actively_executing", "still_blocked", "completed"],
         )
 
+    def test_reopens_and_rotates_capability_for_received_and_active_handoff(self) -> None:
+        record = self.record()
+        local_dispatcher = LocalAgentDispatcher(
+            self.store,
+            registration_id=REGISTRATION_ID,
+            verify_route=lambda claimed: claimed.agent_slug == AGENT,
+            wake=lambda claimed: True,
+        )
+        received_claim = local_dispatcher.run_once(now=NOW)
+        self.assertIsNotNone(received_claim)
+        self.assertEqual(received_claim.status, "received")
+
+        self.store.close()
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+        invalid_recoveries = (
+            registration(verified=False),
+            registration(route="hosts/timmy"),
+            registration(
+                registration_id="private-registration-wrong-owner",
+                agent_slug="agents/timmy",
+                route="hosts/timmy",
+            ),
+        )
+        for invalid_registration in invalid_recoveries:
+            with self.subTest(registration=invalid_registration), self.assertRaisesRegex(
+                ValueError,
+                "verified registration|owner",
+            ):
+                self.store.recover_in_progress(
+                    record.handoff_id,
+                    registration=invalid_registration,
+                    expected_generation=received_claim.lease_generation,
+                    now=NOW + timedelta(seconds=1),
+                )
+        with self.assertRaisesRegex(ValueError, "generation"):
+            self.store.recover_in_progress(
+                record.handoff_id,
+                registration=registration(),
+                expected_generation=received_claim.lease_generation + 1,
+                now=NOW + timedelta(seconds=1),
+            )
+
+        active_claim = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=received_claim.lease_generation,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertGreater(
+            active_claim.lease_generation,
+            received_claim.lease_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "active lease"):
+            self.store.acknowledge(
+                record.handoff_id,
+                "actively_executing",
+                registration_id=REGISTRATION_ID,
+                lease_token=received_claim.lease_token,
+                lease_generation=received_claim.lease_generation,
+                mutation_id="mutation-old-received-capability",
+                now=NOW + timedelta(seconds=2),
+            )
+        active = self.store.acknowledge(
+            record.handoff_id,
+            "actively_executing",
+            registration_id=REGISTRATION_ID,
+            lease_token=active_claim.lease_token,
+            lease_generation=active_claim.lease_generation,
+            mutation_id="mutation-recovered-active",
+            now=NOW + timedelta(seconds=2),
+        )
+        self.assertEqual(active.status, "actively_executing")
+
+        self.store.close()
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+        completed_claim = self.store.recover_in_progress(
+            record.handoff_id,
+            registration=registration(),
+            expected_generation=active_claim.lease_generation,
+            now=NOW + timedelta(seconds=3),
+        )
+        with self.assertRaisesRegex(ValueError, "active lease"):
+            self.store.acknowledge(
+                record.handoff_id,
+                "completed",
+                registration_id=REGISTRATION_ID,
+                lease_token=active_claim.lease_token,
+                lease_generation=active_claim.lease_generation,
+                mutation_id="mutation-old-active-capability",
+                now=NOW + timedelta(seconds=4),
+            )
+        completed = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=completed_claim.lease_token,
+            lease_generation=completed_claim.lease_generation,
+            mutation_id="mutation-recovered-completed",
+            now=NOW + timedelta(seconds=4),
+        )
+        self.assertEqual(completed.status, "completed")
+
+        recoveries = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="capability_rotated",
+        ).events
+        self.assertEqual(
+            [(event.status, event.lease_generation) for event in recoveries],
+            [
+                ("received", active_claim.lease_generation),
+                ("actively_executing", completed_claim.lease_generation),
+            ],
+        )
+        self.assertTrue(
+            all(event.registration_ref == registration().reference for event in recoveries)
+        )
+        with open(self.path, "rb") as database_file:
+            database_bytes = database_file.read()
+        for capability in (
+            received_claim.lease_token,
+            active_claim.lease_token,
+            completed_claim.lease_token,
+        ):
+            self.assertNotIn(capability.encode(), database_bytes)
+
     def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:
         other_store = DurableHandoffStore(self.path, retention_days=30)
         self.addCleanup(other_store.close)
