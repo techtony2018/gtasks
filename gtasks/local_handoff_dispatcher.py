@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import tempfile
 import time
 from typing import Callable, Mapping, Sequence
 from urllib.parse import quote, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 CONFIG_KEYS = frozenset(
@@ -63,6 +64,13 @@ class CodexContractError(RuntimeError):
     """The installed Codex CLI does not support exact-thread resume."""
 
 
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Keep every private Dispatcher header on its configured origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _require_private_regular_file(path: Path, field: str) -> None:
     if path.is_symlink():
         raise ValueError(f"{field} must not be a symbolic link")
@@ -85,6 +93,30 @@ def _require_identifier(value: object, field: str) -> str:
 def _mutation_id(handoff_id: str, operation: str) -> str:
     digest = hashlib.sha256(f"{handoff_id}\0{operation}".encode("utf-8")).hexdigest()
     return f"local/{digest}"
+
+
+def _validated_dispatcher_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("mission_control_url must be an HTTP URL")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("mission_control_url must be an HTTP URL without credentials or query data")
+    if parsed.scheme == "http":
+        hostname = parsed.hostname or ""
+        try:
+            loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            loopback = hostname.casefold() == "localhost"
+        if not loopback:
+            raise ValueError("mission_control_url must use HTTPS except for explicit loopback")
+    return value.rstrip("/")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,19 +147,7 @@ class DispatcherConfig:
         fixed_thread_id = value["fixed_thread_id"]
         if not isinstance(fixed_thread_id, str) or _THREAD_ID.fullmatch(fixed_thread_id) is None:
             raise ValueError("fixed_thread_id must be one bounded existing thread id")
-        mission_control_url = value["mission_control_url"]
-        if not isinstance(mission_control_url, str):
-            raise ValueError("mission_control_url must be an HTTP URL")
-        parsed = urlsplit(mission_control_url)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError("mission_control_url must be an HTTP URL without credentials or query data")
+        mission_control_url = _validated_dispatcher_url(value["mission_control_url"])
         token_file = value["token_file"]
         if not isinstance(token_file, str) or not token_file:
             raise ValueError("token_file must be one path")
@@ -139,7 +159,7 @@ class DispatcherConfig:
             agent_slug=agent_slug,
             registration_id=registration_id,
             fixed_thread_id=fixed_thread_id,
-            mission_control_url=mission_control_url.rstrip("/"),
+            mission_control_url=mission_control_url,
             token_file=token_path,
         )
 
@@ -171,9 +191,7 @@ class PrivateClaimStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
-    def save(self, claim: Mapping[str, object]) -> None:
-        if set(claim) != CLAIM_KEYS:
-            raise ValueError("claim state must match the documented response shape")
+    def _write(self, state: Mapping[str, object]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{self.path.name}.", dir=self.path.parent
@@ -181,7 +199,7 @@ class PrivateClaimStore:
         temporary_path = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(dict(claim), output, sort_keys=True, separators=(",", ":"))
+                json.dump(dict(state), output, sort_keys=True, separators=(",", ":"))
                 output.write("\n")
                 output.flush()
                 os.fsync(output.fileno())
@@ -191,18 +209,136 @@ class PrivateClaimStore:
             if temporary_path.exists():
                 temporary_path.unlink()
 
-    def load(self, handoff_id: str) -> dict[str, object]:
+    def _load_state(self) -> dict[str, object]:
         _require_private_regular_file(self.path, "claim state")
         try:
-            claim = json.loads(self.path.read_text(encoding="utf-8"))
+            state = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError("claim state must contain valid UTF-8 JSON") from exc
-        if not isinstance(claim, dict) or set(claim) != CLAIM_KEYS:
+        if not isinstance(state, dict) or set(state) != {
+            "schema_version",
+            "claim",
+            "next_ack_sequence",
+            "pending_ack",
+            "pending_failure",
+        }:
             raise ValueError("claim state must match the documented response shape")
+        claim = state.get("claim")
+        if not isinstance(claim, dict) or set(claim) != CLAIM_KEYS:
+            raise ValueError("claim state must contain one documented claim")
+        if state.get("schema_version") != 1:
+            raise ValueError("claim state schema_version must be 1")
+        next_sequence = state.get("next_ack_sequence")
+        if not isinstance(next_sequence, int) or next_sequence < 1:
+            raise ValueError("claim state acknowledgement sequence is invalid")
+        pending = state.get("pending_ack")
+        if pending is not None and (
+            not isinstance(pending, dict)
+            or set(pending) != {"sequence", "status", "detail"}
+            or not isinstance(pending.get("sequence"), int)
+        ):
+            raise ValueError("claim state pending acknowledgement is invalid")
+        if state.get("pending_failure") not in {None, "retryable", "terminal"}:
+            raise ValueError("claim state pending failure is invalid")
+        return state
+
+    def save(self, claim: Mapping[str, object]) -> None:
+        if set(claim) != CLAIM_KEYS:
+            raise ValueError("claim state must match the documented response shape")
+        if self.path.exists():
+            state = self._load_state()
+            existing = state["claim"]
+            if existing["handoff_id"] != claim["handoff_id"]:
+                raise ValueError("active claim cannot be replaced before terminal or retry confirmation")
+            state["claim"] = dict(claim)
+        else:
+            state = {
+                "schema_version": 1,
+                "claim": dict(claim),
+                "next_ack_sequence": 1,
+                "pending_ack": None,
+                "pending_failure": None,
+            }
+        self._write(state)
+
+    def load(self, handoff_id: str) -> dict[str, object]:
+        state = self._load_state()
+        claim = state["claim"]
         if claim.get("handoff_id") != handoff_id:
             raise ValueError("claim state does not match the requested handoff")
-        return claim
+        return dict(claim)
 
+    def load_current(self) -> dict[str, object] | None:
+        if not self.path.exists():
+            return None
+        return dict(self._load_state()["claim"])
+
+    def prepare_ack(self, status: str, detail: str | None) -> int:
+        if status not in ACKNOWLEDGEMENT_STATES:
+            raise ValueError("unsupported acknowledgement status")
+        state = self._load_state()
+        pending = state["pending_ack"]
+        if pending is not None:
+            if pending["status"] != status or pending["detail"] != detail:
+                raise ValueError("a different acknowledgement is still pending retry")
+            return pending["sequence"]
+        sequence = state["next_ack_sequence"]
+        state["pending_ack"] = {
+            "sequence": sequence,
+            "status": status,
+            "detail": detail,
+        }
+        self._write(state)
+        return sequence
+
+    def pending_ack(self) -> tuple[int, str, str | None] | None:
+        pending = self._load_state()["pending_ack"]
+        if pending is None:
+            return None
+        return pending["sequence"], pending["status"], pending["detail"]
+
+    def complete_ack(self, sequence: int, response: Mapping[str, object]) -> None:
+        state = self._load_state()
+        pending = state["pending_ack"]
+        if pending is None or pending["sequence"] != sequence:
+            raise ValueError("acknowledgement completion does not match pending operation")
+        if response.get("status") != pending["status"]:
+            raise ValueError("acknowledgement response did not verify the requested status")
+        if pending["status"] == "completed":
+            self.path.unlink()
+            return
+        claim = state["claim"]
+        claim["status"] = pending["status"]
+        claim["detail"] = response.get("detail", pending["detail"])
+        state["next_ack_sequence"] = sequence + 1
+        state["pending_ack"] = None
+        self._write(state)
+
+    def prepare_failure(self, failure_class: str) -> None:
+        if failure_class not in {"retryable", "terminal"}:
+            raise ValueError("failure_class must be retryable or terminal")
+        state = self._load_state()
+        pending = state["pending_failure"]
+        if pending is not None and pending != failure_class:
+            raise ValueError("a different delivery failure is still pending retry")
+        state["pending_failure"] = failure_class
+        self._write(state)
+
+    def pending_failure(self) -> str | None:
+        return self._load_state()["pending_failure"]
+
+    def complete_failure(
+        self,
+        failure_class: str,
+        response: Mapping[str, object],
+    ) -> None:
+        state = self._load_state()
+        if state["pending_failure"] != failure_class:
+            raise ValueError("failure completion does not match pending operation")
+        expected = "retrying" if failure_class == "retryable" else "dead_letter"
+        if response.get("status") != expected:
+            raise ValueError("failure response did not verify terminal or retry state")
+        self.path.unlink()
 
 class LocalDispatcherClient:
     """Identity-scoped client for the documented Mission Control HTTP API."""
@@ -214,14 +350,16 @@ class LocalDispatcherClient:
         registration_id: str,
         bearer_token: str,
         agent_slug: str | None = None,
-        opener: Callable[..., object] = urlopen,
+        opener: Callable[..., object] | None = None,
         request_timeout: float = 10,
     ) -> None:
-        self._base_url = mission_control_url.rstrip("/")
+        self._base_url = _validated_dispatcher_url(mission_control_url)
         self._registration_id = _require_identifier(registration_id, "registration_id")
         self._bearer_token = bearer_token
         self._agent_slug = agent_slug
-        self._opener = opener
+        self._opener = opener or build_opener(
+            ProxyHandler({}), RejectRedirectHandler()
+        ).open
         self._request_timeout = request_timeout
 
     def _post(
@@ -281,6 +419,14 @@ class LocalDispatcherClient:
         )
         if status_code == 204:
             return None
+        return self._validate_claim(payload, agent_slug=agent_slug)
+
+    def _validate_claim(
+        self,
+        payload: object,
+        *,
+        agent_slug: str | None = None,
+    ) -> dict[str, object]:
         if not isinstance(payload, dict) or set(payload) != CLAIM_KEYS:
             raise ValueError("claim response must match the documented safe shape")
         expected_agent = agent_slug or self._agent_slug
@@ -293,6 +439,25 @@ class LocalDispatcherClient:
             raise ValueError("claim response does not match the configured registration identity")
         self._claim_headers(payload)
         return payload
+
+    def recover(
+        self,
+        claim: Mapping[str, object],
+        *,
+        agent_slug: str | None = None,
+    ) -> dict[str, object]:
+        handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        generation = claim.get("lease_generation")
+        if not isinstance(generation, int) or generation < 1:
+            raise ValueError("persisted lease generation is invalid")
+        _, payload = self._post(
+            f"/api/handoffs/{quote(handoff_id, safe='')}/recover",
+            {
+                "registration_id": self._registration_id,
+                "expected_generation": generation,
+            },
+        )
+        return self._validate_claim(payload, agent_slug=agent_slug)
 
     def _claim_headers(self, claim: Mapping[str, object]) -> dict[str, str]:
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
@@ -315,6 +480,7 @@ class LocalDispatcherClient:
         *,
         status: str,
         detail: str | None = None,
+        operation_sequence: int = 1,
     ) -> object | None:
         if status not in ACKNOWLEDGEMENT_STATES:
             raise ValueError("unsupported acknowledgement status")
@@ -322,9 +488,14 @@ class LocalDispatcherClient:
             raise ValueError("still_blocked requires detail")
         if detail is not None and not isinstance(detail, str):
             raise ValueError("detail must be text or null")
+        if not isinstance(operation_sequence, int) or operation_sequence < 1:
+            raise ValueError("operation_sequence must be a positive integer")
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
         headers = self._claim_headers(claim)
-        headers["Idempotency-Key"] = _mutation_id(handoff_id, f"ack/{status}")
+        headers["Idempotency-Key"] = _mutation_id(
+            handoff_id,
+            f"ack/{operation_sequence}/{status}/{detail or ''}",
+        )
         _, response = self._post(
             f"/api/handoffs/{quote(handoff_id, safe='')}/ack",
             {"status": status, "detail": detail},
@@ -345,6 +516,9 @@ class LocalDispatcherClient:
             {"failure_class": failure_class},
             headers=headers,
         )
+        expected_status = "retrying" if failure_class == "retryable" else "dead_letter"
+        if not isinstance(response, Mapping) or response.get("status") != expected_status:
+            raise ValueError("failure response did not verify retry or terminal state")
         return response
 
 
@@ -481,21 +655,75 @@ def run_forever(
     if max_iterations is not None and max_iterations < 0:
         raise ValueError("max_iterations must not be negative")
     iterations = 0
+    resumed_handoffs: set[str] = set()
     while not stop_requested() and (max_iterations is None or iterations < max_iterations):
         iterations += 1
         try:
-            claim = client.claim(wait_seconds=wait_seconds, lease_seconds=lease_seconds)
-            if claim is None:
-                continue
-            if claim_store is not None:
-                claim_store.save(claim)
+            claim = claim_store.load_current() if claim_store is not None else None
+            if claim is not None:
+                pending_failure = claim_store.pending_failure()
+                if pending_failure is not None:
+                    response = client.fail(claim, failure_class=pending_failure)
+                    if not isinstance(response, Mapping):
+                        raise ValueError("pending failure retry was not verified")
+                    claim_store.complete_failure(pending_failure, response)
+                    continue
+                pending = claim_store.pending_ack()
+                if pending is not None:
+                    sequence, status, detail = pending
+                    response = client.ack(
+                        claim,
+                        status=status,
+                        detail=detail,
+                        operation_sequence=sequence,
+                    )
+                    if not isinstance(response, Mapping):
+                        raise ValueError("pending acknowledgement retry was not verified")
+                    claim_store.complete_ack(sequence, response)
+                    claim = claim_store.load_current()
+                    if claim is None:
+                        continue
+                handoff_id = str(claim["handoff_id"])
+                if handoff_id in resumed_handoffs:
+                    if retry_delay > 0:
+                        sleep(retry_delay)
+                    continue
+                if claim["status"] in {
+                    "received",
+                    "actively_executing",
+                    "still_blocked",
+                }:
+                    claim = client.recover(claim)
+                    claim_store.save(claim)
+            else:
+                claim = client.claim(wait_seconds=wait_seconds, lease_seconds=lease_seconds)
+                if claim is None:
+                    continue
+                if claim_store is not None:
+                    claim_store.save(claim)
+            handoff_id = str(claim["handoff_id"])
+            resumed_handoffs.add(handoff_id)
             try:
                 result = adapter.resume_existing_thread(claim)
             except subprocess.TimeoutExpired:
-                client.fail(claim, failure_class="retryable")
+                if claim_store is not None:
+                    claim_store.prepare_failure("retryable")
+                response = client.fail(claim, failure_class="retryable")
+                if claim_store is not None:
+                    if not isinstance(response, Mapping):
+                        raise ValueError("delivery failure was not verified")
+                    claim_store.complete_failure("retryable", response)
+                resumed_handoffs.discard(handoff_id)
                 continue
             if result.returncode != 0:
-                client.fail(claim, failure_class="retryable")
+                if claim_store is not None:
+                    claim_store.prepare_failure("retryable")
+                response = client.fail(claim, failure_class="retryable")
+                if claim_store is not None:
+                    if not isinstance(response, Mapping):
+                        raise ValueError("delivery failure was not verified")
+                    claim_store.complete_failure("retryable", response)
+                resumed_handoffs.discard(handoff_id)
         except (OSError, TimeoutError):
             if retry_delay > 0:
                 sleep(retry_delay)
@@ -527,7 +755,9 @@ def acknowledge_handoff(
 ) -> object | None:
     config = DispatcherConfig.from_file(config_path)
     token = config.read_token()
-    claim = PrivateClaimStore(claim_path).load(handoff_id)
+    store = PrivateClaimStore(claim_path)
+    claim = store.load(handoff_id)
+    sequence = store.prepare_ack(status, detail)
     if client_factory is None:
         client = LocalDispatcherClient(
             config.mission_control_url,
@@ -537,7 +767,16 @@ def acknowledge_handoff(
         )
     else:
         client = client_factory(config, token)
-    return client.ack(claim, status=status, detail=detail)
+    response = client.ack(
+        claim,
+        status=status,
+        detail=detail,
+        operation_sequence=sequence,
+    )
+    if not isinstance(response, Mapping):
+        raise ValueError("acknowledgement response must verify the requested transition")
+    store.complete_ack(sequence, response)
+    return response
 
 
 def _run_parser() -> argparse.ArgumentParser:

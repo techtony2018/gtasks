@@ -9,6 +9,8 @@ from html import escape
 import json
 import os
 from pathlib import Path
+import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,27 @@ from gtasks.local_handoff_dispatcher import (  # noqa: E402
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher"
 
 
+def canonical_install_paths(home_directory: str | Path) -> tuple[Path, Path]:
+    home = Path(home_directory).resolve()
+    return (
+        home / "Library" / "Application Support" / "GTasks" / "handoff-dispatcher.json",
+        home / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist",
+    )
+
+
+def _resolve_executable(value: str) -> str:
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            raise ValueError("codex executable must exist and be executable")
+        return str(resolved)
+    discovered = shutil.which(value)
+    if discovered is None:
+        raise ValueError("codex executable could not be resolved to an absolute path")
+    return str(Path(discovered).resolve())
+
+
 class InstallReceipt(NamedTuple):
     label: str
     agent_slug: str
@@ -35,6 +58,7 @@ class InstallReceipt(NamedTuple):
     plist_path: str
     plist_sha256: str
     codex_version: str
+    codex_path: str
 
 
 def _atomic_write(path: Path, content: bytes, mode: int) -> None:
@@ -74,16 +98,27 @@ def install(
     working_directory: str | Path,
     label: str = DEFAULT_LABEL,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    home_directory: str | Path | None = None,
 ) -> InstallReceipt:
     source_path = Path(source_config)
     destination_path = Path(destination_config)
     plist_path = Path(plist_destination)
+    canonical_config, canonical_plist = canonical_install_paths(
+        home_directory if home_directory is not None else Path.home()
+    )
+    if destination_path.resolve() != canonical_config.resolve():
+        raise ValueError("destination must use the canonical config path")
+    if plist_path.resolve() != canonical_plist.resolve():
+        raise ValueError("destination must use the canonical plist path")
+    if label != DEFAULT_LABEL:
+        raise ValueError("installer requires the canonical label")
     config = DispatcherConfig.from_file(source_path)
     config.read_token()
     if not Path(runner_path).is_file():
         raise ValueError("local Dispatcher runner path must exist")
 
-    if destination_path.exists():
+    existing_config_present = destination_path.exists()
+    if existing_config_present:
         existing = DispatcherConfig.from_file(destination_path)
         if (
             existing.agent_slug != config.agent_slug
@@ -93,8 +128,27 @@ def install(
         if existing.fixed_thread_id != config.fixed_thread_id:
             raise ValueError("existing fixed thread id must be preserved")
 
+    if plist_path.exists():
+        try:
+            existing_plist = plistlib.loads(plist_path.read_bytes())
+        except (OSError, plistlib.InvalidFileException) as exc:
+            raise ValueError("existing canonical plist is invalid") from exc
+        existing_arguments = existing_plist.get("ProgramArguments", [])
+        try:
+            config_index = existing_arguments.index("--config")
+            existing_config_argument = existing_arguments[config_index + 1]
+        except (AttributeError, IndexError, ValueError):
+            existing_config_argument = None
+        if (
+            existing_plist.get("Label") != DEFAULT_LABEL
+            or existing_config_argument != str(canonical_config)
+            or "gtasks.local_handoff_dispatcher" not in existing_arguments
+        ):
+            raise ValueError("existing loaded plist does not match canonical Dispatcher identity")
+
+    resolved_codex = _resolve_executable(codex_path)
     adapter = CodexResumeAdapter(
-        codex_path,
+        resolved_codex,
         fixed_thread_id=config.fixed_thread_id,
         working_directory=working_directory,
         run=run,
@@ -111,22 +165,37 @@ def install(
             "LABEL": label,
             "PYTHON_PATH": str(python_path),
             "CONFIG_PATH": str(destination_path.resolve()),
-            "CODEX_PATH": str(codex_path),
+            "CODEX_PATH": resolved_codex,
             "WORKING_DIRECTORY": str(Path(working_directory).resolve()),
         },
     )
-    _atomic_write(destination_path, serialized_config, 0o600)
-    _atomic_write(plist_path, plist_text.encode("utf-8"), 0o644)
-
     launch_domain = f"gui/{os.getuid()}"
     launch_ref = f"{launch_domain}/{label}"
-    run(
-        ["/bin/launchctl", "bootout", launch_ref],
+    loaded = run(
+        ["/bin/launchctl", "print", launch_ref],
         check=False,
         capture_output=True,
         text=True,
         timeout=10,
     )
+    if loaded.returncode == 0 and (
+        str(canonical_config) not in loaded.stdout
+        or "gtasks.local_handoff_dispatcher" not in loaded.stdout
+    ):
+        raise ValueError("loaded LaunchAgent does not match canonical config and runner")
+    if loaded.returncode == 0 and not existing_config_present:
+        raise ValueError("loaded LaunchAgent identity cannot be verified without canonical config")
+
+    _atomic_write(destination_path, serialized_config, 0o600)
+    _atomic_write(plist_path, plist_text.encode("utf-8"), 0o644)
+    if loaded.returncode == 0:
+        run(
+            ["/bin/launchctl", "bootout", launch_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     bootstrap = run(
         ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)],
         check=False,
@@ -143,12 +212,34 @@ def install(
         text=True,
         timeout=10,
     )
-    if readback.returncode != 0:
+    if (
+        readback.returncode != 0
+        or str(destination_path.resolve()) not in readback.stdout
+        or "gtasks.local_handoff_dispatcher" not in readback.stdout
+        or resolved_codex not in readback.stdout
+    ):
         raise RuntimeError("LaunchAgent readback failed")
 
     installed_config = DispatcherConfig.from_file(destination_path)
     if installed_config.to_json_dict() != config.to_json_dict():
         raise RuntimeError("installed config readback does not match source")
+    rendered_plist = plistlib.loads(plist_path.read_bytes())
+    expected_arguments = [
+        str(python_path),
+        "-m",
+        "gtasks.local_handoff_dispatcher",
+        "--config",
+        str(destination_path.resolve()),
+        "--codex-path",
+        resolved_codex,
+        "--working-directory",
+        str(Path(working_directory).resolve()),
+    ]
+    if (
+        rendered_plist.get("Label") != DEFAULT_LABEL
+        or rendered_plist.get("ProgramArguments") != expected_arguments
+    ):
+        raise RuntimeError("rendered LaunchAgent arguments failed readback")
     config_bytes = destination_path.read_bytes()
     plist_bytes = plist_path.read_bytes()
     return InstallReceipt(
@@ -159,6 +250,7 @@ def install(
         plist_path=str(plist_path),
         plist_sha256=sha256(plist_bytes).hexdigest(),
         codex_version=codex_version,
+        codex_path=resolved_codex,
     )
 
 
@@ -166,13 +258,11 @@ def _parser() -> argparse.ArgumentParser:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-config", required=True, type=Path)
-    parser.add_argument("--destination-config", required=True, type=Path)
     parser.add_argument(
         "--plist-template",
         type=Path,
         default=root / "config" / "handoff-dispatcher" / "agent.plist.template",
     )
-    parser.add_argument("--plist-destination", required=True, type=Path)
     parser.add_argument("--python-path", default="/usr/bin/python3")
     parser.add_argument(
         "--runner-path",
@@ -181,22 +271,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--codex-path", default="codex")
     parser.add_argument("--working-directory", type=Path, default=root)
-    parser.add_argument("--label", default=DEFAULT_LABEL)
+    parser.add_argument("--home-directory", type=Path, default=Path.home())
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    destination_config, plist_destination = canonical_install_paths(args.home_directory)
     receipt = install(
         source_config=args.source_config,
-        destination_config=args.destination_config,
+        destination_config=destination_config,
         plist_template=args.plist_template,
-        plist_destination=args.plist_destination,
+        plist_destination=plist_destination,
         python_path=args.python_path,
         runner_path=args.runner_path,
         codex_path=args.codex_path,
         working_directory=args.working_directory,
-        label=args.label,
+        home_directory=args.home_directory,
     )
     print(json.dumps(receipt._asdict(), sort_keys=True))
     return 0

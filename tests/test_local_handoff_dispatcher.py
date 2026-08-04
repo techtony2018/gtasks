@@ -18,6 +18,7 @@ from gtasks.local_handoff_dispatcher import (
     CodexResumeAdapter,
     DispatcherConfig,
     LocalDispatcherClient,
+    RejectRedirectHandler,
     PrivateClaimStore,
     acknowledge_handoff,
     install_signal_handlers,
@@ -142,6 +143,26 @@ class DispatcherConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     DispatcherConfig.from_file(self.config_path)
 
+    def test_plain_http_is_limited_to_explicit_loopback_hosts(self) -> None:
+        for url, allowed in (
+            ("http://127.0.0.1:4176", True),
+            ("http://localhost:4176", True),
+            ("http://[::1]:4176", True),
+            ("https://mission-control.example", True),
+            ("http://mission-control.example", False),
+            ("http://192.168.1.10:4176", False),
+        ):
+            with self.subTest(url=url):
+                self.write_config({**self.values, "mission_control_url": url})
+                if allowed:
+                    self.assertEqual(
+                        DispatcherConfig.from_file(self.config_path).mission_control_url,
+                        url,
+                    )
+                else:
+                    with self.assertRaisesRegex(ValueError, "HTTPS|loopback"):
+                        DispatcherConfig.from_file(self.config_path)
+
 
 class LocalDispatcherClientTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -191,6 +212,28 @@ class LocalDispatcherClientTests(unittest.TestCase):
         self.assertEqual(first[3]["authorization"], "Bearer local-bearer-token")
         self.assertEqual(first[4], 32)
 
+    def test_default_http_transport_rejects_every_redirect(self) -> None:
+        handler = RejectRedirectHandler()
+
+        redirected = handler.redirect_request(
+            object(),
+            None,
+            302,
+            "Found",
+            {"Location": "https://attacker.example/steal"},
+            "https://attacker.example/steal",
+        )
+
+        self.assertIsNone(redirected)
+
+    def test_client_rejects_nonloopback_plain_http_even_without_config_loader(self) -> None:
+        with self.assertRaisesRegex(ValueError, "HTTPS|loopback"):
+            LocalDispatcherClient(
+                "http://mission-control.example",
+                registration_id="private-registration-tammy",
+                bearer_token="secret",
+            )
+
     def test_acknowledgement_helpers_use_exact_json_and_private_lease_headers(self) -> None:
         claim = claim_payload()
         statuses = (
@@ -201,8 +244,13 @@ class LocalDispatcherClientTests(unittest.TestCase):
         )
         self.responses.extend(FakeResponse(200, {"status": status}) for status, _ in statuses)
 
-        for status, detail in statuses:
-            self.client.ack(claim, status=status, detail=detail)
+        for sequence, (status, detail) in enumerate(statuses, start=1):
+            self.client.ack(
+                claim,
+                status=status,
+                detail=detail,
+                operation_sequence=sequence,
+            )
 
         for index, (status, detail) in enumerate(statuses):
             url, method, body, headers, _ = self.request_details(index)
@@ -213,7 +261,7 @@ class LocalDispatcherClientTests(unittest.TestCase):
             self.assertEqual(headers["x-handoff-lease-capability"], "private-lease-capability")
             self.assertEqual(headers["x-handoff-lease-generation"], "3")
             expected_id = "local/" + hashlib.sha256(
-                f"handoff-100\0ack/{status}".encode("utf-8")
+                f"handoff-100\0ack/{index + 1}/{status}/{detail or ''}".encode("utf-8")
             ).hexdigest()
             self.assertEqual(headers["idempotency-key"], expected_id)
             self.assertRegex(headers["idempotency-key"], r"^[a-z0-9][a-z0-9._/-]{0,127}$")
@@ -230,6 +278,33 @@ class LocalDispatcherClientTests(unittest.TestCase):
             b"handoff-100\0failure/retryable"
         ).hexdigest()
         self.assertEqual(headers["idempotency-key"], expected_id)
+
+    def test_failure_requires_verified_retry_or_terminal_response(self) -> None:
+        self.responses.append(FakeResponse(200, {"status": "leased"}))
+
+        with self.assertRaisesRegex(ValueError, "verify"):
+            self.client.fail(claim_payload(), failure_class="retryable")
+
+    def test_recover_rotates_persisted_in_progress_claim_before_new_claim(self) -> None:
+        persisted = claim_payload(status="actively_executing", lease_generation=3)
+        rotated = claim_payload(
+            status="actively_executing",
+            lease_capability="rotated-capability",
+            lease_generation=4,
+        )
+        self.responses.append(FakeResponse(200, rotated))
+
+        result = self.client.recover(persisted, agent_slug="agents/tammy")
+
+        self.assertEqual(result["lease_generation"], 4)
+        url, _, body, headers, _ = self.request_details()
+        self.assertEqual(url, "http://127.0.0.1:4176/api/handoffs/handoff-100/recover")
+        self.assertEqual(
+            body,
+            {"registration_id": "private-registration-tammy", "expected_generation": 3},
+        )
+        self.assertEqual(headers["authorization"], "Bearer local-bearer-token")
+        self.assertNotIn("x-handoff-lease-capability", headers)
 
     def test_rejects_out_of_bounds_calls_and_malformed_or_cross_identity_claims(self) -> None:
         for wait_seconds, lease_seconds in ((-1, 5), (26, 5), (0, 4), (0, 121)):
@@ -341,6 +416,7 @@ class RunForeverTests(unittest.TestCase):
 
         def fail(self, claim, *, failure_class):
             self.failures.append((claim["handoff_id"], failure_class))
+            return {"status": "retrying" if failure_class == "retryable" else "dead_letter"}
 
     class Adapter:
         def __init__(self, results: list[object]) -> None:
@@ -401,6 +477,127 @@ class RunForeverTests(unittest.TestCase):
         self.assertEqual(first_client.failures, [("handoff-100", "retryable")])
         self.assertEqual(second_adapter.claims, ["handoff-100"])
 
+    def test_process_restart_recovers_persisted_in_progress_before_claiming_new_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing"))
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([claim_payload(handoff_id="handoff-new")])
+                    inner_self.recovered: list[str] = []
+
+                def recover(inner_self, claim):
+                    inner_self.recovered.append(claim["handoff_id"])
+                    return claim_payload(
+                        status="actively_executing",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+            client = Client()
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+
+            run_forever(client, adapter, claim_store=store, max_iterations=1, retry_delay=0)
+
+            self.assertEqual(client.recovered, ["handoff-100"])
+            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(len(client.claims), 1)
+            self.assertEqual(store.load_current()["lease_generation"], 4)
+
+    def test_recovered_in_progress_resume_failure_retries_and_clears_verified_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="still_blocked"))
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, claim):
+                    return claim_payload(
+                        status="still_blocked",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+            client = Client()
+            run_forever(
+                client,
+                self.Adapter([subprocess.CompletedProcess([], 7)]),
+                claim_store=store,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(client.failures, [("handoff-100", "retryable")])
+            self.assertIsNone(store.load_current())
+
+    def test_restart_retries_persisted_pending_ack_before_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload())
+            sequence = store.prepare_ack("received", None)
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    events.append(f"ack:{operation_sequence}:{status}")
+                    return {"status": status, "detail": detail}
+
+                def recover(inner_self, claim):
+                    events.append(f"recover:{claim['status']}")
+                    return claim_payload(
+                        status="received",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+            run_forever(
+                Client(),
+                self.Adapter([subprocess.CompletedProcess([], 0)]),
+                claim_store=store,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(events, [f"ack:{sequence}:received", "recover:received"])
+
+    def test_restart_retries_pending_failure_before_recovery_or_new_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing"))
+            store.prepare_failure("retryable")
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([claim_payload(handoff_id="handoff-new")])
+
+                def fail(inner_self, claim, *, failure_class):
+                    events.append(f"fail:{claim['handoff_id']}:{failure_class}")
+                    return {"status": "retrying"}
+
+                def recover(inner_self, claim):
+                    events.append("unexpected-recover")
+                    return claim
+
+            client = Client()
+            run_forever(
+                client,
+                self.Adapter([]),
+                claim_store=store,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(events, ["fail:handoff-100:retryable"])
+            self.assertIsNone(store.load_current())
+            self.assertEqual(len(client.claims), 1)
+
     def test_persists_private_claim_before_acknowledging_or_resuming(self) -> None:
         events: list[str] = []
         client = self.Client([claim_payload()])
@@ -412,6 +609,9 @@ class RunForeverTests(unittest.TestCase):
         adapter = Adapter([subprocess.CompletedProcess([], 0)])
 
         class Store:
+            def load_current(self):
+                return None
+
             def save(self, claim):
                 events.append(f"save:{claim['handoff_id']}")
 
@@ -440,12 +640,17 @@ class InstallerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
+        self.home = self.directory / "home"
+        self.home.mkdir()
         self.token = self.directory / "token"
         self.token.write_text("bearer-token\n", encoding="utf-8")
         self.token.chmod(0o600)
         self.source = self.directory / "source.json"
-        self.destination = self.directory / "private" / "dispatcher.json"
-        self.plist = self.directory / "LaunchAgents" / "com.tony.gtasks-handoff-dispatcher.plist"
+        self.destination, self.plist = self.installer.canonical_install_paths(self.home)
+        self.codex = self.directory / "bin" / "codex"
+        self.codex.parent.mkdir()
+        self.codex.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.codex.chmod(0o755)
         self.config = {
             "schema_version": 1,
             "agent_slug": "agents/tammy",
@@ -465,8 +670,19 @@ class InstallerTests(unittest.TestCase):
 
         def run(arguments, **kwargs):
             calls.append((arguments, kwargs))
-            stdout = "codex-cli 1.2.3" if arguments[-1] == "--version" else "Usage: codex exec resume"
-            return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+            if arguments[1] == "print":
+                if self.plist.exists():
+                    stdout = (
+                        f"gtasks.local_handoff_dispatcher {self.destination} "
+                        f"{self.codex.resolve()}"
+                    )
+                    return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+                return subprocess.CompletedProcess(arguments, 3, stdout="", stderr="not loaded")
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
         receipt = self.installer.install(
             source_config=self.source,
@@ -475,9 +691,10 @@ class InstallerTests(unittest.TestCase):
             plist_destination=self.plist,
             python_path="/usr/bin/python3",
             runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
-            codex_path="/opt/bin/codex",
+            codex_path=str(self.codex),
             working_directory=ROOT,
             run=run,
+            home_directory=self.home,
         )
         return receipt, calls
 
@@ -495,10 +712,10 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("gtasks.local_handoff_dispatcher", plist_text)
         self.assertNotIn(str(ROOT / "gtasks" / "local_handoff_dispatcher.py"), plist_text)
         self.assertNotIn("bearer-token", plist_text)
-        self.assertEqual(calls[0][0], ["/opt/bin/codex", "--version"])
-        self.assertEqual(calls[1][0], ["/opt/bin/codex", "exec", "resume", "--help"])
+        self.assertEqual(calls[0][0], [str(self.codex.resolve()), "--version"])
+        self.assertEqual(calls[1][0], [str(self.codex.resolve()), "exec", "resume", "--help"])
         launch_ref = f"gui/{os.getuid()}/com.tony.gtasks-handoff-dispatcher"
-        self.assertEqual(calls[2][0], ["/bin/launchctl", "bootout", launch_ref])
+        self.assertEqual(calls[2][0], ["/bin/launchctl", "print", launch_ref])
         self.assertEqual(
             calls[3][0],
             ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist)],
@@ -506,6 +723,60 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(calls[4][0], ["/bin/launchctl", "print", launch_ref])
         for _, kwargs in calls:
             self.assertNotIn("shell", kwargs)
+
+    def test_rejects_noncanonical_config_plist_or_label_before_install(self) -> None:
+        cases = (
+            ({"destination_config": self.directory / "other.json"}, "canonical config"),
+            ({"plist_destination": self.directory / "other.plist"}, "canonical plist"),
+            ({"label": "com.example.second-dispatcher"}, "canonical label"),
+        )
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, message):
+                self.installer.install(
+                    source_config=self.source,
+                    destination_config=overrides.get("destination_config", self.destination),
+                    plist_template=TEMPLATE_PATH,
+                    plist_destination=overrides.get("plist_destination", self.plist),
+                    python_path="/usr/bin/python3",
+                    runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                    codex_path=str(self.codex),
+                    working_directory=ROOT,
+                    label=overrides.get("label", "com.tony.gtasks-handoff-dispatcher"),
+                    run=lambda *_args, **_kwargs: self.fail("subprocess must not run"),
+                    home_directory=self.home,
+                )
+
+    def test_loaded_agent_without_canonical_config_fails_before_bootout(self) -> None:
+        calls: list[list[str]] = []
+
+        def run(arguments, **kwargs):
+            calls.append(arguments)
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume", stderr="")
+            if arguments[1] == "print":
+                stdout = (
+                    f"gtasks.local_handoff_dispatcher {self.destination} "
+                    f"{self.codex.resolve()}"
+                )
+                return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        with self.assertRaisesRegex(ValueError, "config|identity"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path="/usr/bin/python3",
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=run,
+                home_directory=self.home,
+            )
+        self.assertFalse(any(call[1] == "bootout" for call in calls if call[0] == "/bin/launchctl"))
 
     def test_preserves_existing_fixed_thread_and_rejects_second_identity(self) -> None:
         self.install()
@@ -530,6 +801,27 @@ class InstallerTests(unittest.TestCase):
 
 
 class InstalledAcknowledgementHelperTests(unittest.TestCase):
+    def test_persists_stable_per_transition_sequences_across_recurring_states(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload())
+
+            received = store.prepare_ack("received", None)
+            self.assertEqual(store.prepare_ack("received", None), received)
+            store.complete_ack(received, {"status": "received", "detail": None})
+            active_one = store.prepare_ack("actively_executing", None)
+            store.complete_ack(active_one, {"status": "actively_executing", "detail": None})
+            blocked_one = store.prepare_ack("still_blocked", "Waiting for release.")
+            store.complete_ack(
+                blocked_one,
+                {"status": "still_blocked", "detail": "Waiting for release."},
+            )
+            active_two = store.prepare_ack("actively_executing", None)
+            store.complete_ack(active_two, {"status": "actively_executing", "detail": None})
+            blocked_two = store.prepare_ack("still_blocked", "Waiting for release.")
+
+            self.assertEqual((received, active_one, blocked_one, active_two, blocked_two), (1, 2, 3, 4, 5))
+
     def test_private_claim_state_supports_all_helper_acknowledgements(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -559,9 +851,9 @@ class InstalledAcknowledgementHelperTests(unittest.TestCase):
             calls: list[object] = []
 
             class Client:
-                def ack(self, claim, *, status, detail=None):
-                    calls.append((claim["handoff_id"], status, detail))
-                    return {"status": status}
+                def ack(self, claim, *, status, detail=None, operation_sequence=1):
+                    calls.append((claim["handoff_id"], status, detail, operation_sequence))
+                    return {"status": status, "detail": detail}
 
             def client_factory(config, bearer_token):
                 self.assertEqual(config.agent_slug, "agents/tammy")
@@ -582,7 +874,7 @@ class InstalledAcknowledgementHelperTests(unittest.TestCase):
                     detail=detail,
                     client_factory=client_factory,
                 )
-                self.assertEqual(result, {"status": status})
+                self.assertEqual(result, {"status": status, "detail": detail})
             self.assertEqual([call[1] for call in calls], [
                 "received",
                 "actively_executing",
