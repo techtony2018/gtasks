@@ -1019,6 +1019,200 @@ class HandoffMutationBridgeTests(unittest.TestCase):
         self.assertEqual(adapter.todos[self.TODO]["status"], "done")
         self.assertEqual(len(bridge.calls), 1)
 
+    def test_verified_todo_write_survives_post_write_snapshot_failure_with_attention(self) -> None:
+        now = datetime(2026, 7, 30, 9, 0).astimezone()
+        task = new_inbox_task("Ship GTasks", now, "postread1")
+
+        class CreateReadFailureAdapter(FakeAdapter):
+            def __init__(self):
+                super().__init__(active=(task,))
+                self.task_reads = 0
+
+            def get_task(self, task_slug: str):
+                self.task_reads += 1
+                if self.task_reads > 1:
+                    raise gbrain.GBrainProtocolError("synthetic post-write task read failure")
+                return super().get_task(task_slug)
+
+        class TodoReadFailureAdapter(FakeAdapter):
+            def __init__(self):
+                super().__init__(active=(task,))
+                self.todo_reads_after_write = 0
+                self.todos["todos/one"] = {
+                    "slug": "todos/one",
+                    "parent_task": task.slug,
+                    "text": "Confirm window",
+                    "detail": "",
+                    "status": "not_done",
+                    "status_label": "Not Done",
+                    "kind": "action",
+                    "creator": "people/tony-guan",
+                    "source": "mission_control",
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "comments": [],
+                    "events": [],
+                }
+
+            def get_todo(self, todo_slug: str):
+                self.todo_reads_after_write += 1
+                if self.todo_reads_after_write > 1:
+                    raise gbrain.GBrainProtocolError("synthetic post-write To Do read failure")
+                return super().get_todo(todo_slug)
+
+        cases = (
+            (
+                CreateReadFailureAdapter,
+                "POST",
+                f"/api/tasks/{task.slug.replace('/', '%2F')}/todos",
+                {
+                    "text": "Verify the write", "detail": "", "kind": "action",
+                    "actor": "people/tony-guan", "source": "mission_control",
+                    "idempotency_key": "post-read-create",
+                },
+                201,
+            ),
+            (
+                TodoReadFailureAdapter,
+                "PATCH",
+                "/api/todos/todos%2Fone",
+                {
+                    "text": "Confirm the verified window", "detail": "",
+                    "expected_updated_at": now.isoformat(), "actor": "people/tony-guan",
+                    "source": "mission_control", "idempotency_key": "post-read-edit",
+                },
+                200,
+            ),
+            (
+                TodoReadFailureAdapter,
+                "PATCH",
+                "/api/todos/todos%2Fone/status",
+                {
+                    "status": "done", "expected_updated_at": now.isoformat(),
+                    "actor": "people/tony-guan", "source": "mission_control",
+                    "idempotency_key": "post-read-status",
+                },
+                200,
+            ),
+        )
+
+        for adapter_factory, method, path, payload, expected_status in cases:
+            with self.subTest(path=path):
+                adapter = adapter_factory()
+                bridge = self.RecordingBridge()
+                harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+                status, body, _ = harness.request(method, path, payload)
+
+                self.assertEqual(status, expected_status)
+                self.assertTrue(body["receipt"]["verified"])
+                self.assertEqual(len(bridge.calls), 1)
+                self.assertFalse(bridge.calls[0][2]["verified"])
+
+    @staticmethod
+    def proposal_task_fixture() -> tuple[Task, TaskProposal]:
+        now = datetime(2026, 7, 30, 9, 0).astimezone()
+        task = replace(
+            new_task(
+                title="Approved Agent work",
+                detail="Proceed only after Tony approves.",
+                priority="normal",
+                next_action="Execute the approved work.",
+                due_day=now.date(),
+                project=None,
+                goal=None,
+                now=now,
+                identity="33333333-3333-4333-8333-333333333333",
+            ),
+            status="proposed",
+            lifecycle_root="collections/toddys-tasks",
+            owner_agent="agents/toddy",
+            proposal_recipient="tony",
+        )
+        proposal = TaskProposal(
+            slug=task.slug,
+            title=task.title,
+            status="proposed",
+            recipient="tony",
+            proposing_agent="agents/toddy",
+            rationale=task.detail,
+            proposed_next_step=task.next_action,
+            due_day=task.due_day,
+            submitted_at=now,
+            updated_at=now,
+            source_kind="task",
+        )
+        return task, proposal
+
+    def test_real_proposal_approval_emits_authorization_granted(self) -> None:
+        task, proposal = self.proposal_task_fixture()
+
+        class ApprovalAdapter(FakeAdapter):
+            def decide_proposal(self, proposal_slug: str, *, action: str, decision_note: str, now: datetime):
+                approved = replace(
+                    task,
+                    status="planned",
+                    proposal_decision="approve",
+                    proposal_decided_at=now,
+                    proposal_decision_note=decision_note,
+                    updated_at=now,
+                )
+                self.active = (approved,)
+                stored_proposal = replace(
+                    proposal,
+                    status="approved",
+                    decision="approve",
+                    decision_at=now,
+                    resulting_status="planned",
+                    reviewed_at=now,
+                    updated_at=now,
+                )
+                return ProposalMutationReceipt(
+                    proposal_slug=proposal_slug,
+                    status="approved",
+                    proposal=stored_proposal,
+                    created_task=approved,
+                    verified=True,
+                )
+
+        adapter = ApprovalAdapter(active=(task,), proposals=(proposal,))
+        bridge = self.RecordingBridge()
+        harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+        status, body, _ = harness.request(
+            "POST",
+            f"/api/proposals/{task.slug.replace('/', '%2F')}/decision",
+            {"action": "approve", "decision_note": "Approved."},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["receipt"]["proposal"]["decision"], "approve")
+        self.assertEqual(len(bridge.calls), 1)
+        self.assertEqual(bridge.calls[0][1]["task"]["proposal_decision"], "approve")
+        self.assertTrue(bridge.calls[0][2]["verified"])
+
+    def test_proposal_approval_partial_write_appends_attention_without_dispatch(self) -> None:
+        task, proposal = self.proposal_task_fixture()
+
+        class PartialApprovalAdapter(FakeAdapter):
+            def decide_proposal(self, *args, **kwargs):
+                raise PartialMutationError(task.slug, "Proposal approval was not verified.")
+
+        bridge = self.RecordingBridge()
+        harness = ServerHarness(
+            self,
+            PartialApprovalAdapter(active=(task,), proposals=(proposal,)),
+            handoff_event_bridge=bridge,
+        )
+        status, body, _ = harness.request(
+            "POST",
+            f"/api/proposals/{task.slug.replace('/', '%2F')}/decision",
+            {"action": "approve", "decision_note": "Approved."},
+        )
+
+        self.assertEqual(status, 502)
+        self.assertEqual(body["code"], "partial_write")
+        self.assertEqual(len(bridge.calls), 1)
+        self.assertFalse(bridge.calls[0][2]["verified"])
+
 
 class HandoffDispatcherApiTests(unittest.TestCase):
     NOW = datetime(2026, 8, 4, 17, 0, tzinfo=timezone.utc)

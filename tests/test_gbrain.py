@@ -259,7 +259,7 @@ class HandoffMutationReadbackTests(unittest.TestCase):
             (self.snapshot(task={**self.snapshot()["task"], "status": "planned"}), self.snapshot(), self.receipt(), "task_activated"),
             (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["people/tony-guan"]}), self.snapshot(), self.receipt(), "blocker_resolved"),
             (self.snapshot(task={**self.snapshot()["task"], "status": "blocked", "blockers": ["systems/gbrain"], "system_dependencies": {"gbrain": "unavailable"}}), self.snapshot(), self.receipt(), "system_dependency_recovered"),
-            (self.snapshot(task={**self.snapshot()["task"], "authorization": "pending"}), self.snapshot(), self.receipt(), "authorization_granted"),
+            (self.snapshot(task={**self.snapshot()["task"], "status": "proposed", "proposal_decision": None}), self.snapshot(task={**self.snapshot()["task"], "status": "planned", "proposal_decision": "approve"}), self.receipt(mutation_kind="proposal_decision"), "authorization_granted"),
             (self.snapshot(task={**self.snapshot()["task"], "assigned_to": ["agents/timmy"]}), self.snapshot(), self.receipt(), "ownership_changed"),
         )
 
@@ -273,6 +273,27 @@ class HandoffMutationReadbackTests(unittest.TestCase):
                 self.assertEqual(change.task_slug, self.TASK)
                 self.assertEqual(change.assigned_to, ("agents/tammy",))
                 self.assertEqual(dispatcher.changes, [(change, self.NOW)])
+
+    def test_unchanged_system_blocker_is_suppressed_not_recovered(self) -> None:
+        task = self.snapshot()["task"]
+        blocked = {
+            **task,
+            "status": "blocked",
+            "blockers": ["systems/gbrain"],
+            "system_dependencies": {"gbrain": "unavailable"},
+        }
+        still_blocked = {**blocked, "status": "active"}
+
+        change = CanonicalHandoffEventBridge(
+            self.RecordingDispatcher()
+        ).after_verified_mutation(
+            self.snapshot(task=blocked),
+            self.snapshot(task=still_blocked),
+            self.receipt(),
+            self.NOW,
+        )
+
+        self.assertEqual(change.trigger, "unchanged_blocker")
 
     def test_normalizes_explicit_non_actionable_canonical_changes(self) -> None:
         task = self.snapshot()["task"]

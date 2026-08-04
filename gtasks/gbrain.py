@@ -937,6 +937,7 @@ class CanonicalHandoffEventBridge:
         after_status = after_task.get("status")
         before_blockers = tuple(before_task.get("blockers") or ())
         after_blockers = tuple(after_task.get("blockers") or ())
+        removed_blockers = set(before_blockers) - set(after_blockers)
         before_handoff = self._mapping(before_task.get("handoff"))
         after_handoff = self._mapping(after_task.get("handoff"))
         task_changes = self._changed_fields(before_task, after_task)
@@ -971,33 +972,26 @@ class CanonicalHandoffEventBridge:
         elif before_status in {"planned", "proposed"} and after_status == "active":
             trigger = "task_activated"
             summary = "The verified Task became active."
-        elif (
-            kind == "system_dependency_recovered"
-            or (
-                before_status == "blocked"
-                and after_status == "active"
-                and any(str(value).startswith("systems/") for value in before_blockers)
-            )
+        elif before_blockers and before_blockers == after_blockers:
+            trigger = "unchanged_blocker"
+            summary = "The canonical blocker is unchanged."
+        elif before_status == "blocked" and after_status == "active" and any(
+            str(value).startswith("systems/") for value in removed_blockers
         ):
             trigger = "system_dependency_recovered"
             summary = "A verified system dependency recovered."
-        elif before_status == "blocked" and after_status == "active" and (
-            set(before_blockers) - set(after_blockers)
-        ):
+        elif before_status == "blocked" and after_status == "active" and removed_blockers:
             trigger = "blocker_resolved"
             summary = "The verified blocker was resolved."
-        elif kind == "authorization_granted" or (
-            before_task.get("authorization") != "granted"
-            and after_task.get("authorization") == "granted"
+        elif (
+            before_task.get("proposal_decision") != "approve"
+            and after_task.get("proposal_decision") == "approve"
         ):
             trigger = "authorization_granted"
             summary = "Verified authorization was granted."
         elif self._assigned_to(before_outer, before_task) != assigned_to:
             trigger = "ownership_changed"
             summary = "Verified Task ownership changed."
-        elif after_status == "blocked" and before_blockers == after_blockers:
-            trigger = "unchanged_blocker"
-            summary = "The canonical blocker is unchanged."
         elif task_changes and task_changes <= self._PRESENTATION_FIELDS:
             trigger = "presentation_only"
             summary = "Presentation-only canonical fields changed."

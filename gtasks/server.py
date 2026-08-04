@@ -715,6 +715,44 @@ def _handler_class(
             mutation_kind=mutation_kind,
         )
 
+    def after_verified_todo_mutation(
+        before: dict[str, Any],
+        receipt: object,
+        *,
+        mutation_kind: str,
+        task_slug: str | None = None,
+        todo_slug: str | None = None,
+    ) -> None:
+        if active_handoff_event_bridge is None:
+            return
+        receipt_value = canonical_mapping(receipt)
+        receipt_todo = canonical_mapping(receipt_value.get("todo"))
+        attention_slug = (
+            receipt_todo.get("slug")
+            or todo_slug
+            or task_slug
+            or str(before.get("task_slug") or "tasks/unknown")
+        )
+        try:
+            if todo_slug is not None:
+                after = read_todo_mutation_snapshot(todo_slug)
+            else:
+                after_task = adapter.get_task(str(task_slug))
+                after = mutation_snapshot(after_task, todo=receipt_todo)
+        except (DomainValidationError, GBrainError, KeyError, ValueError):
+            partial_mutation_attention(
+                before,
+                slug=str(attention_slug),
+                mutation_kind=f"{mutation_kind}_post_write_readback",
+            )
+            return
+        after_canonical_mutation(
+            before,
+            after,
+            receipt_value,
+            mutation_kind=mutation_kind,
+        )
+
     def read_snapshot(force: bool = False):
         return active_read_cache.read(
             "tasks",
@@ -2295,14 +2333,11 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                receipt_value = canonical_mapping(receipt)
-                after_canonical_mutation(
+                after_verified_todo_mutation(
                     before_snapshot,
-                    read_todo_mutation_snapshot(todo_slug)
-                    if active_handoff_event_bridge is not None
-                    else {},
-                    receipt_value,
+                    receipt,
                     mutation_kind="todo_comment",
+                    todo_slug=todo_slug,
                 )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
@@ -2363,15 +2398,12 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                receipt_value = canonical_mapping(receipt)
-                if active_handoff_event_bridge is not None:
-                    after_task = adapter.get_task(task_slug)
-                    after_canonical_mutation(
-                        before_snapshot,
-                        mutation_snapshot(after_task, todo=receipt_value.get("todo")),
-                        receipt_value,
-                        mutation_kind="todo_created",
-                    )
+                after_verified_todo_mutation(
+                    before_snapshot,
+                    receipt,
+                    mutation_kind="todo_created",
+                    task_slug=task_slug,
+                )
                 invalidate_snapshot()
                 self._json(HTTPStatus.CREATED, {"receipt": receipt.to_dict()})
                 return
@@ -2470,6 +2502,7 @@ def _handler_class(
                         len(proposal_prefix) : -len(proposal_decision_suffix)
                     ]
                 )
+                before_snapshot = None
                 payload = self._read_json()
                 if payload is None:
                     return
@@ -2499,6 +2532,10 @@ def _handler_class(
                     )
                     return
                 try:
+                    if action == "approve" and active_handoff_event_bridge is not None:
+                        before_snapshot = mutation_snapshot(
+                            adapter.get_task(proposal_slug)
+                        )
                     receipt = adapter.decide_proposal(
                         proposal_slug,
                         action=action,
@@ -2518,6 +2555,12 @@ def _handler_class(
                     )
                     return
                 except PartialMutationError as exc:
+                    if action == "approve":
+                        partial_mutation_attention(
+                            before_snapshot,
+                            slug=exc.slug,
+                            mutation_kind="proposal_decision",
+                        )
                     self._json(
                         HTTPStatus.BAD_GATEWAY,
                         {
@@ -2533,6 +2576,18 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
+                receipt_value = canonical_mapping(receipt)
+                approved_task = canonical_mapping(receipt_value.get("created_task"))
+                if (
+                    action == "approve"
+                    and approved_task.get("proposal_decision") == "approve"
+                ):
+                    after_canonical_mutation(
+                        before_snapshot,
+                        mutation_snapshot(approved_task),
+                        receipt_value,
+                        mutation_kind="proposal_decision",
+                    )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
@@ -3175,14 +3230,11 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                receipt_value = canonical_mapping(receipt)
-                after_canonical_mutation(
+                after_verified_todo_mutation(
                     before_snapshot,
-                    read_todo_mutation_snapshot(todo_slug)
-                    if active_handoff_event_bridge is not None
-                    else {},
-                    receipt_value,
+                    receipt,
                     mutation_kind="todo_status",
+                    todo_slug=todo_slug,
                 )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
@@ -3248,14 +3300,11 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                receipt_value = canonical_mapping(receipt)
-                after_canonical_mutation(
+                after_verified_todo_mutation(
                     before_snapshot,
-                    read_todo_mutation_snapshot(todo_slug)
-                    if active_handoff_event_bridge is not None
-                    else {},
-                    receipt_value,
+                    receipt,
                     mutation_kind="todo_edited",
+                    todo_slug=todo_slug,
                 )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
