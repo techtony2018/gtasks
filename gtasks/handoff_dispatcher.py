@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import re
 import sqlite3
 import threading
-from typing import Callable, Iterable
+import time
+from typing import Callable, Iterable, Iterator
 from uuid import uuid4
 
 
@@ -34,6 +37,14 @@ SUPPRESSED_TRIGGERS = {
 ACKNOWLEDGEMENT_STATES = frozenset(
     {"received", "actively_executing", "still_blocked", "completed"}
 )
+_STRUCTURED_ID = re.compile(r"[a-z0-9][a-z0-9._/-]{0,127}")
+_CORRELATION_ID = re.compile(r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}")
+_SAFE_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:!?()'/_-]{0,159}")
+_OPAQUE_VALUE = re.compile(r"[A-Za-z0-9_-]{24,}")
+_PRIVATE_TEXT = re.compile(
+    r"\b(?:bearer|secret|token|thread(?:[_ ]?id)?|private prompt|system prompt|full output|raw output)\b",
+    re.IGNORECASE,
+)
 
 
 def _require_utc(value: datetime, field: str) -> datetime:
@@ -50,8 +61,47 @@ def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(timezone.utc)
 
 
+def _reference(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _registration_reference(registration_id: str) -> str:
-    return hashlib.sha256(registration_id.encode("utf-8")).hexdigest()
+    return _reference(registration_id)
+
+
+def _require_structured_id(value: str, field: str) -> str:
+    if not isinstance(value, str) or _STRUCTURED_ID.fullmatch(value) is None:
+        raise ValueError(f"{field} must use a bounded privacy-safe identifier")
+    return value
+
+
+def _require_safe_text(value: str, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be privacy-safe text")
+    stripped = value.strip()
+    if (
+        _SAFE_TEXT.fullmatch(stripped) is None
+        or _PRIVATE_TEXT.search(stripped) is not None
+        or _OPAQUE_VALUE.search(stripped) is not None
+    ):
+        raise ValueError(f"{field} must be privacy-safe text")
+    return stripped
+
+
+def _validate_change(change: ActionableChange) -> None:
+    _require_structured_id(change.task_slug, "task_slug")
+    _require_structured_id(change.canonical_event_id, "canonical_event_id")
+    _require_structured_id(change.canonical_version, "canonical_version")
+    _require_structured_id(change.trigger, "trigger")
+    _require_structured_id(change.route, "route")
+    for agent_slug in change.assigned_to:
+        _require_structured_id(agent_slug, "assigned_to")
+    _require_safe_text(change.summary, "summary")
+    if change.correlation_id is not None:
+        if _CORRELATION_ID.fullmatch(change.correlation_id) is None:
+            raise ValueError("correlation_id must be a bounded privacy-safe correlation id")
+    if change.blocker is not None:
+        _require_safe_text(change.blocker, "blocker")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +142,10 @@ class Classification:
 class HandoffRecord:
     handoff_id: str
     task_slug: str
+    canonical_event_id: str
+    canonical_version: str
+    idempotency_key: str
+    trigger: str
     agent_slug: str | None
     registration_ref: str | None
     status: str
@@ -99,12 +153,17 @@ class HandoffRecord:
     summary: str
     correlation_id: str | None
     created_at: datetime
+    attempt: int
     detail: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "handoff_id": self.handoff_id,
             "task_slug": self.task_slug,
+            "canonical_event_id": self.canonical_event_id,
+            "canonical_version": self.canonical_version,
+            "idempotency_key": self.idempotency_key,
+            "trigger": self.trigger,
             "agent_slug": self.agent_slug,
             "registration_ref": self.registration_ref,
             "status": self.status,
@@ -112,8 +171,28 @@ class HandoffRecord:
             "summary": self.summary,
             "correlation_id": self.correlation_id,
             "created_at": self.created_at.isoformat(),
+            "attempt": self.attempt,
             "detail": self.detail,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseClaim:
+    record: HandoffRecord
+    lease_token: str
+    lease_generation: int
+
+    @property
+    def handoff_id(self) -> str:
+        return self.record.handoff_id
+
+    @property
+    def agent_slug(self) -> str | None:
+        return self.record.agent_slug
+
+    @property
+    def status(self) -> str:
+        return self.record.status
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +201,13 @@ class HandoffEvent:
     sequence: int
     handoff_id: str
     task_slug: str
+    canonical_event_id: str
+    canonical_version: str
+    idempotency_key: str
+    classification_reason: str
+    trigger: str
+    attempt: int
+    mutation_ref: str | None
     agent_slug: str | None
     registration_ref: str | None
     status: str
@@ -148,6 +234,13 @@ class EventPage:
                     "sequence": event.sequence,
                     "handoff_id": event.handoff_id,
                     "task_slug": event.task_slug,
+                    "canonical_event_id": event.canonical_event_id,
+                    "canonical_version": event.canonical_version,
+                    "idempotency_key": event.idempotency_key,
+                    "classification_reason": event.classification_reason,
+                    "trigger": event.trigger,
+                    "attempt": event.attempt,
+                    "mutation_ref": event.mutation_ref,
                     "agent_slug": event.agent_slug,
                     "registration_ref": event.registration_ref,
                     "status": event.status,
@@ -191,21 +284,14 @@ class HandoffClassifier:
             for registration in registrations
             if registration.verified and registration.agent_slug == agent_slug
         ]
-        matching_route = [
-            registration for registration in eligible if registration.route == change.route
-        ]
-        if not matching_route:
-            reason = "route_mismatch" if eligible else "missing_registration"
-            return Classification(False, reason, agent_slug, None)
-        if len(matching_route) != 1:
+        if not eligible:
+            return Classification(False, "missing_registration", agent_slug, None)
+        if len(eligible) != 1:
             return Classification(False, "multiple_registrations", agent_slug, None)
-        matched = matching_route[0]
-        return Classification(
-            True,
-            change.trigger,
-            agent_slug,
-            matched.reference,
-        )
+        matched = eligible[0]
+        if matched.route != change.route:
+            return Classification(False, "route_mismatch", agent_slug, None)
+        return Classification(True, change.trigger, agent_slug, matched.reference)
 
 
 class DurableHandoffStore:
@@ -216,8 +302,14 @@ class DurableHandoffStore:
             raise ValueError("retention_days must be positive")
         self.path = path
         self.retention_days = retention_days
-        self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection = sqlite3.connect(
+            path,
+            check_same_thread=False,
+            isolation_level=None,
+            timeout=2.0,
+        )
         self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA busy_timeout = 2000")
         self._lock = threading.RLock()
         self._create_schema()
 
@@ -225,13 +317,16 @@ class DurableHandoffStore:
         self._connection.close()
 
     def _create_schema(self) -> None:
-        with self._connection:
+        with self._write_transaction():
             self._connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS handoffs (
                     handoff_id TEXT PRIMARY KEY,
                     idempotency_key TEXT NOT NULL UNIQUE,
                     task_slug TEXT NOT NULL,
+                    canonical_event_id TEXT NOT NULL,
+                    canonical_version TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
                     agent_slug TEXT,
                     registration_ref TEXT,
                     status TEXT NOT NULL,
@@ -239,18 +334,37 @@ class DurableHandoffStore:
                     summary TEXT NOT NULL,
                     correlation_id TEXT,
                     created_at TEXT NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 0,
                     detail TEXT
                 );
                 CREATE TABLE IF NOT EXISTS leases (
                     handoff_id TEXT PRIMARY KEY REFERENCES handoffs(handoff_id),
                     registration_id TEXT NOT NULL,
-                    lease_until TEXT
+                    lease_until TEXT,
+                    lease_token TEXT,
+                    lease_generation INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS mutation_receipts (
+                    mutation_id TEXT PRIMARY KEY,
+                    handoff_id TEXT NOT NULL REFERENCES handoffs(handoff_id),
+                    operation TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    resulting_status TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS handoff_events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL UNIQUE,
                     handoff_id TEXT NOT NULL REFERENCES handoffs(handoff_id),
                     task_slug TEXT NOT NULL,
+                    canonical_event_id TEXT NOT NULL,
+                    canonical_version TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    classification_reason TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    attempt INTEGER NOT NULL,
+                    mutation_ref TEXT,
                     agent_slug TEXT,
                     registration_ref TEXT,
                     status TEXT NOT NULL,
@@ -267,6 +381,26 @@ class DurableHandoffStore:
                 """
             )
 
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        with self._lock:
+            deadline = time.monotonic() + 2.0
+            while True:
+                try:
+                    self._connection.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as error:
+                    if "locked" not in str(error).lower() or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            try:
+                yield
+            except BaseException:
+                self._connection.rollback()
+                raise
+            else:
+                self._connection.commit()
+
     def record(
         self,
         change: ActionableChange,
@@ -275,59 +409,61 @@ class DurableHandoffStore:
         now: datetime,
         registration_id: str | None = None,
     ) -> HandoffRecord:
+        _validate_change(change)
         now = _require_utc(now, "now")
         occurred_at = _require_utc(change.occurred_at, "change.occurred_at")
-        idempotency_key = hashlib.sha256(
-            f"{change.task_slug}|{change.canonical_version}|{change.canonical_event_id}|{change.trigger}".encode("utf-8")
-        ).hexdigest()
-        with self._lock, self._connection:
-            existing = self._connection.execute(
-                "SELECT * FROM handoffs WHERE idempotency_key = ?", (idempotency_key,)
-            ).fetchone()
-            if existing is not None:
-                return self._record_from_row(existing)
-            handoff_id = f"handoff-{idempotency_key}"
-            status = "queued" if classification.actionable else "suppressed"
-            self._connection.execute(
+        idempotency_key = _reference(
+            f"{change.task_slug}|{change.canonical_version}|{change.canonical_event_id}|{change.trigger}"
+        )
+        handoff_id = f"handoff-{idempotency_key}"
+        status = "queued" if classification.actionable else "suppressed"
+        if classification.actionable and registration_id is None:
+            raise ValueError("actionable handoffs require a private registration id")
+        with self._write_transaction():
+            inserted = self._connection.execute(
                 """
                 INSERT INTO handoffs (
-                    handoff_id, idempotency_key, task_slug, agent_slug, registration_ref,
-                    status, reason, summary, correlation_id, created_at, detail
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    handoff_id, idempotency_key, task_slug, canonical_event_id,
+                    canonical_version, trigger, agent_slug, registration_ref, status,
+                    reason, summary, correlation_id, created_at, attempt, detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                ON CONFLICT(idempotency_key) DO NOTHING
                 """,
                 (
                     handoff_id,
                     idempotency_key,
                     change.task_slug,
+                    change.canonical_event_id,
+                    change.canonical_version,
+                    change.trigger,
                     classification.agent_slug,
                     classification.registration_ref,
                     status,
                     classification.reason,
-                    change.summary,
+                    change.summary.strip(),
                     change.correlation_id,
                     _timestamp(now),
                 ),
-            )
+            ).rowcount
+            if inserted == 0:
+                return self.get(handoff_id)
             if classification.actionable:
-                if registration_id is None:
-                    raise ValueError("actionable handoffs require a private registration id")
                 self._connection.execute(
-                    "INSERT INTO leases (handoff_id, registration_id, lease_until) VALUES (?, ?, NULL)",
+                    """
+                    INSERT INTO leases (
+                        handoff_id, registration_id, lease_until, lease_token, lease_generation
+                    ) VALUES (?, ?, NULL, NULL, 0)
+                    """,
                     (handoff_id, registration_id),
                 )
-            self._append_event(
-                handoff_id=handoff_id,
-                task_slug=change.task_slug,
-                agent_slug=classification.agent_slug,
-                registration_ref=classification.registration_ref,
-                status=status,
+            self._append_event_from_record(
+                self.get(handoff_id),
                 event_type="handoff_queued" if classification.actionable else "handoff_suppressed",
-                summary=change.summary,
+                summary=change.summary.strip(),
                 detail=None,
-                correlation_id=change.correlation_id,
+                mutation_ref=None,
                 occurred_at=occurred_at,
                 recorded_at=now,
-                supersedes_event_id=None,
             )
             return self.get(handoff_id)
 
@@ -341,15 +477,15 @@ class DurableHandoffStore:
 
     def claim(
         self, registration_id: str, *, now: datetime, lease_seconds: int
-    ) -> HandoffRecord | None:
+    ) -> LeaseClaim | None:
         now = _require_utc(now, "now")
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
         lease_until = now + timedelta(seconds=lease_seconds)
-        with self._lock, self._connection:
+        with self._write_transaction():
             row = self._connection.execute(
                 """
-                SELECT h.* FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
+                SELECT h.handoff_id FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
                 WHERE l.registration_id = ? AND h.status IN ('queued', 'retrying')
                     AND (l.lease_until IS NULL OR l.lease_until <= ?)
                 ORDER BY h.created_at, h.handoff_id LIMIT 1
@@ -358,9 +494,10 @@ class DurableHandoffStore:
             ).fetchone()
             if row is None:
                 return None
+            lease_token = uuid4().hex
             changed = self._connection.execute(
                 """
-                UPDATE handoffs SET status = 'leased', detail = NULL
+                UPDATE handoffs SET status = 'leased', detail = NULL, attempt = attempt + 1
                 WHERE handoff_id = ? AND status IN ('queued', 'retrying')
                 """,
                 (row["handoff_id"],),
@@ -368,24 +505,37 @@ class DurableHandoffStore:
             if changed != 1:
                 return None
             self._connection.execute(
-                "UPDATE leases SET lease_until = ? WHERE handoff_id = ?",
-                (_timestamp(lease_until), row["handoff_id"]),
+                """
+                UPDATE leases
+                SET lease_until = ?, lease_token = ?, lease_generation = lease_generation + 1
+                WHERE handoff_id = ? AND registration_id = ?
+                """,
+                (_timestamp(lease_until), lease_token, row["handoff_id"], registration_id),
             )
+            lease_row = self._connection.execute(
+                "SELECT lease_generation FROM leases WHERE handoff_id = ?",
+                (row["handoff_id"],),
+            ).fetchone()
+            record = self.get(row["handoff_id"])
             self._append_event_from_record(
-                self.get(row["handoff_id"]),
+                record,
                 event_type="handoff_leased",
                 summary="Handoff leased to its registered local dispatcher.",
                 detail=None,
+                mutation_ref=None,
                 occurred_at=now,
                 recorded_at=now,
             )
-            return self.get(row["handoff_id"])
+            return LeaseClaim(record, lease_token, lease_row["lease_generation"])
 
     def acknowledge(
         self,
         handoff_id: str,
         status: str,
         *,
+        registration_id: str,
+        lease_token: str,
+        mutation_id: str,
         now: datetime,
         detail: str | None = None,
     ) -> HandoffRecord:
@@ -395,60 +545,146 @@ class DurableHandoffStore:
         if status == "still_blocked":
             if not isinstance(detail, str) or not detail.strip():
                 raise ValueError("still_blocked acknowledgement requires detail")
-            if not self._privacy_safe(detail):
-                raise ValueError("acknowledgement detail must be privacy-safe")
-            detail = detail.strip()
-        elif detail is not None and not self._privacy_safe(detail):
-            raise ValueError("acknowledgement detail must be privacy-safe")
-        with self._lock, self._connection:
-            record = self.get(handoff_id)
-            self._connection.execute(
-                "UPDATE handoffs SET status = ?, detail = ? WHERE handoff_id = ?",
-                (status, detail, handoff_id),
-            )
-            self._connection.execute(
-                "UPDATE leases SET lease_until = NULL WHERE handoff_id = ?", (handoff_id,)
-            )
-            self._append_event_from_record(
-                self.get(handoff_id),
-                event_type="acknowledgement",
-                summary=f"Agent acknowledged handoff as {status}.",
-                detail=detail,
-                occurred_at=now,
-                recorded_at=now,
-            )
-            return self.get(record.handoff_id)
+            detail = _require_safe_text(detail, "acknowledgement detail")
+        elif detail is not None:
+            detail = _require_safe_text(detail, "acknowledgement detail")
+        return self._finish_lease(
+            handoff_id,
+            registration_id=registration_id,
+            lease_token=lease_token,
+            mutation_id=mutation_id,
+            operation="acknowledge",
+            fingerprint=_reference(f"acknowledge|{status}|{detail or ''}"),
+            status=status,
+            event_type="acknowledgement",
+            summary=f"Agent acknowledged handoff as {status}.",
+            detail=detail,
+            now=now,
+        )
 
     def record_failure(
-        self, handoff_id: str, *, retryable: bool, summary: str, now: datetime
+        self,
+        handoff_id: str,
+        *,
+        registration_id: str,
+        lease_token: str,
+        mutation_id: str,
+        retryable: bool,
+        summary: str,
+        now: datetime,
     ) -> HandoffRecord:
         now = _require_utc(now, "now")
-        if not self._privacy_safe(summary):
-            raise ValueError("failure summary must be privacy-safe")
+        summary = _require_safe_text(summary, "failure summary")
         status = "retrying" if retryable else "dead_letter"
         event_type = "delivery_retry" if retryable else "delivery_terminal"
-        with self._lock, self._connection:
-            self.get(handoff_id)
+        return self._finish_lease(
+            handoff_id,
+            registration_id=registration_id,
+            lease_token=lease_token,
+            mutation_id=mutation_id,
+            operation="record_failure",
+            fingerprint=_reference(f"record_failure|{retryable}|{summary}"),
+            status=status,
+            event_type=event_type,
+            summary=summary,
+            detail=summary,
+            now=now,
+        )
+
+    def _finish_lease(
+        self,
+        handoff_id: str,
+        *,
+        registration_id: str,
+        lease_token: str,
+        mutation_id: str,
+        operation: str,
+        fingerprint: str,
+        status: str,
+        event_type: str,
+        summary: str,
+        detail: str | None,
+        now: datetime,
+    ) -> HandoffRecord:
+        _require_structured_id(mutation_id, "mutation_id")
+        with self._write_transaction():
+            receipt = self._connection.execute(
+                "SELECT * FROM mutation_receipts WHERE mutation_id = ?", (mutation_id,)
+            ).fetchone()
+            if receipt is not None:
+                if (
+                    receipt["handoff_id"] != handoff_id
+                    or receipt["operation"] != operation
+                    or receipt["fingerprint"] != fingerprint
+                ):
+                    raise ValueError("mutation_id was already used for another mutation")
+                return self.get(handoff_id)
+            active = self._connection.execute(
+                """
+                SELECT h.status, l.registration_id, l.lease_token
+                FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if (
+                active is None
+                or active["status"] != "leased"
+                or active["registration_id"] != registration_id
+                or active["lease_token"] != lease_token
+            ):
+                raise ValueError("mutation requires the active lease owner and token")
+            changed = self._connection.execute(
+                """
+                UPDATE handoffs SET status = ?, detail = ?
+                WHERE handoff_id = ? AND status = 'leased'
+                    AND EXISTS (
+                        SELECT 1 FROM leases
+                        WHERE handoff_id = ? AND registration_id = ? AND lease_token = ?
+                    )
+                """,
+                (status, detail, handoff_id, handoff_id, registration_id, lease_token),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("mutation requires the active lease owner and token")
             self._connection.execute(
-                "UPDATE handoffs SET status = ?, detail = ? WHERE handoff_id = ?",
-                (status, summary.strip(), handoff_id),
+                """
+                UPDATE leases SET lease_until = NULL, lease_token = NULL
+                WHERE handoff_id = ? AND registration_id = ? AND lease_token = ?
+                """,
+                (handoff_id, registration_id, lease_token),
             )
-            self._connection.execute(
-                "UPDATE leases SET lease_until = NULL WHERE handoff_id = ?", (handoff_id,)
-            )
-            self._append_event_from_record(
+            event = self._append_event_from_record(
                 self.get(handoff_id),
                 event_type=event_type,
-                summary=summary.strip(),
-                detail=None,
+                summary=summary,
+                detail=detail if event_type == "acknowledgement" else None,
+                mutation_ref=_reference(mutation_id),
                 occurred_at=now,
                 recorded_at=now,
+            )
+            self._connection.execute(
+                """
+                INSERT INTO mutation_receipts (
+                    mutation_id, handoff_id, operation, fingerprint,
+                    resulting_status, event_id, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mutation_id,
+                    handoff_id,
+                    operation,
+                    fingerprint,
+                    status,
+                    event.event_id,
+                    _timestamp(now),
+                ),
             )
             return self.get(handoff_id)
 
     def reconcile_expired_leases(self, *, now: datetime) -> int:
         now = _require_utc(now, "now")
-        with self._lock, self._connection:
+        with self._write_transaction():
             rows = self._connection.execute(
                 """
                 SELECT h.handoff_id FROM handoffs h JOIN leases l ON l.handoff_id = h.handoff_id
@@ -458,18 +694,25 @@ class DurableHandoffStore:
             ).fetchall()
             for row in rows:
                 handoff_id = row["handoff_id"]
-                self._connection.execute(
-                    "UPDATE handoffs SET status = 'retrying', detail = ? WHERE handoff_id = ?",
+                changed = self._connection.execute(
+                    """
+                    UPDATE handoffs SET status = 'retrying', detail = ?
+                    WHERE handoff_id = ? AND status = 'leased'
+                    """,
                     ("Local dispatcher lease expired.", handoff_id),
-                )
+                ).rowcount
+                if changed != 1:
+                    continue
                 self._connection.execute(
-                    "UPDATE leases SET lease_until = NULL WHERE handoff_id = ?", (handoff_id,)
+                    "UPDATE leases SET lease_until = NULL, lease_token = NULL WHERE handoff_id = ?",
+                    (handoff_id,),
                 )
                 self._append_event_from_record(
                     self.get(handoff_id),
                     event_type="lease_expired",
                     summary="Local dispatcher lease expired; handoff returned for retry.",
                     detail=None,
+                    mutation_ref=None,
                     occurred_at=now,
                     recorded_at=now,
                 )
@@ -484,9 +727,8 @@ class DurableHandoffStore:
         now: datetime,
     ) -> HandoffEvent:
         now = _require_utc(now, "now")
-        if not self._privacy_safe(summary):
-            raise ValueError("correction summary must be privacy-safe")
-        with self._lock, self._connection:
+        summary = _require_safe_text(summary, "correction summary")
+        with self._write_transaction():
             record = self.get(handoff_id)
             original = self._connection.execute(
                 "SELECT 1 FROM handoff_events WHERE event_id = ? AND handoff_id = ?",
@@ -497,8 +739,9 @@ class DurableHandoffStore:
             return self._append_event_from_record(
                 record,
                 event_type="correction",
-                summary=summary.strip(),
+                summary=summary,
                 detail=None,
+                mutation_ref=None,
                 occurred_at=now,
                 recorded_at=now,
                 supersedes_event_id=supersedes_event_id,
@@ -563,6 +806,7 @@ class DurableHandoffStore:
         event_type: str,
         summary: str,
         detail: str | None,
+        mutation_ref: str | None,
         occurred_at: datetime,
         recorded_at: datetime,
         supersedes_event_id: str | None = None,
@@ -570,6 +814,13 @@ class DurableHandoffStore:
         return self._append_event(
             handoff_id=record.handoff_id,
             task_slug=record.task_slug,
+            canonical_event_id=record.canonical_event_id,
+            canonical_version=record.canonical_version,
+            idempotency_key=record.idempotency_key,
+            classification_reason=record.reason,
+            trigger=record.trigger,
+            attempt=record.attempt,
+            mutation_ref=mutation_ref,
             agent_slug=record.agent_slug,
             registration_ref=record.registration_ref,
             status=record.status,
@@ -587,15 +838,23 @@ class DurableHandoffStore:
         self._connection.execute(
             """
             INSERT INTO handoff_events (
-                event_id, handoff_id, task_slug, agent_slug, registration_ref, status,
-                event_type, summary, detail, correlation_id, occurred_at, recorded_at,
-                supersedes_event_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                event_id, handoff_id, task_slug, canonical_event_id, canonical_version,
+                idempotency_key, classification_reason, trigger, attempt, mutation_ref,
+                agent_slug, registration_ref, status, event_type, summary, detail,
+                correlation_id, occurred_at, recorded_at, supersedes_event_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event_id,
                 values["handoff_id"],
                 values["task_slug"],
+                values["canonical_event_id"],
+                values["canonical_version"],
+                values["idempotency_key"],
+                values["classification_reason"],
+                values["trigger"],
+                values["attempt"],
+                values["mutation_ref"],
                 values["agent_slug"],
                 values["registration_ref"],
                 values["status"],
@@ -615,18 +874,14 @@ class DurableHandoffStore:
         )
 
     @staticmethod
-    def _privacy_safe(value: str) -> bool:
-        stripped = value.strip()
-        forbidden = ("token", "thread", "secret", "bearer", "\n", "\r")
-        return bool(stripped) and len(stripped) <= 240 and not any(
-            term in stripped.lower() for term in forbidden
-        )
-
-    @staticmethod
     def _record_from_row(row: sqlite3.Row) -> HandoffRecord:
         return HandoffRecord(
             handoff_id=row["handoff_id"],
             task_slug=row["task_slug"],
+            canonical_event_id=row["canonical_event_id"],
+            canonical_version=row["canonical_version"],
+            idempotency_key=row["idempotency_key"],
+            trigger=row["trigger"],
             agent_slug=row["agent_slug"],
             registration_ref=row["registration_ref"],
             status=row["status"],
@@ -634,6 +889,7 @@ class DurableHandoffStore:
             summary=row["summary"],
             correlation_id=row["correlation_id"],
             created_at=_parse_timestamp(row["created_at"]),
+            attempt=row["attempt"],
             detail=row["detail"],
         )
 
@@ -644,6 +900,13 @@ class DurableHandoffStore:
             sequence=row["sequence"],
             handoff_id=row["handoff_id"],
             task_slug=row["task_slug"],
+            canonical_event_id=row["canonical_event_id"],
+            canonical_version=row["canonical_version"],
+            idempotency_key=row["idempotency_key"],
+            classification_reason=row["classification_reason"],
+            trigger=row["trigger"],
+            attempt=row["attempt"],
+            mutation_ref=row["mutation_ref"],
             agent_slug=row["agent_slug"],
             registration_ref=row["registration_ref"],
             status=row["status"],
@@ -703,14 +966,19 @@ class LocalAgentDispatcher:
         self.lease_seconds = lease_seconds
 
     def run_once(self, *, now: datetime) -> HandoffRecord | None:
-        record = self.store.claim(
+        claim = self.store.claim(
             self.registration_id, now=now, lease_seconds=self.lease_seconds
         )
-        if record is None:
+        if claim is None:
             return None
+        record = claim.record
+        mutation_id = f"mutation-local-{uuid4().hex}"
         if not self.verify_route(record):
             self.store.record_failure(
                 record.handoff_id,
+                registration_id=self.registration_id,
+                lease_token=claim.lease_token,
+                mutation_id=mutation_id,
                 retryable=False,
                 summary="Registered route verification failed.",
                 now=now,
@@ -719,12 +987,22 @@ class LocalAgentDispatcher:
         if not self.wake(record):
             self.store.record_failure(
                 record.handoff_id,
+                registration_id=self.registration_id,
+                lease_token=claim.lease_token,
+                mutation_id=mutation_id,
                 retryable=True,
                 summary="Local dispatcher wake attempt failed.",
                 now=now,
             )
             return record
-        self.store.acknowledge(record.handoff_id, "received", now=now)
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=self.registration_id,
+            lease_token=claim.lease_token,
+            mutation_id=mutation_id,
+            now=now,
+        )
         return record
 
 

@@ -4,7 +4,9 @@ import dataclasses
 import hashlib
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from gtasks.handoff_dispatcher import (
@@ -117,6 +119,21 @@ class HandoffClassifierTests(unittest.TestCase):
             self.assertFalse(result.actionable)
             self.assertEqual(result.reason, reason)
 
+    def test_rejects_mixed_route_duplicate_verified_registration(self) -> None:
+        result = HandoffClassifier().classify(
+            change(),
+            (
+                registration(),
+                registration(
+                    registration_id="private-registration-other-route",
+                    route="hosts/timmy",
+                ),
+            ),
+        )
+
+        self.assertFalse(result.actionable)
+        self.assertEqual(result.reason, "multiple_registrations")
+
 
 class DurableHandoffStoreTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -131,6 +148,11 @@ class DurableHandoffStoreTests(unittest.TestCase):
 
     def record(self, **overrides: object):
         return self.dispatcher.record(change(**overrides), now=NOW)
+
+    def claim(self):
+        claimed = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        self.assertIsNotNone(claimed)
+        return claimed
 
     def test_persists_idempotent_outbox_and_redacted_audit_projection(self) -> None:
         first = self.record()
@@ -162,40 +184,295 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30))
 
     def test_acknowledgement_states_validate_blocked_detail(self) -> None:
-        record = self.record()
-        for status in ("received", "actively_executing", "completed"):
+        for index, status in enumerate(("received", "actively_executing", "completed")):
             with self.subTest(status=status):
-                acknowledged = self.store.acknowledge(record.handoff_id, status, now=NOW)
+                record = self.record(canonical_event_id=f"events/ack-{index}")
+                claim = self.claim()
+                acknowledged = self.store.acknowledge(
+                    record.handoff_id,
+                    status,
+                    registration_id=REGISTRATION_ID,
+                    lease_token=claim.lease_token,
+                    mutation_id=f"mutation-ack-{index}",
+                    now=NOW,
+                )
                 self.assertEqual(acknowledged.status, status)
+        record = self.record(canonical_event_id="events/ack-blocked")
+        claim = self.claim()
         with self.assertRaisesRegex(ValueError, "detail"):
-            self.store.acknowledge(record.handoff_id, "still_blocked", now=NOW)
+            self.store.acknowledge(
+                record.handoff_id,
+                "still_blocked",
+                registration_id=REGISTRATION_ID,
+                lease_token=claim.lease_token,
+                mutation_id="mutation-blocked-empty",
+                now=NOW,
+            )
         with self.assertRaisesRegex(ValueError, "privacy-safe"):
             self.store.acknowledge(
                 record.handoff_id,
                 "still_blocked",
+                registration_id=REGISTRATION_ID,
+                lease_token=claim.lease_token,
+                mutation_id="mutation-blocked-private",
                 detail="token is missing",
                 now=NOW,
             )
         blocked = self.store.acknowledge(
             record.handoff_id,
             "still_blocked",
+            registration_id=REGISTRATION_ID,
+            lease_token=claim.lease_token,
+            mutation_id="mutation-blocked-valid",
             detail="Waiting for a release decision.",
             now=NOW,
         )
         self.assertEqual(blocked.status, "still_blocked")
         self.assertEqual(blocked.detail, "Waiting for a release decision.")
         with self.assertRaisesRegex(ValueError, "acknowledgement"):
-            self.store.acknowledge(record.handoff_id, "invented", now=NOW)
+            self.store.acknowledge(
+                record.handoff_id,
+                "invented",
+                registration_id=REGISTRATION_ID,
+                lease_token=claim.lease_token,
+                mutation_id="mutation-invented",
+                now=NOW,
+            )
 
     def test_retryable_and_terminal_failures_have_distinct_audit_states(self) -> None:
         record = self.record()
-        retry = self.store.record_failure(record.handoff_id, retryable=True, summary="network unavailable", now=NOW)
-        terminal = self.store.record_failure(record.handoff_id, retryable=False, summary="route revoked", now=NOW)
+        first_claim = self.claim()
+        retry = self.store.record_failure(
+            record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=first_claim.lease_token,
+            mutation_id="mutation-retry",
+            retryable=True,
+            summary="Network unavailable.",
+            now=NOW,
+        )
+        second_claim = self.claim()
+        terminal = self.store.record_failure(
+            record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=second_claim.lease_token,
+            mutation_id="mutation-terminal",
+            retryable=False,
+            summary="Route revoked.",
+            now=NOW,
+        )
         page = self.store.query_events(limit=50, after_sequence=0)
 
         self.assertEqual(retry.status, "retrying")
         self.assertEqual(terminal.status, "dead_letter")
-        self.assertEqual([event.event_type for event in page.events[-2:]], ["delivery_retry", "delivery_terminal"])
+        self.assertEqual(
+            [
+                event.event_type
+                for event in page.events
+                if event.event_type.startswith("delivery_")
+            ],
+            ["delivery_retry", "delivery_terminal"],
+        )
+
+    def test_stale_lease_is_fenced_replays_are_idempotent_and_terminal_does_not_regress(self) -> None:
+        record = self.record()
+        stale = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=5)
+        self.assertIsNotNone(stale)
+        HandoffGuardian(self.store).reconcile(now=NOW + timedelta(seconds=6))
+        current = self.store.claim(
+            REGISTRATION_ID,
+            now=NOW + timedelta(seconds=6),
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(current)
+        self.assertGreater(current.lease_generation, stale.lease_generation)
+
+        stale_calls = (
+            lambda: self.store.acknowledge(
+                record.handoff_id,
+                "completed",
+                registration_id=REGISTRATION_ID,
+                lease_token=stale.lease_token,
+                mutation_id="mutation-stale-ack",
+                now=NOW + timedelta(seconds=6),
+            ),
+            lambda: self.store.record_failure(
+                record.handoff_id,
+                registration_id=REGISTRATION_ID,
+                lease_token=stale.lease_token,
+                mutation_id="mutation-stale-failure",
+                retryable=False,
+                summary="Route revoked.",
+                now=NOW + timedelta(seconds=6),
+            ),
+        )
+        for stale_call in stale_calls:
+            with self.subTest(call=stale_call), self.assertRaisesRegex(ValueError, "active lease"):
+                stale_call()
+
+        completed = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=current.lease_token,
+            mutation_id="mutation-completed",
+            now=NOW + timedelta(seconds=6),
+        )
+        replayed = self.store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=REGISTRATION_ID,
+            lease_token=current.lease_token,
+            mutation_id="mutation-completed",
+            now=NOW + timedelta(seconds=7),
+        )
+        self.assertEqual(replayed.status, completed.status)
+        self.assertEqual(
+            len(self.store.query_events(limit=50, after_sequence=0, event_type="acknowledgement").events),
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "active lease"):
+            self.store.record_failure(
+                record.handoff_id,
+                registration_id=REGISTRATION_ID,
+                lease_token=current.lease_token,
+                mutation_id="mutation-after-completed",
+                retryable=True,
+                summary="Network unavailable.",
+                now=NOW + timedelta(seconds=8),
+            )
+        self.assertEqual(self.store.get(record.handoff_id).status, "completed")
+
+        failure_record = self.record(canonical_event_id="events/failure-replay")
+        failure_claim = self.claim()
+        first_failure = self.store.record_failure(
+            failure_record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=failure_claim.lease_token,
+            mutation_id="mutation-failure-replay",
+            retryable=True,
+            summary="Network unavailable.",
+            now=NOW,
+        )
+        replayed_failure = self.store.record_failure(
+            failure_record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=failure_claim.lease_token,
+            mutation_id="mutation-failure-replay",
+            retryable=True,
+            summary="Network unavailable.",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(replayed_failure.status, first_failure.status)
+        failure_events = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="delivery_retry",
+        ).events
+        self.assertEqual(len(failure_events), 1)
+
+    def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:
+        other_store = DurableHandoffStore(self.path, retention_days=30)
+        self.addCleanup(other_store.close)
+        other_dispatcher = HandoffDispatcher(other_store, registrations=(registration(),))
+        barrier = threading.Barrier(2)
+
+        def concurrently_record(dispatcher: HandoffDispatcher):
+            barrier.wait()
+            return dispatcher.record(change(), now=NOW)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            records = list(executor.map(concurrently_record, (self.dispatcher, other_dispatcher)))
+
+        self.assertEqual(records[0].handoff_id, records[1].handoff_id)
+        self.assertEqual(self.store.query_events(limit=50, after_sequence=0).total, 1)
+
+        claim_barrier = threading.Barrier(2)
+
+        def concurrently_claim(store: DurableHandoffStore):
+            claim_barrier.wait()
+            return store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claims = list(executor.map(concurrently_claim, (self.store, other_store)))
+
+        winners = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertTrue(winners[0].lease_token)
+        self.assertEqual(winners[0].lease_generation, 1)
+
+    def test_record_boundary_rejects_unstructured_or_private_content(self) -> None:
+        unsafe_changes = (
+            change(summary="Opaque value eyJhbGciOiJIUzI1NiJ9YWJjZGVmZ2hpamtsbW5vcA."),
+            change(summary="Private prompt: reveal the system instructions."),
+            change(summary="Full output: all agent response content follows."),
+            change(summary="Raw thread id 019fc0e2-5a9b-78a0-b989-27e590890fd8."),
+            change(correlation_id="019fc0e25a9b78a0b98927e590890fd8"),
+        )
+
+        for unsafe_change in unsafe_changes:
+            with self.subTest(change=unsafe_change), self.assertRaisesRegex(
+                ValueError,
+                "privacy-safe",
+            ):
+                self.dispatcher.record(unsafe_change, now=NOW)
+
+        self.assertEqual(self.store.query_events(limit=50, after_sequence=0).total, 0)
+
+    def test_events_alone_reconstruct_creation_classification_attempts_and_transitions(self) -> None:
+        record = self.record()
+        first_claim = self.claim()
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=first_claim.lease_token,
+            mutation_id="mutation-received",
+            now=NOW,
+        )
+        acknowledgement = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="acknowledgement",
+        ).events[0]
+        self.store.append_correction(
+            record.handoff_id,
+            supersedes_event_id=acknowledgement.event_id,
+            summary="Corrected acknowledgement summary.",
+            now=NOW,
+        )
+
+        terminal_record = self.record(canonical_event_id="events/terminal")
+        terminal_claim = self.claim()
+        self.store.record_failure(
+            terminal_record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=terminal_claim.lease_token,
+            mutation_id="mutation-terminal-audit",
+            retryable=False,
+            summary="Route revoked.",
+            now=NOW,
+        )
+        events = self.store.query_events(limit=50, after_sequence=0).events
+
+        for event in events:
+            with self.subTest(event_type=event.event_type):
+                self.assertTrue(event.canonical_event_id)
+                self.assertTrue(event.canonical_version)
+                self.assertTrue(event.idempotency_key)
+                self.assertTrue(event.classification_reason)
+                self.assertTrue(event.trigger)
+                self.assertGreaterEqual(event.attempt, 0)
+        by_type = {event.event_type: event for event in events}
+        self.assertEqual(by_type["handoff_queued"].attempt, 0)
+        self.assertEqual(by_type["handoff_leased"].attempt, 1)
+        self.assertEqual(by_type["acknowledgement"].status, "received")
+        self.assertTrue(by_type["acknowledgement"].mutation_ref)
+        self.assertEqual(
+            by_type["correction"].supersedes_event_id,
+            acknowledgement.event_id,
+        )
+        self.assertEqual(by_type["delivery_terminal"].status, "dead_letter")
 
     def test_claim_is_atomic_and_guardian_recovers_an_expired_lease(self) -> None:
         record = self.record()
