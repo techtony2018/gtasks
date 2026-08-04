@@ -972,6 +972,9 @@ class CanonicalHandoffEventBridge:
         elif before_status in {"planned", "proposed"} and after_status == "active":
             trigger = "task_activated"
             summary = "The verified Task became active."
+        elif self._assigned_to(before_outer, before_task) != assigned_to:
+            trigger = "ownership_changed"
+            summary = "Verified Task ownership changed."
         elif before_blockers and before_blockers == after_blockers:
             trigger = "unchanged_blocker"
             summary = "The canonical blocker is unchanged."
@@ -989,9 +992,6 @@ class CanonicalHandoffEventBridge:
         ):
             trigger = "authorization_granted"
             summary = "Verified authorization was granted."
-        elif self._assigned_to(before_outer, before_task) != assigned_to:
-            trigger = "ownership_changed"
-            summary = "Verified Task ownership changed."
         elif task_changes and task_changes <= self._PRESENTATION_FIELDS:
             trigger = "presentation_only"
             summary = "Presentation-only canonical fields changed."

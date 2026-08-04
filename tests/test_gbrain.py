@@ -383,6 +383,32 @@ class HandoffMutationReadbackTests(unittest.TestCase):
 
         self.assertEqual(change.trigger, "unchanged_blocker")
 
+    def test_blocked_task_reassignment_preserves_actionable_ownership_handoff(self) -> None:
+        task = self.snapshot()["task"]
+        before_task = {
+            **task,
+            "status": "blocked",
+            "blockers": ["systems/gbrain"],
+            "assigned_to": ["agents/timmy"],
+        }
+        after_task = {
+            **before_task,
+            "assigned_to": ["agents/tammy"],
+        }
+        dispatcher = self.RecordingDispatcher()
+
+        change = CanonicalHandoffEventBridge(dispatcher).after_verified_mutation(
+            self.snapshot(task=before_task),
+            self.snapshot(task=after_task),
+            self.receipt(),
+            self.NOW,
+        )
+
+        self.assertEqual(change.trigger, "ownership_changed")
+        self.assertEqual(change.assigned_to, ("agents/tammy",))
+        self.assertEqual(change.route, "hosts/tammy")
+        self.assertEqual(dispatcher.changes, [(change, self.NOW)])
+
     def test_normalizes_explicit_non_actionable_canonical_changes(self) -> None:
         task = self.snapshot()["task"]
         cases = (
