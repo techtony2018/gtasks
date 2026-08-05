@@ -65,7 +65,7 @@ drift.
 Current verified release: V0.0.76. It adds event-driven Agent handoffs from
 verified canonical mutation receipts, identity-scoped delivery to existing
 fixed Codex threads, and one redacted append-only audit source for Task
-Timeline and Handoff Log. It builds on the V0.0.73 recoverable handoff
+Timeline and Agents Handoff History. It builds on the V0.0.73 recoverable handoff
 completion path, the V0.0.74 `job_applied` progress repair, and the V0.0.75
 Artifact navigation and Calendar-control refinements.
 
@@ -238,7 +238,7 @@ Dispatcher per host claims only its registered Agent identity and resumes only
 that Agent's already-approved fixed Codex thread. It never creates, forks,
 replaces, or guesses a thread.
 
-Task Timeline and Handoff Log are read-only projections over the same
+Task Timeline and Agents Handoff History are read-only projections over the same
 append-only handoff event table. They share ordering, totals, filters,
 correlation, pagination, retention/export metadata, and privacy-safe
 `registration_ref` evidence; neither view mutates or repairs GBrain.

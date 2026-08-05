@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.72">
-    <script src="/app.js?v=0.0.72" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.78">
+    <script src="/app.js?v=0.0.78" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -57,9 +57,6 @@
           </button>
           <button class="nav-item has-tooltip" data-view="goals" type="button" aria-label="Goals" data-tooltip="Goals">
             <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Goals</span>
-          </button>
-          <button class="nav-item has-tooltip" data-view="handoff-log" type="button" aria-label="Handoff Log" data-tooltip="Handoff Log">
-            <span class="nav-icon" aria-hidden="true">⇄</span><span class="nav-label">Handoff Log</span>
           </button>
           <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
             <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
@@ -224,18 +221,6 @@
             </form>
             <p class="form-error is-hidden" role="alert" id="task-handoff-error"></p>
           </section>
-          <section class="task-handoff-timeline" id="task-handoff-timeline" aria-labelledby="task-handoff-timeline-heading">
-            <div class="task-handoff-timeline-heading">
-              <div>
-                <h3 id="task-handoff-timeline-heading">Task Timeline</h3>
-                <span>Read-only handoff audit events</span>
-              </div>
-              <span id="task-handoff-total" aria-live="polite"></span>
-            </div>
-            <p class="handoff-surface-state" id="task-handoff-event-state" role="status" aria-live="polite" tabindex="-1">Loading handoff events…</p>
-            <ol class="handoff-event-list" id="task-handoff-event-list" aria-label="Task handoff timeline"></ol>
-            <button class="secondary-button is-hidden" id="task-handoff-load-more" type="button">Load more events</button>
-          </section>
           <section class="task-todos" aria-labelledby="task-todo-heading">
             <div class="task-todo-heading-row">
               <div>
@@ -295,6 +280,15 @@
             Open in Memory Stargraph
           </a>
           <code class="slug-label" id="detail-slug"></code>
+          <details class="task-handoff-timeline" id="task-handoff-timeline" aria-labelledby="task-handoff-timeline-heading">
+            <summary class="task-handoff-timeline-heading" id="task-handoff-timeline-heading" aria-expanded="false">
+              <span>Task Timeline</span>
+              <span id="task-handoff-total" aria-live="polite"></span>
+            </summary>
+            <p class="handoff-surface-state" id="task-handoff-event-state" role="status" aria-live="polite" tabindex="-1">Loading handoff events…</p>
+            <ol class="handoff-event-list" id="task-handoff-event-list" aria-label="Task handoff timeline"></ol>
+            <button class="secondary-button is-hidden" id="task-handoff-load-more" type="button">Load more events</button>
+          </details>
         </div>
         <div class="artifact-detail-content is-hidden" id="artifact-detail-content">
           <div class="detail-toolbar">

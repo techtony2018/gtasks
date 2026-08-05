@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.77",
+  "current_version": "V0.0.78",
   "releases": [
     {
       "version": "V0.0.1",
@@ -462,6 +462,12 @@
       "date": "2026-08-04",
       "title": "Semantic Agent answer handoffs",
       "summary": "Mission Control now classifies Tony answers by semantic effect across task fields, body text, TODO updates, and comments; material answer revisions create a new idempotent Agent handoff, duplicate saves remain Timeline-only, and Tony-owned tasks are logged as informational with no Agent handoff required."
+    },
+    {
+      "version": "V0.0.78",
+      "date": "2026-08-04",
+      "title": "Consolidated handoff history surfaces",
+      "summary": "Keeps Task Timeline collapsed at the bottom of task details, removes self-navigation controls from task-local handoff events, and consolidates user-facing Handoff History into the Agents surface with safe legacy routing."
     }
   ]
 }

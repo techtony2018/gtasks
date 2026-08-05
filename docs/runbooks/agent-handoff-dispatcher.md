@@ -9,7 +9,7 @@ Delivery failure does not roll back an already verified canonical GBrain
 mutation.
 
 The SQLite handoff event table is the only delivery evidence source. Task
-Timeline and Handoff Log are read-only projections over the same append-only
+Timeline and Agents Handoff History are read-only projections over the same append-only
 handoff event table. Neither projection repairs or mutates GBrain.
 
 Each installed local Dispatcher owns exactly one Agent identity, one private
@@ -216,7 +216,7 @@ GET /api/handoff-events?export=1
 ```
 
 The export metadata format is `handoff-audit-v1`; filters, ordering, totals,
-and cursors match the Task Timeline and Handoff Log queries. Corrections are
+and cursors match the Task Timeline and Agents Handoff History queries. Corrections are
 new append-only events that reference the superseded event.
 
 User-visible and exported rows contain the pseudonymized `registration_ref`.
@@ -260,7 +260,7 @@ candidate:
    delete or edit delivery history to make rollback appear clean.
 4. Restore the prior private credential file only from its verified backup,
    then read back mode `0600`, hashes, and identity count.
-5. Verify health/version, read-only Task Timeline and Handoff Log, and zero
+5. Verify health/version, read-only Task Timeline and Agents Handoff History, and zero
    active canary work before considering a later retry.
 
 A verified canonical GBrain mutation is not rolled back because delivery or

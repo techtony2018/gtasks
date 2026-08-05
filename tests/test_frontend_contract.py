@@ -988,8 +988,8 @@ class FrontendContractTests(unittest.TestCase):
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.72"', html)
-        self.assertIn('src="/app.js?v=0.0.72"', html)
+        self.assertIn('href="/styles.css?v=0.0.78"', html)
+        self.assertIn('src="/app.js?v=0.0.78"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1195,8 +1195,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("loadSystemTickets({ force: true })", bootstrap)
         self.assertIn('view === "projects" && !state.projectsLoaded', javascript)
         self.assertIn('view === "inbox" && !state.proposalsLoaded', javascript)
-        self.assertIn('view === "agent-work" || view === "handoff-log"', javascript)
-        self.assertIn('(view === "agent-work" || view === "handoff-log") && !state.agentsLoaded', javascript)
+        self.assertIn('view === "agent-work" && !state.agentsLoaded', javascript)
+        self.assertNotIn('view === "agent-work" || view === "handoff-log"', javascript)
 
     def test_verified_todo_mutation_receipt_updates_ui_without_duplicate_read(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1358,9 +1358,11 @@ class FrontendContractTests(unittest.TestCase):
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 window.innerWidth = 390;
 window.matchMedia = (query) => ({ matches: query.includes("760px") });
-state.activeView = "handoff-log";
+state.activeView = "agent-work";
+state.agentHandoffHistoryOpen = true;
 state.snapshot = null;
 state.tasksReadState = null;
+state.agents = [{ slug: "agents/tammy", name: "Tammy" }];
 state.handoffLogEvents = [{
   sequence: 1,
   task_slug: "tasks/runtime-mobile-handoff",
@@ -1368,7 +1370,7 @@ state.handoffLogEvents = [{
   event_type: "handoff_queued",
   status: "queued",
   occurred_at: "2026-08-04T18:00:00Z",
-  summary: "Stable mobile Handoff Log event.",
+  summary: "Stable mobile handoff history event.",
   correlation_id: "correlation-runtime-mobile",
 }];
 state.handoffLogTotal = 1;
@@ -1389,11 +1391,11 @@ globalThis.fetch = () => new Promise((resolve) => {
 });
 const pending = performTaskLoad("initial");
 await Promise.resolve();
-assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Handoff Log while pending");
+assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Agents handoff history while pending");
 release();
 await pending;
-assert(state.activeView === "handoff-log", "task read changed the active Handoff Log view");
-assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Handoff Log after completion");
+assert(state.activeView === "agent-work", "task read changed the active Agents view");
+assert(elements.viewSurface.children[0] === originalSurface, "task read replaced Agents handoff history after completion");
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1532,15 +1534,13 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         agent_work = javascript[
             javascript.index("function renderAgentWorkView") : javascript.index("function goalCard")
         ]
-        handoff_view = javascript[
-            javascript.index("function renderHandoffLogView") : javascript.index("function keepSelectedCalendarTaskVisible")
-        ]
         set_view = javascript[
             javascript.index("function setView") : javascript.index("function setConnection")
         ]
 
         self.assertIn('data-view="agent-work"', html)
-        self.assertIn('data-view="handoff-log"', html)
+        self.assertNotIn('data-view="handoff-log"', html)
+        self.assertNotIn('<span class="nav-label">Handoff Log</span>', html)
         for forbidden in (
             "Agent Directory",
             "Coordinator",
@@ -1562,8 +1562,10 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn("agentHandoffHistoryOpen: false", javascript)
         self.assertIn("state.agentHandoffHistoryOpen = !details.open", javascript)
         self.assertIn("state.agentHandoffHistoryOpen = details.open", javascript)
-        self.assertIn("renderAgentWorkView({ historyOpen: true })", handoff_view)
-        self.assertIn('view === "agent-work" || view === "handoff-log"', set_view)
+        self.assertIn('if (view === "handoff-log")', set_view)
+        self.assertIn("state.agentHandoffHistoryOpen = true", set_view)
+        self.assertIn('view = "agent-work"', set_view)
+        self.assertNotIn('view === "agent-work" || view === "handoff-log"', set_view)
         self.assertIn("agent.slug === event.agent_slug", javascript)
         self.assertIn("!verifiedAgents.has(event.agent_slug)", javascript)
         self.assertIn(".agent-handoff-history", stylesheet)
@@ -2054,10 +2056,11 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 
-        self.assertIn('data-view="handoff-log"', html)
-        self.assertIn('<span class="nav-label">Handoff Log</span>', html)
+        self.assertNotIn('data-view="handoff-log"', html)
+        self.assertNotIn('<span class="nav-label">Handoff Log</span>', html)
         self.assertIn('id="task-handoff-timeline"', html)
-        self.assertIn('id="task-handoff-timeline-heading">Task Timeline</h3>', html)
+        self.assertIn('id="task-handoff-timeline-heading" aria-expanded="false"', html)
+        self.assertIn('Task Timeline', html)
         self.assertIn('<ol class="handoff-event-list" id="task-handoff-event-list"', html)
         self.assertIn('id="task-handoff-load-more"', html)
         self.assertIn("const HANDOFF_EVENT_PAGE_SIZE = 50", javascript)
@@ -2068,6 +2071,9 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn('`/api/tasks/${encodeURIComponent(taskSlug)}/handoff-events?${params}`', javascript)
         self.assertIn('fetch(`/api/handoff-events?${params}`', javascript)
         self.assertGreaterEqual(javascript.count("renderHandoffEvents("), 3)
+        self.assertIn("showTaskLink: false", javascript)
+        self.assertIn("destination.showTaskLink !== false", javascript)
+        self.assertIn("Task: ${", javascript)
 
         task_loader = javascript[
             javascript.index("async function loadTaskHandoffTimeline(taskSlug)") :
@@ -2099,9 +2105,10 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn("nextSequence", javascript)
         self.assertIn("event.sequence", renderer)
         self.assertIn("privacySafeEventText", renderer)
-        self.assertIn("redactedCorrelationLabel", renderer)
+        self.assertIn("destination.showTaskLink !== false", renderer)
         self.assertIn("is-dead-letter", renderer)
-        self.assertIn("Open correlated Task", renderer)
+        self.assertIn("Open Task", renderer)
+        self.assertNotIn("Open correlated Task", renderer)
         self.assertNotIn("event.detail", renderer)
         self.assertNotIn("event.handoff_id", renderer)
         self.assertNotIn("event.registration_ref", renderer)
@@ -2118,10 +2125,56 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn(".handoff-event-list", stylesheet)
         self.assertIn("overflow-wrap: anywhere", stylesheet)
         mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
-        self.assertIn(".handoff-log-view", mobile)
+        self.assertIn(".agent-handoff-history", mobile)
         self.assertIn("overflow-x: hidden", mobile)
         self.assertIn(".handoff-filter-grid", mobile)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", mobile)
+
+    def test_task_handoff_timeline_is_bottom_collapsed_and_no_self_navigation_controls(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        timeline_index = html.index('id="task-handoff-timeline"')
+        for required_before in (
+            'id="task-todo-list"',
+            'id="task-artifacts"',
+            'class="detail-list"',
+            'id="detail-gbrain-link"',
+            'id="detail-slug"',
+        ):
+            self.assertLess(html.index(required_before), timeline_index)
+        self.assertIn("<details class=\"task-handoff-timeline\"", html)
+        self.assertIn('id="task-handoff-timeline-heading" aria-expanded="false"', html)
+        self.assertIn(".task-handoff-timeline:not([open]) > :not(summary)", stylesheet)
+        self.assertIn("function syncTaskHandoffTimelineDisclosure", javascript)
+        self.assertIn('elements.taskHandoffTimeline.open = false', javascript)
+        self.assertIn("showTaskLink: false", javascript)
+        task_timeline = javascript[
+            javascript.index("function renderTaskHandoffTimeline(taskSlug)") :
+            javascript.index("async function loadTaskHandoffTimeline")
+        ]
+        self.assertIn("showTaskLink: false", task_timeline)
+
+    def test_agents_is_the_only_user_facing_handoff_surface_with_legacy_redirect(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        set_view = javascript[
+            javascript.index("function setView") : javascript.index("function setConnection")
+        ]
+        opener = javascript[
+            javascript.index("function openHandoffCorrelation") :
+            javascript.index("function handoffFilterSelect")
+        ]
+
+        self.assertNotIn('data-view="handoff-log"', html)
+        self.assertNotIn("function renderHandoffLogView", javascript)
+        self.assertIn('if (view === "handoff-log")', set_view)
+        self.assertIn("state.agentHandoffHistoryOpen = true", set_view)
+        self.assertIn('view = "agent-work"', set_view)
+        self.assertIn('state.activeView = "agent-work"', opener)
+        self.assertIn("state.agentHandoffHistoryOpen = true", opener)
+        self.assertNotIn('state.activeView = "handoff-log"', opener)
 
     def test_handoff_correlation_preserves_detail_focus_return_and_fixture_data(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -2130,9 +2183,10 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn("function openHandoffCorrelation", javascript)
         opener = javascript[
             javascript.index("function openHandoffCorrelation") :
-            javascript.index("function renderHandoffLogView")
+            javascript.index("function handoffFilterSelect")
         ]
-        self.assertIn('state.activeView = "handoff-log"', opener)
+        self.assertIn('state.activeView = "agent-work"', opener)
+        self.assertIn("state.agentHandoffHistoryOpen = true", opener)
         self.assertIn("selectTask(taskSlug, task, originControl)", opener)
         self.assertIn('document.querySelectorAll(".handoff-event-task")', javascript)
         self.assertIn("loadTaskHandoffTimeline(task.slug)", javascript)
@@ -2263,7 +2317,7 @@ state.handoffLogEvents = [];
 state.handoffLogLoading = false;
 state.handoffLogStale = false;
 state.handoffLogError = diagnosis;
-const view = renderHandoffLogView();
+const view = renderAgentWorkView({ historyOpen: true });
 const findClass = (root, className) => {
   if (root.className === className) return root;
   for (const child of root.children || []) {
@@ -2291,7 +2345,8 @@ stableStatus.isConnected = true;
 document.querySelectorAll = () => [];
 document.querySelector = (selector) => selector.includes("load-status") ? stableStatus : null;
 render = () => {};
-state.activeView = "handoff-log";
+state.activeView = "agent-work";
+state.agentHandoffHistoryOpen = true;
 state.selectedKind = "task";
 state.selectedSlug = "tasks/runtime-disappeared-origin";
 state.detailReturnFocus = {
@@ -2301,7 +2356,7 @@ state.detailReturnFocus = {
 elements.detailPanel.setAttribute("aria-hidden", "false");
 document.activeElement = elements.detailClose;
 closeDetails();
-assert(stableStatus.focused, "close detail did not focus the stable Handoff Log status");
+assert(stableStatus.focused, "close detail did not focus the stable Handoff History status");
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2453,7 +2508,7 @@ assert(state.handoffLogFocusKey === null, "completed focus restoration remained 
         required_rule = """.handoff-filter-control select,
   .handoff-filter-control input,
   .handoff-filter-grid > .secondary-button,
-  .handoff-correlation-button,
+  .handoff-task-link,
   .handoff-load-more,
   #task-handoff-load-more {
     min-height: 44px;

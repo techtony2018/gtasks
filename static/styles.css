@@ -5592,11 +5592,10 @@ button:active {
   overflow-wrap: anywhere;
 }
 
-.task-handoff-timeline,
-.handoff-log-view {
+.task-handoff-timeline {
   min-width: 0;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .task-handoff-timeline {
@@ -5607,25 +5606,30 @@ button:active {
   background: rgba(56, 189, 248, 0.035);
 }
 
-.task-handoff-timeline-heading,
-.handoff-log-heading {
+.task-handoff-timeline-heading {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
 }
 
-.task-handoff-timeline-heading h3,
-.handoff-log-heading h2,
-.handoff-log-heading p {
+.task-handoff-timeline-heading {
   margin: 0;
 }
 
 .task-handoff-timeline-heading span,
-.handoff-log-heading p,
 .handoff-surface-state {
   color: var(--muted);
   font-size: 12px;
+}
+
+.task-handoff-timeline > summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.task-handoff-timeline:not([open]) > :not(summary) {
+  display: none;
 }
 
 .handoff-filter-grid {
@@ -5674,8 +5678,8 @@ button:active {
   display: grid;
   grid-template-columns: minmax(120px, 0.8fr) auto auto;
   align-items: start;
-  gap: 7px 12px;
-  padding: 11px 12px;
+  gap: 5px 9px;
+  padding: 8px 9px;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: rgba(7, 17, 31, 0.7);
@@ -5721,7 +5725,7 @@ button:active {
   gap: 8px;
 }
 
-.handoff-correlation-button {
+.handoff-task-link {
   min-height: 36px;
   padding: 6px 9px;
   border: 1px solid var(--line-strong);
@@ -5729,6 +5733,8 @@ button:active {
   color: var(--accent-dark);
   background: var(--accent-soft);
   cursor: pointer;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .handoff-dead-letter {
@@ -5906,7 +5912,7 @@ button:active {
     flex-direction: column;
   }
 
-  .handoff-log-view,
+  .agent-handoff-history,
   .task-handoff-timeline,
   .handoff-event-list,
   .handoff-event {
@@ -5927,7 +5933,7 @@ button:active {
   .handoff-filter-control select,
   .handoff-filter-control input,
   .handoff-filter-grid > .secondary-button,
-  .handoff-correlation-button,
+  .handoff-task-link,
   .handoff-load-more,
   #task-handoff-load-more {
     min-height: 44px;

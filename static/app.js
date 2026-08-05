@@ -663,9 +663,6 @@ const viewMeta = {
     emptyCopy: "Durable Agent deliverables linked to authorized Tasks will appear here after canonical GBrain readback.",
   },
   "system-tickets": { title: "Mission Control System Tickets" },
-  "handoff-log": {
-    title: "Handoff Log",
-  },
   blocked: {
     title: "Blocked",
     emptyTitle: "No blocked work",
@@ -914,6 +911,7 @@ const elements = {
   taskArtifactsState: document.querySelector("#task-artifacts-state"),
   taskArtifactList: document.querySelector("#task-artifact-list"),
   taskHandoffTimeline: document.querySelector("#task-handoff-timeline"),
+  taskHandoffTimelineHeading: document.querySelector("#task-handoff-timeline-heading"),
   taskHandoffTotal: document.querySelector("#task-handoff-total"),
   taskHandoffEventState: document.querySelector("#task-handoff-event-state"),
   taskHandoffEventList: document.querySelector("#task-handoff-event-list"),
@@ -1507,7 +1505,6 @@ function reconcileVerifiedTask(task) {
 function navCounts() {
   if (!state.snapshot) return {
     artifacts: state.artifacts.length,
-    "handoff-log": state.handoffLogTotal,
     "system-tickets": state.systemTickets.length,
   };
   return {
@@ -1521,7 +1518,6 @@ function navCounts() {
     blocked: visibleBlockedTasks().length,
     projects: state.projects.length,
     goals: state.snapshot.goals.length,
-    "handoff-log": state.handoffLogTotal,
     completed: state.snapshot.views.completed.length,
     "system-tickets": state.systemTickets.length + (
       state.showCompletedSystemTickets ? state.completedSystemTickets.length : 0
@@ -1582,7 +1578,6 @@ function inContextCountLabel(view) {
     blocked: "blocked tasks",
     projects: "projects",
     goals: "goals",
-    "handoff-log": "handoff events",
     completed: "completed tasks",
     "system-tickets": "System Tickets",
   }[view] || "items";
@@ -4700,7 +4695,7 @@ function restoreHandoffFocus(key = state.handoffLogFocusKey) {
 function render() {
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
   const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
-  if (state.activeView === "handoff-log") {
+  if (state.activeView === "agent-work" && state.agentHandoffHistoryOpen) {
     state.handoffLogFocusKey = captureHandoffFocus() || state.handoffLogFocusKey;
   }
   hideHudTooltip();
@@ -4736,9 +4731,7 @@ function render() {
   // lockstep with state rather than relying on the previous DOM value.
   elements.showAgentTasks.checked = state.showAgentTasks;
   const view = state.activeView;
-  const content = view === "handoff-log"
-    ? renderHandoffLogView()
-    : view === "artifacts"
+  const content = view === "artifacts"
     ? renderArtifactsView()
     : !state.snapshot
     ? view === "system-tickets"
@@ -4770,10 +4763,8 @@ function render() {
       content,
     ],
   );
-  if (view === "handoff-log") restoreHandoffFocus();
-  if (view === "handoff-log") {
-    elements.dateLabel.textContent = "Immutable dispatcher audit";
-  } else if (view === "artifacts") {
+  if (view === "agent-work" && state.agentHandoffHistoryOpen) restoreHandoffFocus();
+  if (view === "artifacts") {
     elements.dateLabel.textContent = "Canonical GBrain deliverables";
   } else if (state.snapshot) {
     const date = parseDay(state.activeView === "week" ? currentWeekStart() : state.snapshot.as_of);
@@ -6165,6 +6156,7 @@ function eventPassesHandoffTimeFilter(event, filter) {
 function renderHandoffEvents(events, destination) {
   const list = destination.list;
   list.replaceChildren();
+  const showTaskLink = destination.showTaskLink !== false;
   const ordered = [...events]
     .filter((event) => eventPassesHandoffTimeFilter(event, destination.timeFilter))
     .sort((left, right) => Number(left.sequence) - Number(right.sequence));
@@ -6173,6 +6165,20 @@ function renderHandoffEvents(events, destination) {
     const item = node("li", `handoff-event${deadLetter ? " is-dead-letter" : ""}`);
     item.dataset.sequence = String(event.sequence);
     const heading = node("div", "handoff-event-heading");
+    if (showTaskLink && event.correlation_id && event.task_slug) {
+      const taskLink = node(
+        "button",
+        "handoff-task-link handoff-event-task",
+        `Task: ${privacySafeEventText(event.task_slug, 120)}`,
+      );
+      taskLink.type = "button";
+      taskLink.dataset.slug = event.task_slug;
+      taskLink.setAttribute("aria-label", `Open Task ${privacySafeEventText(event.task_slug, 120)}`);
+      taskLink.addEventListener("click", () => {
+        openHandoffCorrelation(event.correlation_id, event.task_slug, taskLink);
+      });
+      heading.append(taskLink);
+    }
     heading.append(
       node("strong", "handoff-event-agent", handoffAgentLabel(event.agent_slug)),
       node("span", "handoff-event-type", privacySafeEventText(String(event.event_type || "event").replaceAll("_", " "), 80)),
@@ -6187,20 +6193,6 @@ function renderHandoffEvents(events, destination) {
     const summary = node("p", "handoff-event-summary", privacySafeEventText(event.summary));
     const controls = node("div", "handoff-event-controls");
     if (deadLetter) controls.append(node("span", "handoff-dead-letter", "Dead letter"));
-    if (event.correlation_id && event.task_slug) {
-      const correlation = node(
-        "button",
-        "handoff-correlation-button handoff-event-task",
-        redactedCorrelationLabel(event.correlation_id),
-      );
-      correlation.type = "button";
-      correlation.dataset.slug = event.task_slug;
-      correlation.setAttribute("aria-label", "Open correlated Task");
-      correlation.addEventListener("click", () => {
-        openHandoffCorrelation(event.correlation_id, event.task_slug, correlation);
-      });
-      controls.append(correlation);
-    }
     item.append(heading, status, when, summary, controls);
     list.append(item);
   });
@@ -6224,6 +6216,7 @@ function renderTaskHandoffTimeline(taskSlug) {
   const visible = renderHandoffEvents(entry.events, {
     list: elements.taskHandoffEventList,
     timeFilter: "all",
+    showTaskLink: false,
   });
   elements.taskHandoffTotal.textContent = entry.events.length
     ? `${entry.events.length} of ${entry.total}`
@@ -6244,6 +6237,14 @@ function renderTaskHandoffTimeline(taskSlug) {
   }
   elements.taskHandoffLoadMore.classList.toggle("is-hidden", entry.nextSequence === null);
   elements.taskHandoffLoadMore.disabled = entry.loading;
+}
+
+function syncTaskHandoffTimelineDisclosure() {
+  if (!elements.taskHandoffTimeline || !elements.taskHandoffTimelineHeading) return;
+  elements.taskHandoffTimelineHeading.setAttribute(
+    "aria-expanded",
+    String(Boolean(elements.taskHandoffTimeline.open)),
+  );
 }
 
 async function readTaskHandoffPage(taskSlug, { reset }) {
@@ -6381,7 +6382,7 @@ async function loadHandoffLog({ reset = false, filters = null } = {}) {
   state.handoffLogLoading = true;
   state.handoffLogError = "";
   state.handoffLogStale = false;
-  if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
+  if (state.activeView === "agent-work") render();
   const active = handoffLogFilters();
   try {
     const params = new URLSearchParams({
@@ -6434,7 +6435,7 @@ async function loadHandoffLog({ reset = false, filters = null } = {}) {
   } finally {
     if (requestToken === state.handoffLogRequestToken) {
       state.handoffLogLoading = false;
-      if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
+      if (state.activeView === "agent-work") render();
     }
   }
 }
@@ -6470,7 +6471,8 @@ async function openHandoffCorrelation(correlationId, taskSlug, originControl = n
   state.handoffLogTotal = 0;
   state.handoffLogSnapshotTotal = 0;
   state.handoffLogNextSequence = null;
-  state.activeView = "handoff-log";
+  state.activeView = "agent-work";
+  state.agentHandoffHistoryOpen = true;
   render();
   state.handoffLogFocusKey = null;
   const logRead = loadHandoffLog({ reset: true });
@@ -6484,7 +6486,7 @@ async function openHandoffCorrelation(correlationId, taskSlug, originControl = n
   state.handoffLogError = MISSING_LINKED_TASK_ERROR;
   state.handoffLogStale = false;
   state.handoffLogFocusKey = "load-status";
-  if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
+  if (state.activeView === "agent-work") render();
 }
 
 function handoffFilterSelect(label, name, options, value) {
@@ -6503,10 +6505,6 @@ function handoffFilterSelect(label, name, options, value) {
   });
   wrapper.append(select);
   return wrapper;
-}
-
-function renderHandoffLogView() {
-  return renderAgentWorkView({ historyOpen: true });
 }
 
 function keepSelectedCalendarTaskVisible(taskSlug) {
@@ -6586,6 +6584,8 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
+  elements.taskHandoffTimeline.open = false;
+  syncTaskHandoffTimelineDisclosure();
   elements.taskTodoError.classList.add("is-hidden");
   renderTaskTodos(task);
   renderTaskArtifacts(task.slug);
@@ -6862,7 +6862,7 @@ function detailFocusReturnTarget(anchor) {
     ...document.querySelectorAll(".ical-event"),
   ].find((candidate) => candidate.dataset.slug === anchor.slug) || null;
   if (matchingOrigin) return matchingOrigin;
-  if (state.activeView === "handoff-log") {
+  if (state.activeView === "agent-work" && state.agentHandoffHistoryOpen) {
     return (
       document.querySelector('[data-handoff-focus="load-status"]') ||
       document.querySelector('[data-handoff-focus="filter:correlation_id"]')
@@ -7014,12 +7014,16 @@ async function saveTaskStatus() {
 }
 
 function setView(view) {
+  if (view === "handoff-log") {
+    state.agentHandoffHistoryOpen = true;
+    view = "agent-work";
+  }
   if (!viewMeta[view]) return;
   state.activeView = view;
   render();
   if (
     (
-      view === "agent-work" || view === "handoff-log" ||
+      view === "agent-work" ||
       view === "today" || view === "blocked" ||
       (view === "board" && state.showAgentTasks)
     ) &&
@@ -7045,13 +7049,13 @@ function setView(view) {
   if (view === "artifacts" && !state.projectsLoaded && !state.projectsLoading) {
     void loadProjects();
   }
-  if ((view === "agent-work" || view === "handoff-log") && !state.agentsLoaded && !state.agentsLoading) {
+  if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
     void loadAgents();
   }
   if (view === "week" && !state.icalConnectionLoaded && !state.icalConnectionLoading) {
     void loadCalendarConnectionState();
   }
-  if ((view === "agent-work" || view === "handoff-log") && !state.handoffLogEvents.length && !state.handoffLogLoading) {
+  if (view === "agent-work" && !state.handoffLogEvents.length && !state.handoffLogLoading) {
     void loadHandoffLog({ reset: true });
   }
 }
@@ -7109,7 +7113,7 @@ function clearAutoRefreshTimer() {
 }
 
 function activeViewUsesTaskSnapshot() {
-  return !["handoff-log", "artifacts", "system-tickets"].includes(state.activeView);
+  return !["agent-work", "artifacts", "system-tickets"].includes(state.activeView);
 }
 
 function scheduleAutoRefresh({ reset = false } = {}) {
@@ -7720,7 +7724,7 @@ elements.refreshButton.addEventListener("click", () => {
   if (state.activeView === "system-tickets" || state.systemTickets.length) {
     void loadSystemTickets({ force: true });
   }
-  if (state.activeView === "handoff-log" || state.handoffLogEvents.length) {
+  if (state.activeView === "agent-work" || state.handoffLogEvents.length) {
     void loadHandoffLog({ reset: true });
   }
 });
@@ -7733,6 +7737,7 @@ elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.projectDetailClose.addEventListener("click", closeDetails);
 elements.systemTicketDetailClose.addEventListener("click", closeDetails);
 elements.calendarEventDetailClose.addEventListener("click", closeDetails);
+elements.taskHandoffTimeline.addEventListener("toggle", syncTaskHandoffTimelineDisclosure);
 document.addEventListener("focusin", (event) => {
   const anchor = state.detailFocusReturnAnchor;
   if (!anchor || elements.detailPanel.getAttribute("aria-hidden") !== "true") return;

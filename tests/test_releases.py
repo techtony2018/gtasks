@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 README = PROJECT_ROOT / "README.md"
 RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
 RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
+V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -18,10 +19,18 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.77")
+        self.assertEqual(__version__, "V0.0.78")
+
+    def test_v0_0_78_records_consolidated_handoff_history_surfaces(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.78")
+        self.assertIn("Task Timeline collapsed at the bottom", release["summary"])
+        self.assertIn("removes self-navigation controls", release["summary"])
+        self.assertIn("Agents surface", release["summary"])
 
     def test_v0_0_77_records_semantic_agent_answer_handoffs(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.77")
 
         self.assertEqual(release["version"], "V0.0.77")
         self.assertIn("Tony answers by semantic effect", release["summary"])
@@ -237,6 +246,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.75",
                 "V0.0.76",
                 "V0.0.77",
+                "V0.0.78",
             ],
         )
 
@@ -246,8 +256,8 @@ class ReleaseCatalogTests(unittest.TestCase):
         readme = README.read_text(encoding="utf-8")
 
         one_source = (
-            "Task Timeline and Handoff Log are read-only projections over the same "
-            "append-only handoff event table."
+            "Task Timeline and Agents Handoff History are read-only projections "
+            "over the same append-only handoff event table."
         )
         self.assertIn(one_source, " ".join(runbook.split()))
         self.assertIn(one_source, " ".join(readme.split()))
@@ -353,6 +363,18 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("Independent pre-commit UI/UX QA: PASS", normalized)
         self.assertIn("v0.0.77-repair-independent/gate-report-final.md", evidence)
         self.assertIn("0e8bc0bd4591eadbd6126dd5b4f6a792394148849520e0264b95fa97d3d6939f", evidence)
+
+    def test_v0_0_78_release_evidence_records_handoff_surface_gate_scope(self) -> None:
+        self.assertTrue(V078_RELEASE_EVIDENCE.is_file(), "V0.0.78 release evidence must exist")
+        evidence = V078_RELEASE_EVIDENCE.read_text(encoding="utf-8")
+        normalized = " ".join(evidence.split())
+
+        self.assertIn("Task Timeline at the bottom", normalized)
+        self.assertIn("collapsed by default", normalized)
+        self.assertIn("suppress self-navigation controls", normalized)
+        self.assertIn("Agents is the only user-facing handoff surface", normalized)
+        self.assertIn("real three-event task shape", normalized)
+        self.assertIn("genuine mobile 390x844", normalized)
 
     def test_v0_0_4_records_durable_projects_and_read_latency_work(self) -> None:
         release = RELEASES[3]
