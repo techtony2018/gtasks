@@ -13,6 +13,7 @@ V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md
 V079_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.79.md"
 V080_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.80.md"
 V081_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.81.md"
+V082_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.82.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -22,10 +23,18 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.81")
+        self.assertEqual(__version__, "V0.0.82")
+
+    def test_v0_0_82_records_framed_word_art_and_sidebar_order(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.82")
+        self.assertIn("word art", release["summary"])
+        self.assertIn("dark HUD", release["summary"])
+        self.assertIn("sidebar navigation", release["summary"])
 
     def test_v0_0_81_records_calendar_and_todo_completion_controls(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.81")
 
         self.assertEqual(release["version"], "V0.0.81")
         self.assertIn("Calendar navigation", release["summary"])
@@ -276,6 +285,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.79",
                 "V0.0.80",
                 "V0.0.81",
+                "V0.0.82",
             ],
         )
 
@@ -409,6 +419,7 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertTrue(V079_RELEASE_EVIDENCE.is_file(), "V0.0.79 release evidence must exist")
         self.assertTrue(V080_RELEASE_EVIDENCE.is_file(), "V0.0.80 release evidence must exist")
         self.assertTrue(V081_RELEASE_EVIDENCE.is_file(), "V0.0.81 release evidence must exist")
+        self.assertTrue(V082_RELEASE_EVIDENCE.is_file(), "V0.0.82 release evidence must exist")
         evidence = V079_RELEASE_EVIDENCE.read_text(encoding="utf-8")
         normalized = " ".join(evidence.split())
 
@@ -429,6 +440,18 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("Save & Mark Done", normalized)
         self.assertIn("Save & Complete Task", normalized)
         self.assertIn("dark Mission Control HUD", normalized)
+        self.assertIn("Independent pre-commit UI/UX QA", normalized)
+        self.assertIn("desktop 1440x1000", normalized)
+        self.assertIn("genuine mobile 390x844", normalized)
+
+    def test_v0_0_82_release_evidence_records_word_art_and_sidebar_gate_scope(self) -> None:
+        self.assertTrue(V082_RELEASE_EVIDENCE.is_file(), "V0.0.82 release evidence must exist")
+        evidence = V082_RELEASE_EVIDENCE.read_text(encoding="utf-8")
+        normalized = " ".join(evidence.split())
+
+        self.assertIn("HUD-style frame", normalized)
+        self.assertIn("lights/glow/illumination", normalized)
+        self.assertIn("Today, Calendar, Board, Inbox, Agents, Artifacts, Blocked, Completed, All Tasks, Projects, Goals", normalized)
         self.assertIn("Independent pre-commit UI/UX QA", normalized)
         self.assertIn("desktop 1440x1000", normalized)
         self.assertIn("genuine mobile 390x844", normalized)

@@ -4509,9 +4509,47 @@ a:focus-visible {
 .mission-word-art {
   width: min(260px, 36vw);
   margin: 0;
-  padding-top: 24px;
   aspect-ratio: 760 / 253;
   flex: 0 0 auto;
+}
+
+.mission-word-art-frame {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.54), rgba(2, 8, 22, 0.2)),
+    radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.14), transparent 58%);
+  box-shadow:
+    inset 0 1px rgba(238, 244, 255, 0.08),
+    0 0 0 1px rgba(2, 8, 22, 0.42),
+    0 18px 42px rgba(2, 8, 22, 0.28);
+  overflow: visible;
+}
+
+.mission-word-art-frame::before,
+.mission-word-art-frame::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.mission-word-art-frame::before {
+  inset: 5px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  box-shadow: inset 0 0 22px rgba(34, 211, 238, 0.08);
+}
+
+.mission-word-art-frame::after {
+  inset: -11px -14px;
+  background:
+    radial-gradient(circle at 50% 12%, rgba(125, 211, 252, 0.2), transparent 44%),
+    radial-gradient(circle at 18% 84%, rgba(59, 130, 246, 0.14), transparent 36%),
+    radial-gradient(circle at 82% 82%, rgba(14, 165, 233, 0.14), transparent 36%);
+  opacity: 0.86;
+  z-index: -1;
 }
 
 .mission-art-footer {
@@ -4593,6 +4631,8 @@ a:focus-visible {
 }
 
 .mission-word-art img {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   height: 100%;

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.81",
+  "current_version": "V0.0.82",
   "releases": [
     {
       "version": "V0.0.1",
@@ -486,6 +486,12 @@
       "date": "2026-08-05",
       "title": "Calendar toolbar and TODO completion controls",
       "summary": "Calendar navigation now keeps Week/Month controls and Show iCal Events together with task details open, TODO edits can be saved with Done or Task completion in one verified flow, and GBrain communication states use the dark Mission Control HUD treatment."
+    },
+    {
+      "version": "V0.0.82",
+      "date": "2026-08-05",
+      "title": "Framed word art and priority sidebar order",
+      "summary": "Mission Control now frames the central word art in a dark HUD treatment while preserving its lights, and the sidebar navigation follows the requested priority order from Today through Goals without changing destinations or accessibility labels."
     }
   ]
 }

@@ -1020,8 +1020,8 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.81"', html)
-        self.assertIn('src="/app.js?v=0.0.81"', html)
+        self.assertIn('href="/styles.css?v=0.0.82"', html)
+        self.assertIn('src="/app.js?v=0.0.82"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1904,6 +1904,54 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn(".app-shell {", css)
         self.assertIn("overflow-x: clip", css)
 
+    def test_sidebar_navigation_order_matches_mission_control_priority_order(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        nav = html[html.index('<nav class="nav-list"') : html.index("</nav>", html.index('<nav class="nav-list"'))]
+        expected = [
+            ("today", "Today"),
+            ("week", "Calendar"),
+            ("board", "Board"),
+            ("inbox", "Inbox"),
+            ("agent-work", "Agents"),
+            ("artifacts", "Artifacts"),
+            ("blocked", "Blocked"),
+            ("completed", "Completed"),
+            ("all", "All Tasks"),
+            ("projects", "Projects"),
+            ("goals", "Goals"),
+        ]
+
+        positions = []
+        for view, label in expected:
+            self.assertEqual(nav.count(f'data-view="{view}"'), 1, view)
+            self.assertEqual(nav.count(f'aria-label="{label}"'), 1, label)
+            self.assertEqual(nav.count(f'<span class="nav-label">{label}</span>'), 1, label)
+            positions.append(nav.index(f'data-view="{view}"'))
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(nav.count('class="nav-item'), len(expected))
+        self.assertNotIn("Upcoming", nav)
+
+    def test_mission_word_art_is_hud_framed_without_flattening_lights(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        footer = html[html.index('<div class="mission-art-center"') : html.index('id="sidebar-version"')]
+
+        self.assertIn('class="mission-word-art mission-word-art-frame"', footer)
+        self.assertIn('src="/assets/mission-control-word-art.png"', footer)
+        self.assertIn("North Star", footer)
+        self.assertIn(".mission-word-art-frame", css)
+        frame = css[css.index(".mission-word-art-frame") : css.index(".mission-version-link")]
+        self.assertIn("border: 1px solid", frame)
+        self.assertIn("rgba(56, 189, 248", frame)
+        self.assertIn("box-shadow", frame)
+        self.assertIn("overflow: visible", frame)
+        self.assertIn(".mission-word-art-frame::before", frame)
+        self.assertIn(".mission-word-art-frame::after", frame)
+        image_start = css.index(".mission-word-art img", css.index(".mission-word-art-frame"))
+        image_style = css[image_start : css.index(".topbar", image_start)]
+        self.assertIn("drop-shadow(0 0 14px", image_style)
+        self.assertIn("drop-shadow(0 0 32px", image_style)
+
     def test_mission_control_uses_the_dark_stargraph_family_brand(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1913,7 +1961,8 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn('<meta name="theme-color" content="#020816">', html)
         self.assertIn('/assets/mission-control-command-mark.svg', html)
         self.assertIn('/assets/mission-control-word-art.png', html)
-        self.assertIn('class="mission-word-art"', html)
+        self.assertIn('class="mission-word-art', html)
+        self.assertIn("mission-word-art-frame", html)
         self.assertIn('--canvas: #020816', css)
         self.assertIn('color-scheme: dark', css)
         self.assertIn('/* Memory Stargraph family dark theme. */', css)
@@ -2087,7 +2136,7 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn('class="mission-art-center"', footer)
         self.assertIn('class="footer-controls footer-controls-right"', footer)
         self.assertLess(footer.index('id="store-label"'), footer.index('id="system-tickets-button"'))
-        self.assertLess(footer.index('id="system-tickets-button"'), footer.index('class="mission-word-art"'))
+        self.assertLess(footer.index('id="system-tickets-button"'), footer.index('class="mission-word-art'))
         self.assertLess(footer.index('id="sidebar-version"'), footer.index('id="logs-button"'))
         self.assertLess(footer.index('id="logs-button"'), footer.index('id="about-button"'))
         for identifier in ("store-label", "system-tickets-button", "logs-button", "about-button"):

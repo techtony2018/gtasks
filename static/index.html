@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.81">
-    <script src="/app.js?v=0.0.81" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.82">
+    <script src="/app.js?v=0.0.82" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -28,20 +28,17 @@
         </button>
 
         <nav class="nav-list" aria-label="Task views">
-          <button class="nav-item has-tooltip" data-view="inbox" type="button" aria-label="Inbox" data-tooltip="Inbox">
-            <span class="nav-icon inbox-nav-icon" aria-hidden="true"><img src="/assets/inbox-check.svg" alt=""></span><span class="nav-label">Inbox</span>
-          </button>
           <button class="nav-item is-active has-tooltip" data-view="today" type="button" aria-label="Today" data-tooltip="Today">
             <span class="nav-icon" aria-hidden="true">●</span><span class="nav-label">Today</span>
-          </button>
-          <button class="nav-item has-tooltip" data-view="all" type="button" aria-label="All Tasks" data-tooltip="All Tasks">
-            <span class="nav-icon" aria-hidden="true">☷</span><span class="nav-label">All Tasks</span>
           </button>
           <button class="nav-item has-tooltip" data-view="week" type="button" aria-label="Calendar" data-tooltip="Calendar">
             <span class="nav-icon" aria-hidden="true">□</span><span class="nav-label">Calendar</span>
           </button>
           <button class="nav-item has-tooltip" data-view="board" type="button" aria-label="Board" data-tooltip="Board">
             <span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">Board</span>
+          </button>
+          <button class="nav-item has-tooltip" data-view="inbox" type="button" aria-label="Inbox" data-tooltip="Inbox">
+            <span class="nav-icon inbox-nav-icon" aria-hidden="true"><img src="/assets/inbox-check.svg" alt=""></span><span class="nav-label">Inbox</span>
           </button>
           <button class="nav-item has-tooltip" data-view="agent-work" type="button" aria-label="Agents" data-tooltip="Agents">
             <span class="nav-icon" aria-hidden="true">◌</span><span class="nav-label">Agents</span>
@@ -52,14 +49,17 @@
           <button class="nav-item has-tooltip" data-view="blocked" type="button" aria-label="Blocked" data-tooltip="Blocked">
             <span class="nav-icon" aria-hidden="true">!</span><span class="nav-label">Blocked</span>
           </button>
+          <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
+            <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
+          </button>
+          <button class="nav-item has-tooltip" data-view="all" type="button" aria-label="All Tasks" data-tooltip="All Tasks">
+            <span class="nav-icon" aria-hidden="true">☷</span><span class="nav-label">All Tasks</span>
+          </button>
           <button class="nav-item has-tooltip" data-view="projects" type="button" aria-label="Projects" data-tooltip="Projects">
             <span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Projects</span>
           </button>
           <button class="nav-item has-tooltip" data-view="goals" type="button" aria-label="Goals" data-tooltip="Goals">
             <span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Goals</span>
-          </button>
-          <button class="nav-item has-tooltip" data-view="completed" type="button" aria-label="Completed" data-tooltip="Completed">
-            <span class="nav-icon" aria-hidden="true">✓</span><span class="nav-label">Completed</span>
           </button>
         </nav>
 
@@ -129,7 +129,7 @@
             </button>
           </div>
           <div class="mission-art-center">
-            <figure class="mission-word-art" aria-label="Mission Control celestial artwork">
+            <figure class="mission-word-art mission-word-art-frame" aria-label="Mission Control celestial artwork">
               <img
                 src="/assets/mission-control-word-art.png"
                 alt="Mission Control word artwork with a North Star between the words and a faint Big Dipper behind them"
