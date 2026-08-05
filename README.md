@@ -62,14 +62,12 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-V0.0.73 makes acknowledged Agent handoff completion atomic and recoverable:
-the resolved handoff is cleared before canonical readback, and repeating a
-completion safely repairs an already-partial terminal task without changing its
-original completion time.
-
-V0.0.76 adds event-driven Agent handoffs from verified canonical mutation
-receipts, identity-scoped delivery to an existing fixed Codex thread, and one
-redacted append-only audit source for Task Timeline and Handoff Log.
+Current verified release: V0.0.76. It adds event-driven Agent handoffs from
+verified canonical mutation receipts, identity-scoped delivery to existing
+fixed Codex threads, and one redacted append-only audit source for Task
+Timeline and Handoff Log. It builds on the V0.0.73 recoverable handoff
+completion path, the V0.0.74 `job_applied` progress repair, and the V0.0.75
+Artifact navigation and Calendar-control refinements.
 
 ### Independent UI/UX release gate
 

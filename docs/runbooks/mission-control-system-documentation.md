@@ -126,17 +126,28 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified local date: `2026-08-03` (`America/Los_Angeles`)
-- Mission Control version: `V0.0.73`
-- Source commit: `301adadcc15189942757d8bea0b20b2f2677664b`
+- Last verified local date: `2026-08-04` (`America/Los_Angeles`)
+- Mission Control version: `V0.0.76`
+- Deployed product repair commit:
+  `44abd12ea56f15f50bf1232daaa04be05fd877d6`
+- Current source/evidence commit:
+  `4d3cd4d02825970b5e318098320884821ca1ddbd`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
+- Full automated gate: `715` tests passed, `5` skipped.
+- V0.0.76 Dispatcher evidence: release evidence records independent
+  desktop `1440x1000` and genuine mobile `390x844` QA PASS, three-host
+  Dispatcher installation, one bounded Tammy-only canary, and completed
+  canonical System Ticket `tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620`.
 - Cross-host readback: Tammy, Timmy, and Toddy each returned the same canonical
-  collection hash, Overview hash, and one discovery edge on `2026-08-03`.
+  collection hash, Overview `V0.0.76` document version `3`, Overview hash
+  `9906b28934aeaae31d81faa761092793c75aee382fcc8896e03c319345caf6f9`, and
+  one discovery edge on `2026-08-04`.
 - Installed prompt state: all six active fixed-target Agent automations lacked
-  the shared collection reference at the same snapshot. The pushed source
-  contract is current; installed rollout remains a separately authorized step.
+  the shared collection reference at the `2026-08-03` snapshot. The pushed
+  source contract is current; installed rollout remains a separately
+  authorized step and was not mutated by the `V0.0.76` documentation refresh.
 
 Known documentation-quality issue at this baseline:
 `collections/mission-control-system-tickets` still lists legacy `waiting` in
