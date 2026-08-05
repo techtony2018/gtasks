@@ -20,6 +20,8 @@ from uuid import uuid4
 ACTIONABLE_TRIGGERS = frozenset(
     {
         "answer_received",
+        "tony_answer_received",
+        "waiting_for_information_updated",
         "todo_added",
         "todo_materially_changed",
         "task_activated",
@@ -36,6 +38,7 @@ SUPPRESSED_TRIGGERS = {
     "stale_cache_refresh": "stale_cache_refresh",
     "unchanged_blocker": "stable_blocker",
     "stable_blocker": "stable_blocker",
+    "tony_owned_no_agent": "tony_owned_no_agent",
 }
 ACKNOWLEDGEMENT_STATES = frozenset(
     {"received", "actively_executing", "still_blocked", "completed"}

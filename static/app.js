@@ -314,6 +314,7 @@ const state = {
   handoffLogRequestToken: 0,
   handoffLogFocusKey: null,
   handoffLogTimeRange: null,
+  agentHandoffHistoryOpen: false,
   handoffLogFilters: {
     time: "all",
     agent_slug: "",
@@ -3025,19 +3026,194 @@ async function submitAgentAvatar(event) {
   } finally { elements.agentAvatarSubmit.disabled = false; }
 }
 
-function renderAgentWorkView() {
-  const wrapper = node("section", "agent-work-view");
-  const intro = node("div", "agent-work-intro");
-  intro.append(
-    node("h2", "", "Agent Directory"),
-    node(
-      "p",
-      "",
-      "Goal ownership is read from typed default_agent_for edges. Canonical work uses Planned, Active, Blocked, Completed, and Cancelled; Proposed is reserved for work awaiting Tony's approval. No proposal or task is auto-approved here.",
-    ),
+function agentWorkFor(agent) {
+  return state.agentTasks.filter((task) => task.owner?.slug === agent.slug);
+}
+
+function agentStatusCounts(work) {
+  return {
+    planned: work.filter((task) => task.status === "planned").length,
+    active: work.filter((task) => task.status === "active").length,
+    proposed: work.filter((task) => task.status === "proposed").length,
+    blocked: work.filter((task) => task.status === "blocked").length,
+    completed: work.filter((task) => task.status === "completed").length,
+  };
+}
+
+function latestTaskByStatus(work, status) {
+  return work
+    .filter((task) => task.status === status)
+    .slice()
+    .sort((left, right) => String(right.updated_at || "").localeCompare(String(left.updated_at || "")))[0] || null;
+}
+
+function taskDetailLink(task, label = null) {
+  const button = node("button", "inline-task-link", label || task.title || task.summary || task.slug);
+  button.type = "button";
+  button.dataset.slug = task.slug;
+  button.addEventListener("click", () => selectTask(task.slug, task, button));
+  return button;
+}
+
+function verifiedHandoffEventsForAgent(agent) {
+  return state.handoffLogEvents.filter((event) => event.agent_slug && agent.slug === event.agent_slug);
+}
+
+function handoffDeliveryLabel(event) {
+  const status = String(event?.status || "").replaceAll("_", " ");
+  const type = String(event?.event_type || "handoff").replaceAll("_", " ");
+  if (!event) return "No verified handoff delivery state.";
+  if (event.status === "queued") return `Queued · ${type}`;
+  if (event.status === "received" || event.status === "acknowledged") return `Received · ${type}`;
+  if (event.status === "processing" || event.status === "agent_working") return `Actively executing · ${type}`;
+  if (event.status === "blocked") return `Still blocked · ${type}`;
+  if (event.status === "retrying") return `Retrying · ${type}`;
+  if (event.status === "dead_letter") return `Dead letter · ${type}`;
+  if (event.status === "completed" || event.status === "delivered") return `Completed · ${type}`;
+  return `${privacySafeEventText(status || "Verified")} · ${type}`;
+}
+
+function renderAgentHandoffStatus(agent) {
+  const events = verifiedHandoffEventsForAgent(agent)
+    .slice()
+    .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0));
+  const latest = events[0] || null;
+  const status = node("div", "agent-handoff-status");
+  status.append(node("h3", "", "Handoff delivery"));
+  status.append(node("strong", "", handoffDeliveryLabel(latest)));
+  status.append(node(
+    "span",
+    "",
+    latest
+      ? `${events.length} verified event${events.length === 1 ? "" : "s"} · ${latest.occurred_at ? new Date(latest.occurred_at).toLocaleString() : "time unavailable"}`
+      : "No immutable dispatcher event is currently attributed to this Agent.",
+  ));
+  return status;
+}
+
+function renderSystemHandoffAttention() {
+  const verifiedAgents = new Set(state.agents.map((agent) => agent.slug));
+  const problematic = state.handoffLogEvents.filter((event) => (
+    !event.agent_slug ||
+    !verifiedAgents.has(event.agent_slug) ||
+    event.status === "routing_error" ||
+    event.status === "identity_conflict"
+  ));
+  const section = node("section", "system-handoff-attention");
+  section.setAttribute("aria-label", "System handoff attention");
+  if (!problematic.length) {
+    section.classList.add("is-empty");
+    section.append(node("p", "", "No ambiguous or unassigned handoff routing issues."));
+    return section;
+  }
+  section.append(node("h2", "", "System attention"));
+  section.append(node(
+    "p",
+    "",
+    `${problematic.length} handoff event${problematic.length === 1 ? "" : "s"} need verified identity before routing. These are not attached to an arbitrary Agent.`,
+  ));
+  return section;
+}
+
+function renderUnifiedHandoffHistory({ historyOpen = false } = {}) {
+  const details = node("details", "agent-handoff-history");
+  const shouldOpen = historyOpen || state.agentHandoffHistoryOpen;
+  details.open = Boolean(shouldOpen);
+  details.addEventListener("toggle", () => {
+    state.agentHandoffHistoryOpen = details.open;
+  });
+  const summary = node("summary", "", "Handoff History");
+  summary.addEventListener("click", () => {
+    state.agentHandoffHistoryOpen = !details.open;
+  });
+  const meta = node("span", "handoff-history-count", `${state.handoffLogTotal} event${state.handoffLogTotal === 1 ? "" : "s"}`);
+  summary.append(meta);
+  const filters = handoffLogFilters();
+  const form = node("form", "handoff-filter-grid");
+  form.append(
+    handoffFilterSelect("Time", "time", [["all", "All loaded time"], ["hour", "Past hour"], ["day", "Past day"], ["week", "Past week"]], filters.time),
+    handoffFilterSelect("Agent", "agent_slug", [["", "All Agents"], ["agents/tammy", "Tammy"], ["agents/timmy", "Timmy"], ["agents/toddy", "Toddy"]], filters.agent_slug),
+    handoffFilterSelect("Status", "status", HANDOFF_STATUS_FILTER_OPTIONS, filters.status),
+    handoffFilterSelect("Event", "event_type", HANDOFF_EVENT_FILTER_OPTIONS, filters.event_type),
+    handoffFilterSelect("Failure", "failure", [["", "All outcomes"], ["retrying", "Retrying"], ["dead_letter", "Dead letter"]], filters.failure),
   );
-  wrapper.append(intro);
-  wrapper.append(renderCoordinatorSummary());
+  const correlation = node("label", "handoff-filter-control");
+  correlation.append(node("span", "", "Correlation"));
+  const correlationInput = document.createElement("input");
+  correlationInput.name = "correlation_id";
+  correlationInput.maxLength = 60;
+  correlationInput.autocomplete = "off";
+  correlationInput.placeholder = filters.correlation_id
+    ? redactedCorrelationLabel(filters.correlation_id)
+    : "Exact safe correlation ID";
+  correlationInput.dataset.preserveActive = filters.correlation_id ? "true" : "false";
+  correlationInput.setAttribute("aria-label", "Correlation filter");
+  markHandoffFocus(correlationInput, "filter:correlation_id");
+  correlation.append(correlationInput);
+  const apply = node("button", "secondary-button", "Apply filters");
+  apply.type = "submit";
+  markHandoffFocus(apply, "filter-submit");
+  form.append(correlation, apply);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
+  });
+  form.querySelectorAll("select").forEach((select) => {
+    select.addEventListener("change", () => {
+      const statusFilter = form.elements.namedItem("status");
+      const failureFilter = form.elements.namedItem("failure");
+      if (select.name === "status" && select.value && failureFilter) failureFilter.value = "";
+      if (select.name === "failure" && select.value && statusFilter) statusFilter.value = "";
+      void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
+    });
+  });
+  if (filters.correlation_id) {
+    const clearCorrelation = node("button", "secondary-button", "Clear correlation");
+    clearCorrelation.type = "button";
+    markHandoffFocus(clearCorrelation, "filter-clear-correlation");
+    clearCorrelation.addEventListener("click", () => {
+      void loadHandoffLog({ reset: true, filters: { correlation_id: "" } });
+    });
+    form.append(clearCorrelation);
+  }
+  const stateMessage = node("p", "handoff-surface-state");
+  stateMessage.tabIndex = -1;
+  markHandoffFocus(stateMessage, "load-status");
+  stateMessage.setAttribute("role", state.handoffLogError && !state.handoffLogEvents.length ? "alert" : "status");
+  stateMessage.setAttribute("aria-live", "polite");
+  const list = node("ol", "handoff-event-list");
+  list.setAttribute("aria-label", "Handoff audit events");
+  const visible = renderHandoffEvents(state.handoffLogEvents, {
+    list,
+    timeFilter: "all",
+  });
+  if (state.handoffLogLoading && !state.handoffLogEvents.length) {
+    stateMessage.textContent = "Loading handoff events…";
+  } else if (state.handoffLogStale) {
+    stateMessage.textContent = "Last verified handoff events remain visible; the latest read failed.";
+    stateMessage.classList.add("is-stale");
+  } else if (state.handoffLogError) {
+    stateMessage.textContent = state.handoffLogError === MISSING_LINKED_TASK_ERROR
+      ? state.handoffLogError
+      : "Handoff events are unavailable. Try again without changing any task.";
+    stateMessage.classList.add("is-error");
+  } else if (!visible) {
+    stateMessage.textContent = "No handoff events match these filters.";
+  } else {
+    stateMessage.textContent = `${visible} displayed of ${state.handoffLogTotal} matching events · canonical sequence order.`;
+  }
+  const loadMore = node("button", "secondary-button handoff-load-more", "Load more events");
+  loadMore.type = "button";
+  markHandoffFocus(loadMore, "load-more");
+  loadMore.disabled = state.handoffLogLoading;
+  loadMore.classList.toggle("is-hidden", state.handoffLogNextSequence === null);
+  loadMore.addEventListener("click", () => void loadHandoffLog({ reset: false }));
+  details.append(summary, form, stateMessage, list, loadMore);
+  return details;
+}
+
+function renderAgentWorkView({ historyOpen = false } = {}) {
+  const wrapper = node("section", "agent-work-view");
   if (!state.agents.length) {
     wrapper.append(
       node(
@@ -3046,6 +3222,7 @@ function renderAgentWorkView() {
         "No verified GBrain agent profiles are available.",
       ),
     );
+    wrapper.append(renderSystemHandoffAttention(), renderUnifiedHandoffHistory({ historyOpen }));
     return wrapper;
   }
   const grid = node("div", "agent-profile-grid");
@@ -3062,12 +3239,12 @@ function renderAgentWorkView() {
       node(
         "span",
         "agent-work-count",
-        `${state.agentTasks.filter((task) => task.owner.slug === agent.slug).length} work items`,
+        `${state.agentTasks.filter((task) => task.owner?.slug === agent.slug).length} work items`,
       ),
       profile,
     );
     const goals = agent.default_goal_slugs
-      .map((slug) => state.snapshot.goals.find((goal) => goal.slug === slug))
+      .map((slug) => (state.snapshot?.goals || []).find((goal) => goal.slug === slug))
       .filter(Boolean);
     const goalList = node("ul", "agent-goal-list");
     goals.forEach((goal) => {
@@ -3078,18 +3255,30 @@ function renderAgentWorkView() {
       item.append(button);
       goalList.append(item);
     });
-    const work = state.agentTasks.filter((task) => task.owner?.slug === agent.slug && task.status !== "proposed");
-    const working = work.filter((task) => task.status === "active");
-    const blocked = work.filter((task) => task.status === "blocked");
+    const allWork = agentWorkFor(agent);
+    const counts = agentStatusCounts(allWork);
+    const work = allWork.filter((task) => task.status !== "proposed");
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
+    const recentCompletion = latestTaskByStatus(allWork, "completed");
+    const nextWork = work.find((task) => Array.isArray(task.open_todos) && task.open_todos.length) || latest;
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
-    workSummary.append(node("strong", "", work.length ? `${working.length} working · ${blocked.length} blocked` : "No authorized work yet"));
+    workSummary.append(node("strong", "", work.length ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed` : "No authorized work yet"));
     const openTodoCount = work.reduce(
       (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
       0,
     );
-    workSummary.append(node("span", "", latest ? `${todoSummary(latest)} · ${openTodoCount} open TODO${openTodoCount === 1 ? "" : "s"} · Updated ${formatDay(latest.updated_at || latest.due_day)}` : "No current task or open TODO recorded."));
+    const nextLine = node("span", "");
+    if (nextWork) {
+      nextLine.append(
+        document.createTextNode(`${todoSummary(nextWork)} · ${openTodoCount} open TODO${openTodoCount === 1 ? "" : "s"} · `),
+        taskDetailLink(nextWork, nextWork.title || nextWork.summary || nextWork.slug),
+      );
+    } else {
+      nextLine.textContent = "No current task or open TODO recorded.";
+    }
+    workSummary.append(nextLine);
+    workSummary.append(node("span", "", recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
     card.append(
       heading,
       node(
@@ -3101,6 +3290,7 @@ function renderAgentWorkView() {
       ),
       goalList,
       workSummary,
+      renderAgentHandoffStatus(agent),
     );
     if (agent.chat_url) {
       const chat = node("a", "secondary-button", "Open Codex chat");
@@ -3112,38 +3302,8 @@ function renderAgentWorkView() {
     grid.append(card);
   });
   wrapper.append(grid);
+  wrapper.append(renderSystemHandoffAttention(), renderUnifiedHandoffHistory({ historyOpen }));
   return wrapper;
-}
-
-function renderCoordinatorSummary() {
-  const section = node("section", "coordinator-summary");
-  section.setAttribute("aria-labelledby", "coordinator-summary-title");
-  section.append(
-    node("h2", "", "Coordinator"),
-    node("p", "", "Read-only triage across the three canonical agent work roots. The Coordinator does not execute, approve, edit, reassign, or claim work; shared GBrain state and evidence remain the only coordination channel."),
-  );
-  const list = node("div", "coordinator-agent-grid");
-  state.agents.forEach((agent) => {
-    const work = state.agentTasks.filter((task) => task.owner?.slug === agent.slug);
-    const counts = {
-      active: work.filter((task) => task.status === "active").length,
-      proposed: work.filter((task) => task.status === "proposed").length,
-      blocked: work.filter((task) => task.status === "blocked").length,
-      completed: work.filter((task) => task.status === "completed").length,
-    };
-    const card = node("article", "coordinator-agent-card");
-    card.append(ownerBadge({ name: agent.name, avatar: agent.avatar }));
-    card.append(node("p", "", `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed`));
-    const latest = work.filter((task) => task.status === "completed").sort((a,b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
-    card.append(node("small", "", latest ? `Recent verified completion: ${latest.title || latest.summary}` : "No verified completion yet."));
-    list.append(card);
-  });
-  section.append(list);
-  const blockers = state.agentTasks.filter((task) => task.status === "blocked");
-  const proposals = state.agentTasks.filter((task) => task.status === "proposed");
-  const issueCount = state.agentIssues.length;
-  section.append(node("p", "coordinator-notice", blockers.length || proposals.length || issueCount ? `${blockers.length} blocked item${blockers.length === 1 ? "" : "s"}; ${proposals.length} proposal${proposals.length === 1 ? "" : "s"}; ${issueCount} malformed or missing-state issue${issueCount === 1 ? "" : "s"}. Details stay in Inbox Needs Attention.` : "No blocked items, proposals, or malformed agent-work issues."));
-  return section;
 }
 
 function goalCard(goal) {
@@ -6221,7 +6381,7 @@ async function loadHandoffLog({ reset = false, filters = null } = {}) {
   state.handoffLogLoading = true;
   state.handoffLogError = "";
   state.handoffLogStale = false;
-  if (state.activeView === "handoff-log") render();
+  if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
   const active = handoffLogFilters();
   try {
     const params = new URLSearchParams({
@@ -6274,7 +6434,7 @@ async function loadHandoffLog({ reset = false, filters = null } = {}) {
   } finally {
     if (requestToken === state.handoffLogRequestToken) {
       state.handoffLogLoading = false;
-      if (state.activeView === "handoff-log") render();
+      if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
     }
   }
 }
@@ -6324,7 +6484,7 @@ async function openHandoffCorrelation(correlationId, taskSlug, originControl = n
   state.handoffLogError = MISSING_LINKED_TASK_ERROR;
   state.handoffLogStale = false;
   state.handoffLogFocusKey = "load-status";
-  if (state.activeView === "handoff-log") render();
+  if (state.activeView === "handoff-log" || state.activeView === "agent-work") render();
 }
 
 function handoffFilterSelect(label, name, options, value) {
@@ -6346,94 +6506,7 @@ function handoffFilterSelect(label, name, options, value) {
 }
 
 function renderHandoffLogView() {
-  const section = node("section", "handoff-log-view");
-  const heading = node("div", "handoff-log-heading");
-  heading.append(
-    node("h2", "", "Handoff Log"),
-    node("p", "", "Read-only projection of the same immutable audit events shown in each Task Timeline."),
-  );
-  const filters = handoffLogFilters();
-  const form = node("form", "handoff-filter-grid");
-  form.append(
-    handoffFilterSelect("Time", "time", [["all", "All loaded time"], ["hour", "Past hour"], ["day", "Past day"], ["week", "Past week"]], filters.time),
-    handoffFilterSelect("Agent", "agent_slug", [["", "All Agents"], ["agents/tammy", "Tammy"], ["agents/timmy", "Timmy"], ["agents/toddy", "Toddy"]], filters.agent_slug),
-    handoffFilterSelect("Status", "status", HANDOFF_STATUS_FILTER_OPTIONS, filters.status),
-    handoffFilterSelect("Event", "event_type", HANDOFF_EVENT_FILTER_OPTIONS, filters.event_type),
-    handoffFilterSelect("Failure", "failure", [["", "All outcomes"], ["retrying", "Retrying"], ["dead_letter", "Dead letter"]], filters.failure),
-  );
-  const correlation = node("label", "handoff-filter-control");
-  correlation.append(node("span", "", "Correlation"));
-  const correlationInput = document.createElement("input");
-  correlationInput.name = "correlation_id";
-  correlationInput.maxLength = 60;
-  correlationInput.autocomplete = "off";
-  correlationInput.placeholder = filters.correlation_id
-    ? redactedCorrelationLabel(filters.correlation_id)
-    : "Exact safe correlation ID";
-  correlationInput.dataset.preserveActive = filters.correlation_id ? "true" : "false";
-  correlationInput.setAttribute("aria-label", "Correlation filter");
-  markHandoffFocus(correlationInput, "filter:correlation_id");
-  correlation.append(correlationInput);
-  const apply = node("button", "secondary-button", "Apply filters");
-  apply.type = "submit";
-  markHandoffFocus(apply, "filter-submit");
-  form.append(correlation, apply);
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
-  });
-  form.querySelectorAll("select").forEach((select) => {
-    select.addEventListener("change", () => {
-      const statusFilter = form.elements.namedItem("status");
-      const failureFilter = form.elements.namedItem("failure");
-      if (select.name === "status" && select.value && failureFilter) failureFilter.value = "";
-      if (select.name === "failure" && select.value && statusFilter) statusFilter.value = "";
-      void loadHandoffLog({ reset: true, filters: handoffLogFilters(form) });
-    });
-  });
-  if (filters.correlation_id) {
-    const clearCorrelation = node("button", "secondary-button", "Clear correlation");
-    clearCorrelation.type = "button";
-    markHandoffFocus(clearCorrelation, "filter-clear-correlation");
-    clearCorrelation.addEventListener("click", () => {
-      void loadHandoffLog({ reset: true, filters: { correlation_id: "" } });
-    });
-    form.append(clearCorrelation);
-  }
-  const stateMessage = node("p", "handoff-surface-state");
-  stateMessage.tabIndex = -1;
-  markHandoffFocus(stateMessage, "load-status");
-  stateMessage.setAttribute("role", state.handoffLogError && !state.handoffLogEvents.length ? "alert" : "status");
-  stateMessage.setAttribute("aria-live", "polite");
-  const list = node("ol", "handoff-event-list");
-  list.setAttribute("aria-label", "Handoff audit events");
-  const visible = renderHandoffEvents(state.handoffLogEvents, {
-    list,
-    timeFilter: "all",
-  });
-  if (state.handoffLogLoading && !state.handoffLogEvents.length) {
-    stateMessage.textContent = "Loading handoff events…";
-  } else if (state.handoffLogStale) {
-    stateMessage.textContent = "Last verified handoff events remain visible; the latest read failed.";
-    stateMessage.classList.add("is-stale");
-  } else if (state.handoffLogError) {
-    stateMessage.textContent = state.handoffLogError === MISSING_LINKED_TASK_ERROR
-      ? state.handoffLogError
-      : "Handoff events are unavailable. Try again without changing any task.";
-    stateMessage.classList.add("is-error");
-  } else if (!visible) {
-    stateMessage.textContent = "No handoff events match these filters.";
-  } else {
-    stateMessage.textContent = `${visible} displayed of ${state.handoffLogTotal} matching events · canonical sequence order.`;
-  }
-  const loadMore = node("button", "secondary-button handoff-load-more", "Load more events");
-  loadMore.type = "button";
-  markHandoffFocus(loadMore, "load-more");
-  loadMore.disabled = state.handoffLogLoading;
-  loadMore.classList.toggle("is-hidden", state.handoffLogNextSequence === null);
-  loadMore.addEventListener("click", () => void loadHandoffLog({ reset: false }));
-  section.append(heading, form, stateMessage, list, loadMore);
-  return section;
+  return renderAgentWorkView({ historyOpen: true });
 }
 
 function keepSelectedCalendarTaskVisible(taskSlug) {
@@ -6946,7 +7019,7 @@ function setView(view) {
   render();
   if (
     (
-      view === "agent-work" ||
+      view === "agent-work" || view === "handoff-log" ||
       view === "today" || view === "blocked" ||
       (view === "board" && state.showAgentTasks)
     ) &&
@@ -6972,13 +7045,13 @@ function setView(view) {
   if (view === "artifacts" && !state.projectsLoaded && !state.projectsLoading) {
     void loadProjects();
   }
-  if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
+  if ((view === "agent-work" || view === "handoff-log") && !state.agentsLoaded && !state.agentsLoading) {
     void loadAgents();
   }
   if (view === "week" && !state.icalConnectionLoaded && !state.icalConnectionLoading) {
     void loadCalendarConnectionState();
   }
-  if (view === "handoff-log" && !state.handoffLogEvents.length && !state.handoffLogLoading) {
+  if ((view === "agent-work" || view === "handoff-log") && !state.handoffLogEvents.length && !state.handoffLogLoading) {
     void loadHandoffLog({ reset: true });
   }
 }

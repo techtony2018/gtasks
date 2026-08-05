@@ -1195,7 +1195,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn("loadSystemTickets({ force: true })", bootstrap)
         self.assertIn('view === "projects" && !state.projectsLoaded', javascript)
         self.assertIn('view === "inbox" && !state.proposalsLoaded', javascript)
-        self.assertIn('view === "agent-work" && !state.agentsLoaded', javascript)
+        self.assertIn('view === "agent-work" || view === "handoff-log"', javascript)
+        self.assertIn('(view === "agent-work" || view === "handoff-log") && !state.agentsLoaded', javascript)
 
     def test_verified_todo_mutation_receipt_updates_ui_without_duplicate_read(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1225,7 +1226,7 @@ class FrontendContractTests(unittest.TestCase):
         task_row = javascript[javascript.index("function taskRow") : javascript.index("function section")]
         board = javascript[javascript.index("function boardCard") : javascript.index("function renderBoard")]
         calendar = javascript[javascript.index("function renderWeekView") : javascript.index("function boardCard")]
-        agent_work = javascript[javascript.index("function renderAgentWorkView") : javascript.index("function renderCoordinatorSummary")]
+        agent_work = javascript[javascript.index("function renderAgentWorkView") : javascript.index("function goalCard")]
 
         self.assertIn("function todoSummary(task)", javascript)
         self.assertIn("todoSummary(task)", task_row)
@@ -1513,7 +1514,7 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
     def test_agent_cards_have_one_direct_profile_control_and_structured_current_work(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         agent_work = javascript[
-            javascript.index("function renderAgentWorkView") : javascript.index("function renderCoordinatorSummary")
+            javascript.index("function renderAgentWorkView") : javascript.index("function goalCard")
         ]
 
         self.assertIn('actionIcon("⋯", `Open ${agent.name} profile`', agent_work)
@@ -1523,6 +1524,51 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn('node("h3", "", "Current work")', agent_work)
         self.assertIn("No authorized work yet", agent_work)
         self.assertIn("No current task or open TODO recorded.", agent_work)
+
+    def test_agents_route_is_unified_handoff_surface_without_coordinator_copy(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        agent_work = javascript[
+            javascript.index("function renderAgentWorkView") : javascript.index("function goalCard")
+        ]
+        handoff_view = javascript[
+            javascript.index("function renderHandoffLogView") : javascript.index("function keepSelectedCalendarTaskVisible")
+        ]
+        set_view = javascript[
+            javascript.index("function setView") : javascript.index("function setConnection")
+        ]
+
+        self.assertIn('data-view="agent-work"', html)
+        self.assertIn('data-view="handoff-log"', html)
+        for forbidden in (
+            "Agent Directory",
+            "Coordinator",
+            "Agent Coordination",
+            "Read-only triage across the three canonical agent work roots",
+            "No proposal or task is auto-approved here",
+        ):
+            self.assertNotIn(forbidden, agent_work)
+        self.assertNotIn("renderCoordinatorSummary", agent_work)
+        self.assertIn("renderAgentHandoffStatus(agent)", agent_work)
+        self.assertIn("renderSystemHandoffAttention()", agent_work)
+        self.assertIn("renderUnifiedHandoffHistory({", agent_work)
+        self.assertIn("function renderUnifiedHandoffHistory", javascript)
+        self.assertIn("function renderAgentHandoffStatus(agent)", javascript)
+        self.assertIn("function renderSystemHandoffAttention", javascript)
+        self.assertIn("Handoff History", javascript)
+        self.assertIn("const shouldOpen = historyOpen || state.agentHandoffHistoryOpen", javascript)
+        self.assertIn("details.open = Boolean(shouldOpen)", javascript)
+        self.assertIn("agentHandoffHistoryOpen: false", javascript)
+        self.assertIn("state.agentHandoffHistoryOpen = !details.open", javascript)
+        self.assertIn("state.agentHandoffHistoryOpen = details.open", javascript)
+        self.assertIn("renderAgentWorkView({ historyOpen: true })", handoff_view)
+        self.assertIn('view === "agent-work" || view === "handoff-log"', set_view)
+        self.assertIn("agent.slug === event.agent_slug", javascript)
+        self.assertIn("!verifiedAgents.has(event.agent_slug)", javascript)
+        self.assertIn(".agent-handoff-history", stylesheet)
+        self.assertIn(".agent-handoff-history:not([open]) > :not(summary)", stylesheet)
+        self.assertIn(".system-handoff-attention", stylesheet)
 
     def test_task_write_paths_use_fail_closed_type_preservation(self) -> None:
         adapter = (PROJECT_ROOT / "gtasks" / "gbrain.py").read_text(encoding="utf-8")
@@ -2218,7 +2264,16 @@ state.handoffLogLoading = false;
 state.handoffLogStale = false;
 state.handoffLogError = diagnosis;
 const view = renderHandoffLogView();
-const renderedState = view.children[2];
+const findClass = (root, className) => {
+  if (root.className === className) return root;
+  for (const child of root.children || []) {
+    const found = findClass(child, className);
+    if (found) return found;
+  }
+  return null;
+};
+const renderedState = findClass(view, "handoff-surface-state");
+assert(renderedState, "unified Handoff History did not render the state element");
 assert(renderedState.textContent === diagnosis, `specific error was replaced by: ${renderedState.textContent}`);
 assert(!renderedState.textContent.includes("without changing any task"), "contradictory generic advice remained");
 """

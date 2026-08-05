@@ -825,6 +825,17 @@ class CanonicalHandoffEventBridge:
         {"title", "summary", "detail", "priority", "due_day", "due_at", "scheduled_day"}
     )
     _DERIVED_FIELDS = frozenset({"progress_metric", "event_progress"})
+    _TONY_ANSWER_KINDS = frozenset(
+        {
+            "answer_agent_question",
+            "task_answer_field_saved",
+            "task_body_answer_saved",
+            "todo_answer_detail_saved",
+            "todo_answer_comment_saved",
+            "waiting_for_information_answered",
+            "waiting_for_information_updated",
+        }
+    )
 
     def __init__(self, dispatcher: HandoffDispatcher) -> None:
         self.dispatcher = dispatcher
@@ -885,6 +896,71 @@ class CanonicalHandoffEventBridge:
             if key not in ignored and before.get(key) != after.get(key)
         )
 
+    @staticmethod
+    def _comment_body(comment: object) -> str | None:
+        if not isinstance(comment, Mapping):
+            return None
+        author = comment.get("author") or comment.get("actor")
+        if author != TONY_PROFILE_SLUG:
+            return None
+        body = comment.get("body") or comment.get("text") or comment.get("detail")
+        if not isinstance(body, str) or not body.strip():
+            return None
+        return body.strip()
+
+    @classmethod
+    def _semantic_answer_text(
+        cls,
+        task: Mapping[str, Any],
+        todo: Mapping[str, Any],
+        *,
+        kind: object,
+    ) -> str | None:
+        kind_text = str(kind or "")
+        answerish = "answer" in kind_text or "waiting_for_information" in kind_text
+        candidates: list[str] = []
+        for field in (
+            "answer",
+            "tony_answer",
+            "answer_text",
+            "answer_detail",
+            "decision_note",
+        ):
+            value = task.get(field)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+        if answerish:
+            for value in (task.get("detail"), task.get("body"), todo.get("detail")):
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+        raw_comments = todo.get("comments")
+        if isinstance(raw_comments, (list, tuple)):
+            for comment in raw_comments:
+                body = cls._comment_body(comment)
+                if body is not None:
+                    candidates.append(body)
+        if not candidates:
+            return None
+        return "\n---\n".join(candidates)
+
+    @classmethod
+    def _semantic_answer_digest(
+        cls,
+        before_task: Mapping[str, Any],
+        after_task: Mapping[str, Any],
+        before_todo: Mapping[str, Any],
+        after_todo: Mapping[str, Any],
+        *,
+        kind: object,
+    ) -> str | None:
+        before_answer = cls._semantic_answer_text(
+            before_task, before_todo, kind=kind
+        )
+        after_answer = cls._semantic_answer_text(after_task, after_todo, kind=kind)
+        if after_answer is None or after_answer == before_answer:
+            return None
+        return hashlib.sha256(after_answer.encode("utf-8")).hexdigest()[:24]
+
     def normalize(
         self,
         before: object,
@@ -942,8 +1018,28 @@ class CanonicalHandoffEventBridge:
         after_handoff = self._mapping(after_task.get("handoff"))
         task_changes = self._changed_fields(before_task, after_task)
         todo_changes = self._changed_fields(before_todo, after_todo)
+        answer_digest = self._semantic_answer_digest(
+            before_task,
+            after_task,
+            before_todo,
+            after_todo,
+            kind=kind,
+        )
+        waiting_answer_transition = (
+            before_handoff.get("state") == "waiting_for_input"
+            and after_handoff.get("state") == "ready_for_agent"
+        )
+        tony_owned_answer = (
+            verified
+            and answer_digest is not None
+            and len(assigned_to) == 0
+            and (after_task.get("owner_agent") in {None, "", "tony", TONY_PROFILE_SLUG})
+        )
 
-        if not verified or identity_error:
+        if tony_owned_answer:
+            trigger = "tony_owned_no_agent"
+            summary = "No Agent handoff required - assigned to Tony."
+        elif not verified or identity_error:
             trigger = "system_attention"
             summary = "Canonical handoff data needs system attention."
         elif receipt_value.get("idempotent") is True:
@@ -957,10 +1053,16 @@ class CanonicalHandoffEventBridge:
         ):
             trigger = "derived_count"
             summary = "A derived count changed without new work."
-        elif kind == "answer_agent_question" or (
-            before_handoff.get("state") == "waiting_for_input"
-            and after_handoff.get("state") == "ready_for_agent"
+        elif answer_digest is not None and (
+            kind in self._TONY_ANSWER_KINDS or waiting_answer_transition
         ):
+            trigger = (
+                "waiting_for_information_updated"
+                if waiting_answer_transition
+                else "tony_answer_received"
+            )
+            summary = "Tony's verified answer is ready for the assigned Agent."
+        elif kind == "answer_agent_question" or waiting_answer_transition:
             trigger = "answer_received"
             summary = "A verified answer is ready."
         elif (not before_todo and after_todo) or kind == "todo_created":
@@ -1007,6 +1109,16 @@ class CanonicalHandoffEventBridge:
             or self._mapping(receipt_value.get("event")).get("slug")
             or todo_slug
         )
+        if answer_digest is not None and trigger in {
+            "tony_answer_received",
+            "waiting_for_information_updated",
+        }:
+            base_event = (
+                event_value
+                if isinstance(event_value, str) and event_value.strip()
+                else "events/tony-answer"
+            )
+            event_value = f"{base_event}/answer-{answer_digest}"
         canonical_event_id = self._safe_identifier(
             event_value,
             namespace="events",

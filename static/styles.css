@@ -1951,16 +1951,6 @@ body.is-resizing-detail {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
-.coordinator-summary { margin: 0 0 18px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-muted); }
-.coordinator-summary h2 { margin: 0 0 5px; font-size: 16px; }
-.coordinator-summary > p { margin: 0; color: var(--muted); font-size: 12px; }
-.coordinator-agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
-.coordinator-agent-card { padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-.coordinator-agent-card .owner-badge { margin-bottom: 7px; }
-.coordinator-agent-card p, .coordinator-agent-card small { display: block; margin: 0; font-size: 11px; color: var(--muted); }
-.coordinator-agent-card small { margin-top: 5px; }
-.coordinator-notice { margin-top: 12px !important; }
-
 .board-column {
   min-height: 330px;
   padding: 12px;
@@ -2449,6 +2439,114 @@ body.is-resizing-detail {
 .agent-work-summary h3 { margin: 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .agent-work-summary strong { font-size: 13px; }
 .agent-work-summary span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+.agent-handoff-status {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(56, 189, 248, 0.04);
+}
+
+.agent-handoff-status h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.agent-handoff-status strong {
+  font-size: 12px;
+}
+
+.agent-handoff-status span {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.system-handoff-attention {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(251, 191, 36, 0.34);
+  border-radius: 9px;
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.system-handoff-attention.is-empty {
+  border-color: var(--line);
+  background: var(--surface-muted);
+}
+
+.system-handoff-attention h2,
+.system-handoff-attention p {
+  margin: 0;
+}
+
+.system-handoff-attention h2 {
+  font-size: 12px;
+}
+
+.system-handoff-attention p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-handoff-history {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(7, 17, 31, 0.58);
+}
+
+.agent-handoff-history > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.agent-handoff-history:not([open]) > :not(summary) {
+  display: none;
+}
+
+.agent-handoff-history > summary::marker {
+  color: var(--accent-dark);
+}
+
+.handoff-history-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.inline-task-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  color: var(--accent-dark);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.inline-task-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .agent-work-count,
 .agent-profile-card > p {
@@ -3848,8 +3946,6 @@ body.is-resizing-detail {
     border-left: 0;
     overflow: hidden auto;
   }
-
-  .coordinator-agent-grid { grid-template-columns: 1fr; }
 
   .topbar {
     align-items: flex-start;

@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -35,6 +37,11 @@ from gtasks.domain import (
     new_task,
 )
 import gtasks.gbrain as gbrain_module
+from gtasks.handoff_dispatcher import (
+    AgentRegistration,
+    DurableHandoffStore,
+    HandoffDispatcher,
+)
 from gtasks.gbrain import (
     GBrainAdapter,
     CanonicalHandoffEventBridge,
@@ -459,6 +466,145 @@ class HandoffMutationReadbackTests(unittest.TestCase):
                 )
                 self.assertEqual(change.trigger, "system_attention")
                 self.assertNotEqual(change.blocker, "Tony")
+
+    def test_tony_answer_is_classified_by_semantic_effect_across_storage_shapes(self) -> None:
+        task = self.snapshot()["task"]
+        todo = {
+            "slug": self.TODO,
+            "parent_task": self.TASK,
+            "text": "Tony needs to answer.",
+            "detail": "Waiting for Tony.",
+            "status": "not_done",
+            "comments": [],
+            "updated_at": self.NOW.isoformat(),
+        }
+        answered_todo = {
+            **todo,
+            "status": "done",
+            "comments": [
+                {
+                    "author": "people/tony-guan",
+                    "body": "Use CUV and keep each session to 30 minutes.",
+                }
+            ],
+        }
+        handoff_waiting = {
+            "state": "waiting_for_input",
+            "question_todo": self.TODO,
+            "waiting_on": "people/tony-guan",
+            "resume_owner": "agents/tammy",
+            "resume_action": "Draft the seven-day plan.",
+            "requested_at": self.NOW.isoformat(),
+            "answered_at": None,
+            "acknowledged_at": None,
+            "round": 1,
+        }
+        handoff_ready = {
+            **handoff_waiting,
+            "state": "ready_for_agent",
+            "waiting_on": None,
+            "answered_at": self.NOW.isoformat(),
+        }
+        cases = (
+            (
+                self.snapshot(task={**task, "handoff": handoff_waiting}, todo=todo),
+                self.snapshot(task={**task, "handoff": handoff_ready}, todo=answered_todo),
+                "answer_agent_question",
+            ),
+            (
+                self.snapshot(task={**task, "answer": ""}),
+                self.snapshot(task={**task, "answer": "Use CUV and keep each session to 30 minutes."}),
+                "task_answer_field_saved",
+            ),
+            (
+                self.snapshot(task={**task, "detail": "## Answer\n\nOld answer."}),
+                self.snapshot(task={**task, "detail": "## Answer\n\nUse CUV and keep each session to 30 minutes."}),
+                "task_body_answer_saved",
+            ),
+            (
+                self.snapshot(todo=todo),
+                self.snapshot(todo={**todo, "detail": "Tony answer: Use CUV and keep each session to 30 minutes."}),
+                "todo_answer_detail_saved",
+            ),
+        )
+
+        for before, after, mutation_kind in cases:
+            with self.subTest(mutation_kind=mutation_kind):
+                change = CanonicalHandoffEventBridge(
+                    self.RecordingDispatcher()
+                ).after_verified_mutation(
+                    before,
+                    after,
+                    self.receipt(mutation_kind=mutation_kind),
+                    self.NOW,
+                )
+                self.assertIn(
+                    change.trigger,
+                    {"tony_answer_received", "waiting_for_information_updated"},
+                )
+                self.assertEqual(change.assigned_to, ("agents/tammy",))
+                self.assertIn("answer", change.summary.lower())
+
+    def test_tony_answer_idempotency_uses_semantic_digest_not_storage_field(self) -> None:
+        handle, path = tempfile.mkstemp(prefix="handoff-answer-digest-", suffix=".sqlite3")
+        os.close(handle)
+        try:
+            store = DurableHandoffStore(path)
+            dispatcher = HandoffDispatcher(
+                store,
+                registrations=(
+                    AgentRegistration(
+                        registration_id="private-registration-tammy",
+                        agent_slug="agents/tammy",
+                        route="hosts/tammy",
+                        verified=True,
+                    ),
+                ),
+            )
+            bridge = CanonicalHandoffEventBridge(dispatcher)
+            base_task = self.snapshot()["task"]
+            before = self.snapshot(task={**base_task, "answer": ""})
+            first_after = self.snapshot(
+                task={**base_task, "answer": "Use CUV and keep each session to 30 minutes."}
+            )
+            revised_after = self.snapshot(
+                task={**base_task, "answer": "Use ESV and keep each session to 45 minutes."}
+            )
+            receipt = self.receipt(
+                mutation_kind="task_answer_field_saved",
+                canonical_event_id="events/same-save",
+                canonical_version="versions/same",
+            )
+
+            first = bridge.after_verified_mutation(before, first_after, receipt, self.NOW)
+            duplicate = bridge.after_verified_mutation(before, first_after, receipt, self.NOW)
+            revised = bridge.after_verified_mutation(before, revised_after, receipt, self.NOW)
+
+            self.assertEqual(first.handoff_id, duplicate.handoff_id)
+            self.assertNotEqual(first.handoff_id, revised.handoff_id)
+            self.assertEqual(store.query_events(limit=50, after_sequence=0).total, 2)
+        finally:
+            store.close()
+            os.unlink(path)
+
+    def test_tony_owned_task_without_agent_is_informational_not_system_attention(self) -> None:
+        task = {**self.snapshot()["task"], "assigned_to": [], "owner_agent": None}
+
+        change = CanonicalHandoffEventBridge(
+            self.RecordingDispatcher()
+        ).after_verified_mutation(
+            self.snapshot(task={**task, "answer": ""}, route=None),
+            self.snapshot(
+                task={**task, "answer": "Tony recorded the decision himself."},
+                route=None,
+            ),
+            self.receipt(mutation_kind="task_answer_field_saved"),
+            self.NOW,
+        )
+
+        self.assertEqual(change.trigger, "tony_owned_no_agent")
+        self.assertEqual(change.assigned_to, ())
+        self.assertIn("No Agent handoff required", change.summary)
 
 
 def stored_goal(slug: str, title: str) -> dict:

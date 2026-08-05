@@ -8,7 +8,7 @@ from gtasks.releases import CURRENT_RELEASE, RELEASES
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 README = PROJECT_ROOT / "README.md"
 RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
-RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.76.md"
+RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -18,10 +18,18 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.76")
+        self.assertEqual(__version__, "V0.0.77")
+
+    def test_v0_0_77_records_semantic_agent_answer_handoffs(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.77")
+        self.assertIn("Tony answers by semantic effect", release["summary"])
+        self.assertIn("material answer revisions", release["summary"])
+        self.assertIn("Tony-owned tasks", release["summary"])
 
     def test_v0_0_76_records_event_driven_agent_handoffs(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.76")
 
         self.assertEqual(release["version"], "V0.0.76")
         self.assertIn("event-driven Agent handoffs", release["summary"])
@@ -228,6 +236,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.74",
                 "V0.0.75",
                 "V0.0.76",
+                "V0.0.77",
             ],
         )
 
@@ -331,58 +340,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("independent paths", normalized)
         self.assertIn("WorkingDirectory", runbook)
 
-    def test_release_evidence_records_verified_install_and_canary(self) -> None:
-        self.assertTrue(RELEASE_EVIDENCE.is_file(), "V0.0.76 release evidence must exist")
+    def test_release_evidence_records_verified_semantic_answer_handoff(self) -> None:
+        self.assertTrue(RELEASE_EVIDENCE.is_file(), "V0.0.77 release evidence must exist")
         evidence = RELEASE_EVIDENCE.read_text(encoding="utf-8")
         normalized = " ".join(evidence.split())
 
         self.assertIn("Status: `VERIFIED`", evidence)
-        self.assertIn("Tammy, Timmy, and Toddy installations: PASS", normalized)
-        self.assertIn("Tammy-only canary: PASS", normalized)
-        self.assertIn("Do not canary Timmy or Toddy in V0.0.76", normalized)
-        self.assertIn("Tony personal tasks and Agent work were not mutated", normalized)
-        self.assertIn("715 passed", normalized)
-        self.assertIn("5 skipped", normalized)
-        self.assertIn("Ran 100 tests", evidence)
-        self.assertIn("git diff --check", evidence)
-        self.assertIn("Source review: `APPROVED`", evidence)
-        self.assertIn("no Critical or Important findings", normalized)
-        self.assertIn("Independent pre-commit UI/UX QA", evidence)
-        self.assertIn("explicit `PASS`", evidence)
-        self.assertIn("desktop `1440x1000`", evidence)
-        self.assertIn("genuine mobile `390x844`", evidence)
-        self.assertIn("`corr-v0076-canary-4`", evidence)
-        self.assertIn("`actively_executing`", evidence)
-        self.assertIn("`b9948bb2eeed467b980ca9e323a6444fb17de8e2`", evidence)
-        self.assertIn("`fa762518de541d5ccf372ada95c2666fecc7dff50e3d94025608e2d578527aef`", evidence)
-        self.assertIn("Independent pre-commit UI repair re-QA: PASS", normalized)
-        self.assertIn(
-            "`37bbcd1dc0f6407850024258a1bb554c9dcd0b4a3912a512b900f1dca86dd817`",
-            evidence,
-        )
-        self.assertIn(
-            "`44abd12ea56f15f50bf1232daaa04be05fd877d6`",
-            evidence,
-        )
-        self.assertIn("Final dashboard-managed repair deploy/readback: PASS", normalized)
-        self.assertIn("Final independent live desktop/mobile UI QA: PASS", normalized)
-        self.assertIn("Canonical System Ticket evidence/completion: PASS", normalized)
-        self.assertIn(
-            "`e81b6f003a0ea3361f7cf606343e7182065351b3c946a9caea9bf0106951c4c0`",
-            evidence,
-        )
-        self.assertIn(
-            "`be4eee74ff413cd88194dcdff025a58c18e81e916b66a78c489c2bab9c4bb00e`",
-            evidence,
-        )
-        self.assertIn("`b479...`", evidence)
-        self.assertIn(
-            "`b5db8a71ef8e389df743db1536fdc91b9ccdac750cf65817da6d7c5cb06331d1`",
-            evidence,
-        )
-        self.assertIn("superseded", normalized)
-        self.assertNotIn("V0.0.75", evidence)
-        self.assertNotIn("task-6-report.md", evidence)
+        self.assertIn("semantic Tony answer classification", normalized)
+        self.assertIn("material answer revisions", normalized)
+        self.assertIn("Tony-owned no-Agent tasks", normalized)
+        self.assertIn("Focused automated evidence: PASS", normalized)
+        self.assertIn("Independent pre-commit UI/UX QA: PASS", normalized)
+        self.assertIn("v0.0.77-repair-independent/gate-report-final.md", evidence)
+        self.assertIn("0e8bc0bd4591eadbd6126dd5b4f6a792394148849520e0264b95fa97d3d6939f", evidence)
 
     def test_v0_0_4_records_durable_projects_and_read_latency_work(self) -> None:
         release = RELEASES[3]
