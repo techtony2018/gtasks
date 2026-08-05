@@ -1020,8 +1020,8 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.78"', html)
-        self.assertIn('src="/app.js?v=0.0.78"', html)
+        self.assertIn('href="/styles.css?v=0.0.81"', html)
+        self.assertIn('src="/app.js?v=0.0.81"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1096,6 +1096,170 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
         self.assertIn("state.todoReturnFocus", javascript)
         self.assertIn("candidate.dataset.todoSlug", javascript)
         self.assertIn("target?.focus({ preventScroll: true })", javascript)
+
+    def test_todo_edit_supports_verified_save_done_and_complete_task_actions(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("Save & Mark Done", javascript)
+        self.assertIn("Save & Complete Task", javascript)
+        self.assertIn("function canUseCombinedTodoActions(todo)", javascript)
+        self.assertIn("async function performTodoEditAction", javascript)
+
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const form = new FakeElement("form");
+const button = new FakeElement("button");
+button.textContent = "Save & Complete Task";
+button.closest = (selector) => selector === "form" ? form : null;
+form.querySelectorAll = () => [button];
+state.snapshot = {
+  tasks: [{
+    slug: "tasks/parent",
+    title: "Parent Task",
+    status: "active",
+    todos: [{
+      slug: "todos/one",
+      parent_task: "tasks/parent",
+      text: "Original TODO",
+      detail: "Original detail",
+      status: "not_done",
+      updated_at: "v1",
+    }],
+  }],
+  views: { inbox: [], today: [], completed: [], blocked: [] },
+  goals: [],
+  projects: [],
+};
+state.selectedKind = "task";
+state.selectedSlug = "tasks/parent";
+elements.taskTodoError = new FakeElement("p");
+elements.taskTodoList = new FakeElement("div");
+elements.taskTodoEmpty = new FakeElement("p");
+elements.taskTodoAddForm = new FakeElement("form");
+elements.taskTodoAddToggle = new FakeElement("button");
+elements.taskTodoLoading = new FakeElement("p");
+elements.taskTodoShowCompleted = new FakeElement("input");
+const calls = [];
+globalThis.fetch = async (endpoint, options) => {
+  calls.push({ endpoint, body: JSON.parse(options.body) });
+  if (endpoint === "/api/todos/todos%2Fone" && options.method === "PATCH") {
+    return { ok: true, json: async () => ({ receipt: { verified: true, todo: {
+      slug: "todos/one",
+      parent_task: "tasks/parent",
+      text: "Edited TODO",
+      detail: "Edited detail",
+      status: "not_done",
+      updated_at: "v2",
+    } } }) };
+  }
+  if (endpoint === "/api/todos/todos%2Fone/status" && options.method === "PATCH") {
+    assert(calls[1].body.expected_updated_at === "v2", "mark-done did not use edited TODO readback version");
+    return { ok: true, json: async () => ({ receipt: { verified: true, todo: {
+      slug: "todos/one",
+      parent_task: "tasks/parent",
+      text: "Edited TODO",
+      detail: "Edited detail",
+      status: "done",
+      updated_at: "v3",
+    } } }) };
+  }
+  if (endpoint === "/api/tasks/tasks%2Fparent/status" && options.method === "PATCH") {
+    return { ok: true, json: async () => ({ receipt: { verified: true, task: {
+      slug: "tasks/parent",
+      title: "Parent Task",
+      status: "completed",
+    } } }) };
+  }
+  throw new Error(`unexpected ${endpoint}`);
+};
+await performTodoEditAction(
+  state.snapshot.tasks[0].todos[0],
+  "Edited TODO",
+  "Edited detail",
+  button,
+  "complete_task",
+);
+assert(calls.length === 3, `expected 3 verified writes, got ${calls.length}`);
+assert(calls[0].body.text === "Edited TODO", "edit body was not sent");
+assert(calls[1].body.status === "done", "TODO was not marked done");
+assert(calls[2].body.status === "completed", "Task was not completed");
+const task = findTaskBySlug("tasks/parent");
+assert(task.status === "completed", `task status=${task.status}`);
+assert(task.todos[0].status === "done", `todo status=${task.todos[0].status}`);
+assert(button.disabled === false, "button stayed disabled");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_todo_combined_action_reports_verified_partial_failure_without_claiming_completion(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const form = new FakeElement("form");
+const button = new FakeElement("button");
+button.textContent = "Save & Complete Task";
+button.closest = (selector) => selector === "form" ? form : null;
+form.querySelectorAll = () => [button];
+state.snapshot = {
+  tasks: [{
+    slug: "tasks/parent",
+    title: "Parent Task",
+    status: "active",
+    todos: [{
+      slug: "todos/one",
+      parent_task: "tasks/parent",
+      text: "Original TODO",
+      detail: "Original detail",
+      status: "not_done",
+      updated_at: "v1",
+    }],
+  }],
+  views: { inbox: [], today: [], completed: [], blocked: [] },
+  goals: [],
+  projects: [],
+};
+state.selectedKind = "task";
+state.selectedSlug = "tasks/parent";
+elements.taskTodoError = new FakeElement("p");
+elements.taskTodoList = new FakeElement("div");
+elements.taskTodoEmpty = new FakeElement("p");
+elements.taskTodoAddForm = new FakeElement("form");
+elements.taskTodoAddToggle = new FakeElement("button");
+elements.taskTodoLoading = new FakeElement("p");
+elements.taskTodoShowCompleted = new FakeElement("input");
+globalThis.fetch = async (endpoint, options) => {
+  if (endpoint === "/api/todos/todos%2Fone" && options.method === "PATCH") {
+    return { ok: true, json: async () => ({ receipt: { verified: true, todo: {
+      slug: "todos/one", parent_task: "tasks/parent", text: "Edited TODO", detail: "Edited detail", status: "not_done", updated_at: "v2",
+    } } }) };
+  }
+  if (endpoint === "/api/todos/todos%2Fone/status" && options.method === "PATCH") {
+    return { ok: true, json: async () => ({ receipt: { verified: true, todo: {
+      slug: "todos/one", parent_task: "tasks/parent", text: "Edited TODO", detail: "Edited detail", status: "done", updated_at: "v3",
+    } } }) };
+  }
+  if (endpoint === "/api/tasks/tasks%2Fparent/status" && options.method === "PATCH") {
+    return { ok: false, json: async () => ({ error: "Task status readback failed.", code: "ambiguous_readback" }) };
+  }
+  throw new Error(`unexpected ${endpoint}`);
+};
+await performTodoEditAction(
+  state.snapshot.tasks[0].todos[0],
+  "Edited TODO",
+  "Edited detail",
+  button,
+  "complete_task",
+);
+const message = elements.taskTodoError.textContent || "";
+assert(message.includes("TODO edits were verified"), message);
+assert(message.includes("TODO was marked Done"), message);
+assert(message.includes("Task completion was not verified"), message);
+assert(findTaskBySlug("tasks/parent").status === "active", "task was locally completed despite failed readback");
+assert(findTaskBySlug("tasks/parent").todos[0].status === "done", "verified TODO done state was not retained");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_agent_handoff_is_clear_atomic_and_keeps_question_history_read_only(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -1233,7 +1397,7 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
     def test_verified_todo_mutation_receipt_updates_ui_without_duplicate_read(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         create = javascript[javascript.index("async function createTaskTodo") : javascript.index("async function editTaskTodo")]
-        edit = javascript[javascript.index("async function editTaskTodo") : javascript.index("async function commentOnTodo")]
+        edit = javascript[javascript.index("async function performTodoEditAction") : javascript.index("async function commentOnTodo")]
         comment = javascript[javascript.index("async function commentOnTodo") : javascript.index("async function changeTodoStatus")]
         status = javascript[javascript.index("async function changeTodoStatus") : javascript.index("function renderProposalDecisionTimeline")]
 
@@ -1284,6 +1448,48 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
         self.assertIn("icalEventsForDay", javascript)
         self.assertIn("Full Access to Calendar", html)
 
+    def test_calendar_toolbar_keeps_navigation_and_ical_on_one_desktop_row_with_detail_open(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        week_view = javascript[
+            javascript.index("function renderWeekView")
+            : javascript.index("function calendarEventsFilter")
+        ]
+        month_view = javascript[
+            javascript.index("function renderMonthCalendar")
+            : javascript.index("function renderCalendarView")
+        ]
+
+        for renderer in (week_view, month_view):
+            self.assertIn('node("div", "week-controls calendar-toolbar")', renderer)
+            self.assertIn('node("div", "calendar-toolbar-primary")', renderer)
+            self.assertIn('node("div", "calendar-nav-controls")', renderer)
+            self.assertLess(
+                renderer.index("calendar-toolbar-primary"),
+                renderer.index("calendar-nav-controls"),
+            )
+            self.assertLess(
+                renderer.index("calendar-nav-controls"),
+                renderer.index("calendarEventsFilter()"),
+            )
+
+        self.assertIn(".calendar-toolbar", css)
+        self.assertIn(".calendar-toolbar-primary", css)
+        self.assertIn(".calendar-nav-controls", css)
+        desktop_detail = css[
+            css.index('.app-shell:has(.detail-panel[aria-hidden="false"]) .calendar-toolbar')
+            : css.index(".week-grid")
+        ]
+        self.assertIn("flex-wrap: nowrap", desktop_detail)
+        self.assertIn("min-width: 0", desktop_detail)
+        self.assertIn(".calendar-events-filter", desktop_detail)
+        self.assertIn("margin-left: auto", desktop_detail)
+        mobile = css[css.index("@media (max-width: 760px)") :]
+        self.assertIn(".calendar-toolbar", mobile)
+        self.assertIn("flex-wrap: wrap", mobile)
+        self.assertIn(".calendar-events-filter", mobile)
+
     def test_calendar_picker_is_compact_and_saves_with_verified_feedback(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1300,6 +1506,35 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
         self.assertIn("width: 14px", css)
         self.assertIn("grid-template-columns: 14px minmax(0, 1fr)", css)
         self.assertIn("flex: 1 0 100%", css)
+
+    def test_gbrain_communication_statuses_use_dark_hud_treatment(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        for element_id in (
+            "task-handoff-error",
+            "task-todo-loading",
+            "task-todo-error",
+            "calendar-access-error",
+            "calendar-picker-saving",
+            "calendar-picker-error",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+            fragment = html[
+                max(0, html.index(f'id="{element_id}"') - 160)
+                : html.index(f'id="{element_id}"') + 160
+            ]
+            self.assertIn("mission-status-hud", fragment)
+
+        self.assertIn(".mission-status-hud", css)
+        hud_start = css.index(".mission-status-hud")
+        hud = css[hud_start : css.index(".calendar-events-filter", hud_start)]
+        self.assertIn("rgba(2, 8, 22", hud)
+        self.assertIn("color: var(--ink)", hud)
+        self.assertIn("border: 1px solid", hud)
+        self.assertIn('.mission-status-hud[role="alert"]', hud)
+        self.assertIn('.mission-status-hud[role="status"]', hud)
+        self.assertNotIn("background: white", hud)
 
     def test_calendar_failure_stops_retry_loop_and_always_offers_reauthorization(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

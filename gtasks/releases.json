@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.80",
+  "current_version": "V0.0.81",
   "releases": [
     {
       "version": "V0.0.1",
@@ -480,6 +480,12 @@
       "date": "2026-08-05",
       "title": "Reliable completed System Ticket handoff links",
       "summary": "Handoff History now opens completed System Tickets through an exact canonical slug read instead of depending on the default uncompleted-ticket list, while preserving the existing privacy-safe task reference and detail focus behavior."
+    },
+    {
+      "version": "V0.0.81",
+      "date": "2026-08-05",
+      "title": "Calendar toolbar and TODO completion controls",
+      "summary": "Calendar navigation now keeps Week/Month controls and Show iCal Events together with task details open, TODO edits can be saved with Done or Task completion in one verified flow, and GBrain communication states use the dark Mission Control HUD treatment."
     }
   ]
 }

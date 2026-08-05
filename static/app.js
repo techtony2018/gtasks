@@ -2008,7 +2008,7 @@ function renderWeekView() {
   const startDay = parseDay(start);
   const endDay = parseDay(shiftWeek(start, 1));
   const wrapper = node("section", "week-view");
-  const controls = node("div", "week-controls");
+  const controls = node("div", "week-controls calendar-toolbar");
   const weekMode = node("button", "secondary-button", "Week");
   weekMode.type = "button";
   weekMode.disabled = state.calendarMode === "week";
@@ -2036,16 +2036,14 @@ function renderWeekView() {
     state.weekStart = shiftWeek(start, 1);
     render();
   });
-  const icalFilter = calendarEventsFilter();
-  controls.append(
+  const primary = node("div", "calendar-toolbar-primary");
+  const navControls = node("div", "calendar-nav-controls");
+  navControls.append(weekMode, monthMode, previous, current, next);
+  primary.append(
     node("p", "week-range", `${formatDay(isoDay(startDay), "long")} – ${formatDay(isoDay(new Date(endDay.getFullYear(), endDay.getMonth(), endDay.getDate() - 1)), "long")}`),
-    weekMode,
-    monthMode,
-    previous,
-    current,
-    next,
-    icalFilter,
+    navControls,
   );
+  controls.append(primary, calendarEventsFilter());
   wrapper.append(controls);
   void ensureIcalEvents(start, shiftWeek(start, 1));
 
@@ -2346,13 +2344,20 @@ function renderMonthCalendar() {
   const first = new Date(monthStart);
   first.setDate(first.getDate() - ((first.getDay() + 6) % 7));
   const wrapper = node("section", "week-view");
-  const controls = node("div", "week-controls");
+  const controls = node("div", "week-controls calendar-toolbar");
   const week = node("button", "secondary-button", "Week"); week.type = "button"; week.addEventListener("click", () => { state.calendarMode = "week"; render(); });
   const month = node("button", "secondary-button", "Month"); month.type = "button"; month.disabled = true;
   const previous = node("button", "secondary-button", "Previous month"); previous.type = "button"; previous.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)); render(); });
   const current = node("button", "secondary-button", "This month"); current.type = "button"; current.disabled = monthStart.getFullYear() === parseDay(state.snapshot.as_of).getFullYear() && monthStart.getMonth() === parseDay(state.snapshot.as_of).getMonth(); current.addEventListener("click", () => { state.calendarMonth = null; render(); });
   const next = node("button", "secondary-button", "Next month"); next.type = "button"; next.addEventListener("click", () => { state.calendarMonth = isoDay(new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)); render(); });
-  controls.append(node("p", "week-range", new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(monthStart)), week, month, previous, current, next, calendarEventsFilter());
+  const primary = node("div", "calendar-toolbar-primary");
+  const navControls = node("div", "calendar-nav-controls");
+  navControls.append(week, month, previous, current, next);
+  primary.append(
+    node("p", "week-range", new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(monthStart)),
+    navControls,
+  );
+  controls.append(primary, calendarEventsFilter());
   wrapper.append(controls);
   void ensureIcalEvents(isoDay(first), isoDay(new Date(first.getFullYear(), first.getMonth(), first.getDate() + 42)));
   const grid = node("div", "month-grid");
@@ -5191,10 +5196,38 @@ function todoCard(todo) {
   editDetail.setAttribute("aria-label", `Edit TODO detail: ${todo.text}`);
   const editSubmit = node("button", "secondary-button", "Save TODO");
   editSubmit.type = "submit";
-  editForm.append(editText, editDetail, editSubmit);
+  const editActions = node("div", "task-todo-edit-actions");
+  const saveDone = node("button", "secondary-button", "Save & Mark Done");
+  saveDone.type = "button";
+  saveDone.setAttribute("aria-label", `Save TODO edits and mark Done: ${todo.text}`);
+  const saveComplete = node("button", "secondary-button", "Save & Complete Task");
+  saveComplete.type = "button";
+  saveComplete.setAttribute("aria-label", `Save TODO edits, mark Done, and complete parent Task: ${todo.text}`);
+  const combinedActionsEnabled = canUseCombinedTodoActions(todo);
+  [saveDone, saveComplete].forEach((button) => {
+    button.disabled = !combinedActionsEnabled;
+    button.setAttribute(
+      "aria-disabled",
+      combinedActionsEnabled ? "false" : "true",
+    );
+    if (!combinedActionsEnabled) {
+      setHudTooltip(
+        button,
+        "This combined TODO action is unavailable for handoff questions, completed tasks, and cancelled tasks.",
+      );
+    }
+  });
+  editActions.append(editSubmit, saveDone, saveComplete);
+  editForm.append(editText, editDetail, editActions);
   editForm.addEventListener("submit", (event) => {
     event.preventDefault();
     editTaskTodo(todo, editText.value, editDetail.value, editSubmit);
+  });
+  saveDone.addEventListener("click", () => {
+    performTodoEditAction(todo, editText.value, editDetail.value, saveDone, "mark_done");
+  });
+  saveComplete.addEventListener("click", () => {
+    performTodoEditAction(todo, editText.value, editDetail.value, saveComplete, "complete_task");
   });
 
   const commentsHeading = node("h5", "", "Comments");
@@ -5420,6 +5453,47 @@ async function todoMutation(endpoint, method, body) {
   return result.receipt.todo;
 }
 
+function canUseCombinedTodoActions(todo) {
+  if (!todo || todo.status === "done") return false;
+  const task = findTaskBySlug(todo.parent_task);
+  if (!task || ["completed", "cancelled"].includes(task.status)) return false;
+  if (isActiveHandoffQuestion(todo, task)) return false;
+  return true;
+}
+
+function setTodoEditActionPending(submit, pending) {
+  const form = submit?.closest?.("form");
+  const controls = form
+    ? Array.from(form.querySelectorAll("button"))
+    : submit ? [submit] : [];
+  controls.forEach((control) => {
+    control.disabled = Boolean(pending);
+  });
+}
+
+function mergeVerifiedTodoIntoTask(task, todo) {
+  if (!task || !todo) return task;
+  const todos = Array.isArray(task.todos) ? [...task.todos] : [];
+  const index = todos.findIndex((candidate) => candidate.slug === todo.slug);
+  if (index === -1) todos.push(todo);
+  else todos[index] = todo;
+  return { ...task, todos };
+}
+
+function verifiedTodoActionPartialMessage(flags, error) {
+  const parts = [];
+  if (flags.saved) parts.push("TODO edits were verified");
+  if (flags.done) parts.push("TODO was marked Done");
+  if (flags.completingTask) {
+    parts.push(`Task completion was not verified: ${statusErrorMessage(error)}`);
+  } else if (flags.markingDone) {
+    parts.push(`Mark Done was not verified: ${todoErrorMessage(error)}`);
+  } else {
+    parts.push(todoErrorMessage(error));
+  }
+  return parts.join(". ") + (parts.length ? "." : "");
+}
+
 async function answerAndHandBack(event) {
   event.preventDefault();
   const task = findTaskBySlug(state.selectedSlug);
@@ -5506,9 +5580,17 @@ async function createTaskTodo(event) {
   }
 }
 
-async function editTaskTodo(todo, text, detail, submit) {
+async function performTodoEditAction(todo, text, detail, submit, action = "save") {
+  const flags = {
+    saved: false,
+    done: false,
+    markingDone: action === "mark_done" || action === "complete_task",
+    completingTask: action === "complete_task",
+  };
   elements.taskTodoError.classList.add("is-hidden");
-  submit.disabled = true;
+  const originalLabel = submit?.textContent || "";
+  setTodoEditActionPending(submit, true);
+  if (submit) submit.textContent = "Saving…";
   try {
     const updated = await todoMutation(`/api/todos/${encodeURIComponent(todo.slug)}`, "PATCH", {
       text,
@@ -5518,17 +5600,65 @@ async function editTaskTodo(todo, text, detail, submit) {
       source: "mission_control",
       idempotency_key: crypto.randomUUID(),
     });
+    flags.saved = true;
     applyVerifiedTodoMutation(todo.parent_task, updated, { slug: todo.slug, control: "summary" });
-    showToast("TODO edit verified in GBrain.");
+    let verifiedTodo = updated;
+    if (flags.markingDone && verifiedTodo.status !== "done") {
+      const doneTodo = await todoMutation(
+        `/api/todos/${encodeURIComponent(todo.slug)}/status`,
+        "PATCH",
+        {
+          status: "done",
+          expected_updated_at: verifiedTodo.updated_at,
+          actor: "people/tony-guan",
+          source: "mission_control",
+          idempotency_key: crypto.randomUUID(),
+        },
+      );
+      verifiedTodo = doneTodo;
+      flags.done = true;
+      applyVerifiedTodoMutation(todo.parent_task, verifiedTodo, { slug: todo.slug, control: "summary" });
+    } else if (verifiedTodo.status === "done") {
+      flags.done = true;
+    }
+    if (flags.completingTask) {
+      const receipt = await requestTaskStatus(todo.parent_task, "completed");
+      const current = findTaskBySlug(todo.parent_task);
+      reconcileVerifiedTask(mergeVerifiedTodoIntoTask(receipt.task, verifiedTodo));
+      if (current?.slug === state.selectedSlug || receipt.task.slug === state.selectedSlug) {
+        state.selectedKind = "task";
+        state.selectedSlug = receipt.task.slug;
+        selectTask(receipt.task.slug);
+      }
+      showMutationStatus(
+        "TODO saved, marked Done, and Task completed in GBrain.",
+        "success",
+      );
+      return;
+    }
+    showMutationStatus(
+      action === "mark_done"
+        ? "TODO saved and marked Done in GBrain."
+        : "TODO edit verified in GBrain.",
+      "success",
+    );
   } catch (error) {
-    elements.taskTodoError.textContent = todoErrorMessage(error);
+    elements.taskTodoError.textContent =
+      flags.saved || flags.done
+        ? verifiedTodoActionPartialMessage(flags, error)
+        : todoErrorMessage(error);
     elements.taskTodoError.classList.remove("is-hidden");
     if (error.code === "todo_changed") {
       await refreshTaskTodos(todo.parent_task, { slug: todo.slug, control: "summary" });
     }
   } finally {
-    submit.disabled = false;
+    setTodoEditActionPending(submit, false);
+    if (submit) submit.textContent = originalLabel;
   }
+}
+
+async function editTaskTodo(todo, text, detail, submit) {
+  return performTodoEditAction(todo, text, detail, submit, "save");
 }
 
 async function commentOnTodo(todo, body, submit) {

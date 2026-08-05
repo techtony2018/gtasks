@@ -9,8 +9,8 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="alternate icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon-180.png">
-    <link rel="stylesheet" href="/styles.css?v=0.0.78">
-    <script src="/app.js?v=0.0.78" defer></script>
+    <link rel="stylesheet" href="/styles.css?v=0.0.81">
+    <script src="/app.js?v=0.0.81" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -219,7 +219,7 @@
               <textarea id="task-handoff-answer" rows="4" maxlength="4000" required placeholder="Give the precise information the Agent needs to resume"></textarea>
               <button class="primary-button" id="task-handoff-submit" type="submit">Answer and Hand Back</button>
             </form>
-            <p class="form-error is-hidden" role="alert" id="task-handoff-error"></p>
+            <p class="mission-status-hud form-error is-hidden" role="alert" id="task-handoff-error"></p>
           </section>
           <section class="task-todos" aria-labelledby="task-todo-heading">
             <div class="task-todo-heading-row">
@@ -251,9 +251,9 @@
                 </div>
               </div>
             </form>
-            <p class="is-hidden" role="status" id="task-todo-loading">Loading canonical TODOs…</p>
+            <p class="mission-status-hud is-hidden" role="status" id="task-todo-loading">Loading canonical TODOs…</p>
             <p class="is-hidden" id="task-todo-empty">No TODO yet</p>
-            <p class="form-error is-hidden" role="alert" id="task-todo-error"></p>
+            <p class="mission-status-hud form-error is-hidden" role="alert" id="task-todo-error"></p>
             <div class="task-todo-list" id="task-todo-list" role="list"></div>
           </section>
           <section class="task-artifacts" id="task-artifacts" aria-labelledby="task-artifacts-heading">
@@ -825,7 +825,7 @@
         <p>Apple requires <strong>Full Access to Calendar</strong> before an app can read local events. Mission Control will only read events from calendars you choose. It never creates, changes, or deletes calendar events.</p>
         <p>Calendar events stay outside GBrain and cannot be used as Mission Control tasks.</p>
         <p>If access was previously denied or revoked, <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars">open macOS Calendar privacy settings</a>, enable Mission Control, then retry here.</p>
-        <p class="form-error is-hidden" id="calendar-access-error" role="alert"></p>
+        <p class="mission-status-hud form-error is-hidden" id="calendar-access-error" role="alert"></p>
         <div class="dialog-footer"><button class="secondary-button" id="calendar-access-cancel" type="button">Cancel</button><button class="submit-button" id="calendar-access-request" type="button">Continue to Apple permission</button></div>
       </div>
     </dialog>
@@ -838,8 +838,8 @@
         </div>
         <p>Only selected calendar identifiers are saved locally. Event details are read only for this Calendar overlay and are never copied to GBrain.</p>
         <fieldset class="calendar-picker-list" id="calendar-picker-list"><legend>Available calendars</legend></fieldset>
-        <p class="calendar-picker-saving is-hidden" id="calendar-picker-saving" role="status">Saving calendar selection…</p>
-        <p class="form-error is-hidden" id="calendar-picker-error" role="alert"></p>
+        <p class="mission-status-hud calendar-picker-saving is-hidden" id="calendar-picker-saving" role="status">Saving calendar selection…</p>
+        <p class="mission-status-hud form-error is-hidden" id="calendar-picker-error" role="alert"></p>
         <div class="dialog-footer"><button class="secondary-button" id="calendar-picker-cancel" type="button">Cancel</button><button class="submit-button" id="calendar-picker-submit" type="submit">Save selected calendars</button></div>
       </form>
     </dialog>

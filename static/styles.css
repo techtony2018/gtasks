@@ -1457,6 +1457,12 @@ body.is-resizing-detail {
   margin: 9px 0 13px;
 }
 
+.task-todo-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
 .task-todo-edit-form .secondary-button,
 .task-todo-comment-form .secondary-button {
   justify-self: start;
@@ -1755,6 +1761,82 @@ body.is-resizing-detail {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.calendar-toolbar {
+  min-width: 0;
+}
+
+.calendar-toolbar-primary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+
+.calendar-nav-controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+.calendar-nav-controls .secondary-button {
+  min-height: 34px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.app-shell:has(.detail-panel[aria-hidden="false"]) .calendar-toolbar {
+  flex-wrap: nowrap;
+}
+
+.app-shell:has(.detail-panel[aria-hidden="false"]) .calendar-toolbar-primary {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.app-shell:has(.detail-panel[aria-hidden="false"]) .calendar-nav-controls {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.app-shell:has(.detail-panel[aria-hidden="false"]) .week-range {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell:has(.detail-panel[aria-hidden="false"]) .calendar-events-filter {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.mission-status-hud {
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(110, 231, 255, 0.24);
+  border-radius: 9px;
+  color: var(--ink);
+  background: rgba(2, 8, 22, 0.94);
+  box-shadow: 0 14px 34px rgba(2, 8, 22, 0.22);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.mission-status-hud[role="status"] {
+  border-color: rgba(110, 231, 255, 0.28);
+  color: #c5f7ff;
+}
+
+.mission-status-hud[role="alert"] {
+  border-color: rgba(255, 154, 169, 0.36);
+  color: #ffccd4;
 }
 
 .calendar-events-filter {
@@ -5905,6 +5987,27 @@ button:active {
     min-height: 44px;
   }
 
+  .calendar-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .calendar-toolbar-primary {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .calendar-nav-controls {
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .calendar-toolbar .calendar-events-filter {
+    width: 100%;
+    margin-left: 0;
+    flex: 1 0 100%;
+  }
+
   .artifact-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -6105,7 +6208,13 @@ button:active {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .task-todo-edit-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .task-todo-add-row .secondary-button,
+  .task-todo-edit-actions .secondary-button,
   .task-todo-edit-form .secondary-button,
   .task-todo-comment-form .secondary-button {
     width: 100%;
