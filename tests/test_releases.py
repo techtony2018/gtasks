@@ -11,6 +11,7 @@ RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
 RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
 V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md"
 V079_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.79.md"
+V080_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.80.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -20,10 +21,17 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.79")
+        self.assertEqual(__version__, "V0.0.80")
+
+    def test_v0_0_80_records_completed_system_ticket_handoff_links(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.80")
+        self.assertIn("completed System Tickets", release["summary"])
+        self.assertIn("exact canonical slug", release["summary"])
 
     def test_v0_0_79_records_verified_compact_handoff_task_links(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.79")
 
         self.assertEqual(release["version"], "V0.0.79")
         self.assertIn("verified server-projected Task references", release["summary"])
@@ -257,6 +265,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.77",
                 "V0.0.78",
                 "V0.0.79",
+                "V0.0.80",
             ],
         )
 
@@ -388,6 +397,7 @@ class ReleaseCatalogTests(unittest.TestCase):
 
     def test_v0_0_79_release_evidence_records_verified_task_link_gate_scope(self) -> None:
         self.assertTrue(V079_RELEASE_EVIDENCE.is_file(), "V0.0.79 release evidence must exist")
+        self.assertTrue(V080_RELEASE_EVIDENCE.is_file(), "V0.0.80 release evidence must exist")
         evidence = V079_RELEASE_EVIDENCE.read_text(encoding="utf-8")
         normalized = " ".join(evidence.split())
 

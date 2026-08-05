@@ -2865,7 +2865,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.79")
+        self.assertEqual(payload["version"], "V0.0.80")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -2873,11 +2873,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.79")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.79")
+        self.assertEqual(payload["current_version"], "V0.0.80")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.80")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.80",
                 "V0.0.79",
                 "V0.0.78",
                 "V0.0.77",
@@ -5541,6 +5542,25 @@ class SystemTicketApiTests(unittest.TestCase):
         self.assertEqual(len(adapter.updated_system_tickets), 1)
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.created_agent_tasks, [])
+
+    def test_reads_one_completed_system_ticket_by_exact_slug(self) -> None:
+        ticket = SystemTicket(
+            slug="tasks/completed-handoff-ticket",
+            title="Completed handoff ticket",
+            status="completed",
+            verbatim_request="Open this ticket from Handoff History.",
+            target_subsystem="mission_control",
+            priority="normal",
+        )
+        harness = ServerHarness(self, FakeAdapter(system_tickets=(ticket,)))
+
+        status, payload, _ = harness.request(
+            "GET", "/api/system-tickets/tasks%2Fcompleted-handoff-ticket"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["ticket"]["slug"], ticket.slug)
+        self.assertEqual(payload["ticket"]["status"], "completed")
 
     def test_system_ticket_edit_rejects_receipt_mutation(self) -> None:
         ticket = SystemTicket(

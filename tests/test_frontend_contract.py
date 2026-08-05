@@ -2484,6 +2484,34 @@ await pending;
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_handoff_completed_system_ticket_uses_exact_slug_readback(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const ticketSlug = "tasks/completed-handoff-ticket";
+state.systemTickets = [];
+state.completedSystemTickets = [];
+loadSystemTickets = async () => {};
+let requested = null;
+globalThis.fetch = async (url) => {
+  requested = url;
+  return {
+    ok: true,
+    json: async () => ({
+      ticket: { slug: ticketSlug, title: "Completed handoff ticket", status: "completed" },
+    }),
+  };
+};
+
+const ticket = await loadCorrelatedSystemTicket(ticketSlug);
+
+assert(requested === `/api/system-tickets/${encodeURIComponent(ticketSlug)}`, `unexpected exact System Ticket URL: ${requested}`);
+assert(ticket?.slug === ticketSlug, "completed System Ticket did not open by exact slug");
+assert(state.completedSystemTickets.some((item) => item.slug === ticketSlug), "exact completed ticket was not cached for detail rendering");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_task_handoff_final_page_moves_load_more_focus_to_timeline_state(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn(

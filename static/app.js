@@ -6532,8 +6532,23 @@ async function loadCorrelatedSystemTicket(ticketSlug) {
   await loadSystemTickets({ force: false });
   ticket = findSystemTicket(ticketSlug);
   if (ticket) return ticket;
-  await loadSystemTickets({ force: true });
-  return findSystemTicket(ticketSlug) || null;
+  try {
+    const response = await fetch(`/api/system-tickets/${encodeURIComponent(ticketSlug)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok || payload?.ticket?.slug !== ticketSlug) return null;
+    ticket = payload.ticket;
+    const destination = ticket.status === "completed" ? "completedSystemTickets" : "systemTickets";
+    state[destination] = [
+      ...state[destination].filter((item) => item.slug !== ticketSlug),
+      ticket,
+    ];
+    return ticket;
+  } catch (_error) {
+    return null;
+  }
 }
 
 async function openHandoffTaskReference(event, originControl = null) {

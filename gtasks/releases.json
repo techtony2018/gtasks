@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.79",
+  "current_version": "V0.0.80",
   "releases": [
     {
       "version": "V0.0.1",
@@ -474,6 +474,12 @@
       "date": "2026-08-05",
       "title": "Verified compact handoff task links",
       "summary": "Agents Handoff History now uses verified server-projected Task references with compact inline title links, non-clickable unavailable fallbacks, Unicode-safe truncation, and denser timestamp/detail rows without redundant event-type labels."
+    },
+    {
+      "version": "V0.0.80",
+      "date": "2026-08-05",
+      "title": "Reliable completed System Ticket handoff links",
+      "summary": "Handoff History now opens completed System Tickets through an exact canonical slug read instead of depending on the default uncompleted-ticket list, while preserving the existing privacy-safe task reference and detail focus behavior."
     }
   ]
 }

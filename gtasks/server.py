@@ -1670,6 +1670,43 @@ def _handler_class(
                 except ICalendarError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "calendar_unavailable"})
                 return
+            system_ticket_read_prefix = "/api/system-tickets/"
+            if path.startswith(system_ticket_read_prefix) and "/" not in path[len(system_ticket_read_prefix) :]:
+                ticket_slug = unquote(path[len(system_ticket_read_prefix) :])
+                try:
+                    result = read_system_tickets(force=False)
+                    if result.payload is None:
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": result.state.get("error")
+                                or "The canonical System Ticket could not be read.",
+                                "code": "gbrain_refresh_delayed",
+                                "read_state": result.state,
+                            },
+                        )
+                        return
+                    ticket = next(
+                        (
+                            item
+                            for item in result.payload.get("tickets", [])
+                            if isinstance(item, dict) and item.get("slug") == ticket_slug
+                        ),
+                        None,
+                    )
+                    if ticket is None:
+                        self._json(
+                            HTTPStatus.NOT_FOUND,
+                            {"error": "System Ticket was not found.", "code": "system_ticket_not_found"},
+                        )
+                        return
+                    self._json(
+                        HTTPStatus.OK,
+                        {"ticket": ticket, "read_state": result.state},
+                    )
+                except GBrainError as exc:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
+                return
             if path == "/api/system-tickets":
                 try:
                     query = parse_qs(urlsplit(self.path).query)
