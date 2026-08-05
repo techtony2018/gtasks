@@ -4671,8 +4671,30 @@ function captureHandoffFocus() {
   return control?.dataset?.handoffFocus || null;
 }
 
+function isHandoffTaskOrigin(element) {
+  const origin = element?.closest?.(".handoff-event-task") || element;
+  return origin?.dataset?.handoffTask === "true" ? origin : null;
+}
+
+function detailReturnFocusAnchor(element, slug) {
+  const anchor = { element, slug };
+  const handoffOrigin = isHandoffTaskOrigin(element);
+  if (handoffOrigin) {
+    anchor.handoffTask = true;
+    anchor.sequence = handoffOrigin.dataset.sequence || "";
+    anchor.correlationId = handoffOrigin.dataset.correlationId || "";
+  }
+  return anchor;
+}
+
+function isHandoffDetailFallbackFocus(element) {
+  const key = element?.dataset?.handoffFocus;
+  return key === "load-status" || key === "filter:correlation_id";
+}
+
 function restoreHandoffFocus(key = state.handoffLogFocusKey) {
   if (!key) return;
+  if (state.detailFocusReturnAnchor) return;
   window.requestAnimationFrame(() => {
     const selector = `[data-handoff-focus="${CSS.escape(key)}"]`;
     let replacement = document.querySelector(selector);
@@ -4919,7 +4941,7 @@ function selectSystemTicket(ticketSlug, originControl = null) {
   const ticket = findSystemTicket(ticketSlug);
   if (!ticket) return;
   if (originControl instanceof HTMLElement) {
-    state.detailReturnFocus = { element: originControl, slug: ticket.slug };
+    state.detailReturnFocus = detailReturnFocusAnchor(originControl, ticket.slug);
   }
   state.selectedSlug = ticket.slug;
   state.selectedKind = "system-ticket";
@@ -6153,6 +6175,35 @@ function eventPassesHandoffTimeFilter(event, filter) {
   return Date.now() - occurred <= (windows[filter] || Number.POSITIVE_INFINITY);
 }
 
+function visibleGraphemes(value) {
+  const text = String(value || "");
+  if (typeof Intl !== "undefined" && Intl.Segmenter) {
+    return Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text), (part) => part.segment);
+  }
+  return Array.from(text);
+}
+
+function truncateVisibleTaskTitle(title, limit = 20) {
+  const safe = privacySafeEventText(title, 160);
+  const graphemes = visibleGraphemes(safe);
+  if (graphemes.length <= limit) return safe;
+  return `${graphemes.slice(0, limit).join("")}…`;
+}
+
+function handoffStatusLabel(event) {
+  const status = String(event?.status || "unknown").replaceAll("_", " ");
+  if (event?.status === "dead_letter" || event?.event_type === "delivery_terminal") return "Dead letter";
+  if (event?.status === "queued") return "Queued";
+  if (event?.status === "leased") return "Leased";
+  if (event?.status === "received") return "Received";
+  if (event?.status === "acknowledged") return "Acknowledged";
+  if (event?.status === "processing" || event?.status === "agent_working") return "Working";
+  if (event?.status === "blocked") return "Blocked";
+  if (event?.status === "retrying") return "Retrying";
+  if (event?.status === "completed" || event?.status === "delivered") return "Completed";
+  return privacySafeEventText(status || "Verified", 80);
+}
+
 function renderHandoffEvents(events, destination) {
   const list = destination.list;
   list.replaceChildren();
@@ -6164,36 +6215,49 @@ function renderHandoffEvents(events, destination) {
     const deadLetter = event.status === "dead_letter" || event.event_type === "delivery_terminal";
     const item = node("li", `handoff-event${deadLetter ? " is-dead-letter" : ""}`);
     item.dataset.sequence = String(event.sequence);
-    const heading = node("div", "handoff-event-heading");
-    if (showTaskLink && event.correlation_id && event.task_slug) {
-      const taskLink = node(
-        "button",
-        "handoff-task-link handoff-event-task",
-        `Task: ${privacySafeEventText(event.task_slug, 120)}`,
-      );
-      taskLink.type = "button";
-      taskLink.dataset.slug = event.task_slug;
-      taskLink.setAttribute("aria-label", `Open Task ${privacySafeEventText(event.task_slug, 120)}`);
-      taskLink.addEventListener("click", () => {
-        openHandoffCorrelation(event.correlation_id, event.task_slug, taskLink);
-      });
-      heading.append(taskLink);
+    const heading = node("div", "handoff-event-heading handoff-event-mainline");
+    heading.append(node("strong", "handoff-event-agent", handoffAgentLabel(event.agent_slug)));
+    const status = node("span", "handoff-event-status", handoffStatusLabel(event));
+    if (showTaskLink) {
+      heading.append(node("span", "handoff-event-separator", " - "));
+      if (event.task_ref?.available && event.task_ref?.slug && event.task_ref?.title) {
+        const fullTitle = privacySafeEventText(event.task_ref.title, 240);
+        const taskLink = node(
+          "a",
+          "handoff-task-link handoff-event-task",
+          `Task:${truncateVisibleTaskTitle(fullTitle, 20)}`,
+        );
+        taskLink.href = `#${event.task_ref.surface === "system_ticket" ? "system-ticket" : "task"}/${encodeURIComponent(event.task_ref.slug)}`;
+        taskLink.dataset.slug = event.task_ref.slug;
+        taskLink.dataset.handoffTask = "true";
+        taskLink.dataset.sequence = String(event.sequence ?? "");
+        taskLink.dataset.correlationId = event.correlation_id || "";
+        taskLink.title = fullTitle;
+        taskLink.setAttribute("aria-label", `Open Task ${fullTitle}`);
+        taskLink.addEventListener("click", (clickEvent) => {
+          clickEvent.preventDefault();
+          openHandoffTaskReference(event, taskLink);
+        });
+        heading.append(taskLink);
+      } else {
+        const unavailable = node("span", "handoff-task-unavailable", "Task unavailable");
+        unavailable.setAttribute("aria-label", event.task_ref?.reason || "Task unavailable for this handoff event.");
+        heading.append(unavailable);
+      }
+      heading.append(node("span", "handoff-event-separator", " - "));
     }
-    heading.append(
-      node("strong", "handoff-event-agent", handoffAgentLabel(event.agent_slug)),
-      node("span", "handoff-event-type", privacySafeEventText(String(event.event_type || "event").replaceAll("_", " "), 80)),
-    );
-    const status = node("span", "handoff-event-status", privacySafeEventText(String(event.status || "unknown").replaceAll("_", " "), 80));
+    heading.append(status);
     const when = node(
       "time",
       "handoff-event-time",
       event.occurred_at ? new Date(event.occurred_at).toLocaleString() : "Time unavailable",
     );
     if (event.occurred_at) when.dateTime = event.occurred_at;
-    const summary = node("p", "handoff-event-summary", privacySafeEventText(event.summary));
+    const meta = node("p", "handoff-event-meta");
+    meta.append(when, node("span", "handoff-event-separator", " · "), node("span", "handoff-event-summary", privacySafeEventText(event.detail || event.summary)));
     const controls = node("div", "handoff-event-controls");
     if (deadLetter) controls.append(node("span", "handoff-dead-letter", "Dead letter"));
-    item.append(heading, status, when, summary, controls);
+    item.append(heading, meta, controls);
     list.append(item);
   });
   return ordered.length;
@@ -6462,15 +6526,55 @@ async function loadCorrelatedHandoffTask(taskSlug) {
   }
 }
 
+async function loadCorrelatedSystemTicket(ticketSlug) {
+  let ticket = findSystemTicket(ticketSlug);
+  if (ticket) return ticket;
+  await loadSystemTickets({ force: false });
+  ticket = findSystemTicket(ticketSlug);
+  if (ticket) return ticket;
+  await loadSystemTickets({ force: true });
+  return findSystemTicket(ticketSlug) || null;
+}
+
+async function openHandoffTaskReference(event, originControl = null) {
+  const ref = event?.task_ref;
+  if (!ref?.available || !ref.slug) return;
+  state.handoffLogFilters = {
+    ...state.handoffLogFilters,
+    correlation_id: event.correlation_id || "",
+  };
+  state.activeView = "agent-work";
+  state.agentHandoffHistoryOpen = true;
+  render();
+  state.handoffLogFocusKey = null;
+  const logRead = loadHandoffLog({ reset: true });
+  if (ref.surface === "system_ticket") {
+    const ticket = await loadCorrelatedSystemTicket(ref.slug);
+    if (ticket) {
+      selectSystemTicket(ref.slug, originControl);
+      await logRead;
+      return;
+    }
+  } else {
+    const task = await loadCorrelatedHandoffTask(ref.slug);
+    if (task) {
+      selectTask(ref.slug, task, originControl);
+      await logRead;
+      return;
+    }
+  }
+  await logRead;
+  state.handoffLogError = MISSING_LINKED_TASK_ERROR;
+  state.handoffLogStale = false;
+  state.handoffLogFocusKey = "load-status";
+  if (state.activeView === "agent-work") render();
+}
+
 async function openHandoffCorrelation(correlationId, taskSlug, originControl = null) {
   state.handoffLogFilters = {
     ...state.handoffLogFilters,
     correlation_id: correlationId || "",
   };
-  state.handoffLogEvents = [];
-  state.handoffLogTotal = 0;
-  state.handoffLogSnapshotTotal = 0;
-  state.handoffLogNextSequence = null;
   state.activeView = "agent-work";
   state.agentHandoffHistoryOpen = true;
   render();
@@ -6530,7 +6634,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   const task = findTaskBySlug(slug) || taskFallback;
   if (!task) return;
   state.detailReturnFocus = returnFocus
-    ? { element: returnFocus, slug }
+    ? detailReturnFocusAnchor(returnFocus, slug)
     : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
@@ -6851,6 +6955,16 @@ function closeDetails() {
 function detailFocusReturnTarget(anchor) {
   if (!anchor) return null;
   if (anchor.element?.isConnected) return anchor.element;
+  if (anchor.handoffTask) {
+    const taskLinks = Array.from(document.querySelectorAll(".handoff-event-task"))
+      .filter((candidate) => candidate.dataset.slug === anchor.slug);
+    const exactOrigin = taskLinks.find((candidate) => (
+      (!anchor.sequence || candidate.dataset.sequence === anchor.sequence) &&
+      (!anchor.correlationId || candidate.dataset.correlationId === anchor.correlationId)
+    ));
+    if (exactOrigin) return exactOrigin;
+    if (!anchor.sequence && !anchor.correlationId && taskLinks.length) return taskLinks[0];
+  }
   const matchingOrigin = [
     ...document.querySelectorAll(".proposal-card"),
     ...document.querySelectorAll(".task-row-open"),
@@ -6877,7 +6991,12 @@ function restorePendingDetailFocus({ force = false } = {}) {
   window.requestAnimationFrame(() => {
     if (state.detailFocusReturnAnchor !== anchor) return;
     const active = document.activeElement;
-    if (!force && active !== document.body && active?.isConnected) return;
+    if (
+      !force &&
+      active !== document.body &&
+      active?.isConnected &&
+      !(anchor.handoffTask && isHandoffDetailFallbackFocus(active))
+    ) return;
     detailFocusReturnTarget(anchor)?.focus({ preventScroll: true });
   });
 }

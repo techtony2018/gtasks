@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.78",
+  "current_version": "V0.0.79",
   "releases": [
     {
       "version": "V0.0.1",
@@ -468,6 +468,12 @@
       "date": "2026-08-04",
       "title": "Consolidated handoff history surfaces",
       "summary": "Keeps Task Timeline collapsed at the bottom of task details, removes self-navigation controls from task-local handoff events, and consolidates user-facing Handoff History into the Agents surface with safe legacy routing."
+    },
+    {
+      "version": "V0.0.79",
+      "date": "2026-08-05",
+      "title": "Verified compact handoff task links",
+      "summary": "Agents Handoff History now uses verified server-projected Task references with compact inline title links, non-clickable unavailable fallbacks, Unicode-safe truncation, and denser timestamp/detail rows without redundant event-type labels."
     }
   ]
 }

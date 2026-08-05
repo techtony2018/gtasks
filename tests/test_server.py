@@ -2592,6 +2592,110 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertEqual(exported["metadata"]["format"], "handoff-audit-v1")
         self.assertEqual(self._event_count(), before)
 
+    def test_event_projection_includes_verified_task_reference_and_unavailable_fallback(self) -> None:
+        task = new_task(
+            title="Review Unicode handoff title 🚀 with enough text",
+            detail="Verified task detail.",
+            due_day=date(2026, 8, 5),
+            now=self.NOW,
+            identity="handoff-reference",
+        )
+        system_ticket = SystemTicket(
+            slug="tasks/system-ticket-reference",
+            title="System ticket handoff target",
+            status="active",
+            verbatim_request="Preserve a canonical ticket target.",
+            target_subsystem="mission_control",
+            priority="normal",
+            acceptance_criteria="Must open the verified System Ticket.",
+        )
+        adapter = FakeAdapter(active=(task,), system_tickets=(system_ticket,))
+        harness = ServerHarness(
+            self,
+            adapter,
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                self.registration
+                if agent == "agents/tammy" and registration == self.REGISTRATION
+                else None
+            ),
+            handoff_waiter=lambda _seconds: None,
+        )
+        self.dispatcher.record(
+            ActionableChange(
+                task_slug=task.slug,
+                canonical_event_id="events/task-ref",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="Task link should be verified.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-task-ref",
+            ),
+            now=self.NOW,
+        )
+        self.dispatcher.record(
+            ActionableChange(
+                task_slug=system_ticket.slug,
+                canonical_event_id="events/ticket-ref",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="System Ticket link should be verified.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-ticket-ref",
+            ),
+            now=self.NOW,
+        )
+        self.dispatcher.record(
+            ActionableChange(
+                task_slug="tasks/missing-reference",
+                canonical_event_id="events/missing-ref",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="Missing task must not produce a broken link.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-missing-ref",
+            ),
+            now=self.NOW,
+        )
+
+        status, payload, _ = harness.request(
+            "GET", "/api/handoff-events?limit=50&after_sequence=0"
+        )
+
+        self.assertEqual(status, 200)
+        by_event = {event["canonical_event_id"]: event for event in payload["events"]}
+        task_ref = by_event["events/task-ref"]["task_ref"]
+        self.assertEqual(
+            task_ref,
+            {
+                "available": True,
+                "slug": task.slug,
+                "title": task.title,
+                "surface": "task",
+            },
+        )
+        ticket_ref = by_event["events/ticket-ref"]["task_ref"]
+        self.assertEqual(
+            ticket_ref,
+            {
+                "available": True,
+                "slug": system_ticket.slug,
+                "title": system_ticket.title,
+                "surface": "system_ticket",
+            },
+        )
+        missing_ref = by_event["events/missing-ref"]["task_ref"]
+        self.assertEqual(missing_ref["available"], False)
+        self.assertNotIn("slug", missing_ref)
+        self.assertEqual(missing_ref["label"], "Task unavailable")
+
     def test_event_endpoints_share_bounded_timestamp_range_filter(self) -> None:
         self._record(event="events/range-current")
         encoded = self.TASK.replace("/", "%2F")
@@ -2761,7 +2865,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.78")
+        self.assertEqual(payload["version"], "V0.0.79")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -2769,11 +2873,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.78")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.78")
+        self.assertEqual(payload["current_version"], "V0.0.79")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.79")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.79",
                 "V0.0.78",
                 "V0.0.77",
                 "V0.0.76",

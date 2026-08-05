@@ -1065,6 +1065,20 @@ def _handler_class(
                     if export == "1"
                     else handoff_store.query_events(**filters).to_dict()
                 )
+                if export != "1":
+                    payload = {
+                        **payload,
+                        "events": [
+                            {
+                                **event,
+                                "task_ref": self._handoff_task_ref(
+                                    event.get("task_slug")
+                                ),
+                            }
+                            for event in payload.get("events", [])
+                            if isinstance(event, dict)
+                        ],
+                    }
             except ValueError as exc:
                 self._json(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -1072,6 +1086,56 @@ def _handler_class(
                 )
                 return
             self._json(HTTPStatus.OK, payload)
+
+        def _handoff_task_ref(self, raw_slug: object) -> dict[str, object]:
+            unavailable: dict[str, object] = {
+                "available": False,
+                "label": "Task unavailable",
+                "reason": "Mission Control could not verify a navigable canonical Task for this handoff event.",
+            }
+            if not isinstance(raw_slug, str) or not raw_slug.startswith("tasks/"):
+                return unavailable
+
+            try:
+                system_result = read_system_tickets(force=False)
+                tickets = (
+                    system_result.payload.get("tickets", [])
+                    if isinstance(system_result.payload, dict)
+                    else []
+                )
+                for ticket in tickets:
+                    if (
+                        isinstance(ticket, dict)
+                        and ticket.get("slug") == raw_slug
+                        and isinstance(ticket.get("title"), str)
+                        and ticket["title"].strip()
+                    ):
+                        return {
+                            "available": True,
+                            "slug": raw_slug,
+                            "title": ticket["title"].strip(),
+                            "surface": "system_ticket",
+                        }
+            except Exception:
+                # A System Ticket read problem must not make handoff history
+                # unusable.  Fall through to the normal task verifier.
+                pass
+
+            try:
+                with foreground_operation():
+                    task = adapter.get_task(raw_slug)
+            except Exception:
+                return unavailable
+            title = getattr(task, "title", "")
+            slug = getattr(task, "slug", "")
+            if slug != raw_slug or not isinstance(title, str) or not title.strip():
+                return unavailable
+            return {
+                "available": True,
+                "slug": raw_slug,
+                "title": title.strip(),
+                "surface": "task",
+            }
 
         def _read_json(self) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length", "0")

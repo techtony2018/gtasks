@@ -461,6 +461,38 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("state.proposals.length", proposal_renderer)
         self.assertIn("Last verified proposals", proposal_renderer)
 
+    def test_agents_handoff_history_uses_compact_verified_task_links(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderHandoffEvents")
+            : javascript.index("function taskHandoffEntry")
+        ]
+
+        self.assertIn("event.task_ref?.available", renderer)
+        self.assertIn("truncateVisibleTaskTitle", javascript)
+        self.assertIn("openHandoffTaskReference", javascript)
+        self.assertIn('node("span", "handoff-event-separator", " - ")', renderer)
+        self.assertIn('Task:${truncateVisibleTaskTitle', renderer)
+        self.assertIn("Task unavailable", renderer)
+        self.assertNotIn('`Task: ${privacySafeEventText(event.task_slug', renderer)
+        self.assertNotIn('"handoff-event-type"', renderer)
+        self.assertIn(".handoff-event-meta", stylesheet)
+        self.assertIn(".handoff-event-mainline", stylesheet)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", stylesheet)
+
+    def test_handoff_task_title_truncation_is_unicode_safe_and_deterministic(self) -> None:
+        probe = r"""
+const short = truncateVisibleTaskTitle("Short title", 20);
+const exact = truncateVisibleTaskTitle("12345678901234567890", 20);
+const long = truncateVisibleTaskTitle("0123456789🙂ABCDE中文XYZ", 20);
+if (short !== "Short title") throw new Error(`short=${short}`);
+if (exact !== "12345678901234567890") throw new Error(`exact=${exact}`);
+if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
+"""
+        result = run_app_runtime_probe(probe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_narrow_desktop_calendar_keeps_detail_panel_in_layout_flow(self) -> None:
         stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(
             encoding="utf-8"
@@ -2108,8 +2140,8 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn("destination.showTaskLink !== false", renderer)
         self.assertIn("is-dead-letter", renderer)
         self.assertIn("Open Task", renderer)
+        self.assertIn("event.detail || event.summary", renderer)
         self.assertNotIn("Open correlated Task", renderer)
-        self.assertNotIn("event.detail", renderer)
         self.assertNotIn("event.handoff_id", renderer)
         self.assertNotIn("event.registration_ref", renderer)
         self.assertNotIn("event.idempotency_key", renderer)
@@ -2357,6 +2389,97 @@ elements.detailPanel.setAttribute("aria-hidden", "false");
 document.activeElement = elements.detailClose;
 closeDetails();
 assert(stableStatus.focused, "close detail did not focus the stable Handoff History status");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_task_link_close_restores_exact_origin_after_rerender(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/runtime-handoff-origin";
+const origin = new FakeElement("a");
+origin.isConnected = false;
+origin.dataset.slug = taskSlug;
+origin.dataset.handoffTask = "true";
+origin.dataset.sequence = "42";
+origin.dataset.correlationId = "corr-42";
+const stableStatus = new FakeElement("p");
+stableStatus.isConnected = true;
+stableStatus.dataset.handoffFocus = "load-status";
+const exactReplacement = new FakeElement("a");
+exactReplacement.isConnected = true;
+exactReplacement.dataset.slug = taskSlug;
+exactReplacement.dataset.handoffTask = "true";
+exactReplacement.dataset.sequence = "42";
+exactReplacement.dataset.correlationId = "corr-42";
+const wrongSameTask = new FakeElement("a");
+wrongSameTask.isConnected = true;
+wrongSameTask.dataset.slug = taskSlug;
+wrongSameTask.dataset.handoffTask = "true";
+wrongSameTask.dataset.sequence = "41";
+wrongSameTask.dataset.correlationId = "corr-41";
+let replacementVisible = false;
+document.querySelectorAll = (selector) => {
+  if (!replacementVisible) return [];
+  return selector === ".handoff-event-task" ? [wrongSameTask, exactReplacement] : [];
+};
+document.querySelector = (selector) => selector.includes("load-status") ? stableStatus : null;
+render = () => {};
+state.activeView = "agent-work";
+state.agentHandoffHistoryOpen = true;
+state.selectedKind = "task";
+state.selectedSlug = taskSlug;
+state.detailReturnFocus = {
+  element: origin,
+  slug: taskSlug,
+  handoffTask: true,
+  sequence: "42",
+  correlationId: "corr-42",
+};
+elements.detailPanel.setAttribute("aria-hidden", "false");
+document.activeElement = elements.detailClose;
+closeDetails();
+assert(stableStatus.focused, "fixture did not first focus the stable Handoff History status");
+replacementVisible = true;
+state.handoffLogFocusKey = "load-status";
+restorePendingDetailFocus();
+restoreHandoffFocus();
+assert(exactReplacement.focused, "close detail did not restore the exact originating Handoff Task link after rerender");
+assert(document.activeElement === exactReplacement, "handoff status focus restore overrode the exact originating Task link");
+assert(!wrongSameTask.focused, "close detail focused a different event for the same task slug");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_handoff_task_reference_preserves_visible_history_during_readback(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/runtime-handoff-preserve";
+const event = {
+  sequence: 51,
+  task_ref: { available: true, slug: taskSlug, title: "Preserved handoff Task", surface: "task" },
+  correlation_id: "corr-preserve",
+};
+state.handoffLogFilters = { ...state.handoffLogFilters, correlation_id: "corr-preserve" };
+state.handoffLogEvents = [event];
+state.handoffLogTotal = 1;
+state.handoffLogSnapshotTotal = 1;
+state.handoffLogNextSequence = null;
+state.activeView = "agent-work";
+state.agentHandoffHistoryOpen = true;
+const origin = new FakeElement("a");
+let release;
+loadHandoffLog = async () => new Promise((resolve) => { release = resolve; });
+loadCorrelatedHandoffTask = async () => ({ slug: taskSlug, title: "Preserved handoff Task" });
+selectTask = () => {};
+const pending = openHandoffTaskReference(event, origin);
+await Promise.resolve();
+assert(state.handoffLogEvents.length === 1, "opening a Handoff Task blanked the visible history while readback was pending");
+assert(state.handoffLogEvents[0].sequence === 51, "opening a Handoff Task replaced the visible history before readback");
+release();
+await pending;
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)

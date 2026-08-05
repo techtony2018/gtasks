@@ -10,6 +10,7 @@ README = PROJECT_ROOT / "README.md"
 RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
 RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
 V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md"
+V079_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.79.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -19,10 +20,18 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.78")
+        self.assertEqual(__version__, "V0.0.79")
+
+    def test_v0_0_79_records_verified_compact_handoff_task_links(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.79")
+        self.assertIn("verified server-projected Task references", release["summary"])
+        self.assertIn("Unicode-safe truncation", release["summary"])
+        self.assertIn("without redundant event-type labels", release["summary"])
 
     def test_v0_0_78_records_consolidated_handoff_history_surfaces(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.78")
 
         self.assertEqual(release["version"], "V0.0.78")
         self.assertIn("Task Timeline collapsed at the bottom", release["summary"])
@@ -247,6 +256,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.76",
                 "V0.0.77",
                 "V0.0.78",
+                "V0.0.79",
             ],
         )
 
@@ -374,6 +384,18 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("suppress self-navigation controls", normalized)
         self.assertIn("Agents is the only user-facing handoff surface", normalized)
         self.assertIn("real three-event task shape", normalized)
+        self.assertIn("genuine mobile 390x844", normalized)
+
+    def test_v0_0_79_release_evidence_records_verified_task_link_gate_scope(self) -> None:
+        self.assertTrue(V079_RELEASE_EVIDENCE.is_file(), "V0.0.79 release evidence must exist")
+        evidence = V079_RELEASE_EVIDENCE.read_text(encoding="utf-8")
+        normalized = " ".join(evidence.split())
+
+        self.assertIn("verified server-projected Task references", normalized)
+        self.assertIn("Task unavailable", normalized)
+        self.assertIn("Unicode-safe deterministic truncation", normalized)
+        self.assertIn("Independent pre-commit UI/UX QA", normalized)
+        self.assertIn("desktop 1440x1000", normalized)
         self.assertIn("genuine mobile 390x844", normalized)
 
     def test_v0_0_4_records_durable_projects_and_read_latency_work(self) -> None:

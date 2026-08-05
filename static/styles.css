@@ -5676,10 +5676,10 @@ button:active {
 .handoff-event {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 5px 9px;
-  padding: 8px 9px;
+  gap: 4px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: rgba(7, 17, 31, 0.7);
@@ -5693,11 +5693,20 @@ button:active {
 
 .handoff-event-heading {
   min-width: 0;
-  display: grid;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
 }
 
-.handoff-event-type,
+.handoff-event-mainline {
+  line-height: 1.35;
+}
+
+.handoff-event-separator {
+  color: var(--muted);
+}
+
 .handoff-event-status,
 .handoff-event-time {
   color: var(--muted);
@@ -5705,16 +5714,30 @@ button:active {
 }
 
 .handoff-event-status {
-  padding: 3px 7px;
+  padding: 2px 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
   text-transform: capitalize;
 }
 
-.handoff-event-summary,
+.handoff-event-meta,
 .handoff-surface-state {
-  grid-column: 1 / -1;
   margin: 0;
+}
+
+.handoff-event-meta {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.handoff-event-summary {
+  color: var(--ink);
 }
 
 .handoff-event-controls {
@@ -5726,15 +5749,26 @@ button:active {
 }
 
 .handoff-task-link {
-  min-height: 36px;
-  padding: 6px 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  min-height: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
   color: var(--accent-dark);
-  background: var(--accent-soft);
+  background: transparent;
   cursor: pointer;
   text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
   overflow-wrap: anywhere;
+}
+
+.handoff-task-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.handoff-task-unavailable {
+  color: var(--muted);
 }
 
 .handoff-dead-letter {
