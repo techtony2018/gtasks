@@ -130,7 +130,7 @@ to the reviewed source before updating relationships.
 - Mission Control version: `V0.0.76`
 - Deployed product repair commit:
   `44abd12ea56f15f50bf1232daaa04be05fd877d6`
-- Current source/evidence commit:
+- Source/evidence base commit:
   `4d3cd4d02825970b5e318098320884821ca1ddbd`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
@@ -141,8 +141,8 @@ to the reviewed source before updating relationships.
   Dispatcher installation, one bounded Tammy-only canary, and completed
   canonical System Ticket `tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620`.
 - Cross-host readback: Tammy, Timmy, and Toddy each returned the same canonical
-  collection hash, Overview `V0.0.76` document version `3`, Overview hash
-  `9906b28934aeaae31d81faa761092793c75aee382fcc8896e03c319345caf6f9`, and
+  collection hash, Overview `V0.0.76` document version `4`, Overview hash
+  `d485bbbfa54f1ac6d6cdf969c3aa080320edfc44bc779ed5e37030368a6ef9ba`, and
   one discovery edge on `2026-08-04`.
 - Installed prompt state: all six active fixed-target Agent automations lacked
   the shared collection reference at the `2026-08-03` snapshot. The pushed

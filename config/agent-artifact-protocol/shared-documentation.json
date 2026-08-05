@@ -6,7 +6,7 @@
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
   "last_verified_version": "V0.0.76",
   "last_verified_commit": "44abd12ea56f15f50bf1232daaa04be05fd877d6",
-  "current_source_commit": "4d3cd4d02825970b5e318098320884821ca1ddbd",
+  "source_evidence_base_commit": "4d3cd4d02825970b5e318098320884821ca1ddbd",
   "last_verified_date": "2026-08-04",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "cross_host_readback": {
@@ -17,7 +17,7 @@
       "toddy"
     ],
     "collection_content_hash": "7df109b3c0186cf407fd3dc66cc827743d882697d2fc609603df80a5d70f3a5d",
-    "overview_content_hash": "9906b28934aeaae31d81faa761092793c75aee382fcc8896e03c319345caf6f9",
+    "overview_content_hash": "d485bbbfa54f1ac6d6cdf969c3aa080320edfc44bc779ed5e37030368a6ef9ba",
     "exact_discovery_edges_per_agent": 1
   },
   "installed_prompt_reference": {
