@@ -4508,15 +4508,15 @@ a:focus-visible {
 
 .mission-word-art {
   --mission-frame-glow-inset: -18px;
-  width: min(260px, 36vw);
+  width: min(340px, 42vw);
   margin: 0;
-  aspect-ratio: 760 / 253;
+  aspect-ratio: 760 / 190;
   flex: 0 0 auto;
 }
 
 .mission-word-art-frame {
   position: relative;
-  padding: 14px 16px;
+  padding: 10px 18px;
   border-radius: 18px;
   background:
     linear-gradient(180deg, rgba(15, 23, 42, 0.54), rgba(2, 8, 22, 0.2)),
@@ -4642,10 +4642,11 @@ a:focus-visible {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  opacity: 0.94;
+  opacity: 1;
   filter:
-    drop-shadow(0 0 14px rgba(34, 211, 238, 0.4))
-    drop-shadow(0 0 32px rgba(59, 130, 246, 0.18));
+    drop-shadow(0 0 10px rgba(226, 246, 255, 0.5))
+    drop-shadow(0 0 26px rgba(34, 211, 238, 0.3))
+    drop-shadow(0 0 44px rgba(59, 130, 246, 0.16));
 }
 
 .topbar {
@@ -5970,12 +5971,35 @@ button:active {
   }
 
   .mission-word-art {
-    width: min(185px, 50vw);
-    padding-top: 18px;
+    width: min(330px, calc(100vw - 48px));
+    padding-top: 6px;
   }
 
   .mission-art-footer {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 8px;
     padding-bottom: 28px;
+  }
+
+  .mission-art-center {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: center;
+  }
+
+  .footer-controls-left,
+  .footer-controls-right {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .footer-controls-left {
+    justify-self: start;
+  }
+
+  .footer-controls-right {
+    justify-self: end;
   }
 
   .footer-controls {
@@ -6273,6 +6297,6 @@ button:active {
 
 @media (max-width: 360px) {
   .mission-word-art {
-    width: 38vw;
+    width: min(312px, calc(100vw - 36px));
   }
 }

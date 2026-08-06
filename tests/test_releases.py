@@ -15,6 +15,7 @@ V080_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.80.md
 V081_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.81.md"
 V082_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.82.md"
 V083_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.83.md"
+V084_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.84.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -24,10 +25,18 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.83")
+        self.assertEqual(__version__, "V0.0.84")
+
+    def test_v0_0_84_records_single_stargraph_style_word_art(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.84")
+        self.assertIn("single Mission Control typographic artword", release["summary"])
+        self.assertIn("Memory Stargraph family style", release["summary"])
+        self.assertIn("blue-white glowing lights", release["summary"])
 
     def test_v0_0_83_records_board_project_busy_detail_and_word_art_layering(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.83")
 
         self.assertEqual(release["version"], "V0.0.83")
         self.assertIn("Board drag-and-drop", release["summary"])
@@ -51,6 +60,17 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("busy state", evidence)
         self.assertIn("light rings", evidence)
         self.assertIn("Independent pre-commit UI/UX QA PASS", evidence)
+
+    def test_v0_0_84_release_evidence_records_artword_scope_and_qa_gate(self) -> None:
+        evidence = V084_RELEASE_EVIDENCE.read_text(encoding="utf-8")
+        normalized = " ".join(evidence.split())
+
+        self.assertIn("one typographic `Mission Control` artword", normalized)
+        self.assertIn("Memory Stargraph family treatment", normalized)
+        self.assertIn("glowing lights", normalized)
+        self.assertIn("Independent pre-commit UI/UX QA PASS", normalized)
+        self.assertIn("desktop 1440x1000", normalized)
+        self.assertIn("genuine 390x844", normalized)
 
     def test_v0_0_81_records_calendar_and_todo_completion_controls(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.81")
@@ -306,6 +326,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.81",
                 "V0.0.82",
                 "V0.0.83",
+                "V0.0.84",
             ],
         )
 

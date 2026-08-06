@@ -2830,7 +2830,7 @@ class HealthApiTests(unittest.TestCase):
             ("/assets/mission-control-command-mark.svg", "image/svg+xml"),
             ("/assets/inbox-check.svg", "image/svg+xml"),
             ("/assets/apple-touch-icon-180.png", "image/png"),
-            ("/assets/mission-control-word-art.png", "image/png"),
+            ("/assets/mission-control-word-art.svg", "image/svg+xml"),
         ):
             connection = http.client.HTTPConnection(
                 "127.0.0.1", harness.server.server_address[1], timeout=3
@@ -2865,7 +2865,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.83")
+        self.assertEqual(payload["version"], "V0.0.84")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -2873,11 +2873,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.83")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.83")
+        self.assertEqual(payload["current_version"], "V0.0.84")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.84")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.84",
                 "V0.0.83",
                 "V0.0.82",
                 "V0.0.81",

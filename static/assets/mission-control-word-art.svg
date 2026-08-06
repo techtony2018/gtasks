@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 190" role="img" aria-labelledby="title desc">
+  <title id="title">Mission Control celestial word art</title>
+  <desc id="desc">A single Mission Control typographic word art treatment with blue-white glow and small constellation lights around the letters.</desc>
+  <defs>
+    <radialGradient id="lightCore" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.36" stop-color="#c8ecff"/>
+      <stop offset="0.72" stop-color="#38bdf8" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="letterFill" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.48" stop-color="#d8efff"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+    <filter id="artwordGlow" x="-8%" y="-40%" width="116%" height="190%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2.6" result="soft"/>
+      <feColorMatrix in="soft" result="blueGlow" type="matrix" values="0 0 0 0 0.2 0 0 0 0 0.72 0 0 0 0 1 0 0 0 0.85 0"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="7" result="wide"/>
+      <feColorMatrix in="wide" result="wideGlow" type="matrix" values="0 0 0 0 0.06 0 0 0 0 0.38 0 0 0 0 0.85 0 0 0 0.58 0"/>
+      <feMerge>
+        <feMergeNode in="wideGlow"/>
+        <feMergeNode in="blueGlow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="lightGlow" x="-160%" y="-160%" width="420%" height="420%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <g opacity="0.72">
+    <path d="M66 126 C162 66 260 58 376 104 S588 134 696 68" fill="none" stroke="#38bdf8" stroke-opacity="0.18" stroke-width="2"/>
+    <path d="M104 62 L148 38 L214 56 M522 138 L574 102 L630 116 L678 74" fill="none" stroke="#bfdbfe" stroke-opacity="0.24" stroke-width="1.4"/>
+  </g>
+
+  <text
+    x="380"
+    y="112"
+    text-anchor="middle"
+    dominant-baseline="middle"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="80"
+    font-weight="400"
+    letter-spacing="-2.2"
+    fill="url(#letterFill)"
+    stroke="#dbeafe"
+    stroke-width="1.4"
+    paint-order="stroke fill"
+    filter="url(#artwordGlow)"
+  >Mission Control</text>
+
+  <g class="art-lights" filter="url(#lightGlow)">
+    <circle class="art-light" cx="72" cy="116" r="5" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="138" cy="38" r="3.6" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="214" cy="56" r="3.8" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="308" cy="54" r="3.2" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="391" cy="43" r="3.4" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="492" cy="63" r="3.2" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="574" cy="102" r="4.2" fill="url(#lightCore)"/>
+    <circle class="art-light" cx="681" cy="74" r="4.8" fill="url(#lightCore)"/>
+  </g>
+  <g class="art-sparkles" stroke="#e0f2fe" stroke-linecap="round" opacity="0.9">
+    <path d="M72 100 v32 M56 116 h32" stroke-width="1.5"/>
+    <path d="M681 59 v30 M666 74 h30" stroke-width="1.3"/>
+    <path d="M391 30 v26 M378 43 h26" stroke-width="1.1"/>
+  </g>
+</svg>

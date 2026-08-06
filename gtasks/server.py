@@ -4390,6 +4390,7 @@ def _handler_class(
                 "/assets/mission-control-command-mark.svg": "assets/mission-control-command-mark.svg",
                 "/assets/inbox-check.svg": "assets/inbox-check.svg",
                 "/assets/apple-touch-icon-180.png": "assets/apple-touch-icon-180.png",
+                "/assets/mission-control-word-art.svg": "assets/mission-control-word-art.svg",
                 "/assets/mission-control-word-art.png": "assets/mission-control-word-art.png",
             }.get(path)
             if relative is None:

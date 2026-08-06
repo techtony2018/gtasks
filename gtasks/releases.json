@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.83",
+  "current_version": "V0.0.84",
   "releases": [
     {
       "version": "V0.0.1",
@@ -498,6 +498,12 @@
       "date": "2026-08-06",
       "title": "Board movement and verified card metadata",
       "summary": "Restores safe Board drag-and-drop status movement, shows verified Project titles instead of raw slugs on task cards, opens Task details immediately with a busy GBrain read state for cold selections, and refines the Mission Control word-art HUD frame so exterior light rings remain outside the frame."
+    },
+    {
+      "version": "V0.0.84",
+      "date": "2026-08-06",
+      "title": "Single Mission Control word art",
+      "summary": "Replaces the central illustrated banner with a single Mission Control typographic artword in the Memory Stargraph family style, retaining a direct dark HUD frame and blue-white glowing lights around the words."
     }
   ]
 }
