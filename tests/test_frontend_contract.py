@@ -29,7 +29,9 @@ class FakeElement {
     this.value = "";
     this.name = "";
     this.focused = false;
+    this.style = { setProperty(name, value) { this[name] = value; } };
   }
+  get childNodes() { return this.children; }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = [...children]; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
@@ -40,10 +42,12 @@ class FakeElement {
   querySelector() { return null; }
   closest() { return this.closestResult || null; }
   focus() { this.focused = true; document.activeElement = this; }
+  reset() {}
 }
 const document = {
   activeElement: null,
   body: new FakeElement("body"),
+  documentElement: new FakeElement("html"),
   cookie: "",
   querySelector: () => new FakeElement(),
   querySelectorAll: () => [],
@@ -616,6 +620,160 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
             move_body.index('phase: "saving"'),
         )
 
+    def test_board_read_only_task_drop_does_not_write_or_enter_saving_state(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const readonlyTask = {
+  slug: "tasks/read-only-agent",
+  status: "planned",
+  title: "Read-only Agent task",
+  summary: "Read-only Agent task",
+  priority: "normal",
+  due_day: "2026-08-06",
+  read_only: true,
+  owner_agent: "agents/tammy",
+  owner: { name: "Tammy", avatar: { kind: "initials", value: "T" } },
+};
+state.snapshot = {
+  as_of: "2026-08-06",
+  tasks: [],
+  goals: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.agentTasks = [readonlyTask];
+let writes = 0;
+globalThis.fetch = async () => {
+  writes += 1;
+  throw new Error("read-only task should not write");
+};
+render = () => {};
+showToast = () => {};
+
+await moveBoardTask(readonlyTask.slug, "active");
+
+assert(writes === 0, `read-only board move wrote ${writes} times`);
+assert(state.boardMove === null, "read-only board move entered saving/error state");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_cards_render_verified_project_titles_not_raw_slugs(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const textOf = (element) => {
+  if (!element) return "";
+  const own = element.textContent || "";
+  const child = (element.children || []).map(textOf).join(" ");
+  return `${own} ${child}`.replace(/\s+/g, " ").trim();
+};
+const task = {
+  slug: "tasks/with-project",
+  status: "planned",
+  title: "Task with canonical project",
+  summary: "Task with canonical project",
+  detail: "",
+  priority: "normal",
+  project: "projects/project-opaque-id",
+  goal: "goals/career",
+  due_day: "2026-08-06",
+  inbox: false,
+  lifecycle_root: "collections/tonys-tasks",
+};
+state.snapshot = {
+  owner: { name: "Tony", avatar: { kind: "initials", value: "T" } },
+  as_of: "2026-08-06",
+  tasks: [task],
+  goals: [{ slug: "goals/career", title: "Career: Engineering Manager" }],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [task], overdue: [] },
+};
+state.projects = [{ slug: "projects/project-opaque-id", title: "Career Path Tuning Up" }];
+const boardText = textOf(boardCard(task));
+const rowText = textOf(taskRow(task, { calendarWeek: true }));
+
+assert(boardText.includes("Career Path Tuning Up"), `Board card missing project title: ${boardText}`);
+assert(rowText.includes("Career Path Tuning Up"), `Task row missing project title: ${rowText}`);
+assert(!boardText.includes("projects/project-opaque-id"), `Board card leaked raw project slug: ${boardText}`);
+assert(!rowText.includes("projects/project-opaque-id"), `Task row leaked raw project slug: ${rowText}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_snapshot_with_project_references_loads_verified_project_titles(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        task_load = javascript[
+            javascript.index("async function performTaskLoad(reason)")
+            : javascript.index("function loadTasks(")
+        ]
+
+        self.assertIn("function snapshotHasProjectReferences", javascript)
+        self.assertIn("snapshotHasProjectReferences(state.snapshot)", task_load)
+        self.assertIn("void loadProjects()", task_load)
+
+    def test_select_task_opens_busy_detail_before_exact_gbrain_read_finishes(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/cold-detail-read";
+state.snapshot = {
+  as_of: "2026-08-06",
+  tasks: [],
+  goals: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.agentTasks = [];
+state.projects = [];
+render = () => {};
+renderTaskTodos = () => {};
+renderTaskArtifacts = () => {};
+renderTaskHandoffTimeline = () => {};
+loadTaskArtifacts = async () => {};
+loadTaskHandoffTimeline = async () => {};
+let reads = 0;
+let releaseRead;
+globalThis.fetch = async (url) => {
+  reads += 1;
+  assert(url === `/api/tasks/${encodeURIComponent(taskSlug)}`, `unexpected URL ${url}`);
+  return await new Promise((resolve) => {
+    releaseRead = () => resolve({
+      ok: true,
+      json: async () => ({
+        task: {
+          slug: taskSlug,
+          status: "planned",
+          title: "Loaded canonical task",
+          summary: "Loaded canonical task",
+          detail: "Verified detail",
+          priority: "normal",
+          due_day: "2026-08-06",
+          lifecycle_root: "collections/tonys-tasks",
+        },
+      }),
+    });
+  });
+};
+const origin = new FakeElement("button");
+const pending = selectTask(taskSlug, null, origin);
+selectTask(taskSlug, null, origin);
+
+assert(elements.detailPanel.getAttribute("aria-hidden") === "false", "detail panel did not open immediately");
+assert(elements.detailPanel.getAttribute("aria-busy") === "true", "detail panel was not marked busy");
+assert(elements.detailTitle.textContent.includes("Reading canonical Task"), `missing busy heading: ${elements.detailTitle.textContent}`);
+assert(reads === 1, `same-task cold selections were not coalesced: ${reads}`);
+
+releaseRead();
+await pending;
+
+assert(elements.detailPanel.getAttribute("aria-busy") === "false", "detail panel did not clear busy state");
+assert(elements.detailTitle.textContent === "Loaded canonical task", `canonical detail did not render: ${elements.detailTitle.textContent}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_status_success_reconciles_authoritative_task_without_full_reload(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         move_body = javascript[
@@ -1020,8 +1178,8 @@ if (long !== "0123456789🙂ABCDE中文XY…") throw new Error(`long=${long}`);
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.82"', html)
-        self.assertIn('src="/app.js?v=0.0.82"', html)
+        self.assertIn('href="/styles.css?v=0.0.83"', html)
+        self.assertIn('src="/app.js?v=0.0.83"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1951,6 +2109,26 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         image_style = css[image_start : css.index(".topbar", image_start)]
         self.assertIn("drop-shadow(0 0 14px", image_style)
         self.assertIn("drop-shadow(0 0 32px", image_style)
+
+    def test_mission_word_art_layers_frame_directly_with_exterior_light_rings(self) -> None:
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        frame = css[css.index(".mission-word-art-frame") : css.index(".mission-version-link")]
+        outer_start = css.index(".mission-word-art-frame::before {")
+        overlay_start = css.index(".mission-word-art-frame::after {", outer_start)
+        outer_glow = css[outer_start:overlay_start]
+        frame_overlay = css[overlay_start : css.index(".mission-art-footer")]
+
+        self.assertIn("--mission-frame-glow-inset: -18px", css)
+        self.assertIn("inset: var(--mission-frame-glow-inset)", outer_glow)
+        self.assertIn("z-index: 0", outer_glow)
+        self.assertIn("inset: 0", frame_overlay)
+        self.assertIn("border: 1px solid", frame_overlay)
+        self.assertIn("z-index: 1", frame_overlay)
+        self.assertNotIn("inset 0 0", frame)
+        self.assertLess(
+            frame.index(".mission-word-art-frame::before"),
+            frame.index(".mission-word-art-frame::after"),
+        )
 
     def test_mission_control_uses_the_dark_stargraph_family_brand(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

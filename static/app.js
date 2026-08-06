@@ -245,6 +245,9 @@ const state = {
   logsLoading: false,
   tasksLoadPromise: null,
   tasksReadState: null,
+  taskDetailReadSlug: null,
+  taskDetailReadPromise: null,
+  taskDetailReadToken: 0,
   taskSurfacePollTimer: null,
   autoRefreshTimer: null,
   autoRefreshDueAt: null,
@@ -1608,6 +1611,29 @@ function todoSummary(task) {
   return `TODO: ${todos[0].text}${todos.length > 1 ? ` · +${todos.length - 1} more` : ""}`;
 }
 
+function verifiedProjectForTask(task) {
+  if (!task?.project) return null;
+  return state.projects.find((project) => project.slug === task.project) || null;
+}
+
+function taskProjectLabel(task) {
+  if (!task?.project) return task?.inbox ? "Inbox · No project" : "No project";
+  return verifiedProjectForTask(task)?.title || "Project unavailable";
+}
+
+function snapshotHasProjectReferences(snapshot) {
+  if (!snapshot) return false;
+  const taskLists = [
+    snapshot.tasks || [],
+    snapshot.today?.in_progress || [],
+    snapshot.today?.todays_actions || [],
+    snapshot.today?.overdue || [],
+    snapshot.views?.blocked || [],
+    snapshot.views?.completed || [],
+  ];
+  return taskLists.some((tasks) => tasks.some((task) => Boolean(task?.project)));
+}
+
 function taskRow(task, {
   todayActions = false,
   calendarWeek = false,
@@ -1629,7 +1655,7 @@ function taskRow(task, {
   const titleText = node("span");
   titleText.append(
     node("span", "task-title", task.title || task.summary),
-    node("span", "task-project", task.project || (task.inbox ? "Inbox · No project" : "No project")),
+    node("span", "task-project", taskProjectLabel(task)),
   );
   if (calendarWeek && task.goal) {
     const goal = state.snapshot?.goals.find((item) => item.slug === task.goal);
@@ -2440,7 +2466,7 @@ function boardCard(task) {
   );
   const meta = node("span", "board-card-meta");
   meta.append(
-    node("span", "", task.project || (task.inbox ? "Inbox" : "No project")),
+    node("span", "", taskProjectLabel(task)),
     node("span", `priority-badge ${task.priority}`, task.priority),
   );
   button.append(
@@ -2469,7 +2495,7 @@ function boardCard(task) {
     statusSelect.append(option);
   });
   statusSelect.value = taskUiStatus(task);
-  statusSelect.disabled = isSaving;
+  statusSelect.disabled = isSaving || Boolean(task.read_only);
   statusSelect.addEventListener("change", () => {
     moveBoardTask(task.slug, statusSelect.value);
   });
@@ -2478,7 +2504,7 @@ function boardCard(task) {
   if (isSaving) card.append(node("span", "board-card-saving", "Saving in GBrain…"));
 
   card.addEventListener("dragstart", (event) => {
-    if (!event.dataTransfer || isSaving) {
+    if (!event.dataTransfer || isSaving || task.read_only) {
       event.preventDefault();
       return;
     }
@@ -2548,7 +2574,7 @@ function agentBoardCard(task) {
   );
   const meta = node("span", "board-card-meta");
   meta.append(
-    node("span", "", task.project || "Agent work"),
+    node("span", "", taskProjectLabel(task)),
     node("span", `priority-badge ${task.priority}`, task.priority),
   );
   button.append(
@@ -2577,7 +2603,7 @@ function agentBoardCard(task) {
     statusSelect.append(option);
   });
   statusSelect.value = taskUiStatus(task);
-  statusSelect.disabled = isSaving;
+  statusSelect.disabled = isSaving || Boolean(task.read_only);
   statusSelect.addEventListener("change", () => {
     moveBoardTask(task.slug, statusSelect.value);
   });
@@ -2587,7 +2613,7 @@ function agentBoardCard(task) {
     card.append(node("span", "board-card-saving", "Saving in GBrain…"));
   }
   card.addEventListener("dragstart", (event) => {
-    if (!event.dataTransfer || isSaving) {
+    if (!event.dataTransfer || isSaving || task.read_only) {
       event.preventDefault();
       return;
     }
@@ -6775,15 +6801,122 @@ function keepSelectedCalendarTaskVisible(taskSlug) {
   });
 }
 
-function selectTask(slug, taskFallback = null, returnFocus = null) {
-  const task = findTaskBySlug(slug) || taskFallback;
-  if (!task) return;
+function openTaskDetailLoading(slug, returnFocus = null) {
   state.detailReturnFocus = returnFocus
     ? detailReturnFocusAnchor(returnFocus, slug)
     : null;
   state.selectedSlug = slug;
   state.selectedKind = "task";
   prepareDetailPanelWidth("task");
+  state.showCompletedTodos = false;
+  setTodoAddOpen(false, { focus: false });
+  elements.detailPanel.setAttribute("aria-hidden", "false");
+  elements.detailPanel.setAttribute("aria-busy", "true");
+  elements.detailPanel.setAttribute("aria-label", "Task details");
+  elements.detailEmpty.classList.add("is-hidden");
+  elements.detailContent.classList.remove("is-hidden");
+  elements.artifactDetailContent.classList.add("is-hidden");
+  elements.goalDetailContent.classList.add("is-hidden");
+  elements.projectDetailContent.classList.add("is-hidden");
+  elements.systemTicketDetailContent.classList.add("is-hidden");
+  elements.calendarEventDetail.classList.add("is-hidden");
+  elements.taskDetailStatus.textContent = "Reading";
+  elements.taskApproveButton.classList.add("is-hidden");
+  elements.taskRejectButton.classList.add("is-hidden");
+  elements.taskDuplicateButton.classList.add("is-hidden");
+  elements.taskOwner.classList.add("is-hidden");
+  elements.detailTitle.textContent = "Reading canonical Task…";
+  renderSafeMarkdown(
+    elements.detailCopy,
+    "Mission Control accepted the selection and is reading the exact canonical Task from GBrain.",
+  );
+  elements.proposalDetailMeta.classList.add("is-hidden");
+  elements.proposalDecisionHistory.classList.add("is-hidden");
+  elements.taskProgressDetail.classList.add("is-hidden");
+  elements.detailPriority.textContent = "Loading";
+  elements.detailDue.textContent = "Loading";
+  elements.taskProjectValue.textContent = "Loading";
+  elements.taskGoalNav.classList.add("is-hidden");
+  elements.taskGoalNav.onclick = null;
+  elements.taskGoalValue.textContent = "Loading";
+  elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(slug)}`;
+  elements.detailSlug.textContent = slug;
+  renderTaskTodos({ slug, todos: [], open_todos: [] });
+  renderTaskArtifacts(slug);
+  renderTaskHandoffTimeline(slug);
+  render();
+  window.requestAnimationFrame(() => {
+    if (window.matchMedia("(max-width: 760px)").matches) {
+      elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+    elements.detailTitle.focus({ preventScroll: true });
+  });
+}
+
+async function readExactTaskForDetail(slug) {
+  const response = await fetch(`/api/tasks/${encodeURIComponent(slug)}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.task?.slug !== slug) {
+    throw new Error(payload?.error || "Canonical Task could not be read.");
+  }
+  return payload.task;
+}
+
+function selectTaskWithCanonicalRead(slug, returnFocus = null) {
+  if (
+    state.taskDetailReadSlug === slug &&
+    state.taskDetailReadPromise
+  ) {
+    return state.taskDetailReadPromise;
+  }
+  const token = state.taskDetailReadToken + 1;
+  state.taskDetailReadToken = token;
+  state.taskDetailReadSlug = slug;
+  openTaskDetailLoading(slug, returnFocus);
+  state.taskDetailReadPromise = (async () => {
+    try {
+      const task = await readExactTaskForDetail(slug);
+      if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
+        return null;
+      }
+      selectTask(slug, task, returnFocus);
+      return task;
+    } catch (error) {
+      if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
+        return null;
+      }
+      elements.detailPanel.setAttribute("aria-busy", "false");
+      elements.taskDetailStatus.textContent = "Read failed";
+      elements.detailTitle.textContent = "Task detail unavailable";
+      renderSafeMarkdown(
+        elements.detailCopy,
+        `${error.message || "Canonical Task could not be read."} Use Refresh, then try opening this Task again.`,
+      );
+      render();
+      return null;
+    } finally {
+      if (state.taskDetailReadToken === token) {
+        state.taskDetailReadSlug = null;
+        state.taskDetailReadPromise = null;
+      }
+    }
+  })();
+  return state.taskDetailReadPromise;
+}
+
+function selectTask(slug, taskFallback = null, returnFocus = null) {
+  const task = findTaskBySlug(slug) || taskFallback;
+  if (!task) return selectTaskWithCanonicalRead(slug, returnFocus);
+  state.detailReturnFocus = returnFocus
+    ? detailReturnFocusAnchor(returnFocus, slug)
+    : null;
+  state.selectedSlug = slug;
+  state.selectedKind = "task";
+  prepareDetailPanelWidth("task");
+  elements.detailPanel.setAttribute("aria-busy", "false");
   state.showCompletedTodos = false;
   setTodoAddOpen(false, { focus: false });
   elements.detailPanel.setAttribute("aria-hidden", "false");
@@ -6864,8 +6997,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   }
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(task.slug)}`;
   elements.detailSlug.textContent = task.slug;
-  const project = state.projects.find((item) => item.slug === task.project);
-  elements.taskProjectValue.textContent = project?.title || (task.project ? task.project : "No project");
+  elements.taskProjectValue.textContent = taskProjectLabel(task);
   const linkedGoal = state.snapshot.goals.find((goal) => goal.slug === task.goal);
   if (linkedGoal) {
     elements.taskGoalNav.textContent = linkedGoal.title;
@@ -7220,6 +7352,7 @@ async function moveBoardTask(taskSlug, status) {
   const task = findTaskBySlug(taskSlug);
   const definition = boardColumns.find((column) => column.status === status);
   if (!task || !definition || state.boardMove?.phase === "saving") return;
+  if (task.read_only) return;
   if (task.status === status) return;
   const move = {
     taskSlug,
@@ -7436,6 +7569,13 @@ async function performTaskLoad(reason) {
       state.lastSyncedAt = payload.read_state?.last_valid_at
         ? payload.read_state.last_valid_at * 1000
         : Date.now();
+      if (
+        snapshotHasProjectReferences(state.snapshot) &&
+        !state.projectsLoaded &&
+        !state.projectsLoading
+      ) {
+        void loadProjects();
+      }
     }
     state.refreshDeferred = false;
     if (state.snapshot) {

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.82",
+  "current_version": "V0.0.83",
   "releases": [
     {
       "version": "V0.0.1",
@@ -492,6 +492,12 @@
       "date": "2026-08-05",
       "title": "Framed word art and priority sidebar order",
       "summary": "Mission Control now frames the central word art in a dark HUD treatment while preserving its lights, and the sidebar navigation follows the requested priority order from Today through Goals without changing destinations or accessibility labels."
+    },
+    {
+      "version": "V0.0.83",
+      "date": "2026-08-06",
+      "title": "Board movement and verified card metadata",
+      "summary": "Restores safe Board drag-and-drop status movement, shows verified Project titles instead of raw slugs on task cards, opens Task details immediately with a busy GBrain read state for cold selections, and refines the Mission Control word-art HUD frame so exterior light rings remain outside the frame."
     }
   ]
 }

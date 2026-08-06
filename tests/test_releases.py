@@ -14,6 +14,7 @@ V079_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.79.md
 V080_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.80.md"
 V081_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.81.md"
 V082_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.82.md"
+V083_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.83.md"
 
 
 class ReleaseCatalogTests(unittest.TestCase):
@@ -23,15 +24,33 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.82")
+        self.assertEqual(__version__, "V0.0.83")
+
+    def test_v0_0_83_records_board_project_busy_detail_and_word_art_layering(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.83")
+        self.assertIn("Board drag-and-drop", release["summary"])
+        self.assertIn("Project titles", release["summary"])
+        self.assertIn("Task details immediately", release["summary"])
+        self.assertIn("exterior light rings", release["summary"])
 
     def test_v0_0_82_records_framed_word_art_and_sidebar_order(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.82")
 
         self.assertEqual(release["version"], "V0.0.82")
         self.assertIn("word art", release["summary"])
         self.assertIn("dark HUD", release["summary"])
         self.assertIn("sidebar navigation", release["summary"])
+
+    def test_v0_0_83_release_evidence_records_full_ticket_batch_and_qa_gate(self) -> None:
+        evidence = V083_RELEASE_EVIDENCE.read_text(encoding="utf-8")
+
+        self.assertIn("Board drag-and-drop", evidence)
+        self.assertIn("Project titles", evidence)
+        self.assertIn("busy state", evidence)
+        self.assertIn("light rings", evidence)
+        self.assertIn("Independent pre-commit UI/UX QA PASS", evidence)
 
     def test_v0_0_81_records_calendar_and_todo_completion_controls(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.81")
@@ -286,6 +305,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.80",
                 "V0.0.81",
                 "V0.0.82",
+                "V0.0.83",
             ],
         )
 
