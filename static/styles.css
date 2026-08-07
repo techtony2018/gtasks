@@ -4564,6 +4564,7 @@ a:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: flex-end;
   margin: auto 0 0;
+  padding-top: 66px;
 }
 
 .mission-art-center {

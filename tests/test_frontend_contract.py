@@ -2148,6 +2148,14 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertNotIn("width: min(185px, 50vw)", mobile)
         self.assertNotIn("width: 38vw", mobile)
 
+    def test_desktop_mission_word_art_reserves_clearance_above_exterior_glow(self) -> None:
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        footer = css[css.index(".mission-art-footer") : css.index(".mission-art-center")]
+
+        self.assertIn("--mission-frame-glow-inset: -18px", css)
+        self.assertIn("padding-top: 66px", footer)
+        self.assertIn("margin: auto 0 0", footer)
+
     def test_mission_control_uses_the_dark_stargraph_family_brand(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
