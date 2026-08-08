@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gtasks.gbrain import GBrainError, MemoryStargraphOpenClawProfileClient  # noqa: E402
+from gtasks.gbrain import (  # noqa: E402
+    GBrainCommandError,
+    GBrainError,
+    MemoryStargraphOpenClawProfileClient,
+)
 
 
 DECLARATION_FIELDS = frozenset(
@@ -32,6 +38,71 @@ APPROVED = {
     "agents/timmy-oc": ("Timmy-OC", "hosts/timmy", "collections/timmy-oc-tasks", "collections/timmy-oc-artifacts"),
     "agents/toddy-oc": ("Toddy-OC", "hosts/toddy", "collections/toddy-oc-tasks", "collections/toddy-oc-artifacts"),
 }
+NONTERMINAL_OPERATION_STATUSES = frozenset(
+    {"created", "accepted", "running", "recovery_required"}
+)
+
+
+def default_operation_file() -> Path:
+    configured = os.environ.get("GTASKS_OPENCLAW_ACTIVATION_OPERATION_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return (
+        Path.home()
+        / "Library"
+        / "Application Support"
+        / "GTasks"
+        / "openclaw-profile-activation-operation.json"
+    )
+
+
+def _declarations_digest(declarations: tuple[dict[str, str], ...]) -> str:
+    payload = json.dumps(
+        list(declarations), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_operation_state(path: Path, state: Mapping[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    data = json.dumps(dict(state), sort_keys=True, separators=(",", ":")) + "\n"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _load_retriable_operation(
+    path: Path, declarations_digest: str
+) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("OpenClaw activation operation state is invalid") from error
+    if (
+        not isinstance(state, Mapping)
+        or state.get("schema_version") != 1
+        or not isinstance(state.get("operation_id"), str)
+        or not isinstance(state.get("owner"), str)
+        or state.get("declarations_digest") != declarations_digest
+        or state.get("status")
+        not in NONTERMINAL_OPERATION_STATUSES | {"completed", "failed"}
+    ):
+        raise ValueError("OpenClaw activation operation state is invalid")
+    path.chmod(0o600)
+    if state["status"] not in NONTERMINAL_OPERATION_STATUSES:
+        return None
+    return dict(state)
 
 
 def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
@@ -61,7 +132,10 @@ def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
 
 def provision(
     declarations: tuple[dict[str, str],
-    ...], *, execute: bool, client: MemoryStargraphOpenClawProfileClient | None = None
+    ...], *, execute: bool, client: MemoryStargraphOpenClawProfileClient | None = None,
+    operation_file: Path | None = None,
+    operation_id_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
+    owner_factory: Callable[[], str] = lambda: f"gtasks-provisioner-{uuid.uuid4()}",
 ) -> dict[str, object]:
     collection_slugs = [collection for item in declarations for collection in (item["task_collection"], item["artifact_collection"])]
     if not execute:
@@ -76,20 +150,63 @@ def provision(
             "activation": None,
         }
     active_client = client or MemoryStargraphOpenClawProfileClient.from_environment()
-    activation = active_client.provision(
-        declarations,
-        owner=f"gtasks-provisioner-{uuid.uuid4()}",
-        operation_id=str(uuid.uuid4()),
-    )
+    state_path = operation_file or default_operation_file()
+    declarations_digest = _declarations_digest(declarations)
+    state = _load_retriable_operation(state_path, declarations_digest)
+    if state is None:
+        state = {
+            "schema_version": 1,
+            "operation_id": operation_id_factory(),
+            "owner": owner_factory(),
+            "declarations_digest": declarations_digest,
+            "status": "created",
+            "fence_generation": None,
+            "receipt": None,
+            "error": None,
+        }
+        _write_operation_state(state_path, state)
+
+    operation_id = str(state["operation_id"])
+    owner = str(state["owner"])
+
+    def persist_status(status: Mapping[str, Any]) -> None:
+        if status.get("operation_id") != operation_id:
+            raise GBrainError("Memory Stargraph returned another activation operation")
+        state.update(
+            {
+                "status": status.get("status"),
+                "fence_generation": status.get("fence_generation"),
+                "receipt": status.get("receipt"),
+                "error": status.get("error"),
+            }
+        )
+        _write_operation_state(state_path, state)
+
+    try:
+        accepted = active_client.submit(
+            declarations, owner=owner, operation_id=operation_id
+        )
+        persist_status(accepted)
+        operation = active_client.wait(
+            operation_id, initial=accepted, on_status=persist_status
+        )
+    except GBrainError as error:
+        raise GBrainCommandError(
+            f"{error} Operation ID: {operation_id}"
+        ) from error
+    receipt = operation.get("receipt")
+    if not isinstance(receipt, Mapping):
+        raise GBrainError(f"OpenClaw activation {operation_id} completed without a receipt")
     return {
         "agent_count": len(declarations),
         "agent_slugs": [item["slug"] for item in declarations],
         "collection_count": len(collection_slugs),
         "collection_slugs": collection_slugs,
-        "default_goal_link_count": int(activation.get("default_goal_link_count", -1)),
+        "default_goal_link_count": int(receipt.get("default_goal_link_count", -1)),
         "mutated": True,
-        "verified": int(activation.get("default_goal_link_count", -1)) == 0,
-        "activation": dict(activation),
+        "verified": int(receipt.get("default_goal_link_count", -1)) == 0,
+        "operation_id": operation_id,
+        "activation": dict(operation),
     }
 
 
@@ -103,9 +220,19 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--execute", action="store_true")
+    parser.add_argument(
+        "--operation-file",
+        type=Path,
+        default=default_operation_file(),
+        help="Private durable operation state used to resume the same submission.",
+    )
     args = parser.parse_args()
     try:
-        result = provision(load_declarations(args.config), execute=args.execute)
+        result = provision(
+            load_declarations(args.config),
+            execute=args.execute,
+            operation_file=args.operation_file,
+        )
     except (OSError, ValueError, json.JSONDecodeError, GBrainError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

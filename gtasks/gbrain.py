@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Condition, Lock, current_thread
 from time import sleep, time
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -142,12 +142,24 @@ class CommandRunner(Protocol):
 class OpenClawProfileActivationClient(Protocol):
     """Read/write boundary for Memory Stargraph's activation authority."""
 
-    def provision(
+    def submit(
         self,
         declarations: Sequence[Mapping[str, str]],
         *,
         owner: str,
         operation_id: str,
+    ) -> Mapping[str, Any]: ...
+
+    def status(self, operation_id: str) -> Mapping[str, Any]: ...
+
+    def recover(self, operation_id: str) -> Mapping[str, Any]: ...
+
+    def wait(
+        self,
+        operation_id: str,
+        *,
+        initial: Mapping[str, Any] | None = None,
+        on_status: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> Mapping[str, Any]: ...
 
     def active_projection(self) -> Mapping[str, Any]: ...
@@ -161,13 +173,40 @@ class MemoryStargraphOpenClawProfileClient:
         base_url: str,
         token: str,
         *,
-        timeout_seconds: float = 15,
+        timeout_seconds: float | None = None,
+        submit_timeout_seconds: float = 10,
+        status_timeout_seconds: float = 5,
+        poll_timeout_seconds: float = 180,
+        poll_interval_seconds: float = 0.5,
+        sleeper: Callable[[float], None] = sleep,
+        clock: Callable[[], float] = time,
     ) -> None:
         if not base_url.startswith(("http://127.0.0.1:", "https://")) or not token:
             raise ValueError("Memory Stargraph OpenClaw activation client is not configured")
+        if timeout_seconds is not None:
+            submit_timeout_seconds = timeout_seconds
+            status_timeout_seconds = timeout_seconds
+        if (
+            submit_timeout_seconds <= 0
+            or submit_timeout_seconds > 30
+            or status_timeout_seconds <= 0
+            or status_timeout_seconds > 30
+            or poll_timeout_seconds < max(
+                submit_timeout_seconds, status_timeout_seconds
+            )
+            or poll_timeout_seconds > 3600
+            or poll_interval_seconds <= 0
+            or poll_interval_seconds > 10
+        ):
+            raise ValueError("Memory Stargraph activation timeouts are not aligned")
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self.timeout_seconds = timeout_seconds
+        self.submit_timeout_seconds = submit_timeout_seconds
+        self.status_timeout_seconds = status_timeout_seconds
+        self.poll_timeout_seconds = poll_timeout_seconds
+        self.poll_interval_seconds = poll_interval_seconds
+        self.sleeper = sleeper
+        self.clock = clock
 
     @classmethod
     def from_environment(cls) -> "MemoryStargraphOpenClawProfileClient":
@@ -176,7 +215,14 @@ class MemoryStargraphOpenClawProfileClient:
             os.environ.get("MEMORY_STARGRAPH_OC_PROVISION_TOKEN", ""),
         )
 
-    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
         body = None if payload is None else json.dumps(dict(payload), separators=(",", ":")).encode("utf-8")
         request = Request(
             f"{self.base_url}{path}",
@@ -189,13 +235,140 @@ class MemoryStargraphOpenClawProfileClient:
             },
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 parsed = json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             raise GBrainCommandError("Memory Stargraph OpenClaw activation request failed") from exc
         if not isinstance(parsed, Mapping) or parsed.get("ok") is not True:
             raise GBrainProtocolError("Memory Stargraph OpenClaw activation response was invalid")
         return dict(parsed)
+
+    @staticmethod
+    def _operation_response(
+        payload: Mapping[str, Any], operation_id: str
+    ) -> dict[str, Any]:
+        item = {key: value for key, value in payload.items() if key != "ok"}
+        if (
+            set(item)
+            != {
+                "operation_id",
+                "status",
+                "fence_generation",
+                "receipt",
+                "error",
+            }
+            or item.get("operation_id") != operation_id
+            or item.get("status")
+            not in {"accepted", "running", "completed", "failed", "recovery_required"}
+            or (
+                item.get("fence_generation") is not None
+                and (
+                    isinstance(item["fence_generation"], bool)
+                    or not isinstance(item["fence_generation"], int)
+                    or item["fence_generation"] < 1
+                )
+            )
+            or (item.get("receipt") is not None and not isinstance(item["receipt"], Mapping))
+            or (item.get("error") is not None and not isinstance(item["error"], str))
+        ):
+            raise GBrainProtocolError(
+                f"Memory Stargraph activation status was invalid for {operation_id}"
+            )
+        if item["status"] == "completed" and not isinstance(item["receipt"], Mapping):
+            raise GBrainProtocolError(
+                f"Memory Stargraph completed without a receipt for {operation_id}"
+            )
+        if item["status"] == "completed":
+            receipt = item["receipt"]
+            if (
+                set(receipt)
+                != {
+                    "generation",
+                    "manifest_slug",
+                    "manifest_digest",
+                    "default_goal_link_count",
+                }
+                or isinstance(receipt.get("generation"), bool)
+                or not isinstance(receipt.get("generation"), int)
+                or receipt["generation"] < 1
+                or receipt["generation"] != item["fence_generation"]
+                or not isinstance(receipt.get("manifest_slug"), str)
+                or not receipt["manifest_slug"].startswith(
+                    "system/openclaw-profile-manifests/"
+                )
+                or not isinstance(receipt.get("manifest_digest"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", receipt["manifest_digest"]) is None
+                or receipt.get("default_goal_link_count") != 0
+            ):
+                raise GBrainProtocolError(
+                    f"Memory Stargraph terminal receipt was invalid for {operation_id}"
+                )
+        return dict(item)
+
+    def submit(
+        self,
+        declarations: Sequence[Mapping[str, str]],
+        *,
+        owner: str,
+        operation_id: str,
+    ) -> Mapping[str, Any]:
+        response = self._request(
+            "POST", "/api/internal/openclaw-profiles/provision",
+            {"declarations": list(declarations), "owner": owner, "operation_id": operation_id},
+            timeout_seconds=self.submit_timeout_seconds,
+        )
+        return self._operation_response(response, operation_id)
+
+    def status(self, operation_id: str) -> Mapping[str, Any]:
+        response = self._request(
+            "GET",
+            f"/api/internal/openclaw-profiles/operations/{quote(operation_id, safe='')}",
+            timeout_seconds=self.status_timeout_seconds,
+        )
+        return self._operation_response(response, operation_id)
+
+    def recover(self, operation_id: str) -> Mapping[str, Any]:
+        response = self._request(
+            "POST",
+            f"/api/internal/openclaw-profiles/operations/{quote(operation_id, safe='')}/recover",
+            timeout_seconds=self.submit_timeout_seconds,
+        )
+        return self._operation_response(response, operation_id)
+
+    def wait(
+        self,
+        operation_id: str,
+        *,
+        initial: Mapping[str, Any] | None = None,
+        on_status: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> Mapping[str, Any]:
+        deadline = self.clock() + self.poll_timeout_seconds
+        current = self._operation_response(initial, operation_id) if initial is not None else dict(self.status(operation_id))
+        while True:
+            if on_status is not None:
+                on_status(current)
+            status = current["status"]
+            if status == "completed":
+                return current
+            if status == "failed":
+                raise GBrainCommandError(
+                    f"Memory Stargraph activation failed for {operation_id}: "
+                    f"{current.get('error') or 'unknown failure'}"
+                )
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise GBrainCommandError(
+                    f"Memory Stargraph activation polling timed out for {operation_id}"
+                )
+            if status == "recovery_required":
+                current = dict(self.recover(operation_id))
+                if current.get("status") == "recovery_required":
+                    remaining = deadline - self.clock()
+                    if remaining > 0:
+                        self.sleeper(min(self.poll_interval_seconds, remaining))
+                continue
+            self.sleeper(min(self.poll_interval_seconds, remaining))
+            current = dict(self.status(operation_id))
 
     def provision(
         self,
@@ -204,14 +377,17 @@ class MemoryStargraphOpenClawProfileClient:
         owner: str,
         operation_id: str,
     ) -> Mapping[str, Any]:
-        return self._request(
-            "POST",
-            "/api/internal/openclaw-profiles/provision",
-            {"declarations": list(declarations), "owner": owner, "operation_id": operation_id},
+        accepted = self.submit(
+            declarations, owner=owner, operation_id=operation_id
         )
+        return self.wait(operation_id, initial=accepted)
 
     def active_projection(self) -> Mapping[str, Any]:
-        return self._request("GET", "/api/internal/openclaw-profiles/active")
+        return self._request(
+            "GET",
+            "/api/internal/openclaw-profiles/active",
+            timeout_seconds=self.status_timeout_seconds,
+        )
 
 
 class SubprocessCommandRunner:
