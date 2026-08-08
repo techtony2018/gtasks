@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Help"
+  short_description: "Overview and routing guide for mc-* skills."
+  default_prompt: "Use $mc-help to explain available Mission Control mc-* skills and choose the right one for the current request."

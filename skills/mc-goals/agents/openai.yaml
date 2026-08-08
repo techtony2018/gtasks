@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Goals"
+  short_description: "Read-only goal coverage and stalled-goal analysis."
+  default_prompt: "Use $mc-goals to inspect Mission Control goals and linked task coverage from canonical GBrain sources."

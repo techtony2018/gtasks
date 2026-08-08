@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Tickets"
+  short_description: "Read-only Mission Control System Tickets query."
+  default_prompt: "Use $mc-tickets to inspect Mission Control System Tickets from canonical GBrain sources without creating or changing tickets."

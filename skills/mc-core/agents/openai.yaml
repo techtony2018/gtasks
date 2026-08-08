@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Core"
+  short_description: "Read-only canonical Mission Control/GTasks query rules."
+  default_prompt: "Use $mc-core to inspect Mission Control/GTasks read-only using canonical GBrain sources and report data-quality warnings separately."

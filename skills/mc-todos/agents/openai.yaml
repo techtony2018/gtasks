@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control To Dos"
+  short_description: "Read-only task To Do status, comments, and history."
+  default_prompt: "Use $mc-todos to inspect task To Dos, comments, blockers, and history without changing state."

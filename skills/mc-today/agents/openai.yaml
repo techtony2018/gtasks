@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Today"
+  short_description: "Daily read-only focus view for Mission Control tasks."
+  default_prompt: "Use $mc-today to summarize today's Mission Control focus from canonical GBrain task sources without mutating anything."

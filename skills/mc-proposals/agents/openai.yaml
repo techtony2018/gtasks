@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Proposals"
+  short_description: "Read-only Proposed Tasks inbox and proposal timeline query."
+  default_prompt: "Use $mc-proposals to inspect Proposed Tasks inbox status, evidence, fingerprints, and timeline without changing proposals."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mission Control Task"
+  short_description: "Read-only lookup for a specific Mission Control task."
+  default_prompt: "Use $mc-task to inspect a Mission Control task by slug/title and verify status from canonical GBrain readback."
