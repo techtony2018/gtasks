@@ -4074,6 +4074,113 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(scopes, domain.EXISTING_CODEX_AGENT_SCOPES)
         self.assertNotIn("agents/tammy-oc", dict(scopes))
 
+    def test_only_cas_activated_openclaw_manifest_profiles_are_projected(self) -> None:
+        staged_agent = "system/openclaw-profile-staging/g000001-op/staged/agents/tammy-oc"
+        staged_tasks = "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-tasks"
+        runner = FakeRunner(
+            {
+                "list_pages": [[]],
+                "get_page": [
+                    {
+                        "slug": "agents/toddy",
+                        "type": "agent",
+                        "title": "Toddy",
+                        "compiled_truth": "",
+                        "frontmatter": {},
+                    },
+                    {
+                        "slug": "agents/timmy",
+                        "type": "agent",
+                        "title": "Timmy",
+                        "compiled_truth": "",
+                        "frontmatter": {},
+                    },
+                    {
+                        "slug": "agents/tammy",
+                        "type": "agent",
+                        "title": "Tammy",
+                        "compiled_truth": "",
+                        "frontmatter": {},
+                    },
+                    {
+                        "slug": staged_agent,
+                        "type": "agent",
+                        "title": "Tammy-OC",
+                        "compiled_truth": "Staged OpenClaw profile.",
+                        "frontmatter": {"runtime": "openclaw", "staged": True},
+                    },
+                    {
+                        "slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc",
+                        "type": "agent",
+                        "title": "Timmy-OC",
+                        "compiled_truth": "Staged OpenClaw profile.",
+                        "frontmatter": {"runtime": "openclaw", "staged": True},
+                    },
+                    {
+                        "slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc",
+                        "type": "agent",
+                        "title": "Toddy-OC",
+                        "compiled_truth": "Staged OpenClaw profile.",
+                        "frontmatter": {"runtime": "openclaw", "staged": True},
+                    },
+                ],
+                "get_links": [[], [], [], [], [], []],
+            }
+        )
+
+        class ActiveProfiles:
+            def active_projection(self):
+                return {
+                    "profiles": [
+                        {
+                            "canonical_agent_slug": "agents/tammy-oc",
+                            "canonical_task_collection": "collections/tammy-oc-tasks",
+                            "canonical_artifact_collection": "collections/tammy-oc-artifacts",
+                            "staged_agent_slug": staged_agent,
+                            "staged_task_collection": staged_tasks,
+                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-artifacts",
+                            "page_hashes": {
+                                staged_agent: "a" * 64,
+                                staged_tasks: "b" * 64,
+                                "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-artifacts": "c" * 64,
+                            },
+                        },
+                        {
+                            "canonical_agent_slug": "agents/timmy-oc",
+                            "canonical_task_collection": "collections/timmy-oc-tasks",
+                            "canonical_artifact_collection": "collections/timmy-oc-artifacts",
+                            "staged_agent_slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc",
+                            "staged_task_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-tasks",
+                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-artifacts",
+                            "page_hashes": {
+                                "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc": "a" * 64,
+                                "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-tasks": "b" * 64,
+                                "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-artifacts": "c" * 64,
+                            },
+                        },
+                        {
+                            "canonical_agent_slug": "agents/toddy-oc",
+                            "canonical_task_collection": "collections/toddy-oc-tasks",
+                            "canonical_artifact_collection": "collections/toddy-oc-artifacts",
+                            "staged_agent_slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc",
+                            "staged_task_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-tasks",
+                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-artifacts",
+                            "page_hashes": {
+                                "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc": "a" * 64,
+                                "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-tasks": "b" * 64,
+                                "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-artifacts": "c" * 64,
+                            },
+                        },
+                    ]
+                }
+
+        read = GBrainAdapter(runner, openclaw_profiles=ActiveProfiles()).list_agent_profiles()
+
+        activated = [item for item in read.agents if item.slug == "agents/tammy-oc"]
+        self.assertEqual(len(activated), 1)
+        self.assertEqual(activated[0].work_root, staged_tasks)
+        self.assertEqual(activated[0].runtime, "openclaw")
+
     def test_fails_closed_and_reports_non_task_proposed_agent_work(self) -> None:
         agent_pages = [
             {

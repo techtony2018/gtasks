@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gtasks.gbrain import GBrainAdapter, GBrainError  # noqa: E402
+from gtasks.gbrain import GBrainError, MemoryStargraphOpenClawProfileClient  # noqa: E402
 
 
 DECLARATION_FIELDS = frozenset(
@@ -49,26 +50,36 @@ def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
 
 
 def provision(
-    declarations: tuple[dict[str, str], ...], *, execute: bool
+    declarations: tuple[dict[str, str],
+    ...], *, execute: bool, client: MemoryStargraphOpenClawProfileClient | None = None
 ) -> dict[str, object]:
-    adapter = GBrainAdapter()
-    receipts = list(adapter.provision_agent_profiles(declarations, execute=execute))
-    collection_slugs = [
-        collection
-        for receipt in receipts
-        for collection in receipt.collection_slugs
-    ]
+    collection_slugs = [collection for item in declarations for collection in (item["task_collection"], item["artifact_collection"])]
+    if not execute:
+        return {
+            "agent_count": len(declarations),
+            "agent_slugs": [item["slug"] for item in declarations],
+            "collection_count": len(collection_slugs),
+            "collection_slugs": collection_slugs,
+            "default_goal_link_count": 0,
+            "mutated": False,
+            "verified": False,
+            "activation": None,
+        }
+    active_client = client or MemoryStargraphOpenClawProfileClient.from_environment()
+    activation = active_client.provision(
+        declarations,
+        owner="gtasks-provisioner",
+        operation_id=str(uuid.uuid4()),
+    )
     return {
-        "agent_count": len(receipts),
-        "agent_slugs": [receipt.agent_slug for receipt in receipts],
+        "agent_count": len(declarations),
+        "agent_slugs": [item["slug"] for item in declarations],
         "collection_count": len(collection_slugs),
         "collection_slugs": collection_slugs,
-        "default_goal_link_count": sum(
-            len(receipt.default_goal_slugs) for receipt in receipts
-        ),
-        "mutated": any(receipt.mutated for receipt in receipts),
-        "verified": all(receipt.verified for receipt in receipts),
-        "receipts": [receipt.to_dict() for receipt in receipts],
+        "default_goal_link_count": int(activation.get("default_goal_link_count", -1)),
+        "mutated": True,
+        "verified": int(activation.get("default_goal_link_count", -1)) == 0,
+        "activation": dict(activation),
     }
 
 

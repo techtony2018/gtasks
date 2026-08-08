@@ -139,6 +139,81 @@ class CommandRunner(Protocol):
     def run(self, tool: str, params: dict[str, Any]) -> object: ...
 
 
+class OpenClawProfileActivationClient(Protocol):
+    """Read/write boundary for Memory Stargraph's activation authority."""
+
+    def provision(
+        self,
+        declarations: Sequence[Mapping[str, str]],
+        *,
+        owner: str,
+        operation_id: str,
+    ) -> Mapping[str, Any]: ...
+
+    def active_projection(self) -> Mapping[str, Any]: ...
+
+
+class MemoryStargraphOpenClawProfileClient:
+    """Authenticated client for the fail-closed Stargraph activation endpoint."""
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        timeout_seconds: float = 15,
+    ) -> None:
+        if not base_url.startswith(("http://127.0.0.1:", "https://")) or not token:
+            raise ValueError("Memory Stargraph OpenClaw activation client is not configured")
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.timeout_seconds = timeout_seconds
+
+    @classmethod
+    def from_environment(cls) -> "MemoryStargraphOpenClawProfileClient":
+        return cls(
+            os.environ.get("MEMORY_STARGRAPH_URL", ""),
+            os.environ.get("MEMORY_STARGRAPH_OC_PROVISION_TOKEN", ""),
+        )
+
+    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        body = None if payload is None else json.dumps(dict(payload), separators=(",", ":")).encode("utf-8")
+        request = Request(
+            f"{self.base_url}{path}",
+            data=body,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/json",
+                **({"Content-Type": "application/json"} if body is not None else {}),
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
+            raise GBrainCommandError("Memory Stargraph OpenClaw activation request failed") from exc
+        if not isinstance(parsed, Mapping) or parsed.get("ok") is not True:
+            raise GBrainProtocolError("Memory Stargraph OpenClaw activation response was invalid")
+        return dict(parsed)
+
+    def provision(
+        self,
+        declarations: Sequence[Mapping[str, str]],
+        *,
+        owner: str,
+        operation_id: str,
+    ) -> Mapping[str, Any]:
+        return self._request(
+            "POST",
+            "/api/internal/openclaw-profiles/provision",
+            {"declarations": list(declarations), "owner": owner, "operation_id": operation_id},
+        )
+
+    def active_projection(self) -> Mapping[str, Any]:
+        return self._request("GET", "/api/internal/openclaw-profiles/active")
+
+
 class SubprocessCommandRunner:
     def __init__(self, executable: str = "gbrain", timeout_seconds: float = 30) -> None:
         self.executable = executable
@@ -2085,8 +2160,19 @@ def _normalize_collection_task(
 
 
 class GBrainAdapter:
-    def __init__(self, runner: CommandRunner | None = None) -> None:
+    def __init__(
+        self,
+        runner: CommandRunner | None = None,
+        *,
+        openclaw_profiles: OpenClawProfileActivationClient | None = None,
+    ) -> None:
         self.runner = runner or RemoteHttpCommandRunner()
+        if openclaw_profiles is None and (
+            os.environ.get("MEMORY_STARGRAPH_URL")
+            and os.environ.get("MEMORY_STARGRAPH_OC_PROVISION_TOKEN")
+        ):
+            openclaw_profiles = MemoryStargraphOpenClawProfileClient.from_environment()
+        self.openclaw_profiles = openclaw_profiles
         # Comments and events are append-only canonical records. Cache only
         # fully validated immutable children so repeated Todo hydration does
         # not renegotiate OAuth through two CLI subprocesses per history item.
@@ -3676,7 +3762,11 @@ class GBrainAdapter:
             if not isinstance(item, Mapping):
                 continue
             slug = item.get("slug")
-            if not isinstance(slug, str) or not slug.startswith("agents/"):
+            if (
+                not isinstance(slug, str)
+                or not slug.startswith("agents/")
+                or slug.endswith("-oc")
+            ):
                 continue
             frontmatter = item.get("frontmatter")
             frontmatter = frontmatter if isinstance(frontmatter, Mapping) else {}
@@ -3695,6 +3785,64 @@ class GBrainAdapter:
             if slug not in known
         )
         return tuple(dict.fromkeys(scopes))
+
+    def _activated_openclaw_profiles(self) -> tuple[Mapping[str, str], ...]:
+        """Return only profiles named by Stargraph's CAS-active manifest.
+
+        The regular GBrain agent directory intentionally cannot activate an
+        `-oc` identity; staged pages become visible here only after the NATS
+        control key selected their immutable manifest.
+        """
+        if self.openclaw_profiles is None:
+            return ()
+        projection = self.openclaw_profiles.active_projection()
+        raw_profiles = projection.get("profiles") if isinstance(projection, Mapping) else None
+        if not isinstance(raw_profiles, list):
+            raise GBrainProtocolError("OpenClaw active profile projection was invalid")
+        expected = {
+            "canonical_agent_slug",
+            "canonical_task_collection",
+            "canonical_artifact_collection",
+            "staged_agent_slug",
+            "staged_task_collection",
+            "staged_artifact_collection",
+            "page_hashes",
+        }
+        profiles: list[Mapping[str, str]] = []
+        for item in raw_profiles:
+            if not isinstance(item, Mapping) or set(item) != expected:
+                raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
+            values = {key: item.get(key) for key in expected if key != "page_hashes"}
+            page_hashes = item.get("page_hashes")
+            if (
+                not all(isinstance(value, str) and value for value in values.values())
+                or not isinstance(page_hashes, Mapping)
+            ):
+                raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
+            canonical = str(values["canonical_agent_slug"])
+            staged_agent = str(values["staged_agent_slug"])
+            staged_tasks = str(values["staged_task_collection"])
+            if (
+                canonical not in AGENT_RUNTIME_BY_SLUG
+                or AGENT_RUNTIME_BY_SLUG[canonical] != "openclaw"
+                or not staged_agent.startswith("system/openclaw-profile-staging/")
+                or not staged_tasks.startswith("system/openclaw-profile-staging/")
+                or not str(values["staged_artifact_collection"]).startswith("system/openclaw-profile-staging/")
+                or set(page_hashes) != {
+                    staged_agent,
+                    staged_tasks,
+                    str(values["staged_artifact_collection"]),
+                }
+                or not all(
+                    isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+                    for digest in page_hashes.values()
+                )
+            ):
+                raise GBrainProtocolError("OpenClaw active profile manifest has an invalid identity")
+            profiles.append({key: str(value) for key, value in values.items()})
+        if len(profiles) != 3 or len({item["canonical_agent_slug"] for item in profiles}) != 3:
+            raise GBrainProtocolError("OpenClaw active profile manifest must contain exactly three Agents")
+        return tuple(sorted(profiles, key=lambda item: item["canonical_agent_slug"]))
 
     def list_agent_profiles(self) -> AgentRead:
         def read_agent(
@@ -3733,6 +3881,36 @@ class GBrainAdapter:
                 agents.append(agent)
             if issue is not None:
                 issues.append(issue)
+        for activation in self._activated_openclaw_profiles():
+            canonical_slug = activation["canonical_agent_slug"]
+            staged_agent = activation["staged_agent_slug"]
+            staged_work_root = activation["staged_task_collection"]
+            try:
+                page = self.runner.run("get_page", {"slug": staged_agent})
+                edges = self.runner.run("get_links", {"slug": staged_agent})
+                if not isinstance(page, Mapping) or not isinstance(edges, list):
+                    raise GBrainProtocolError("activated OpenClaw profile readback was not structured")
+                if any(
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == staged_agent
+                    and edge.get("link_type") == "default_agent_for"
+                    for edge in edges
+                ):
+                    raise GBrainProtocolError("activated OpenClaw profile violates its zero-Goal contract")
+                canonical_page = dict(page)
+                canonical_page["slug"] = canonical_slug
+                profile = AgentProfile.from_page(canonical_page, work_root=staged_work_root)
+                if profile.runtime != "openclaw":
+                    raise GBrainProtocolError("activated OpenClaw profile has the wrong runtime")
+                agents.append(profile)
+            except (DomainValidationError, GBrainError) as exc:
+                issues.append(
+                    CollectionIssue(
+                        slug=canonical_slug,
+                        message=str(exc),
+                        impact="This activated OpenClaw profile is unavailable until its staged page is repaired.",
+                    )
+                )
         return AgentRead(agents=tuple(agents), issues=tuple(issues))
 
     def set_agent_avatar(self, agent_slug: str, served_url: str) -> AgentProfile:
