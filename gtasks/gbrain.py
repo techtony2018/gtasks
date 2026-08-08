@@ -3913,55 +3913,164 @@ class GBrainAdapter:
             ),
         )
 
-    def provision_agent_profile(
-        self,
-        declaration: Mapping[str, str],
+    @staticmethod
+    def _validated_openclaw_links(
+        raw_links: object,
         *,
-        execute: bool,
+        slug: str,
+    ) -> list[Mapping[str, Any]]:
+        if not isinstance(raw_links, list):
+            raise GBrainProtocolError(f"{slug} relationship readback was not a list")
+        validated: list[Mapping[str, Any]] = []
+        for edge in raw_links:
+            if not isinstance(edge, Mapping) or any(
+                not isinstance(edge.get(field), str) or not edge[field].strip()
+                for field in ("from_slug", "to_slug", "link_type")
+            ):
+                raise GBrainProtocolError(f"{slug} relationship is malformed")
+            if edge["from_slug"] != slug:
+                raise GBrainProtocolError(f"{slug} relationship source is malformed")
+            validated.append(edge)
+        return validated
+
+    @staticmethod
+    def _openclaw_receipt(
+        declaration: Mapping[str, str],
+        specs: Sequence[tuple[str, str, str, dict[str, Any], str]],
+        expected_links: Sequence[tuple[str, str, str, str]],
+        *,
+        verified: bool,
+        mutated: bool,
     ) -> AgentProvisioningReceipt:
-        """Explicitly provision one OpenClaw profile, never a Goal relationship."""
-        item = self._openclaw_declaration(declaration)
-        specs = self._openclaw_page_spec(item)
-        expected_links = self._openclaw_expected_links(item)
-        operations = tuple(
-            [f"put_page:{slug}" for slug, *_rest in specs]
-            + [f"add_link:{source}->{target}:{link_type}" for source, target, link_type, _context in expected_links]
-        )
-        receipt = lambda *, verified, mutated: AgentProvisioningReceipt(
-            agent_slug=item["slug"],
-            collection_slugs=(item["task_collection"], item["artifact_collection"]),
+        return AgentProvisioningReceipt(
+            agent_slug=declaration["slug"],
+            collection_slugs=(
+                declaration["task_collection"],
+                declaration["artifact_collection"],
+            ),
             default_goal_slugs=(),
-            operations=operations,
+            operations=tuple(
+                [f"put_page:{slug}" for slug, *_rest in specs]
+                + [
+                    f"add_link:{source}->{target}:{link_type}"
+                    for source, target, link_type, _context in expected_links
+                ]
+            ),
             verified=verified,
             mutated=mutated,
         )
+
+    def _rollback_openclaw_provisioning(
+        self,
+        *,
+        snapshots: Mapping[str, object | None],
+        links_by_slug: Mapping[str, list[Mapping[str, Any]]],
+        created_slugs: Sequence[str],
+        added_links: Sequence[tuple[str, str, str]],
+    ) -> bool:
+        try:
+            for source, target, link_type in reversed(added_links):
+                self.runner.run(
+                    "remove_link",
+                    {"from": source, "to": target, "link_type": link_type},
+                )
+            for slug in reversed(created_slugs):
+                try:
+                    self.runner.run("delete_page", {"slug": slug})
+                except GBrainCommandError as exc:
+                    if not is_page_not_found_error(exc):
+                        raise
+            for slug, before in snapshots.items():
+                if before is None:
+                    try:
+                        self.runner.run("get_page", {"slug": slug})
+                    except GBrainCommandError as exc:
+                        if not is_page_not_found_error(exc):
+                            raise
+                    else:
+                        return False
+                    try:
+                        deleted = self.runner.run(
+                            "get_page", {"slug": slug, "include_deleted": True}
+                        )
+                    except GBrainCommandError as exc:
+                        if not is_page_not_found_error(exc):
+                            raise
+                    else:
+                        if (
+                            not isinstance(deleted, Mapping)
+                            or deleted.get("slug") != slug
+                            or not deleted.get("deleted_at")
+                        ):
+                            return False
+                elif self.runner.run("get_page", {"slug": slug}) != before:
+                    return False
+                restored_links = self._validated_openclaw_links(
+                    self.runner.run("get_links", {"slug": slug}), slug=slug
+                )
+                if restored_links != links_by_slug[slug]:
+                    return False
+            return True
+        except GBrainError:
+            return False
+
+    def provision_agent_profiles(
+        self,
+        declarations: Sequence[Mapping[str, str]],
+        *,
+        execute: bool,
+    ) -> tuple[AgentProvisioningReceipt, ...]:
+        """Batch-provision OpenClaw profiles with one fail-closed boundary."""
+        items = tuple(self._openclaw_declaration(declaration) for declaration in declarations)
+        if not items:
+            raise ValueError("OpenClaw provisioning requires at least one declaration")
+        if len({item["slug"] for item in items}) != len(items) or len(
+            {
+                collection
+                for item in items
+                for collection in (item["task_collection"], item["artifact_collection"])
+            }
+        ) != len(items) * 2:
+            raise ValueError("OpenClaw declarations must not share canonical identities")
+        plans = tuple(
+            (item, self._openclaw_page_spec(item), self._openclaw_expected_links(item))
+            for item in items
+        )
         if not execute:
-            return receipt(verified=False, mutated=False)
+            return tuple(
+                self._openclaw_receipt(
+                    item, specs, expected_links, verified=False, mutated=False
+                )
+                for item, specs, expected_links in plans
+            )
 
         snapshots: dict[str, object | None] = {}
         links_by_slug: dict[str, list[Mapping[str, Any]]] = {}
-        for slug, page_type, title, frontmatter, content in specs:
-            try:
-                snapshots[slug] = self.runner.run("get_page", {"slug": slug})
-            except GBrainCommandError as exc:
-                if not is_page_not_found_error(exc):
-                    raise
-                snapshots[slug] = None
-            raw_links = self.runner.run("get_links", {"slug": slug})
-            if not isinstance(raw_links, list):
-                raise GBrainProtocolError(f"{slug} relationship readback was not a list")
-            links_by_slug[slug] = [edge for edge in raw_links if isinstance(edge, Mapping)]
-            existing = snapshots[slug]
-            if existing is not None and not self._openclaw_page_matches(
-                existing,
-                slug=slug,
-                page_type=page_type,
-                title=title,
-                frontmatter=frontmatter,
-                content=content,
-            ):
-                label = "Agent" if page_type == "agent" else "collection"
-                raise GBrainProtocolError(f"{slug} is not a canonical {label} page")
+        expected_by_source: dict[str, set[tuple[str, str]]] = {}
+        for item, specs, expected_links in plans:
+            for slug, page_type, title, frontmatter, content in specs:
+                try:
+                    snapshots[slug] = self.runner.run("get_page", {"slug": slug})
+                except GBrainCommandError as exc:
+                    if not is_page_not_found_error(exc):
+                        raise
+                    snapshots[slug] = None
+                links_by_slug[slug] = self._validated_openclaw_links(
+                    self.runner.run("get_links", {"slug": slug}), slug=slug
+                )
+                existing = snapshots[slug]
+                if existing is not None and not self._openclaw_page_matches(
+                    existing,
+                    slug=slug,
+                    page_type=page_type,
+                    title=title,
+                    frontmatter=frontmatter,
+                    content=content,
+                ):
+                    label = "Agent" if page_type == "agent" else "collection"
+                    raise GBrainProtocolError(f"{slug} is not a canonical {label} page")
+            for source, target, link_type, _context in expected_links:
+                expected_by_source.setdefault(source, set()).add((target, link_type))
 
         root = self.runner.run("get_page", {"slug": ARTIFACTS_ROOT})
         if (
@@ -3973,72 +4082,106 @@ class GBrainAdapter:
             != "mission_control_artifacts"
         ):
             raise GBrainProtocolError("global Artifact collection is not canonical")
-
-        expected_by_source: dict[str, set[tuple[str, str]]] = {}
-        for source, target, link_type, _context in expected_links:
-            expected_by_source.setdefault(source, set()).add((target, link_type))
         for slug, links in links_by_slug.items():
-            if any(edge.get("link_type") == "default_agent_for" for edge in links):
+            if any(edge["link_type"] == "default_agent_for" for edge in links):
                 raise GBrainProtocolError(
                     f"{slug} has a Goal relationship; provisioning will not repair it"
                 )
-            actual = {
-                (str(edge.get("to_slug")), str(edge.get("link_type")))
-                for edge in links
-                if edge.get("from_slug") == slug
-            }
+            actual = {(edge["to_slug"], edge["link_type"]) for edge in links}
             unexpected = actual - expected_by_source.get(slug, set())
             if unexpected:
                 raise GBrainProtocolError(
                     f"{slug} has unexpected collection membership or relationship"
                 )
 
-        mutated = False
-        for slug, _page_type, _title, _frontmatter, content in specs:
-            if snapshots[slug] is None:
-                self.runner.run("put_page", {"slug": slug, "content": content})
-                mutated = True
-        for source, target, link_type, context in expected_links:
-            actual = {
-                (str(edge.get("to_slug")), str(edge.get("link_type")))
-                for edge in links_by_slug[source]
-                if edge.get("from_slug") == source
-            }
-            if (target, link_type) not in actual:
-                self.runner.run(
-                    "add_link",
-                    {
-                        "from": source,
-                        "to": target,
-                        "link_type": link_type,
-                        "context": context,
-                        "link_source": "gtasks",
-                    },
-                )
-                mutated = True
+        created_slugs: list[str] = []
+        added_links: list[tuple[str, str, str]] = []
+        mutated_by_agent = {item["slug"]: False for item in items}
+        try:
+            for item, specs, _expected_links in plans:
+                for slug, _page_type, _title, _frontmatter, content in specs:
+                    if snapshots[slug] is None:
+                        created_slugs.append(slug)
+                        self.runner.run("put_page", {"slug": slug, "content": content})
+                        mutated_by_agent[item["slug"]] = True
+            for item, _specs, expected_links in plans:
+                for source, target, link_type, context in expected_links:
+                    actual = {
+                        (edge["to_slug"], edge["link_type"])
+                        for edge in links_by_slug[source]
+                    }
+                    if (target, link_type) not in actual:
+                        added_links.append((source, target, link_type))
+                        self.runner.run(
+                            "add_link",
+                            {
+                                "from": source,
+                                "to": target,
+                                "link_type": link_type,
+                                "context": context,
+                                "link_source": "gtasks",
+                            },
+                        )
+                        mutated_by_agent[item["slug"]] = True
 
-        for slug, page_type, title, frontmatter, content in specs:
-            stored = self.runner.run("get_page", {"slug": slug})
-            if not self._openclaw_page_matches(
-                stored,
-                slug=slug,
-                page_type=page_type,
-                title=title,
-                frontmatter=frontmatter,
-                content=content,
-            ):
-                raise GBrainProtocolError(f"{slug} page did not read back exactly")
-            stored_links = self.runner.run("get_links", {"slug": slug})
-            if not isinstance(stored_links, list):
-                raise GBrainProtocolError(f"{slug} relationship readback was not a list")
-            actual = {
-                (str(edge.get("to_slug")), str(edge.get("link_type")))
-                for edge in stored_links
-                if isinstance(edge, Mapping) and edge.get("from_slug") == slug
-            }
-            if actual != expected_by_source.get(slug, set()):
-                raise GBrainProtocolError(f"{slug} relationships did not read back exactly")
-        return receipt(verified=True, mutated=mutated)
+            for item, specs, _expected_links in plans:
+                for slug, page_type, title, frontmatter, content in specs:
+                    stored = self.runner.run("get_page", {"slug": slug})
+                    if not self._openclaw_page_matches(
+                        stored,
+                        slug=slug,
+                        page_type=page_type,
+                        title=title,
+                        frontmatter=frontmatter,
+                        content=content,
+                    ):
+                        raise GBrainProtocolError(f"{slug} page did not read back exactly")
+                    stored_links = self._validated_openclaw_links(
+                        self.runner.run("get_links", {"slug": slug}), slug=slug
+                    )
+                    actual = {
+                        (edge["to_slug"], edge["link_type"])
+                        for edge in stored_links
+                    }
+                    if actual != expected_by_source.get(slug, set()):
+                        raise GBrainProtocolError(
+                            f"{slug} relationships did not read back exactly"
+                        )
+        except (GBrainError, ValueError) as exc:
+            rollback_verified = self._rollback_openclaw_provisioning(
+                snapshots=snapshots,
+                links_by_slug=links_by_slug,
+                created_slugs=created_slugs,
+                added_links=added_links,
+            )
+            raise PartialMutationError(
+                items[0]["slug"],
+                "OpenClaw profile provisioning failed. "
+                + (
+                    "Rollback verified."
+                    if rollback_verified
+                    else "Rollback could not be verified."
+                ),
+            ) from exc
+        return tuple(
+            self._openclaw_receipt(
+                item,
+                specs,
+                expected_links,
+                verified=True,
+                mutated=mutated_by_agent[item["slug"]],
+            )
+            for item, specs, expected_links in plans
+        )
+
+    def provision_agent_profile(
+        self,
+        declaration: Mapping[str, str],
+        *,
+        execute: bool,
+    ) -> AgentProvisioningReceipt:
+        """Provision one explicit profile through the same rollback boundary."""
+        return self.provision_agent_profiles((declaration,), execute=execute)[0]
 
     def read_handoff_dispatcher_registration(
         self,

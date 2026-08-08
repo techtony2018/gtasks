@@ -3722,6 +3722,25 @@ OPENCLAW_DECLARATION = {
     "task_collection": "collections/tammy-oc-tasks",
     "artifact_collection": "collections/tammy-oc-artifacts",
 }
+OPENCLAW_DECLARATIONS = (
+    OPENCLAW_DECLARATION,
+    {
+        "slug": "agents/timmy-oc",
+        "name": "Timmy-OC",
+        "runtime": "openclaw",
+        "route": "hosts/timmy",
+        "task_collection": "collections/timmy-oc-tasks",
+        "artifact_collection": "collections/timmy-oc-artifacts",
+    },
+    {
+        "slug": "agents/toddy-oc",
+        "name": "Toddy-OC",
+        "runtime": "openclaw",
+        "route": "hosts/toddy",
+        "task_collection": "collections/toddy-oc-tasks",
+        "artifact_collection": "collections/toddy-oc-artifacts",
+    },
+)
 
 
 class ProvisioningRunner:
@@ -3752,18 +3771,30 @@ class ProvisioningRunner:
             if edge["from_slug"] == slug and edge["link_type"] == link_type
         ]
 
+    def active_pages(self) -> dict[str, dict]:
+        return {
+            slug: deepcopy(page)
+            for slug, page in self.pages.items()
+            if not page.get("deleted_at")
+        }
+
     def run(self, tool: str, params: dict) -> object:
         self.calls.append((tool, deepcopy(params)))
         if tool == "get_page":
             try:
-                return deepcopy(self.pages[params["slug"]])
+                page = self.pages[params["slug"]]
             except KeyError as exc:
                 raise GBrainCommandError("page_not_found") from exc
+            if page.get("deleted_at") and not params.get("include_deleted"):
+                raise GBrainCommandError("page_not_found")
+            return deepcopy(page)
         if tool == "get_links":
             return [
                 deepcopy(edge)
                 for edge in self.links
-                if edge["from_slug"] == params["slug"]
+                if not isinstance(edge, dict)
+                or not edge.get("from_slug")
+                or edge.get("from_slug") == params["slug"]
             ]
         if tool == "put_page":
             lines = params["content"].splitlines()
@@ -3792,7 +3823,60 @@ class ProvisioningRunner:
             if edge not in self.links:
                 self.links.append(edge)
             return edge
+        if tool == "remove_link":
+            self.links = [
+                edge
+                for edge in self.links
+                if not (
+                    edge["from_slug"] == params["from"]
+                    and edge["to_slug"] == params["to"]
+                    and edge["link_type"] == params["link_type"]
+                )
+            ]
+            return {"removed": True}
+        if tool == "delete_page":
+            try:
+                self.pages[params["slug"]]["deleted_at"] = "2026-08-08T00:00:00Z"
+            except KeyError as exc:
+                raise GBrainCommandError("page_not_found") from exc
+            self.links = [
+                edge
+                for edge in self.links
+                if edge["from_slug"] != params["slug"] and edge["to_slug"] != params["slug"]
+            ]
+            return {"slug": params["slug"], "deleted": True}
         raise AssertionError(f"unexpected tool: {tool}")
+
+
+class FailingProvisioningRunner(ProvisioningRunner):
+    def __init__(self, *, fail_tool: str, fail_at: int) -> None:
+        super().__init__()
+        self.fail_tool = fail_tool
+        self.fail_at = fail_at
+        self.tool_count = 0
+
+    def run(self, tool: str, params: dict) -> object:
+        if tool == self.fail_tool:
+            self.tool_count += 1
+            if self.tool_count == self.fail_at:
+                raise GBrainCommandError(f"injected {tool} failure")
+        return super().run(tool, params)
+
+
+class FinalMalformedProvisioningRunner(ProvisioningRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutated = False
+        self.malformed_returned = False
+
+    def run(self, tool: str, params: dict) -> object:
+        if tool in {"put_page", "add_link"}:
+            self.mutated = True
+        if tool == "get_links" and self.mutated and not self.malformed_returned:
+            self.malformed_returned = True
+            self.calls.append((tool, deepcopy(params)))
+            return [{}]
+        return super().run(tool, params)
 
 
 class AgentCreationTests(unittest.TestCase):
@@ -3901,6 +3985,82 @@ class AgentCreationTests(unittest.TestCase):
 
         self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
         self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+    def test_later_profile_mismatch_prevents_all_batch_writes(self) -> None:
+        runner = ProvisioningRunner(
+            pages={
+                "agents/toddy-oc": {
+                    "slug": "agents/toddy-oc",
+                    "type": "concept",
+                    "title": "Agent Toddy-OC",
+                    "compiled_truth": "Wrong type.",
+                    "frontmatter": {},
+                }
+            }
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "not a canonical Agent"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
+        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+    def test_mutation_failure_rolls_back_new_pages_and_links(self) -> None:
+        runner = FailingProvisioningRunner(fail_tool="add_link", fail_at=2)
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
+        self.assertEqual(runner.links, [])
+
+    def test_page_mutation_failure_rolls_back_new_pages(self) -> None:
+        runner = FailingProvisioningRunner(fail_tool="put_page", fail_at=2)
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
+        self.assertEqual(runner.links, [])
+
+    def test_final_readback_failure_rolls_back_new_pages_and_links(self) -> None:
+        runner = FinalMalformedProvisioningRunner()
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
+        self.assertEqual(runner.links, [])
+
+    def test_malformed_relationship_fails_closed_preflight(self) -> None:
+        runner = ProvisioningRunner(links=[{}])
+
+        with self.assertRaisesRegex(GBrainProtocolError, "relationship is malformed"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
+        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+    def test_malformed_relationship_fails_closed_final_readback(self) -> None:
+        runner = FinalMalformedProvisioningRunner()
+
+        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
+            GBrainAdapter(runner).provision_agent_profiles(
+                OPENCLAW_DECLARATIONS, execute=True
+            )
+
+        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
+        self.assertEqual(runner.links, [])
 
 
 class AgentReadTests(unittest.TestCase):

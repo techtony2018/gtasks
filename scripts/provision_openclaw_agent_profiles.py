@@ -52,10 +52,7 @@ def provision(
     declarations: tuple[dict[str, str], ...], *, execute: bool
 ) -> dict[str, object]:
     adapter = GBrainAdapter()
-    receipts = [
-        adapter.provision_agent_profile(declaration, execute=execute)
-        for declaration in declarations
-    ]
+    receipts = list(adapter.provision_agent_profiles(declarations, execute=execute))
     collection_slugs = [
         collection
         for receipt in receipts
