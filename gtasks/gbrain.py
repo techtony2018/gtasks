@@ -26,6 +26,7 @@ from .domain import (
     ARTIFACT_AGENT_SCOPES,
     ARTIFACT_BY_AGENT,
     ARTIFACT_BY_COLLECTION,
+    EXISTING_CODEX_ARTIFACT_AGENT_SCOPES,
     AGENT_SCOPES,
     EXISTING_CODEX_AGENT_SCOPES,
     AGENT_WORK_ROOTS,
@@ -2074,7 +2075,10 @@ class GBrainAdapter:
     def ensure_artifact_collections(self) -> None:
         scopes: tuple[tuple[str, str | None], ...] = (
             (ARTIFACTS_ROOT, None),
-            *((collection, agent) for agent, collection in ARTIFACT_AGENT_SCOPES),
+            *(
+                (collection, agent)
+                for agent, collection in EXISTING_CODEX_ARTIFACT_AGENT_SCOPES
+            ),
         )
         for slug, agent in scopes:
             try:

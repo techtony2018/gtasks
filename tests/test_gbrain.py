@@ -2104,18 +2104,55 @@ class AgentArtifactAdapterTests(unittest.TestCase):
         first_puts = [call for call in runner.calls if call[0] == "put_page"]
         adapter.ensure_artifact_collections()
 
-        self.assertEqual(len(first_puts), len(domain.ARTIFACT_AGENT_SCOPES) + 1)
+        self.assertEqual(
+            len(first_puts),
+            len(domain.EXISTING_CODEX_ARTIFACT_AGENT_SCOPES) + 1,
+        )
         self.assertEqual(
             len([call for call in runner.calls if call[0] == "put_page"]),
-            len(domain.ARTIFACT_AGENT_SCOPES) + 1,
+            len(domain.EXISTING_CODEX_ARTIFACT_AGENT_SCOPES) + 1,
         )
         actual = {
             (edge["from_slug"], edge["to_slug"], edge["link_type"])
             for edge in runner.links
         }
-        for agent, collection in domain.ARTIFACT_AGENT_SCOPES:
+        for agent, collection in domain.EXISTING_CODEX_ARTIFACT_AGENT_SCOPES:
             self.assertIn((collection, ARTIFACTS_ROOT, "part_of"), actual)
             self.assertIn((collection, agent, "for_agent"), actual)
+
+    def test_codex_artifact_publication_does_not_bootstrap_openclaw_collections(
+        self,
+    ) -> None:
+        artifact = self.artifact()
+        task_page, task_edges = authorized_artifact_task(artifact)
+        runner = StatefulArtifactRunner(
+            {artifact.produced_for: task_page}, task_edges
+        )
+
+        receipt = GBrainAdapter(runner).create_agent_artifact(
+            artifact,
+            executing_agent=artifact.created_by,
+        )
+
+        openclaw_agents = {
+            agent
+            for agent, _collection in domain.ARTIFACT_AGENT_SCOPES
+            if agent.endswith("-oc")
+        }
+        openclaw_collections = {
+            collection
+            for agent, collection in domain.ARTIFACT_AGENT_SCOPES
+            if agent in openclaw_agents
+        }
+        self.assertTrue(receipt.verified)
+        self.assertTrue(openclaw_collections.isdisjoint(runner.pages))
+        self.assertFalse(
+            any(
+                edge["from_slug"] in openclaw_collections
+                or edge["to_slug"] in openclaw_agents
+                for edge in runner.links
+            )
+        )
 
     def test_collection_bootstrap_rejects_extra_child_scope_edges(self) -> None:
         runner = StatefulArtifactRunner({}, [])
