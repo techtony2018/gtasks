@@ -3807,16 +3807,19 @@ class GBrainAdapter:
             "staged_task_collection",
             "staged_artifact_collection",
             "page_hashes",
+            "metadata",
         }
         profiles: list[Mapping[str, str]] = []
         for item in raw_profiles:
             if not isinstance(item, Mapping) or set(item) != expected:
                 raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
-            values = {key: item.get(key) for key in expected if key != "page_hashes"}
+            values = {key: item.get(key) for key in expected if key not in {"page_hashes", "metadata"}}
             page_hashes = item.get("page_hashes")
+            metadata = item.get("metadata")
             if (
                 not all(isinstance(value, str) and value for value in values.values())
                 or not isinstance(page_hashes, Mapping)
+                or not isinstance(metadata, Mapping)
             ):
                 raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
             canonical = str(values["canonical_agent_slug"])
@@ -3839,7 +3842,7 @@ class GBrainAdapter:
                 )
             ):
                 raise GBrainProtocolError("OpenClaw active profile manifest has an invalid identity")
-            profiles.append({key: str(value) for key, value in values.items()})
+            profiles.append({**{key: str(value) for key, value in values.items()}, "metadata": dict(metadata)})
         if len(profiles) != 3 or len({item["canonical_agent_slug"] for item in profiles}) != 3:
             raise GBrainProtocolError("OpenClaw active profile manifest must contain exactly three Agents")
         return tuple(sorted(profiles, key=lambda item: item["canonical_agent_slug"]))
@@ -3881,23 +3884,26 @@ class GBrainAdapter:
                 agents.append(agent)
             if issue is not None:
                 issues.append(issue)
-        for activation in self._activated_openclaw_profiles():
+        try:
+            activated_openclaw = self._activated_openclaw_profiles()
+        except GBrainError as exc:
+            activated_openclaw = ()
+            issues.append(
+                CollectionIssue(
+                    slug="system/openclaw-profile-activation",
+                    message=str(exc),
+                    category="openclaw_activation",
+                    impact="Existing Codex Agents remain available; OpenClaw activation could not be read.",
+                )
+            )
+        for activation in activated_openclaw:
             canonical_slug = activation["canonical_agent_slug"]
             staged_agent = activation["staged_agent_slug"]
-            staged_work_root = activation["staged_task_collection"]
+            staged_work_root = activation["canonical_task_collection"]
             try:
-                page = self.runner.run("get_page", {"slug": staged_agent})
-                edges = self.runner.run("get_links", {"slug": staged_agent})
-                if not isinstance(page, Mapping) or not isinstance(edges, list):
-                    raise GBrainProtocolError("activated OpenClaw profile readback was not structured")
-                if any(
-                    isinstance(edge, Mapping)
-                    and edge.get("from_slug") == staged_agent
-                    and edge.get("link_type") == "default_agent_for"
-                    for edge in edges
-                ):
-                    raise GBrainProtocolError("activated OpenClaw profile violates its zero-Goal contract")
-                canonical_page = dict(page)
+                canonical_page = dict(activation["metadata"])
+                if canonical_page.get("slug") != staged_agent:
+                    raise GBrainProtocolError("activated OpenClaw metadata is not manifest-bound")
                 canonical_page["slug"] = canonical_slug
                 profile = AgentProfile.from_page(canonical_page, work_root=staged_work_root)
                 if profile.runtime != "openclaw":
@@ -4199,6 +4205,10 @@ class GBrainAdapter:
         execute: bool,
     ) -> tuple[AgentProvisioningReceipt, ...]:
         """Batch-provision OpenClaw profiles with one fail-closed boundary."""
+        if execute:
+            raise GBrainProtocolError(
+                "direct OpenClaw provisioning is disabled; use Memory Stargraph activation"
+            )
         items = tuple(self._openclaw_declaration(declaration) for declaration in declarations)
         if not items:
             raise ValueError("OpenClaw provisioning requires at least one declaration")

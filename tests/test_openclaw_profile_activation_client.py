@@ -58,7 +58,7 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
         result = provision(DECLARATIONS, execute=True, client=client)
 
         self.assertEqual(client.calls[0][0], DECLARATIONS)
-        self.assertEqual(client.calls[0][1], "gtasks-provisioner")
+        self.assertTrue(client.calls[0][1].startswith("gtasks-provisioner-"))
         self.assertTrue(client.calls[0][2])
         self.assertTrue(result["verified"])
         self.assertEqual(result["default_goal_link_count"], 0)

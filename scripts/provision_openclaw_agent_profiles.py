@@ -27,6 +27,11 @@ DECLARATION_FIELDS = frozenset(
         "artifact_collection",
     }
 )
+APPROVED = {
+    "agents/tammy-oc": ("Tammy-OC", "hosts/tammy", "collections/tammy-oc-tasks", "collections/tammy-oc-artifacts"),
+    "agents/timmy-oc": ("Timmy-OC", "hosts/timmy", "collections/timmy-oc-tasks", "collections/timmy-oc-artifacts"),
+    "agents/toddy-oc": ("Toddy-OC", "hosts/toddy", "collections/toddy-oc-tasks", "collections/toddy-oc-artifacts"),
+}
 
 
 def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
@@ -46,6 +51,11 @@ def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
         declarations.append({key: item[key].strip() for key in DECLARATION_FIELDS})
     if len(declarations) != 3 or len({item["slug"] for item in declarations}) != 3:
         raise ValueError("OpenClaw declaration config must contain exactly three Agents")
+    if {item["slug"] for item in declarations} != set(APPROVED) or any(
+        (item["name"], item["route"], item["task_collection"], item["artifact_collection"]) != APPROVED[item["slug"]]
+        for item in declarations
+    ):
+        raise ValueError("OpenClaw declaration config must match the approved Agent contracts")
     return tuple(declarations)
 
 
@@ -68,7 +78,7 @@ def provision(
     active_client = client or MemoryStargraphOpenClawProfileClient.from_environment()
     activation = active_client.provision(
         declarations,
-        owner="gtasks-provisioner",
+        owner=f"gtasks-provisioner-{uuid.uuid4()}",
         operation_id=str(uuid.uuid4()),
     )
     return {

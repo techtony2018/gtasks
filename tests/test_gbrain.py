@@ -3879,6 +3879,7 @@ class FinalMalformedProvisioningRunner(ProvisioningRunner):
         return super().run(tool, params)
 
 
+@unittest.skip("Direct OpenClaw provisioning was replaced by Memory Stargraph CAS activation.")
 class AgentCreationTests(unittest.TestCase):
     def test_provision_openclaw_profile_creates_no_goal_relationship(self) -> None:
         runner = ProvisioningRunner()
@@ -4144,6 +4145,7 @@ class AgentReadTests(unittest.TestCase):
                                 staged_tasks: "b" * 64,
                                 "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-artifacts": "c" * 64,
                             },
+                            "metadata": {"slug": staged_agent, "type": "agent", "title": "Tammy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
                         },
                         {
                             "canonical_agent_slug": "agents/timmy-oc",
@@ -4157,6 +4159,7 @@ class AgentReadTests(unittest.TestCase):
                                 "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-tasks": "b" * 64,
                                 "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-artifacts": "c" * 64,
                             },
+                            "metadata": {"slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc", "type": "agent", "title": "Timmy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
                         },
                         {
                             "canonical_agent_slug": "agents/toddy-oc",
@@ -4170,6 +4173,7 @@ class AgentReadTests(unittest.TestCase):
                                 "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-tasks": "b" * 64,
                                 "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-artifacts": "c" * 64,
                             },
+                            "metadata": {"slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc", "type": "agent", "title": "Toddy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
                         },
                     ]
                 }
@@ -4178,7 +4182,7 @@ class AgentReadTests(unittest.TestCase):
 
         activated = [item for item in read.agents if item.slug == "agents/tammy-oc"]
         self.assertEqual(len(activated), 1)
-        self.assertEqual(activated[0].work_root, staged_tasks)
+        self.assertEqual(activated[0].work_root, "collections/tammy-oc-tasks")
         self.assertEqual(activated[0].runtime, "openclaw")
 
     def test_fails_closed_and_reports_non_task_proposed_agent_work(self) -> None:
