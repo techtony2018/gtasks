@@ -76,6 +76,36 @@ TONY_PROFILE_SLUG = "people/tony-guan"
 _MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
+def _openclaw_active_manifest_identity_is_valid(
+    generation: Any, manifest_slug: Any, manifest_digest: Any
+) -> bool:
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        return False
+    if generation == 0:
+        return manifest_slug is None and manifest_digest is None
+    if (
+        not isinstance(manifest_slug, str)
+        or not isinstance(manifest_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", manifest_digest) is None
+    ):
+        return False
+    prefix = (
+        "system/openclaw-profile-manifests/"
+        f"g{generation:06d}-"
+    )
+    if not manifest_slug.startswith(prefix):
+        return False
+    operation_id = manifest_slug[len(prefix) :]
+    return (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", operation_id)
+        is not None
+    )
+
+
 class GBrainError(RuntimeError):
     """Base error for GBrain command, protocol, and verification failures."""
 
@@ -291,6 +321,8 @@ class MemoryStargraphOpenClawProfileClient:
                 "fence_generation",
                 "receipt",
                 "error",
+                "recovery_request_generation",
+                "recovery_processed_generation",
             }
             or item.get("operation_id") != operation_id
             or not isinstance(operation_id, str)
@@ -310,6 +342,14 @@ class MemoryStargraphOpenClawProfileClient:
             )
             or (item.get("receipt") is not None and not isinstance(item["receipt"], Mapping))
             or (item.get("error") is not None and not isinstance(item["error"], str))
+            or isinstance(item.get("recovery_request_generation"), bool)
+            or not isinstance(item.get("recovery_request_generation"), int)
+            or item["recovery_request_generation"] < 0
+            or isinstance(item.get("recovery_processed_generation"), bool)
+            or not isinstance(item.get("recovery_processed_generation"), int)
+            or item["recovery_processed_generation"] < 0
+            or item["recovery_processed_generation"]
+            > item["recovery_request_generation"]
         ):
             raise GBrainProtocolError(
                 f"Memory Stargraph activation status was invalid for {operation_id}"
@@ -425,10 +465,39 @@ class MemoryStargraphOpenClawProfileClient:
                 )
             )
         )
+        recovery_generation: int | None = None
         while True:
             if on_status is not None:
                 on_status(current)
             status = current["status"]
+            if recovery_generation is not None:
+                if (
+                    current["recovery_processed_generation"]
+                    < recovery_generation
+                ):
+                    remaining = deadline - self.clock()
+                    if remaining <= 0:
+                        raise GBrainCommandError(
+                            "Memory Stargraph activation polling timed out for "
+                            f"{operation_id}"
+                        )
+                    self.sleeper(
+                        min(self.poll_interval_seconds, remaining)
+                    )
+                    remaining = deadline - self.clock()
+                    if remaining <= 0:
+                        continue
+                    current = self._operation_response(
+                        self.status(
+                            operation_id,
+                            timeout_seconds=min(
+                                self.status_timeout_seconds, remaining
+                            ),
+                        ),
+                        operation_id,
+                    )
+                    continue
+                recovery_generation = None
             if status == "completed":
                 return current
             if status == "failed":
@@ -442,28 +511,38 @@ class MemoryStargraphOpenClawProfileClient:
                     f"Memory Stargraph activation polling timed out for {operation_id}"
                 )
             if status == "recovery_required":
-                current = dict(
+                current = self._operation_response(
                     self.recover(
                         operation_id,
                         timeout_seconds=min(
                             self.submit_timeout_seconds, remaining
                         ),
-                    )
+                    ),
+                    operation_id,
                 )
-                if current.get("status") == "recovery_required":
-                    remaining = deadline - self.clock()
-                    if remaining > 0:
-                        self.sleeper(min(self.poll_interval_seconds, remaining))
+                recovery_generation = current[
+                    "recovery_request_generation"
+                ]
+                if (
+                    current["status"] == "recovery_required"
+                    and recovery_generation
+                    <= current["recovery_processed_generation"]
+                ):
+                    raise GBrainProtocolError(
+                        "Memory Stargraph recovery response did not queue a "
+                        f"generation for {operation_id}"
+                    )
                 continue
             self.sleeper(min(self.poll_interval_seconds, remaining))
             remaining = deadline - self.clock()
             if remaining <= 0:
                 continue
-            current = dict(
+            current = self._operation_response(
                 self.status(
                     operation_id,
                     timeout_seconds=min(self.status_timeout_seconds, remaining),
-                )
+                ),
+                operation_id,
             )
 
     def provision(
@@ -500,15 +579,10 @@ class MemoryStargraphOpenClawProfileClient:
             or not isinstance(projection.get("generation"), int)
             or projection["generation"] < 0
             or not isinstance(projection.get("profiles"), list)
-            or (
-                projection.get("manifest_digest") is not None
-                and (
-                    not isinstance(projection.get("manifest_digest"), str)
-                    or re.fullmatch(
-                        r"[0-9a-f]{64}", projection["manifest_digest"]
-                    )
-                    is None
-                )
+            or not _openclaw_active_manifest_identity_is_valid(
+                projection.get("generation"),
+                projection.get("active_manifest"),
+                projection.get("manifest_digest"),
             )
         ):
             raise GBrainProtocolError(

@@ -85,6 +85,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                 "fence_generation": None,
                 "receipt": None,
                 "error": None,
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
             {
                 "ok": True,
@@ -93,6 +95,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                 "fence_generation": 4,
                 "receipt": None,
                 "error": None,
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
             {
                 "ok": True,
@@ -106,6 +110,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "default_goal_link_count": 0,
                 },
                 "error": None,
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
         ]
 
@@ -178,6 +184,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "fence_generation": None,
                         "receipt": None,
                         "error": None,
+                        "recovery_request_generation": 0,
+                        "recovery_processed_generation": 0,
                     }
                 )
             if request.full_url.endswith("/recover"):
@@ -189,6 +197,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "fence_generation": 2,
                         "receipt": None,
                         "error": "queued",
+                        "recovery_request_generation": 1,
+                        "recovery_processed_generation": 0,
                     }
                 )
             if request.full_url.endswith("/active"):
@@ -212,6 +222,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": None,
                     "receipt": None,
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 }
             )
 
@@ -260,6 +272,71 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
         ):
             client.active_projection()
 
+    def test_active_projection_rejects_invalid_generation_positive_manifest_identity(self):
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788", "unit-token"
+        )
+        valid = {
+            "ok": True,
+            "status": "ready",
+            "control_revision": 5,
+            "validated_at": 1000.0,
+            "generation": 3,
+            "active_manifest": (
+                "system/openclaw-profile-manifests/"
+                "g000003-op-active-shape"
+            ),
+            "manifest_digest": "a" * 64,
+            "profiles": [],
+        }
+        invalid = (
+            {**valid, "active_manifest": None},
+            {
+                **valid,
+                "active_manifest": (
+                    "system/openclaw-profile-manifests/"
+                    "g000004-op-active-shape"
+                ),
+            },
+            {
+                **valid,
+                "active_manifest": (
+                    "system/openclaw-profile-manifests/"
+                    "g000003-bad/operation"
+                ),
+            },
+            {**valid, "manifest_digest": "A" * 64},
+        )
+
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                with (
+                    patch.object(client, "_request", return_value=payload),
+                    self.assertRaisesRegex(GBrainProtocolError, "projection"),
+                ):
+                    client.active_projection()
+
+    def test_active_projection_accepts_generation_zero_without_a_manifest(self):
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788", "unit-token"
+        )
+        payload = {
+            "ok": True,
+            "status": "ready",
+            "control_revision": 1,
+            "validated_at": 1000.0,
+            "generation": 0,
+            "active_manifest": None,
+            "manifest_digest": None,
+            "profiles": [],
+        }
+
+        with patch.object(client, "_request", return_value=payload):
+            projection = client.active_projection()
+
+        self.assertEqual(projection["generation"], 0)
+        self.assertIsNone(projection["active_manifest"])
+
     def test_client_recovers_the_same_id_and_times_out_with_the_id_visible(self):
         class Client(MemoryStargraphOpenClawProfileClient):
             def __init__(self):
@@ -288,6 +365,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": 7,
                     "receipt": None,
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 }
 
             def recover(self, operation_id, *, timeout_seconds=None):
@@ -303,6 +382,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "default_goal_link_count": 0,
                     },
                     "error": None,
+                    "recovery_request_generation": 1,
+                    "recovery_processed_generation": 1,
                 }
 
         client = Client()
@@ -314,6 +395,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                 "fence_generation": 7,
                 "receipt": None,
                 "error": "journal interrupted",
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
         )
 
@@ -329,6 +412,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": 8,
                     "receipt": None,
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
 
@@ -337,6 +422,7 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
             def __init__(self):
                 self.now = 0.0
                 self.recover_calls = 0
+                self.status_calls = 0
                 super().__init__(
                     "http://127.0.0.1:8788",
                     "unit-token",
@@ -353,14 +439,28 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
 
             def recover(self, operation_id, *, timeout_seconds=None):
                 self.recover_calls += 1
-                if self.recover_calls > 2:
-                    raise AssertionError("recovery retry was not bounded")
+                if self.recover_calls > 1:
+                    raise AssertionError("pending recovery generation was reposted")
                 return {
                     "operation_id": operation_id,
                     "status": "recovery_required",
                     "fence_generation": 7,
                     "receipt": None,
                     "error": "still interrupted",
+                    "recovery_request_generation": 1,
+                    "recovery_processed_generation": 0,
+                }
+
+            def status(self, operation_id, *, timeout_seconds=None):
+                self.status_calls += 1
+                return {
+                    "operation_id": operation_id,
+                    "status": "recovery_required",
+                    "fence_generation": 7,
+                    "receipt": None,
+                    "error": "still interrupted",
+                    "recovery_request_generation": 1,
+                    "recovery_processed_generation": 0,
                 }
 
         client = Client()
@@ -374,10 +474,94 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": 7,
                     "receipt": None,
                     "error": "interrupted",
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
 
-        self.assertEqual(client.recover_calls, 2)
+        self.assertEqual(client.recover_calls, 1)
+        self.assertGreaterEqual(client.status_calls, 1)
+
+    def test_recovery_generation_is_posted_once_then_get_polled_to_exact_completion(self):
+        class Client(MemoryStargraphOpenClawProfileClient):
+            def __init__(self):
+                self.now = 0.0
+                self.recover_calls = 0
+                self.status_calls = 0
+                super().__init__(
+                    "http://127.0.0.1:8788",
+                    "unit-token",
+                    poll_timeout_seconds=10,
+                    poll_interval_seconds=0.25,
+                    sleeper=self.advance,
+                    clock=lambda: self.now,
+                )
+
+            def advance(self, seconds):
+                self.now += seconds
+
+            def recover(self, operation_id, *, timeout_seconds=None):
+                self.recover_calls += 1
+                if self.recover_calls != 1:
+                    raise AssertionError("pending recovery generation was reposted")
+                return {
+                    "operation_id": operation_id,
+                    "status": "recovery_required",
+                    "fence_generation": 7,
+                    "receipt": None,
+                    "error": "canonical verification is running",
+                    "recovery_request_generation": 1,
+                    "recovery_processed_generation": 0,
+                }
+
+            def status(self, operation_id, *, timeout_seconds=None):
+                self.status_calls += 1
+                if self.status_calls < 3:
+                    return {
+                        "operation_id": operation_id,
+                        "status": "recovery_required",
+                        "fence_generation": 7,
+                        "receipt": None,
+                        "error": "canonical verification is running",
+                        "recovery_request_generation": 1,
+                        "recovery_processed_generation": 0,
+                    }
+                return {
+                    "operation_id": operation_id,
+                    "status": "completed",
+                    "fence_generation": 7,
+                    "receipt": {
+                        "generation": 7,
+                        "manifest_slug": (
+                            "system/openclaw-profile-manifests/"
+                            "g000007-op-generation-race"
+                        ),
+                        "manifest_digest": "a" * 64,
+                        "default_goal_link_count": 0,
+                    },
+                    "error": None,
+                    "recovery_request_generation": 1,
+                    "recovery_processed_generation": 1,
+                }
+
+        client = Client()
+        completed = client.wait(
+            "op-generation-race",
+            initial={
+                "operation_id": "op-generation-race",
+                "status": "recovery_required",
+                "fence_generation": 7,
+                "receipt": None,
+                "error": "recovery is required",
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
+            },
+        )
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["recovery_processed_generation"], 1)
+        self.assertEqual(client.recover_calls, 1)
+        self.assertEqual(client.status_calls, 3)
 
     def test_poll_requests_are_capped_by_the_remaining_total_deadline(self):
         now = [0.0]
@@ -401,9 +585,14 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
             operation_id = request.full_url.split("/operations/", 1)[1].split(
                 "/", 1
             )[0]
-            if operation_id == "op-deadline-recover" and len(
+            if (
+                operation_id == "op-deadline-recover"
+                and request.get_method() == "POST"
+                and len(
                 [item for item in observed_timeouts if item[0] == "POST"]
-            ) == 1:
+                )
+                == 1
+            ):
                 return Response(
                     {
                         "ok": True,
@@ -412,6 +601,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "fence_generation": 3,
                         "receipt": None,
                         "error": "recover again",
+                        "recovery_request_generation": 1,
+                        "recovery_processed_generation": 0,
                     }
                 )
             return Response(
@@ -428,6 +619,12 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "default_goal_link_count": 0,
                     },
                     "error": None,
+                    "recovery_request_generation": (
+                        1 if operation_id == "op-deadline-recover" else 0
+                    ),
+                    "recovery_processed_generation": (
+                        1 if operation_id == "op-deadline-recover" else 0
+                    ),
                 }
             )
 
@@ -450,6 +647,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": 3,
                     "receipt": None,
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
             now[0] = 0
@@ -461,12 +660,14 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "fence_generation": 3,
                     "receipt": None,
                     "error": "recover",
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
 
         self.assertEqual(observed_timeouts[0], ("GET", 0.25))
         self.assertEqual(observed_timeouts[1], ("POST", 10.0))
-        self.assertEqual(observed_timeouts[2], ("POST", 0.25))
+        self.assertEqual(observed_timeouts[2], ("GET", 0.25))
 
     def test_client_rejects_an_incomplete_terminal_receipt(self):
         client = MemoryStargraphOpenClawProfileClient(
@@ -485,6 +686,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "default_goal_link_count": 0,
                     },
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
 
@@ -505,6 +708,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                 "fence_generation": 3,
                 "receipt": valid_receipt,
                 "error": "completed with an error",
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
             {
                 "operation_id": "op-terminal",
@@ -515,6 +720,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "manifest_slug": "system/openclaw-profile-manifests/g000003-op-other",
                 },
                 "error": None,
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
             {
                 "operation_id": "op-terminal",
@@ -525,6 +732,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "default_goal_link_count": False,
                 },
                 "error": None,
+                "recovery_request_generation": 0,
+                "recovery_processed_generation": 0,
             },
         )
 
@@ -546,6 +755,8 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                         "g000003-bad/op",
                     },
                     "error": None,
+                    "recovery_request_generation": 0,
+                    "recovery_processed_generation": 0,
                 },
             )
 
