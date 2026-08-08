@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import sys
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -63,8 +65,21 @@ def _declarations_digest(declarations: tuple[dict[str, str], ...]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _write_operation_state(path: Path, state: Mapping[str, Any]) -> None:
+@contextmanager
+def _operation_file_lock(path: Path):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _write_operation_state_unlocked(path: Path, state: Mapping[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     data = json.dumps(dict(state), sort_keys=True, separators=(",", ":")) + "\n"
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -75,9 +90,19 @@ def _write_operation_state(path: Path, state: Mapping[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         path.chmod(0o600)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _write_operation_state(path: Path, state: Mapping[str, Any]) -> None:
+    with _operation_file_lock(path):
+        _write_operation_state_unlocked(path, state)
 
 
 def _load_retriable_operation(
@@ -100,9 +125,75 @@ def _load_retriable_operation(
     ):
         raise ValueError("OpenClaw activation operation state is invalid")
     path.chmod(0o600)
-    if state["status"] not in NONTERMINAL_OPERATION_STATUSES:
-        return None
     return dict(state)
+
+
+def _load_or_create_operation(
+    path: Path,
+    declarations_digest: str,
+    *,
+    operation_id_factory: Callable[[], str],
+    owner_factory: Callable[[], str],
+) -> dict[str, Any]:
+    with _operation_file_lock(path):
+        state = _load_retriable_operation(path, declarations_digest)
+        if state is not None:
+            return state
+        state = {
+            "schema_version": 1,
+            "operation_id": operation_id_factory(),
+            "owner": owner_factory(),
+            "declarations_digest": declarations_digest,
+            "status": "created",
+            "fence_generation": None,
+            "receipt": None,
+            "error": None,
+        }
+        _write_operation_state_unlocked(path, state)
+        return state
+
+
+def _persist_operation_status(
+    path: Path,
+    declarations_digest: str,
+    operation_id: str,
+    status: Mapping[str, Any],
+) -> dict[str, Any]:
+    with _operation_file_lock(path):
+        current = _load_retriable_operation(path, declarations_digest)
+        if current is None:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, Mapping):
+                raise ValueError("OpenClaw activation operation state is invalid")
+            current = dict(raw)
+        if current.get("operation_id") != operation_id:
+            raise GBrainError("activation operation file changed identity")
+        if current.get("status") in {"completed", "failed"}:
+            return current
+        incoming_status = str(status.get("status") or "")
+        if incoming_status not in NONTERMINAL_OPERATION_STATUSES | {
+            "completed",
+            "failed",
+        }:
+            raise GBrainError("Memory Stargraph returned an invalid activation status")
+        order = {"created": 0, "accepted": 1, "running": 2, "recovery_required": 2}
+        if (
+            incoming_status in order
+            and str(current.get("status")) in order
+            and order[incoming_status] < order[str(current.get("status"))]
+        ):
+            return current
+        updated = dict(current)
+        updated.update(
+            {
+                "status": incoming_status,
+                "fence_generation": status.get("fence_generation"),
+                "receipt": status.get("receipt"),
+                "error": status.get("error"),
+            }
+        )
+        _write_operation_state_unlocked(path, updated)
+        return updated
 
 
 def load_declarations(path: Path) -> tuple[dict[str, str], ...]:
@@ -152,19 +243,12 @@ def provision(
     active_client = client or MemoryStargraphOpenClawProfileClient.from_environment()
     state_path = operation_file or default_operation_file()
     declarations_digest = _declarations_digest(declarations)
-    state = _load_retriable_operation(state_path, declarations_digest)
-    if state is None:
-        state = {
-            "schema_version": 1,
-            "operation_id": operation_id_factory(),
-            "owner": owner_factory(),
-            "declarations_digest": declarations_digest,
-            "status": "created",
-            "fence_generation": None,
-            "receipt": None,
-            "error": None,
-        }
-        _write_operation_state(state_path, state)
+    state = _load_or_create_operation(
+        state_path,
+        declarations_digest,
+        operation_id_factory=operation_id_factory,
+        owner_factory=owner_factory,
+    )
 
     operation_id = str(state["operation_id"])
     owner = str(state["owner"])
@@ -172,15 +256,14 @@ def provision(
     def persist_status(status: Mapping[str, Any]) -> None:
         if status.get("operation_id") != operation_id:
             raise GBrainError("Memory Stargraph returned another activation operation")
-        state.update(
-            {
-                "status": status.get("status"),
-                "fence_generation": status.get("fence_generation"),
-                "receipt": status.get("receipt"),
-                "error": status.get("error"),
-            }
+        persisted = _persist_operation_status(
+            state_path,
+            declarations_digest,
+            operation_id,
+            status,
         )
-        _write_operation_state(state_path, state)
+        state.clear()
+        state.update(persisted)
 
     try:
         accepted = active_client.submit(

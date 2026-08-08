@@ -2,10 +2,12 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import scripts.provision_openclaw_agent_profiles as provision_module
 from scripts.provision_openclaw_agent_profiles import provision
 from gtasks.gbrain import (
     GBrainAdapter,
@@ -49,6 +51,29 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
             adapter = GBrainAdapter(openclaw_profiles=None)
 
         self.assertIsInstance(adapter.openclaw_profiles, MemoryStargraphOpenClawProfileClient)
+
+    def test_client_accepts_only_an_exact_loopback_http_origin(self):
+        for valid in (
+            "http://127.0.0.1:8788",
+            "http://localhost:8788/",
+            "http://[::1]:8788",
+        ):
+            with self.subTest(valid=valid):
+                MemoryStargraphOpenClawProfileClient(valid, "unit-token")
+
+        for invalid in (
+            "https://127.0.0.1:8788",
+            "http://127.0.0.1",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1.evil.example:8788",
+            "http://127.0.0.1:8788@evil.example:8788",
+            "http://localhost:8788/internal",
+            "http://localhost:8788?next=http://evil.example",
+            "http://localhost:8788/#fragment",
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    MemoryStargraphOpenClawProfileClient(invalid, "unit-token")
 
     def test_client_submits_then_polls_the_same_operation_to_completion(self):
         requests = []
@@ -146,7 +171,7 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
             def advance(self, seconds):
                 self.now += seconds
 
-            def status(self, operation_id):
+            def status(self, operation_id, *, timeout_seconds=None):
                 self.status_calls.append(operation_id)
                 return {
                     "operation_id": operation_id,
@@ -156,7 +181,7 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "error": None,
                 }
 
-            def recover(self, operation_id):
+            def recover(self, operation_id, *, timeout_seconds=None):
                 self.recover_calls.append(operation_id)
                 return {
                     "operation_id": operation_id,
@@ -217,7 +242,7 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
             def advance(self, seconds):
                 self.now += seconds
 
-            def recover(self, operation_id):
+            def recover(self, operation_id, *, timeout_seconds=None):
                 self.recover_calls += 1
                 if self.recover_calls > 2:
                     raise AssertionError("recovery retry was not bounded")
@@ -245,6 +270,95 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
 
         self.assertEqual(client.recover_calls, 2)
 
+    def test_poll_requests_are_capped_by_the_remaining_total_deadline(self):
+        now = [0.0]
+        observed_timeouts = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def open_request(request, timeout):
+            observed_timeouts.append((request.get_method(), timeout))
+            operation_id = request.full_url.split("/operations/", 1)[1].split(
+                "/", 1
+            )[0]
+            if operation_id == "op-deadline-recover" and len(
+                [item for item in observed_timeouts if item[0] == "POST"]
+            ) == 1:
+                return Response(
+                    {
+                        "ok": True,
+                        "operation_id": operation_id,
+                        "status": "recovery_required",
+                        "fence_generation": 3,
+                        "receipt": None,
+                        "error": "recover again",
+                    }
+                )
+            return Response(
+                {
+                    "ok": True,
+                    "operation_id": operation_id,
+                    "status": "completed",
+                    "fence_generation": 3,
+                    "receipt": {
+                        "generation": 3,
+                        "manifest_slug": "system/openclaw-profile-manifests/"
+                        f"g000003-{operation_id}",
+                        "manifest_digest": "f" * 64,
+                        "default_goal_link_count": 0,
+                    },
+                    "error": None,
+                }
+            )
+
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788",
+            "unit-token",
+            submit_timeout_seconds=10,
+            status_timeout_seconds=5,
+            poll_timeout_seconds=10,
+            poll_interval_seconds=9.75,
+            sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds),
+            clock=lambda: now[0],
+        )
+        with patch("gtasks.gbrain.urlopen", side_effect=open_request):
+            client.wait(
+                "op-deadline-status",
+                initial={
+                    "operation_id": "op-deadline-status",
+                    "status": "running",
+                    "fence_generation": 3,
+                    "receipt": None,
+                    "error": None,
+                },
+            )
+            now[0] = 0
+            client.wait(
+                "op-deadline-recover",
+                initial={
+                    "operation_id": "op-deadline-recover",
+                    "status": "recovery_required",
+                    "fence_generation": 3,
+                    "receipt": None,
+                    "error": "recover",
+                },
+            )
+
+        self.assertEqual(observed_timeouts[0], ("GET", 0.25))
+        self.assertEqual(observed_timeouts[1], ("POST", 10.0))
+        self.assertEqual(observed_timeouts[2], ("POST", 0.25))
+
     def test_client_rejects_an_incomplete_terminal_receipt(self):
         client = MemoryStargraphOpenClawProfileClient(
             "http://127.0.0.1:8788", "unit-token"
@@ -260,6 +374,67 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
                     "receipt": {
                         "generation": 3,
                         "default_goal_link_count": 0,
+                    },
+                    "error": None,
+                },
+            )
+
+    def test_client_rejects_non_exact_completed_terminal_semantics(self):
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788", "unit-token"
+        )
+        valid_receipt = {
+            "generation": 3,
+            "manifest_slug": "system/openclaw-profile-manifests/g000003-op-terminal",
+            "manifest_digest": "e" * 64,
+            "default_goal_link_count": 0,
+        }
+        invalid_operations = (
+            {
+                "operation_id": "op-terminal",
+                "status": "completed",
+                "fence_generation": 3,
+                "receipt": valid_receipt,
+                "error": "completed with an error",
+            },
+            {
+                "operation_id": "op-terminal",
+                "status": "completed",
+                "fence_generation": 3,
+                "receipt": {
+                    **valid_receipt,
+                    "manifest_slug": "system/openclaw-profile-manifests/g000003-op-other",
+                },
+                "error": None,
+            },
+            {
+                "operation_id": "op-terminal",
+                "status": "completed",
+                "fence_generation": 3,
+                "receipt": {
+                    **valid_receipt,
+                    "default_goal_link_count": False,
+                },
+                "error": None,
+            },
+        )
+
+        for operation in invalid_operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(GBrainProtocolError):
+                    client.wait("op-terminal", initial=operation)
+
+        with self.assertRaises(GBrainProtocolError):
+            client.wait(
+                "bad/op",
+                initial={
+                    "operation_id": "bad/op",
+                    "status": "completed",
+                    "fence_generation": 3,
+                    "receipt": {
+                        **valid_receipt,
+                        "manifest_slug": "system/openclaw-profile-manifests/"
+                        "g000003-bad/op",
                     },
                     "error": None,
                 },
@@ -322,6 +497,153 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
         self.assertTrue(result["verified"])
         self.assertEqual(result["default_goal_link_count"], 0)
         self.assertEqual(result["operation_id"], "op-fixed")
+
+    def test_concurrent_load_or_create_reuses_one_locked_operation_identity(self):
+        load_or_create = getattr(
+            provision_module, "_load_or_create_operation", None
+        )
+        self.assertIsNotNone(load_or_create)
+        barrier = threading.Barrier(2)
+        generated = []
+        results = []
+        errors = []
+        guard = threading.Lock()
+
+        def operation_id_factory():
+            with guard:
+                operation_id = f"op-{len(generated) + 1}"
+                generated.append(operation_id)
+                return operation_id
+
+        def worker(path):
+            try:
+                barrier.wait(timeout=2)
+                state = load_or_create(
+                    path,
+                    "a" * 64,
+                    operation_id_factory=operation_id_factory,
+                    owner_factory=lambda: "owner-locked",
+                )
+                with guard:
+                    results.append(state)
+            except Exception as error:
+                with guard:
+                    errors.append(error)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "operation.json"
+            threads = [threading.Thread(target=worker, args=(path,)) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(3)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(generated, ["op-1"])
+        self.assertEqual(
+            {state["operation_id"] for state in results}, {"op-1"}
+        )
+
+    def test_atomic_operation_state_rename_fsyncs_file_and_parent_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "state" / "operation.json"
+            with patch.object(os, "fsync", wraps=os.fsync) as fsync:
+                provision_module._write_operation_state(
+                    path,
+                    {
+                        "schema_version": 1,
+                        "operation_id": "op-fsync",
+                        "owner": "owner-fsync",
+                        "declarations_digest": "b" * 64,
+                        "status": "created",
+                        "fence_generation": None,
+                        "receipt": None,
+                        "error": None,
+                    },
+                )
+
+        self.assertGreaterEqual(fsync.call_count, 2)
+
+    def test_locked_status_update_cannot_overwrite_a_terminal_operation(self):
+        digest = "c" * 64
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "operation.json"
+            provision_module._load_or_create_operation(
+                path,
+                digest,
+                operation_id_factory=lambda: "op-terminal-lock",
+                owner_factory=lambda: "owner-terminal-lock",
+            )
+            completed = {
+                "operation_id": "op-terminal-lock",
+                "status": "completed",
+                "fence_generation": 3,
+                "receipt": {
+                    "generation": 3,
+                    "manifest_slug": "system/openclaw-profile-manifests/"
+                    "g000003-op-terminal-lock",
+                    "manifest_digest": "d" * 64,
+                    "default_goal_link_count": 0,
+                },
+                "error": None,
+            }
+            provision_module._persist_operation_status(
+                path, digest, "op-terminal-lock", completed
+            )
+            persisted = provision_module._persist_operation_status(
+                path,
+                digest,
+                "op-terminal-lock",
+                {
+                    "operation_id": "op-terminal-lock",
+                    "status": "accepted",
+                    "fence_generation": None,
+                    "receipt": None,
+                    "error": None,
+                },
+            )
+
+        self.assertEqual(persisted["status"], "completed")
+        self.assertEqual(persisted["receipt"], completed["receipt"])
+
+    def test_load_or_create_reuses_a_completed_identity_for_idempotent_retry(self):
+        digest = "e" * 64
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "operation.json"
+            provision_module._load_or_create_operation(
+                path,
+                digest,
+                operation_id_factory=lambda: "op-original-terminal",
+                owner_factory=lambda: "owner-original-terminal",
+            )
+            provision_module._persist_operation_status(
+                path,
+                digest,
+                "op-original-terminal",
+                {
+                    "operation_id": "op-original-terminal",
+                    "status": "completed",
+                    "fence_generation": 4,
+                    "receipt": {
+                        "generation": 4,
+                        "manifest_slug": "system/openclaw-profile-manifests/"
+                        "g000004-op-original-terminal",
+                        "manifest_digest": "f" * 64,
+                        "default_goal_link_count": 0,
+                    },
+                    "error": None,
+                },
+            )
+
+            retried = provision_module._load_or_create_operation(
+                path,
+                digest,
+                operation_id_factory=lambda: "op-must-not-replace-terminal",
+                owner_factory=lambda: "owner-must-not-replace-terminal",
+            )
+
+        self.assertEqual(retried["operation_id"], "op-original-terminal")
+        self.assertEqual(retried["status"], "completed")
 
     def test_retry_after_submit_failure_reuses_the_persisted_operation_id_and_owner(self):
         class Client:
