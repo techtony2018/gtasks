@@ -4961,7 +4961,7 @@ class ArtifactApiTests(unittest.TestCase):
         self.assertEqual(accepted_status, 201)
         self.assertTrue(accepted["receipt"]["verified"])
 
-    def test_openclaw_publication_preserves_optional_delegation_provenance(self) -> None:
+    def test_openclaw_publication_rejects_unverified_delegation_claim(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
         delegation_ref = (
@@ -4980,10 +4980,13 @@ class ArtifactApiTests(unittest.TestCase):
             self._execution_headers("agents/tammy-oc"),
         )
 
-        self.assertEqual(status, 201)
-        self.assertEqual(payload["artifact"]["created_by"], "agents/tammy-oc")
-        self.assertEqual(payload["artifact"]["delegation_ref"], delegation_ref)
-        self.assertEqual(adapter.created_artifacts[0][0].delegation_ref, delegation_ref)
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "unsupported_delegation_claim")
+        self.assertRegex(
+            payload["error"],
+            "delegation_ref.*unsupported.*verified delegation claim",
+        )
+        self.assertEqual(adapter.created_artifacts, [])
 
     def test_cross_identity_openclaw_publication_fails_before_adapter_mutation(self) -> None:
         adapter = FakeAdapter()

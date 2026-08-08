@@ -3759,6 +3759,12 @@ OPENCLAW_DECLARATIONS = (
 )
 
 
+def canonical_projection_page_hash(page: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(page, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def activated_openclaw_projection(*, generation: int = 7) -> dict:
     operation_id = "op-integrated"
     prefix = (
@@ -3770,19 +3776,46 @@ def activated_openclaw_projection(*, generation: int = 7) -> dict:
         staged_agent = f"{prefix}{declaration['slug']}"
         staged_tasks = f"{prefix}{declaration['task_collection']}"
         staged_artifacts = f"{prefix}{declaration['artifact_collection']}"
-        frontmatter = {
-            "runtime": "openclaw",
-            "route": declaration["route"],
-            "activation_generation": generation,
-            "activation_operation_id": operation_id,
-            "canonical_slug": declaration["slug"],
-            "staged": True,
+        agent_page = {
+            "slug": staged_agent,
+            "type": "agent",
+            "title": declaration["name"],
+            "frontmatter": {
+                "runtime": "openclaw",
+                "route": declaration["route"],
+                "activation_generation": generation,
+                "activation_operation_id": operation_id,
+                "canonical_slug": declaration["slug"],
+                "staged": True,
+            },
+            "compiled_truth": f"Staged OpenClaw profile for {declaration['name']}.",
         }
-        if declaration["slug"] == "agents/tammy-oc":
-            frontmatter["avatar"] = {
-                "kind": "attachment",
-                "value": "/media/agents/tammy-oc/avatar.png",
-            }
+        task_page = {
+            "slug": staged_tasks,
+            "type": "collection",
+            "title": f"{declaration['name']} Tasks",
+            "frontmatter": {
+                "collection_kind": "mission_control_agent_tasks",
+                "activation_generation": generation,
+                "activation_operation_id": operation_id,
+                "canonical_slug": declaration["task_collection"],
+                "staged": True,
+            },
+            "compiled_truth": f"Staged task collection for {declaration['name']}.",
+        }
+        artifact_page = {
+            "slug": staged_artifacts,
+            "type": "collection",
+            "title": f"{declaration['name']} Artifacts",
+            "frontmatter": {
+                "collection_kind": "mission_control_artifacts",
+                "activation_generation": generation,
+                "activation_operation_id": operation_id,
+                "canonical_slug": declaration["artifact_collection"],
+                "staged": True,
+            },
+            "compiled_truth": f"Staged Artifact collection for {declaration['name']}.",
+        }
         profiles.append(
             {
                 "canonical_agent_slug": declaration["slug"],
@@ -3792,23 +3825,17 @@ def activated_openclaw_projection(*, generation: int = 7) -> dict:
                 "staged_task_collection": staged_tasks,
                 "staged_artifact_collection": staged_artifacts,
                 "page_hashes": {
-                    staged_agent: "a" * 64,
-                    staged_tasks: "b" * 64,
-                    staged_artifacts: "c" * 64,
+                    staged_agent: canonical_projection_page_hash(agent_page),
+                    staged_tasks: canonical_projection_page_hash(task_page),
+                    staged_artifacts: canonical_projection_page_hash(artifact_page),
                 },
-                "metadata": {
-                    "slug": staged_agent,
-                    "type": "agent",
-                    "title": f"Agent {declaration['name']}",
-                    "compiled_truth": (
-                        f"Activated generation {generation} profile for "
-                        f"{declaration['name']}."
-                    ),
-                    "frontmatter": frontmatter,
-                },
+                "metadata": agent_page,
             }
         )
     return {
+        "status": "ready",
+        "control_revision": 11,
+        "validated_at": 1_786_208_400.0,
         "generation": generation,
         "active_manifest": (
             "system/openclaw-profile-manifests/"
@@ -3994,6 +4021,14 @@ class AgentReadTests(unittest.TestCase):
                 }
             ]
         )
+        pages["agents/tammy-oc"]["title"] = "Tammy OpenClaw"
+        pages["agents/tammy-oc"]["compiled_truth"] = (
+            "Logical profile updated after activation."
+        )
+        pages["agents/tammy-oc"]["frontmatter"]["avatar"] = {
+            "kind": "attachment",
+            "value": "/media/agents/tammy-oc/avatar.png",
+        }
         runner = ActivatedOpenClawRunner(pages, links)
         profiles = StaticOpenClawProfiles(activated_openclaw_projection())
         adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
@@ -4005,8 +4040,11 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(len(activated), 1)
         self.assertEqual(activated[0].work_root, "collections/tammy-oc-tasks")
         self.assertEqual(activated[0].runtime, "openclaw")
-        self.assertEqual(activated[0].title, "Agent Tammy-OC")
-        self.assertIn("Activated generation 7", activated[0].summary)
+        self.assertEqual(activated[0].title, "Tammy OpenClaw")
+        self.assertEqual(
+            activated[0].summary,
+            "Logical profile updated after activation.",
+        )
         self.assertEqual(activated[0].avatar_kind, "attachment")
         self.assertEqual(
             activated[0].avatar_value,
@@ -4093,6 +4131,26 @@ class AgentReadTests(unittest.TestCase):
                 self.assertEqual(len(read.issues), 1)
                 self.assertEqual(read.issues[0].category, "openclaw_activation")
 
+    def test_metadata_tampering_without_a_matching_page_hash_suppresses_all_oc_profiles(
+        self,
+    ) -> None:
+        for field in ("title", "compiled_truth"):
+            with self.subTest(field=field):
+                projection = activated_openclaw_projection()
+                projection["profiles"][0]["metadata"][field] = "tampered"
+                pages, links = openclaw_anchor_fixture()
+
+                read = GBrainAdapter(
+                    ActivatedOpenClawRunner(pages, links),
+                    openclaw_profiles=StaticOpenClawProfiles(projection),
+                ).list_agent_profiles()
+
+                self.assertFalse(
+                    any(profile.runtime == "openclaw" for profile in read.agents)
+                )
+                self.assertEqual(len(read.issues), 1)
+                self.assertEqual(read.issues[0].category, "openclaw_activation")
+
     def test_one_logical_anchor_read_failure_suppresses_all_oc_profiles(self) -> None:
         pages, links = openclaw_anchor_fixture()
 
@@ -4165,6 +4223,41 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
             },
         ]
         return Task.from_page(page, edges=links), page, links
+
+    @classmethod
+    def _adapter_with_task(
+        cls, *, status: str = "planned"
+    ) -> tuple[GBrainAdapter, ActivatedOpenClawRunner, Task]:
+        task, page, task_links = cls._task_fixture(status=status)
+        pages, links = openclaw_anchor_fixture(
+            extra_pages={task.slug: page},
+            extra_links=task_links,
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        return (
+            GBrainAdapter(
+                runner,
+                openclaw_profiles=StaticOpenClawProfiles(
+                    activated_openclaw_projection()
+                ),
+            ),
+            runner,
+            task,
+        )
+
+    @staticmethod
+    def _tamper_tammy_task_anchor(runner: ActivatedOpenClawRunner) -> None:
+        runner.pages["collections/tammy-oc-tasks"]["frontmatter"]["agent"] = (
+            "agents/timmy-oc"
+        )
+
+    @staticmethod
+    def _mutation_calls(runner: ActivatedOpenClawRunner) -> list[tuple[str, dict]]:
+        return [
+            call
+            for call in runner.calls
+            if call[0] in {"put_page", "add_link", "remove_link", "delete_page"}
+        ]
 
     def test_create_edit_status_and_todo_use_only_stable_logical_slugs(self) -> None:
         pages, links = openclaw_anchor_fixture()
@@ -4303,7 +4396,221 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
 
         self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
 
-    def test_oc_artifact_uses_authenticated_logical_identity_and_delegation_ref(
+    def test_reassignment_validates_current_and_target_oc_anchors_before_any_write(
+        self,
+    ) -> None:
+        adapter, runner, task = self._adapter_with_task()
+        runner.pages["collections/timmy-oc-tasks"]["frontmatter"]["agent"] = (
+            "agents/tammy-oc"
+        )
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            adapter.edit_task(
+                task.slug,
+                title=task.title,
+                detail=task.detail,
+                priority=task.priority,
+                due_day=task.due_day,
+                next_action=task.next_action,
+                project_slug=task.project,
+                goal_slug=task.goal,
+                status=task.status,
+                assignee_slug="agents/timmy-oc",
+                progress_metric=task.progress_metric,
+                event_progress=task.event_progress,
+                handoff_reason="Move to Timmy.",
+                now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+            )
+
+        self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_tampered_oc_anchor_blocks_every_todo_mutation_before_any_write(self) -> None:
+        now = datetime.fromisoformat("2026-08-08T10:05:00-07:00")
+        for operation in ("create", "edit", "comment", "status"):
+            with self.subTest(operation=operation):
+                adapter, runner, task = self._adapter_with_task()
+                todo = None
+                if operation != "create":
+                    todo = adapter.create_todo(
+                        task.slug,
+                        text="Verify the logical anchor",
+                        detail="",
+                        kind="action",
+                        actor="agents/tammy-oc",
+                        source="agent",
+                        idempotency_key=f"setup-{operation}",
+                        now=now,
+                    ).todo
+                self._tamper_tammy_task_anchor(runner)
+                runner.calls.clear()
+
+                with self.assertRaisesRegex(
+                    GBrainProtocolError, "logical task collection"
+                ):
+                    if operation == "create":
+                        adapter.create_todo(
+                            task.slug,
+                            text="Must not be written",
+                            detail="",
+                            kind="action",
+                            actor="agents/tammy-oc",
+                            source="agent",
+                            idempotency_key="tampered-create",
+                            now=now,
+                        )
+                    elif operation == "edit":
+                        assert todo is not None
+                        adapter.edit_todo(
+                            todo.slug,
+                            text="Must not be edited",
+                            detail="",
+                            expected_updated_at=todo.updated_at,
+                            actor="agents/tammy-oc",
+                            source="agent",
+                            idempotency_key="tampered-edit",
+                            now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+                        )
+                    elif operation == "comment":
+                        assert todo is not None
+                        adapter.add_todo_comment(
+                            todo.slug,
+                            body="Must not be appended",
+                            expected_updated_at=todo.updated_at,
+                            author="agents/tammy-oc",
+                            source="agent",
+                            idempotency_key="tampered-comment",
+                            now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+                        )
+                    else:
+                        assert todo is not None
+                        adapter.set_todo_status(
+                            todo.slug,
+                            status="done",
+                            expected_updated_at=todo.updated_at,
+                            actor="agents/tammy-oc",
+                            source="agent",
+                            idempotency_key="tampered-status",
+                            now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+                        )
+
+                self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_tampered_oc_anchor_blocks_handoff_request_before_any_write(self) -> None:
+        adapter, runner, task = self._adapter_with_task()
+        self._tamper_tammy_task_anchor(runner)
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            adapter.request_agent_input(
+                task.slug,
+                question="Which release window?",
+                question_detail="Choose one.",
+                resume_action="Ship the release.",
+                agent_slug="agents/tammy-oc",
+                idempotency_key="tampered-request",
+                now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+            )
+
+        self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_tampered_oc_anchor_blocks_answer_before_any_write(self) -> None:
+        adapter, runner, task = self._adapter_with_task()
+        todo = adapter.request_agent_input(
+            task.slug,
+            question="Which release window?",
+            question_detail="Choose one.",
+            resume_action="Ship the release.",
+            agent_slug="agents/tammy-oc",
+            idempotency_key="answer-setup",
+            now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+        ).todo
+        self._tamper_tammy_task_anchor(runner)
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            adapter.answer_agent_question(
+                todo.slug,
+                answer="17:00.",
+                expected_updated_at=todo.updated_at,
+                actor="people/tony-guan",
+                source="mission_control",
+                idempotency_key="tampered-answer",
+                now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+            )
+
+        self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_tampered_oc_anchor_blocks_acknowledgement_before_any_write(self) -> None:
+        adapter, runner, task = self._adapter_with_task()
+        todo = adapter.request_agent_input(
+            task.slug,
+            question="Which release window?",
+            question_detail="Choose one.",
+            resume_action="Ship the release.",
+            agent_slug="agents/tammy-oc",
+            idempotency_key="ack-setup",
+            now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+        ).todo
+        adapter.answer_agent_question(
+            todo.slug,
+            answer="17:00.",
+            expected_updated_at=todo.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="ack-answer-setup",
+            now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+        )
+        self._tamper_tammy_task_anchor(runner)
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            adapter.acknowledge_agent_handoff(
+                task.slug,
+                actor="agents/tammy-oc",
+                now=datetime.fromisoformat("2026-08-08T10:07:00-07:00"),
+            )
+
+        self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_tampered_oc_anchor_blocks_handoff_repair_before_any_write(self) -> None:
+        adapter, runner, task = self._adapter_with_task()
+        todo = adapter.create_todo(
+            task.slug,
+            text="Tony supplied the release window",
+            detail="17:00.",
+            kind="action",
+            actor="agents/tammy-oc",
+            source="agent",
+            idempotency_key="repair-setup",
+            now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+        ).todo
+        todo = adapter.set_todo_status(
+            todo.slug,
+            status="done",
+            expected_updated_at=todo.updated_at,
+            actor="agents/tammy-oc",
+            source="agent",
+            idempotency_key="repair-done-setup",
+            now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+        ).todo
+        self._tamper_tammy_task_anchor(runner)
+        runner.calls.clear()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            adapter.repair_answered_agent_handoff(
+                task.slug,
+                question_todo_slug=todo.slug,
+                expected_answer="17:00.",
+                resume_action="Ship the release.",
+                agent_slug="agents/tammy-oc",
+                idempotency_key="tampered-repair",
+                now=datetime.fromisoformat("2026-08-08T10:07:00-07:00"),
+            )
+
+        self.assertEqual(self._mutation_calls(runner), [])
+
+    def test_oc_artifact_rejects_unverified_delegation_claim_before_runner_call(
         self,
     ) -> None:
         task, page, task_links = self._task_fixture(status="active")
@@ -4326,40 +4633,18 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
             now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
         )
 
-        receipt = adapter.create_agent_artifact(
-            artifact,
-            executing_agent="agents/tammy-oc",
-            idempotency_key="oc-delegated-artifact",
-        )
-
-        self.assertTrue(receipt.verified)
-        self.assertEqual(receipt.artifact.created_by, "agents/tammy-oc")
-        self.assertEqual(
-            receipt.artifact.agent_collection,
-            "collections/tammy-oc-artifacts",
-        )
-        self.assertEqual(receipt.artifact.delegation_ref, artifact.delegation_ref)
-        self.assertGreater(profiles.calls, 0)
-        artifact_writes = [
-            params["slug"]
-            for tool, params in runner.calls
-            if tool == "put_page" and str(params.get("slug", "")).startswith("artifacts/")
-        ]
-        self.assertEqual(artifact_writes, [artifact.slug])
-        self.assertIn(
-            (artifact.slug, "agents/tammy-oc", "created_by"),
-            {
-                (edge["from_slug"], edge["to_slug"], edge["link_type"])
-                for edge in runner.links
-            },
-        )
-        self.assertFalse(
-            any(
-                "system/openclaw-profile-staging/" in json.dumps(params)
-                for tool, params in runner.calls
-                if tool in {"put_page", "add_link", "remove_link"}
+        with self.assertRaisesRegex(
+            domain.DomainValidationError,
+            "delegation_ref.*unsupported.*verified delegation claim",
+        ):
+            adapter.create_agent_artifact(
+                artifact,
+                executing_agent="agents/tammy-oc",
+                idempotency_key="oc-delegated-artifact",
             )
-        )
+
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(profiles.calls, 0)
 
     def test_cross_identity_oc_artifact_rejected_before_runner_call(self) -> None:
         task, _page, _task_links = self._task_fixture(status="active")

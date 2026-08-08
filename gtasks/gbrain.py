@@ -132,6 +132,12 @@ def _openclaw_active_manifest_identity_is_valid(
     )
 
 
+def _canonical_json_digest(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class GBrainError(RuntimeError):
     """Base error for GBrain command, protocol, and verification failures."""
 
@@ -3133,6 +3139,10 @@ class GBrainAdapter:
             raise DomainValidationError(
                 "Artifact publisher identity does not match its installed execution contract"
             )
+        if artifact.delegation_ref is not None:
+            raise DomainValidationError(
+                "delegation_ref is unsupported until a verified delegation claim model is available"
+            )
         if idempotency_key is not None and (
             not isinstance(idempotency_key, str)
             or not idempotency_key.strip()
@@ -4256,6 +4266,12 @@ class GBrainAdapter:
                     "OpenClaw active profile manifest has an invalid approved identity mapping"
                 )
             metadata_frontmatter = metadata.get("frontmatter")
+            try:
+                metadata_digest = _canonical_json_digest(metadata)
+            except (TypeError, ValueError) as exc:
+                raise GBrainProtocolError(
+                    "OpenClaw active profile metadata was not canonical JSON"
+                ) from exc
             if (
                 metadata.get("slug") != staged_agent
                 or metadata.get("type") != "agent"
@@ -4270,6 +4286,10 @@ class GBrainAdapter:
                 != operation_id
                 or metadata_frontmatter.get("canonical_slug") != canonical
                 or metadata_frontmatter.get("staged") is not True
+                or not hmac.compare_digest(
+                    metadata_digest,
+                    str(page_hashes[staged_agent]),
+                )
             ):
                 raise GBrainProtocolError(
                     "OpenClaw active profile metadata was not bound to its approved declaration"
@@ -4311,10 +4331,8 @@ class GBrainAdapter:
             raise GBrainProtocolError(
                 f"{canonical_slug} is not a canonical logical OpenClaw Agent anchor"
             )
-        metadata_page = deepcopy(dict(activation["metadata"]))
-        metadata_page["slug"] = canonical_slug
         profile = AgentProfile.from_page(
-            metadata_page,
+            logical_page,
             work_root=str(activation["canonical_task_collection"]),
             edges=logical_edges,
         )
@@ -4353,12 +4371,14 @@ class GBrainAdapter:
             raise GBrainProtocolError(
                 f"{collection_slug} logical task collection links were not a list"
             )
-        for_agent = [
-            edge.get("to_slug")
+        exact_for_agent = [
+            edge
             for edge in links
             if isinstance(edge, Mapping)
             and edge.get("from_slug") == collection_slug
+            and edge.get("to_slug") == agent_slug
             and edge.get("link_type") == "for_agent"
+            and edge.get("context") == "Logical OpenClaw task scope."
         ]
         if (
             not isinstance(page, Mapping)
@@ -4369,7 +4389,8 @@ class GBrainAdapter:
             != "mission_control_agent_tasks"
             or frontmatter.get("agent") != agent_slug
             or frontmatter.get("logical_anchor") is not True
-            or for_agent != [agent_slug]
+            or len(links) != 1
+            or len(exact_for_agent) != 1
         ):
             raise GBrainProtocolError(
                 f"{collection_slug} is not the verified logical task collection for {agent_slug}"
@@ -4407,6 +4428,14 @@ class GBrainAdapter:
             )
         self._openclaw_profile_from_activation(activation)
         self._verify_openclaw_task_anchor(activation)
+
+    def _require_openclaw_assignment_target(self, agent_slug: str) -> str | None:
+        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) != "openclaw":
+            return None
+        activation = self._active_openclaw_activation(agent_slug)
+        self._openclaw_profile_from_activation(activation)
+        self._verify_openclaw_task_anchor(activation)
+        return str(activation["canonical_task_collection"])
 
     def list_agent_profiles(self) -> AgentRead:
         def read_agent(
@@ -6660,6 +6689,7 @@ class GBrainAdapter:
             )
         task = Task.from_page(raw_page, edges=raw_links)
         self._require_task_openclaw_activation(task)
+        self._require_openclaw_assignment_target(assignee_slug)
         if status not in EDITABLE_TASK_STATUSES | {"proposed"}:
             raise ValueError("task status is not supported")
         if task.status == "proposed" and status == "proposed" and assignee_slug != (task.owner_agent or "tony"):
@@ -6759,16 +6789,19 @@ class GBrainAdapter:
         if not isinstance(page, Mapping) or not isinstance(links, list):
             raise GBrainProtocolError("task reassignment snapshot was not structured")
         task = Task.from_page(page, edges=links)
+        self._require_task_openclaw_activation(task)
         old_owner = task.owner_agent or "tony"
         old_root = task.lifecycle_root
-        target_root = (
-            ACTIVE_ROOT
-            if assignee_slug == "tony"
-            else {
+        target_openclaw_root = self._require_openclaw_assignment_target(assignee_slug)
+        if assignee_slug == "tony":
+            target_root = ACTIVE_ROOT
+        elif target_openclaw_root is not None:
+            target_root = target_openclaw_root
+        else:
+            target_root = {
                 agent.slug: agent.work_root
                 for agent in self.list_agent_profiles().agents
             }[assignee_slug]
-        )
         frontmatter = deepcopy(dict(page.get("frontmatter") or {}))
         raw_frontmatter_links = frontmatter.get("links")
         if not isinstance(raw_frontmatter_links, list):
@@ -8266,6 +8299,7 @@ class GBrainAdapter:
         event_type: str = "created",
         sync_projection: bool = True,
     ) -> TodoMutationReceipt:
+        self._require_task_openclaw_activation(task)
         normalized_text, normalized_detail = self._normalize_todo_text(text, detail)
         key = self._normalize_idempotency_key(idempotency_key)
         self._validate_todo_timestamp(created_at, "todo created_at")
@@ -8491,6 +8525,7 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("handoff task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
+        self._require_task_openclaw_activation(task)
         if task.owner_agent != agent_slug:
             raise ValueError("question Agent must match the task's assigned Agent")
         if task.status in {"proposed", "completed", "cancelled"}:
@@ -8638,6 +8673,7 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("answer handoff task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
+        self._require_task_openclaw_activation(task)
         if task.handoff is None or task.handoff.question_todo != todo.slug:
             raise ValueError("TODO is not the task's current blocking question")
         comment_slug = self._todo_identity("todo-comments", todo.slug, key)
@@ -8824,6 +8860,7 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_links, list):
             raise GBrainProtocolError("handoff acknowledgement snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_links)
+        self._require_task_openclaw_activation(task)
         if task.owner_agent != actor:
             raise ValueError("handoff acknowledgement actor must be the assigned Agent")
         if task.handoff is None:
@@ -8915,6 +8952,7 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("handoff repair task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
+        self._require_task_openclaw_activation(task)
         if todo.parent_task != task.slug:
             raise ValueError("legacy question TODO does not belong to the task")
         if task.owner_agent != agent_slug:

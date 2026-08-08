@@ -1698,21 +1698,7 @@ class AgentArtifactContractTests(unittest.TestCase):
         self.assertEqual(artifact.agent_collection, "collections/toddys-artifacts")
         self.assertEqual(artifact.attachments, ("/media/artifacts/brief.png",))
 
-    def test_agent_artifact_preserves_only_a_canonical_delegation_reference(self) -> None:
-        reference = "agent-delegations/22222222-2222-4222-8222-222222222222"
-        artifact = domain.new_agent_artifact(
-            title="Delegated OpenClaw evidence",
-            artifact_kind="markdown",
-            created_by="agents/tammy-oc",
-            produced_for="tasks/561640dd-8e34-43e1-a03e-e3f3f270033d",
-            markdown="# Evidence",
-            delegation_ref=reference,
-            now=datetime(2026, 8, 8, 17, tzinfo=timezone.utc),
-        )
-
-        self.assertEqual(artifact.delegation_ref, reference)
-        self.assertEqual(artifact.to_dict()["delegation_ref"], reference)
-
+    def test_delegation_reference_shape_parser_rejects_noncanonical_values(self) -> None:
         for invalid in (
             "delegation-secret-token",
             "agent-delegations/title-derived",

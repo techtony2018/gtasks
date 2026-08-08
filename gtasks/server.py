@@ -2284,6 +2284,18 @@ def _handler_class(
                             },
                         )
                         return
+                    if payload.get("delegation_ref") is not None:
+                        self._json(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            {
+                                "error": (
+                                    "delegation_ref is unsupported until a verified "
+                                    "delegation claim model is available"
+                                ),
+                                "code": "unsupported_delegation_claim",
+                            },
+                        )
+                        return
                     artifact = new_agent_artifact(
                         title=payload["title"],
                         artifact_kind=payload["artifact_kind"],

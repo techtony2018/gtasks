@@ -144,3 +144,73 @@ behavior were intentionally not exercised. The integration contract was checked
 against the reviewed Memory Stargraph protocol source and tested with exact local
 projection/anchor fakes. A live operational canary remains a separately
 authorized step.
+
+## Reviewer remediation (2026-08-08)
+
+This section supersedes the earlier mutable-profile and delegation-provenance
+statements. Review found that several handoff paths validated the OC anchor only
+after their first write, reassignment did not preflight the target OC task root,
+generation metadata was not bound to its advertised hash, and an arbitrary
+well-shaped delegation UUID was treated as verified provenance.
+
+The remediation is split across the two repositories as required:
+
+- Memory Stargraph commit `76ad58f` changes logical-anchor page hashing to the
+  identity-invariant fields and keeps only the declared `for_agent`/`part_of`
+  relationships invariant. Later logical Agent title/avatar changes and valid
+  `default_agent_for` Goal edges survive active-projection revalidation, while
+  runtime/collection identity changes and undeclared relationships still fail.
+- GTasks now recomputes Memory Stargraph's canonical JSON SHA-256 for each
+  generation Agent metadata page and compares it with the advertised staged-page
+  hash. A title or compiled-summary change without a matching hash suppresses the
+  entire OC roster.
+- OC presentation fields and default Goals now come from the current logical
+  Agent page and its edges. Immutable generation metadata authorizes activation
+  but cannot override the logical title, summary, avatar, or Goal assignments.
+- Full edit/reassignment validates both the current OC owner and any target OC
+  activation plus exact logical task anchor before the first page or link write.
+- TODO creation/edit/comment/status and handoff request/answer/acknowledgement/
+  legacy-answer repair all preflight the owning OC task and exact logical root
+  before their first mutation. Failure-injection tests assert an empty runner
+  mutation log for every path.
+- `delegation_ref` remains only a bounded domain shape for possible future use.
+  Every non-null publication claim is rejected before runner/adapter mutation
+  with an explicit unsupported-until-verified-claim error; cross-identity auth
+  still fails first.
+- The local provider fixture now reproduces Memory Stargraph's exact staged Agent,
+  task collection, and Artifact collection pages and canonical JSON hashes rather
+  than placeholder hashes or invented presentation metadata.
+
+Failure-first evidence observed before the remediation:
+
+```text
+selected reviewer reproductions:
+Ran 9 tests
+FAILED (failures=5, errors=5)
+
+Observed failures included post-write PartialMutationError rollbacks for request,
+answer, acknowledgement, and repair; accepted target-root tampering; visible
+metadata with a stale hash; generation-avatar override; and successful delegated
+Artifact publication.
+```
+
+Fresh verification after the remediation:
+
+```text
+Memory Stargraph:
+python3 -m unittest discover -s tests
+Ran 482 tests in 6.080s
+OK
+
+GTasks focused remediation and adjacent regression coverage:
+Ran 87 tests in 11.130s
+OK
+
+GTasks full suite:
+python3 -m unittest discover -s tests
+Ran 805 tests in 82.044s
+OK (skipped=5)
+```
+
+No live NATS/GBrain activation, canonical graph mutation, service restart,
+dashboard deploy, or external publication was performed during remediation.
