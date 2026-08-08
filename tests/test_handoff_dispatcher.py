@@ -15,11 +15,13 @@ from gtasks.handoff_dispatcher import (
     ActionableChange,
     AgentRegistration,
     DurableHandoffStore,
+    ExecutionClaim,
     HandoffClassifier,
     HandoffDispatcher,
     HandoffGuardian,
     LocalAgentDispatcher,
 )
+from gtasks.delegation import AgentDelegationLease, DelegationState
 from gtasks.gbrain import CanonicalHandoffEventBridge
 
 
@@ -27,6 +29,9 @@ NOW = datetime(2026, 8, 4, 17, 0, tzinfo=timezone.utc)
 TASK = "tasks/11111111-1111-4111-8111-111111111111"
 AGENT = "agents/tammy"
 REGISTRATION_ID = "private-registration-tammy"
+OC_AGENT = "agents/tammy-oc"
+OC_REGISTRATION_ID = "private-registration-tammy-oc"
+DELEGATION_SLUG = "agent-delegations/22222222-2222-4222-8222-222222222222"
 
 
 def registration(**overrides: object) -> AgentRegistration:
@@ -38,6 +43,35 @@ def registration(**overrides: object) -> AgentRegistration:
     }
     values.update(overrides)
     return AgentRegistration(**values)
+
+
+def oc_registration(**overrides: object) -> AgentRegistration:
+    values: dict[str, object] = {
+        "registration_id": OC_REGISTRATION_ID,
+        "agent_slug": OC_AGENT,
+        "route": "hosts/tammy",
+        "verified": True,
+    }
+    values.update(overrides)
+    return AgentRegistration(**values)
+
+
+def delegation(**overrides: object) -> AgentDelegationLease:
+    values: dict[str, object] = {
+        "slug": DELEGATION_SLUG,
+        "source_agent": AGENT,
+        "executor_agent": OC_AGENT,
+        "authorized_by": "people/tony-guan",
+        "starts_at": NOW - timedelta(minutes=15),
+        "ends_at": NOW + timedelta(minutes=45),
+        "display_timezone": "America/Los_Angeles",
+        "allowed_operations": ("task_status", "todo", "comment", "artifact"),
+        "state": DelegationState.ACTIVE,
+        "created_at": NOW - timedelta(minutes=20),
+        "updated_at": NOW - timedelta(minutes=20),
+    }
+    values.update(overrides)
+    return AgentDelegationLease(**values)
 
 
 def change(**overrides: object) -> ActionableChange:
@@ -52,6 +86,8 @@ def change(**overrides: object) -> ActionableChange:
         "occurred_at": NOW,
         "correlation_id": "correlation-100",
         "blocker": None,
+        "task_status": "planned",
+        "requested_operation": "todo",
     }
     values.update(overrides)
     return ActionableChange(**values)
@@ -157,6 +193,628 @@ class HandoffClassifierTests(unittest.TestCase):
 
         self.assertFalse(result.actionable)
         self.assertEqual(result.reason, "multiple_registrations")
+
+
+class HandoffDispatcherTests(unittest.TestCase):
+    def setUp(self) -> None:
+        handle, self.path = tempfile.mkstemp(
+            prefix="handoff-execution-claim-", suffix=".sqlite3"
+        )
+        os.close(handle)
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+
+    def tearDown(self) -> None:
+        self.store.close()
+        os.unlink(self.path)
+
+    def dispatcher(
+        self,
+        *,
+        leases: tuple[AgentDelegationLease, ...] = (),
+        owned_work_ready=lambda _executor: False,
+        registrations: tuple[AgentRegistration, ...] | None = None,
+    ) -> HandoffDispatcher:
+        return HandoffDispatcher(
+            self.store,
+            registrations=registrations or (registration(), oc_registration()),
+            delegations=leases,
+            owned_work_ready=owned_work_ready,
+        )
+
+    @staticmethod
+    def task(index: int) -> str:
+        return f"tasks/{index:08d}-1111-4111-8111-{index:012d}"
+
+    def test_owned_openclaw_work_routes_directly_with_a_task_claim(self) -> None:
+        actionable = change(
+            assigned_to=(OC_AGENT,),
+            canonical_event_id="events/owned-oc",
+            correlation_id="correlation-owned-oc",
+        )
+
+        record = self.dispatcher().record(actionable, now=NOW)
+        claim = self.store.get_execution_claim(TASK)
+
+        self.assertEqual(actionable.assigned_to, (OC_AGENT,))
+        self.assertEqual(record.agent_slug, OC_AGENT)
+        self.assertEqual(record.executor_agent, OC_AGENT)
+        self.assertEqual(record.permanent_owner, OC_AGENT)
+        self.assertIsNone(record.delegation_slug)
+        self.assertIsInstance(claim, ExecutionClaim)
+        self.assertEqual(claim.executor_agent, OC_AGENT)
+        self.assertEqual(claim.permanent_owner, OC_AGENT)
+        self.assertIsNone(claim.delegation_slug)
+        self.assertIsNone(
+            self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        )
+        self.assertEqual(
+            self.store.claim(OC_REGISTRATION_ID, now=NOW, lease_seconds=30).task_slug,
+            TASK,
+        )
+
+    def test_active_verified_lease_routes_without_rewriting_permanent_owner(self) -> None:
+        active = delegation()
+        actionable = change(canonical_event_id="events/delegated-active")
+
+        record = self.dispatcher(leases=(active,)).record(actionable, now=NOW)
+        claim = self.store.get_execution_claim(TASK)
+
+        self.assertEqual(actionable.assigned_to, (AGENT,))
+        self.assertEqual(record.agent_slug, OC_AGENT)
+        self.assertEqual(record.executor_agent, OC_AGENT)
+        self.assertEqual(record.permanent_owner, AGENT)
+        self.assertEqual(record.delegation_slug, active.slug)
+        self.assertEqual(claim.delegation_slug, active.slug)
+        self.assertEqual(claim.expires_at, active.ends_at)
+        self.assertIsNone(
+            self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        )
+        self.assertEqual(
+            self.store.claim(OC_REGISTRATION_ID, now=NOW, lease_seconds=30).task_slug,
+            TASK,
+        )
+
+    def test_nonactive_lease_routes_to_the_permanent_owner(self) -> None:
+        scheduled = delegation(
+            starts_at=NOW + timedelta(minutes=15),
+            ends_at=NOW + timedelta(minutes=45),
+            state=DelegationState.SCHEDULED,
+        )
+
+        record = self.dispatcher(leases=(scheduled,)).record(
+            change(canonical_event_id="events/scheduled-delegation"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+
+        self.assertEqual(record.executor_agent, AGENT)
+        self.assertEqual(record.permanent_owner, AGENT)
+        self.assertIsNone(record.delegation_slug)
+        self.assertEqual(claim.executor_agent, AGENT)
+        self.assertIsNone(claim.delegation_slug)
+
+    def test_missing_canonical_task_status_fails_closed_to_permanent_owner(self) -> None:
+        actionable = ActionableChange(
+            task_slug=TASK,
+            canonical_event_id="events/missing-task-status",
+            canonical_version="42",
+            trigger="answer_received",
+            assigned_to=(AGENT,),
+            route="hosts/tammy",
+            summary="A verified answer is ready.",
+            occurred_at=NOW,
+            correlation_id="correlation-missing-task-status",
+        )
+
+        record = self.dispatcher(leases=(delegation(),)).record(
+            actionable,
+            now=NOW,
+        )
+
+        self.assertEqual(record.executor_agent, AGENT)
+        self.assertIsNone(record.delegation_slug)
+
+    def test_store_api_cannot_claim_a_suppressed_handoff(self) -> None:
+        record = self.dispatcher().record(
+            change(
+                canonical_event_id="events/suppressed-claim",
+                trigger="presentation_only",
+            ),
+            now=NOW,
+        )
+
+        claim = self.store.claim_execution(
+            record.handoff_id,
+            permanent_owner=AGENT,
+            executor_agent=AGENT,
+            delegation=None,
+            task_status="planned",
+            requested_operation="todo",
+            owned_work_ready=False,
+            now=NOW,
+        )
+
+        self.assertEqual(record.status, "suppressed")
+        self.assertIsNone(claim)
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+    def test_owned_openclaw_work_and_active_codex_work_prevent_delegation(self) -> None:
+        active = delegation()
+        cases = (
+            (
+                "owned-priority",
+                change(canonical_event_id="events/owned-priority"),
+                lambda executor: executor == OC_AGENT,
+            ),
+            (
+                "active-codex",
+                change(
+                    canonical_event_id="events/active-codex",
+                    task_status="active",
+                ),
+                lambda _executor: False,
+            ),
+        )
+        for label, actionable, ready in cases:
+            with self.subTest(label=label):
+                path = self.path if label == "owned-priority" else self.path + ".active"
+                if label == "active-codex":
+                    store = DurableHandoffStore(path, retention_days=30)
+                else:
+                    store = self.store
+                try:
+                    dispatcher = HandoffDispatcher(
+                        store,
+                        registrations=(registration(), oc_registration()),
+                        delegations=(active,),
+                        owned_work_ready=ready,
+                    )
+                    record = dispatcher.record(actionable, now=NOW)
+                    claim = store.get_execution_claim(TASK)
+                    self.assertEqual(record.executor_agent, AGENT)
+                    self.assertIsNone(record.delegation_slug)
+                    self.assertEqual(claim.executor_agent, AGENT)
+                    self.assertIsNone(claim.delegation_slug)
+                finally:
+                    if label == "active-codex":
+                        store.close()
+                        os.unlink(path)
+
+    def test_two_executors_cannot_claim_the_same_task(self) -> None:
+        other_store = DurableHandoffStore(self.path, retention_days=30)
+        direct = HandoffDispatcher(
+            self.store,
+            registrations=(registration(), oc_registration()),
+            delegations=(),
+        )
+        delegated = HandoffDispatcher(
+            other_store,
+            registrations=(registration(), oc_registration()),
+            delegations=(delegation(),),
+        )
+        barrier = threading.Barrier(2)
+
+        def record_once(item: tuple[HandoffDispatcher, ActionableChange]):
+            dispatcher, actionable = item
+            barrier.wait()
+            return dispatcher.record(actionable, now=NOW)
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                records = list(
+                    executor.map(
+                        record_once,
+                        (
+                            (
+                                direct,
+                                change(
+                                    canonical_event_id="events/direct-race",
+                                    correlation_id="correlation-direct-race",
+                                ),
+                            ),
+                            (
+                                delegated,
+                                change(
+                                    canonical_event_id="events/delegated-race",
+                                    correlation_id="correlation-delegated-race",
+                                ),
+                            ),
+                        ),
+                    )
+                )
+            winner = self.store.get_execution_claim(TASK)
+            self.assertIn(winner.executor_agent, {AGENT, OC_AGENT})
+            self.assertEqual(
+                sorted(record.status for record in records),
+                ["queued", "suppressed"],
+            )
+            claimed = self.store.query_events(
+                limit=50,
+                after_sequence=0,
+                event_type="execution_claimed",
+            )
+            self.assertEqual(claimed.total, 1)
+        finally:
+            other_store.close()
+
+    def test_restart_replay_reuses_claim_and_never_wakes_twice(self) -> None:
+        active = delegation()
+        dispatcher = self.dispatcher(leases=(active,))
+        actionable = change(canonical_event_id="events/restart-replay")
+        dispatcher.record(actionable, now=NOW)
+        before = self.store.get_execution_claim(TASK)
+        wake_count = 0
+
+        def wake(_record) -> bool:
+            nonlocal wake_count
+            wake_count += 1
+            return True
+
+        local = LocalAgentDispatcher(
+            self.store,
+            registration_id=OC_REGISTRATION_ID,
+            verify_route=lambda record: record.executor_agent == OC_AGENT,
+            wake=wake,
+        )
+        self.assertEqual(local.run_once(now=NOW).status, "received")
+
+        self.store.close()
+        self.store = DurableHandoffStore(self.path, retention_days=30)
+        replay_dispatcher = self.dispatcher(leases=(active,))
+        replay = replay_dispatcher.record(actionable, now=NOW + timedelta(seconds=1))
+        after = self.store.get_execution_claim(TASK)
+        recovered_local = LocalAgentDispatcher(
+            self.store,
+            registration_id=OC_REGISTRATION_ID,
+            verify_route=lambda record: record.executor_agent == OC_AGENT,
+            wake=wake,
+        )
+
+        self.assertEqual(replay.status, "received")
+        self.assertEqual(before, after)
+        self.assertIsNone(recovered_local.run_once(now=NOW + timedelta(seconds=1)))
+        self.assertEqual(wake_count, 1)
+        self.assertEqual(
+            self.store.query_events(
+                limit=50,
+                after_sequence=0,
+                event_type="execution_claimed",
+            ).total,
+            1,
+        )
+
+    def test_expiry_stops_new_delegated_claims_but_inflight_can_checkpoint(self) -> None:
+        active = delegation()
+        dispatcher = self.dispatcher(leases=(active,))
+        first = dispatcher.record(
+            change(canonical_event_id="events/inflight-before-expiry"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        expired_attempt = dispatcher.record(
+            change(
+                canonical_event_id="events/new-at-expiry",
+                canonical_version="43",
+                correlation_id="correlation-new-at-expiry",
+            ),
+            now=active.ends_at,
+        )
+
+        self.assertEqual(first.executor_agent, OC_AGENT)
+        self.assertEqual(expired_attempt.executor_agent, AGENT)
+        self.assertEqual(expired_attempt.status, "suppressed")
+        self.assertIsNone(
+            self.store.claim(
+                OC_REGISTRATION_ID,
+                now=active.ends_at,
+                lease_seconds=30,
+            )
+        )
+        event = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="checkpointed",
+            mutation_id="mutation-checkpoint-after-expiry",
+            now=active.ends_at,
+        )
+        replay = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="checkpointed",
+            mutation_id="mutation-checkpoint-after-expiry",
+            now=active.ends_at + timedelta(seconds=1),
+        )
+
+        self.assertEqual(event.event_id, replay.event_id)
+        self.assertEqual(event.event_type, "delegated_execution_handed_back")
+        self.assertEqual(event.execution_state, "checkpointed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+        self.assertEqual(
+            self.store.get_execution_claim(TASK, include_terminal=True), claim
+        )
+
+    def test_expired_inflight_delivery_can_only_checkpoint_and_hand_back(self) -> None:
+        active = delegation()
+        self.dispatcher(leases=(active,)).record(
+            change(canonical_event_id="events/inflight-expiry-fence"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID,
+            now=NOW,
+            lease_seconds=30,
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "actively_executing",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-started-before-expiry",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        with self.assertRaisesRegex(ValueError, "checkpoint and hand back"):
+            self.store.acknowledge(
+                delivery.handoff_id,
+                "completed",
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                mutation_id="mutation-completed-after-expiry",
+                now=active.ends_at,
+            )
+
+        checkpoint = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="checkpointed",
+            mutation_id="mutation-checkpoint-inflight-after-expiry",
+            now=active.ends_at,
+        )
+        self.assertEqual(checkpoint.execution_state, "checkpointed")
+        self.assertEqual(self.store.get(delivery.handoff_id).status, "suppressed")
+
+    def test_completion_and_revocation_emit_exact_handback_evidence(self) -> None:
+        active = delegation()
+        for index, terminal_state in enumerate(("completed", "revoked"), start=10):
+            with self.subTest(terminal_state=terminal_state):
+                task_slug = self.task(index)
+                record = self.dispatcher(leases=(active,)).record(
+                    change(
+                        task_slug=task_slug,
+                        canonical_event_id=f"events/{terminal_state}",
+                        correlation_id=f"correlation-{terminal_state}",
+                    ),
+                    now=NOW,
+                )
+                claim = self.store.get_execution_claim(task_slug)
+                event = self.store.release_execution_claim(
+                    task_slug,
+                    executor_agent=OC_AGENT,
+                    idempotency_key=claim.idempotency_key,
+                    terminal_state=terminal_state,
+                    mutation_id=f"mutation-handback-{terminal_state}",
+                    now=NOW + timedelta(seconds=index),
+                )
+
+                self.assertEqual(event.handoff_id, record.handoff_id)
+                self.assertEqual(event.permanent_owner, AGENT)
+                self.assertEqual(event.executor_agent, OC_AGENT)
+                self.assertEqual(event.delegation_slug, active.slug)
+                self.assertEqual(event.correlation_id, f"correlation-{terminal_state}")
+                self.assertEqual(event.idempotency_key, claim.idempotency_key)
+                self.assertEqual(event.execution_state, terminal_state)
+
+    def test_completed_acknowledgement_releases_the_execution_fence(self) -> None:
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id="events/completed-ack-release"),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID,
+            now=NOW,
+            lease_seconds=30,
+        )
+
+        completed = self.store.acknowledge(
+            delivery.handoff_id,
+            "completed",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-completed-ack-release",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.assertEqual(completed.status, "completed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+        handback = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="delegated_execution_handed_back",
+        )
+        self.assertEqual(handback.total, 1)
+        self.assertEqual(handback.events[0].execution_state, "completed")
+
+    def test_revocation_cancels_pending_wake_and_old_release_replays_exactly(self) -> None:
+        active = delegation()
+        self.dispatcher(leases=(active,)).record(
+            change(canonical_event_id="events/revoke-before-wake"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        released = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-revoke-before-wake",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.assertIsNone(
+            self.store.claim(
+                OC_REGISTRATION_ID,
+                now=NOW + timedelta(seconds=2),
+                lease_seconds=30,
+            )
+        )
+        self.assertEqual(self.store.get(released.handoff_id).status, "suppressed")
+
+        HandoffDispatcher(
+            self.store,
+            registrations=(registration(), oc_registration()),
+            delegations=(),
+        ).record(
+            change(
+                canonical_event_id="events/owner-after-revoke",
+                canonical_version="43",
+                correlation_id="correlation-owner-after-revoke",
+            ),
+            now=NOW + timedelta(seconds=2),
+        )
+        replay = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-revoke-before-wake",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.assertEqual(replay.event_id, released.event_id)
+
+    def test_revocation_fences_an_already_received_local_delivery(self) -> None:
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id="events/revoke-after-received"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID,
+            now=NOW,
+            lease_seconds=30,
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-received-before-revoke",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-revoke-received-delivery",
+            now=NOW + timedelta(seconds=2),
+        )
+
+        self.assertEqual(self.store.get(delivery.handoff_id).status, "suppressed")
+        with self.assertRaisesRegex(ValueError, "active lease owner"):
+            self.store.acknowledge(
+                delivery.handoff_id,
+                "actively_executing",
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                mutation_id="mutation-after-revoke-must-fail",
+                now=NOW + timedelta(seconds=3),
+            )
+
+    def test_claim_release_is_idempotent_and_fenced(self) -> None:
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id="events/release-fence"),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        for executor_agent, idempotency_key in (
+            (AGENT, claim.idempotency_key),
+            (OC_AGENT, "0" * 64),
+        ):
+            with self.subTest(executor_agent=executor_agent):
+                with self.assertRaisesRegex(ValueError, "active execution claim"):
+                    self.store.release_execution_claim(
+                        TASK,
+                        executor_agent=executor_agent,
+                        idempotency_key=idempotency_key,
+                        terminal_state="revoked",
+                        mutation_id="mutation-wrong-execution-fence",
+                        now=NOW,
+                    )
+
+        first = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-correct-execution-fence",
+            now=NOW,
+        )
+        replay = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-correct-execution-fence",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.assertEqual(first.event_id, replay.event_id)
+        with self.assertRaisesRegex(ValueError, "already terminal"):
+            self.store.release_execution_claim(
+                TASK,
+                executor_agent=OC_AGENT,
+                idempotency_key=claim.idempotency_key,
+                terminal_state="completed",
+                mutation_id="mutation-conflicting-execution-release",
+                now=NOW + timedelta(seconds=2),
+            )
+
+    def test_delegation_identity_mismatch_deadletters_without_wake(self) -> None:
+        wake_count = 0
+
+        def wake(_record) -> bool:
+            nonlocal wake_count
+            wake_count += 1
+            return True
+
+        dispatcher = self.dispatcher(
+            leases=(delegation(),),
+            registrations=(
+                registration(),
+                oc_registration(route="hosts/timmy"),
+            ),
+        )
+        record = dispatcher.record(
+            change(canonical_event_id="events/delegation-route-mismatch"),
+            now=NOW,
+        )
+        local = LocalAgentDispatcher(
+            self.store,
+            registration_id=OC_REGISTRATION_ID,
+            verify_route=lambda _record: True,
+            wake=wake,
+        )
+
+        self.assertEqual(record.status, "dead_letter")
+        self.assertEqual(record.reason, "delegation_identity_mismatch")
+        self.assertIsNone(local.run_once(now=NOW))
+        self.assertEqual(wake_count, 0)
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+        terminal = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="delivery_terminal",
+        )
+        self.assertEqual(terminal.total, 1)
 
 
 class DurableHandoffStoreTests(unittest.TestCase):

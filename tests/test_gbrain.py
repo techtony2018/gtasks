@@ -113,6 +113,98 @@ class EntityTypePreservationTests(unittest.TestCase):
 
 
 class HandoffDispatcherRegistrationReadbackTests(unittest.TestCase):
+    def test_reads_only_the_exact_codex_and_openclaw_host_pair_routes(self) -> None:
+        cases = (
+            ("agents/tammy", "hosts/tammy"),
+            ("agents/tammy-oc", "hosts/tammy"),
+            ("agents/timmy", "hosts/timmy"),
+            ("agents/timmy-oc", "hosts/timmy"),
+            ("agents/toddy", "hosts/toddy"),
+            ("agents/toddy-oc", "hosts/toddy"),
+        )
+        for agent_slug, route in cases:
+            with self.subTest(agent_slug=agent_slug):
+                registration_reference = hashlib.sha256(
+                    f"private-{agent_slug}".encode("utf-8")
+                ).hexdigest()
+                page = {
+                    "slug": agent_slug,
+                    "type": "agent",
+                    "title": agent_slug,
+                    "frontmatter": {
+                        "handoff_dispatcher": {
+                            "registration_sha256": registration_reference,
+                            "route": route,
+                            "verified": True,
+                        }
+                    },
+                }
+                accepted = GBrainAdapter(
+                    FakeRunner({"get_page": [page]})
+                ).read_handoff_dispatcher_registration_by_reference(
+                    agent_slug, registration_reference
+                )
+                rejected_page = deepcopy(page)
+                rejected_page["frontmatter"]["handoff_dispatcher"]["route"] = (
+                    "hosts/timmy" if route != "hosts/timmy" else "hosts/tammy"
+                )
+                rejected = GBrainAdapter(
+                    FakeRunner({"get_page": [rejected_page]})
+                ).read_handoff_dispatcher_registration_by_reference(
+                    agent_slug, registration_reference
+                )
+
+                self.assertEqual(accepted.agent_slug, agent_slug)
+                self.assertEqual(accepted.route, route)
+                self.assertIsNone(rejected)
+
+    def test_bridge_preserves_owner_and_exposes_verified_claim_inputs(self) -> None:
+        class RecordingDispatcher:
+            registrations = ()
+
+            def __init__(self) -> None:
+                self.change = None
+
+            def record(self, change, *, now):
+                self.change = change
+                return change
+
+        dispatcher = RecordingDispatcher()
+        bridge = CanonicalHandoffEventBridge(dispatcher)
+        before = {
+            "task_slug": "tasks/11111111-1111-4111-8111-111111111111",
+            "task": {
+                "slug": "tasks/11111111-1111-4111-8111-111111111111",
+                "status": "planned",
+                "assigned_to": ["agents/tammy"],
+                "blockers": [],
+            },
+            "route": "hosts/tammy",
+        }
+        after = {
+            **before,
+            "todo": {
+                "slug": "todos/22222222-2222-4222-8222-222222222222",
+                "parent_task": "tasks/11111111-1111-4111-8111-111111111111",
+            },
+        }
+        bridge.after_verified_mutation(
+            before,
+            after,
+            {
+                "verified": True,
+                "canonical_event_id": "events/delegated-todo",
+                "canonical_version": "versions/1",
+                "mutation_kind": "todo_created",
+                "correlation_id": "correlation-delegated-todo",
+            },
+            datetime(2026, 8, 4, 17, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(dispatcher.change.assigned_to, ("agents/tammy",))
+        self.assertEqual(dispatcher.change.task_status, "planned")
+        self.assertEqual(dispatcher.change.requested_operation, "todo")
+
     def test_reads_runtime_route_from_stored_registration_reference_only(self) -> None:
         registration_reference = hashlib.sha256(
             b"private-registration-tammy"

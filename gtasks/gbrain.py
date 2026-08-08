@@ -102,6 +102,14 @@ APPROVED_OPENCLAW_DECLARATIONS: dict[str, dict[str, str]] = {
         "artifact_collection": "collections/toddy-oc-artifacts",
     },
 }
+HANDOFF_ROUTE_BY_AGENT: dict[str, str] = {
+    "agents/tammy": "hosts/tammy",
+    "agents/tammy-oc": "hosts/tammy",
+    "agents/timmy": "hosts/timmy",
+    "agents/timmy-oc": "hosts/timmy",
+    "agents/toddy": "hosts/toddy",
+    "agents/toddy-oc": "hosts/toddy",
+}
 
 
 def _openclaw_active_manifest_identity_is_valid(
@@ -1528,6 +1536,20 @@ class CanonicalHandoffEventBridge:
         kind = receipt_value.get("mutation_kind")
         before_status = before_task.get("status")
         after_status = after_task.get("status")
+        task_status = (
+            after_status
+            if isinstance(after_status, str)
+            and re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", after_status)
+            else "unknown"
+        )
+        if kind == "todo_comment":
+            requested_operation = "comment"
+        elif isinstance(kind, str) and kind.startswith("todo_"):
+            requested_operation = "todo"
+        elif isinstance(kind, str) and "artifact" in kind:
+            requested_operation = "artifact"
+        else:
+            requested_operation = "task_status"
         before_blockers = tuple(before_task.get("blockers") or ())
         after_blockers = tuple(after_task.get("blockers") or ())
         removed_blockers = set(before_blockers) - set(after_blockers)
@@ -1667,6 +1689,8 @@ class CanonicalHandoffEventBridge:
             occurred_at=now.astimezone(timezone.utc),
             correlation_id=correlation,
             blocker=None,
+            task_status=task_status,
+            requested_operation=requested_operation,
         )
 
     def after_verified_mutation(
@@ -4968,6 +4992,7 @@ class GBrainAdapter:
             return None
         expected = dispatcher.get("registration_sha256")
         route = dispatcher.get("route")
+        canonical_route = HANDOFF_ROUTE_BY_AGENT.get(agent_slug)
         if (
             dispatcher.get("verified") is not True
             or not isinstance(expected, str)
@@ -4975,6 +5000,7 @@ class GBrainAdapter:
             or not hmac.compare_digest(registration_reference, expected)
             or not isinstance(route, str)
             or re.fullmatch(r"[a-z0-9][a-z0-9._/-]{0,127}", route) is None
+            or route != canonical_route
         ):
             return None
         return AgentRegistration(
