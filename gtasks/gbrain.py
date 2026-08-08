@@ -26,6 +26,7 @@ from .domain import (
     ARTIFACT_AGENT_SCOPES,
     ARTIFACT_BY_AGENT,
     ARTIFACT_BY_COLLECTION,
+    AGENT_RUNTIME_BY_SLUG,
     EXISTING_CODEX_ARTIFACT_AGENT_SCOPES,
     AGENT_SCOPES,
     EXISTING_CODEX_AGENT_SCOPES,
@@ -460,6 +461,28 @@ class AgentRead:
         return {
             "agents": [agent.to_dict() for agent in self.agents],
             "issues": [issue.to_dict() for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProvisioningReceipt:
+    """Readback evidence for one explicit OpenClaw profile provision."""
+
+    agent_slug: str
+    collection_slugs: tuple[str, str]
+    default_goal_slugs: tuple[str, ...]
+    operations: tuple[str, ...]
+    verified: bool
+    mutated: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_slug": self.agent_slug,
+            "collection_slugs": list(self.collection_slugs),
+            "default_goal_slugs": list(self.default_goal_slugs),
+            "operations": list(self.operations),
+            "verified": self.verified,
+            "mutated": self.mutated,
         }
 
 
@@ -1202,6 +1225,55 @@ def render_artifact_collection_page(
             ]
         )
     lines.extend(["---", "", f"# {title}", "", "Mission Control Agent artifacts.", ""])
+    return "\n".join(lines)
+
+
+def _render_openclaw_collection_page(
+    *,
+    title: str,
+    collection_kind: str,
+    agent_slug: str,
+) -> str:
+    return "\n".join(
+        [
+            "---",
+            "type: collection",
+            f"title: {_yaml_scalar(title)}",
+            f"collection_kind: {collection_kind}",
+            f"agent: {_yaml_scalar(agent_slug)}",
+            "member_type: task" if collection_kind == "mission_control_agent_tasks" else "member_type: artifact",
+            "---",
+            "",
+            f"# {title}",
+            "",
+            "Canonical Mission Control Agent collection.",
+            "",
+        ]
+    )
+
+
+def _render_openclaw_agent_page(declaration: Mapping[str, str]) -> str:
+    name = declaration["name"]
+    host = declaration["route"].rsplit("/", 1)[-1].title()
+    lines = [
+        "---",
+        "type: agent",
+        f"title: {_yaml_scalar(f'Agent {name}')}",
+        "runtime: openclaw",
+        f"route: {_yaml_scalar(declaration['route'])}",
+        f"work_root: {_yaml_scalar(declaration['task_collection'])}",
+        f"artifact_collection: {_yaml_scalar(declaration['artifact_collection'])}",
+        'capabilities: ["read_own_work", "update_authorized_task_state", "publish_own_artifacts"]',
+        "---",
+        "",
+        f"# Agent {name}",
+        "",
+        (
+            f"Independent OpenClaw Agent on {host}. It can read its own canonical "
+            "work, update authorized task state, and publish its own Artifacts."
+        ),
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -3705,6 +3777,268 @@ class GBrainAdapter:
         if not isinstance(page, Mapping) or not isinstance(links, list):
             raise GBrainProtocolError("agent profile readback was not structured")
         return AgentProfile.from_page(page, work_root=work_root, edges=links)
+
+    @staticmethod
+    def _openclaw_declaration(declaration: Mapping[str, str]) -> dict[str, str]:
+        required = {
+            "slug",
+            "name",
+            "runtime",
+            "route",
+            "task_collection",
+            "artifact_collection",
+        }
+        if set(declaration) != required or not all(
+            isinstance(value, str) and value.strip() for value in declaration.values()
+        ):
+            raise ValueError("OpenClaw declaration must contain the exact public fields")
+        normalized = {key: value.strip() for key, value in declaration.items()}
+        slug = normalized["slug"]
+        if (
+            AGENT_RUNTIME_BY_SLUG.get(slug) != "openclaw"
+            or normalized["runtime"] != "openclaw"
+            or dict(AGENT_SCOPES).get(slug) != normalized["task_collection"]
+            or ARTIFACT_BY_AGENT.get(slug) != normalized["artifact_collection"]
+            or re.fullmatch(r"agents/[a-z0-9][a-z0-9._-]{0,63}", slug) is None
+            or re.fullmatch(r"hosts/[a-z0-9][a-z0-9._-]{0,63}", normalized["route"])
+            is None
+        ):
+            raise ValueError("OpenClaw declaration does not match the approved scope")
+        return normalized
+
+    @staticmethod
+    def _openclaw_page_spec(
+        declaration: Mapping[str, str],
+    ) -> tuple[tuple[str, str, str, dict[str, Any], str], ...]:
+        agent_slug = declaration["slug"]
+        name = declaration["name"]
+        task_collection = declaration["task_collection"]
+        artifact_collection = declaration["artifact_collection"]
+        agent_content = _render_openclaw_agent_page(declaration)
+        return (
+            (
+                agent_slug,
+                "agent",
+                f"Agent {name}",
+                {
+                    "runtime": "openclaw",
+                    "route": declaration["route"],
+                    "work_root": task_collection,
+                    "artifact_collection": artifact_collection,
+                    "capabilities": [
+                        "read_own_work",
+                        "update_authorized_task_state",
+                        "publish_own_artifacts",
+                    ],
+                },
+                agent_content,
+            ),
+            (
+                task_collection,
+                "collection",
+                f"{name} Tasks",
+                {
+                    "collection_kind": "mission_control_agent_tasks",
+                    "agent": agent_slug,
+                    "member_type": "task",
+                },
+                _render_openclaw_collection_page(
+                    title=f"{name} Tasks",
+                    collection_kind="mission_control_agent_tasks",
+                    agent_slug=agent_slug,
+                ),
+            ),
+            (
+                artifact_collection,
+                "collection",
+                f"{name} Artifacts",
+                {
+                    "collection_kind": "mission_control_artifacts",
+                    "agent": agent_slug,
+                    "member_type": "artifact",
+                },
+                _render_openclaw_collection_page(
+                    title=f"{name} Artifacts",
+                    collection_kind="mission_control_artifacts",
+                    agent_slug=agent_slug,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _openclaw_page_matches(
+        page: object,
+        *,
+        slug: str,
+        page_type: str,
+        title: str,
+        frontmatter: Mapping[str, Any],
+        content: str,
+    ) -> bool:
+        if not isinstance(page, Mapping):
+            return False
+        stored_frontmatter = page.get("frontmatter")
+        return (
+            page.get("slug") == slug
+            and page.get("type") == page_type
+            and page.get("title") == title
+            and isinstance(stored_frontmatter, Mapping)
+            and dict(stored_frontmatter) == dict(frontmatter)
+            and page.get("compiled_truth") == content.split("---", 2)[-1].strip()
+        )
+
+    @staticmethod
+    def _openclaw_expected_links(
+        declaration: Mapping[str, str],
+    ) -> tuple[tuple[str, str, str, str], ...]:
+        agent = declaration["slug"]
+        return (
+            (
+                declaration["task_collection"],
+                agent,
+                "for_agent",
+                "This collection stores canonical work for this Agent.",
+            ),
+            (
+                declaration["artifact_collection"],
+                ARTIFACTS_ROOT,
+                "part_of",
+                "This Agent Artifact collection belongs to Mission Control Artifacts.",
+            ),
+            (
+                declaration["artifact_collection"],
+                agent,
+                "for_agent",
+                "This collection stores durable output from this Agent.",
+            ),
+        )
+
+    def provision_agent_profile(
+        self,
+        declaration: Mapping[str, str],
+        *,
+        execute: bool,
+    ) -> AgentProvisioningReceipt:
+        """Explicitly provision one OpenClaw profile, never a Goal relationship."""
+        item = self._openclaw_declaration(declaration)
+        specs = self._openclaw_page_spec(item)
+        expected_links = self._openclaw_expected_links(item)
+        operations = tuple(
+            [f"put_page:{slug}" for slug, *_rest in specs]
+            + [f"add_link:{source}->{target}:{link_type}" for source, target, link_type, _context in expected_links]
+        )
+        receipt = lambda *, verified, mutated: AgentProvisioningReceipt(
+            agent_slug=item["slug"],
+            collection_slugs=(item["task_collection"], item["artifact_collection"]),
+            default_goal_slugs=(),
+            operations=operations,
+            verified=verified,
+            mutated=mutated,
+        )
+        if not execute:
+            return receipt(verified=False, mutated=False)
+
+        snapshots: dict[str, object | None] = {}
+        links_by_slug: dict[str, list[Mapping[str, Any]]] = {}
+        for slug, page_type, title, frontmatter, content in specs:
+            try:
+                snapshots[slug] = self.runner.run("get_page", {"slug": slug})
+            except GBrainCommandError as exc:
+                if not is_page_not_found_error(exc):
+                    raise
+                snapshots[slug] = None
+            raw_links = self.runner.run("get_links", {"slug": slug})
+            if not isinstance(raw_links, list):
+                raise GBrainProtocolError(f"{slug} relationship readback was not a list")
+            links_by_slug[slug] = [edge for edge in raw_links if isinstance(edge, Mapping)]
+            existing = snapshots[slug]
+            if existing is not None and not self._openclaw_page_matches(
+                existing,
+                slug=slug,
+                page_type=page_type,
+                title=title,
+                frontmatter=frontmatter,
+                content=content,
+            ):
+                label = "Agent" if page_type == "agent" else "collection"
+                raise GBrainProtocolError(f"{slug} is not a canonical {label} page")
+
+        root = self.runner.run("get_page", {"slug": ARTIFACTS_ROOT})
+        if (
+            not isinstance(root, Mapping)
+            or root.get("slug") != ARTIFACTS_ROOT
+            or root.get("type") != "collection"
+            or not isinstance(root.get("frontmatter"), Mapping)
+            or root["frontmatter"].get("collection_kind")
+            != "mission_control_artifacts"
+        ):
+            raise GBrainProtocolError("global Artifact collection is not canonical")
+
+        expected_by_source: dict[str, set[tuple[str, str]]] = {}
+        for source, target, link_type, _context in expected_links:
+            expected_by_source.setdefault(source, set()).add((target, link_type))
+        for slug, links in links_by_slug.items():
+            if any(edge.get("link_type") == "default_agent_for" for edge in links):
+                raise GBrainProtocolError(
+                    f"{slug} has a Goal relationship; provisioning will not repair it"
+                )
+            actual = {
+                (str(edge.get("to_slug")), str(edge.get("link_type")))
+                for edge in links
+                if edge.get("from_slug") == slug
+            }
+            unexpected = actual - expected_by_source.get(slug, set())
+            if unexpected:
+                raise GBrainProtocolError(
+                    f"{slug} has unexpected collection membership or relationship"
+                )
+
+        mutated = False
+        for slug, _page_type, _title, _frontmatter, content in specs:
+            if snapshots[slug] is None:
+                self.runner.run("put_page", {"slug": slug, "content": content})
+                mutated = True
+        for source, target, link_type, context in expected_links:
+            actual = {
+                (str(edge.get("to_slug")), str(edge.get("link_type")))
+                for edge in links_by_slug[source]
+                if edge.get("from_slug") == source
+            }
+            if (target, link_type) not in actual:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": source,
+                        "to": target,
+                        "link_type": link_type,
+                        "context": context,
+                        "link_source": "gtasks",
+                    },
+                )
+                mutated = True
+
+        for slug, page_type, title, frontmatter, content in specs:
+            stored = self.runner.run("get_page", {"slug": slug})
+            if not self._openclaw_page_matches(
+                stored,
+                slug=slug,
+                page_type=page_type,
+                title=title,
+                frontmatter=frontmatter,
+                content=content,
+            ):
+                raise GBrainProtocolError(f"{slug} page did not read back exactly")
+            stored_links = self.runner.run("get_links", {"slug": slug})
+            if not isinstance(stored_links, list):
+                raise GBrainProtocolError(f"{slug} relationship readback was not a list")
+            actual = {
+                (str(edge.get("to_slug")), str(edge.get("link_type")))
+                for edge in stored_links
+                if isinstance(edge, Mapping) and edge.get("from_slug") == slug
+            }
+            if actual != expected_by_source.get(slug, set()):
+                raise GBrainProtocolError(f"{slug} relationships did not read back exactly")
+        return receipt(verified=True, mutated=mutated)
 
     def read_handoff_dispatcher_registration(
         self,

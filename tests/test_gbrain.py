@@ -3714,6 +3714,195 @@ class GoalLinkMutationTests(unittest.TestCase):
         )
 
 
+OPENCLAW_DECLARATION = {
+    "slug": "agents/tammy-oc",
+    "name": "Tammy-OC",
+    "runtime": "openclaw",
+    "route": "hosts/tammy",
+    "task_collection": "collections/tammy-oc-tasks",
+    "artifact_collection": "collections/tammy-oc-artifacts",
+}
+
+
+class ProvisioningRunner:
+    """In-memory canonical surface for OpenClaw profile provisioning tests."""
+
+    def __init__(
+        self,
+        pages: dict[str, dict] | None = None,
+        links: list[dict] | None = None,
+    ) -> None:
+        self.pages = {
+            ARTIFACTS_ROOT: {
+                "slug": ARTIFACTS_ROOT,
+                "type": "collection",
+                "title": "Mission Control Artifacts",
+                "compiled_truth": "Mission Control Agent artifacts.",
+                "frontmatter": {"collection_kind": "mission_control_artifacts"},
+            }
+        }
+        self.pages.update(deepcopy(pages or {}))
+        self.links = deepcopy(links or [])
+        self.calls: list[tuple[str, dict]] = []
+
+    def links_of_type(self, slug: str, link_type: str) -> list[dict]:
+        return [
+            deepcopy(edge)
+            for edge in self.links
+            if edge["from_slug"] == slug and edge["link_type"] == link_type
+        ]
+
+    def run(self, tool: str, params: dict) -> object:
+        self.calls.append((tool, deepcopy(params)))
+        if tool == "get_page":
+            try:
+                return deepcopy(self.pages[params["slug"]])
+            except KeyError as exc:
+                raise GBrainCommandError("page_not_found") from exc
+        if tool == "get_links":
+            return [
+                deepcopy(edge)
+                for edge in self.links
+                if edge["from_slug"] == params["slug"]
+            ]
+        if tool == "put_page":
+            lines = params["content"].splitlines()
+            end = lines.index("---", 1)
+            frontmatter = {}
+            for line in lines[1:end]:
+                key, value = line.split(": ", 1)
+                try:
+                    frontmatter[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    frontmatter[key] = value
+            self.pages[params["slug"]] = {
+                "slug": params["slug"],
+                "type": frontmatter.pop("type"),
+                "title": frontmatter.pop("title"),
+                "compiled_truth": "\n".join(lines[end + 1 :]).strip(),
+                "frontmatter": frontmatter,
+            }
+            return {"slug": params["slug"]}
+        if tool == "add_link":
+            edge = {
+                "from_slug": params["from"],
+                "to_slug": params["to"],
+                "link_type": params["link_type"],
+            }
+            if edge not in self.links:
+                self.links.append(edge)
+            return edge
+        raise AssertionError(f"unexpected tool: {tool}")
+
+
+class AgentCreationTests(unittest.TestCase):
+    def test_provision_openclaw_profile_creates_no_goal_relationship(self) -> None:
+        runner = ProvisioningRunner()
+        adapter = GBrainAdapter(runner)
+
+        receipt = adapter.provision_agent_profile(OPENCLAW_DECLARATION, execute=True)
+
+        self.assertTrue(receipt.verified)
+        self.assertTrue(receipt.mutated)
+        self.assertEqual(receipt.agent_slug, "agents/tammy-oc")
+        self.assertEqual(
+            receipt.collection_slugs,
+            ("collections/tammy-oc-tasks", "collections/tammy-oc-artifacts"),
+        )
+        self.assertEqual(receipt.default_goal_slugs, ())
+        self.assertEqual(
+            runner.links_of_type("agents/tammy-oc", "default_agent_for"), []
+        )
+        self.assertFalse(
+            any(
+                tool == "add_link" and params["link_type"] == "default_agent_for"
+                for tool, params in runner.calls
+            )
+        )
+
+    def test_dry_run_returns_operations_without_mutating_gbrain(self) -> None:
+        runner = ProvisioningRunner()
+
+        receipt = GBrainAdapter(runner).provision_agent_profile(
+            OPENCLAW_DECLARATION,
+            execute=False,
+        )
+
+        self.assertFalse(receipt.verified)
+        self.assertFalse(receipt.mutated)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(
+            receipt.operations,
+            (
+                "put_page:agents/tammy-oc",
+                "put_page:collections/tammy-oc-tasks",
+                "put_page:collections/tammy-oc-artifacts",
+                "add_link:collections/tammy-oc-tasks->agents/tammy-oc:for_agent",
+                "add_link:collections/tammy-oc-artifacts->collections/mission-control-artifacts:part_of",
+                "add_link:collections/tammy-oc-artifacts->agents/tammy-oc:for_agent",
+            ),
+        )
+
+    def test_existing_mismatched_page_fails_without_repair(self) -> None:
+        runner = ProvisioningRunner(
+            pages={
+                "agents/tammy-oc": {
+                    "slug": "agents/tammy-oc",
+                    "type": "concept",
+                    "title": "Tammy-OC",
+                    "compiled_truth": "Wrong type.",
+                    "frontmatter": {},
+                }
+            }
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "not a canonical Agent"):
+            GBrainAdapter(runner).provision_agent_profile(
+                OPENCLAW_DECLARATION, execute=True
+            )
+
+        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
+        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+    def test_preexisting_goal_link_fails_without_repair(self) -> None:
+        runner = ProvisioningRunner(
+            links=[
+                {
+                    "from_slug": "agents/tammy-oc",
+                    "to_slug": "goals/should-not-exist",
+                    "link_type": "default_agent_for",
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "Goal relationship"):
+            GBrainAdapter(runner).provision_agent_profile(
+                OPENCLAW_DECLARATION, execute=True
+            )
+
+        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
+        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+    def test_unexpected_membership_fails_without_repair(self) -> None:
+        runner = ProvisioningRunner(
+            links=[
+                {
+                    "from_slug": "collections/tammy-oc-tasks",
+                    "to_slug": "collections/not-allowed",
+                    "link_type": "member_of",
+                }
+            ]
+        )
+
+        with self.assertRaisesRegex(GBrainProtocolError, "unexpected collection membership"):
+            GBrainAdapter(runner).provision_agent_profile(
+                OPENCLAW_DECLARATION, execute=True
+            )
+
+        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
+        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
+
+
 class AgentReadTests(unittest.TestCase):
     def test_unprovisioned_openclaw_scopes_are_not_activated_by_legacy_directory_reads(
         self,
