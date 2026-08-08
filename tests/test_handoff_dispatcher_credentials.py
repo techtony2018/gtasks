@@ -86,6 +86,35 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "0600"):
             HandoffDispatcherAuth.from_file(path)
 
+    def test_auth_loader_accepts_exactly_all_three_codex_openclaw_pairs(self) -> None:
+        path = self.root / "paired-credentials.json"
+        payload = self._credential_payload()
+        payload["identities"].extend(
+            {
+                "agent_slug": f"agents/{agent}-oc",
+                "registration_sha256": hashlib.sha256(
+                    f"private-registration-{agent}-oc".encode()
+                ).hexdigest(),
+                "token_sha256": hashlib.sha256(
+                    f"{agent}-oc-private-token".encode()
+                ).hexdigest(),
+            }
+            for agent in ("tammy", "timmy", "toddy")
+        )
+        self._write_json(path, payload)
+
+        auth = HandoffDispatcherAuth.from_file(path)
+
+        for agent in ("tammy", "timmy", "toddy"):
+            identity = auth.resolve(f"Bearer {agent}-oc-private-token")
+            self.assertIsNotNone(identity)
+            self.assertEqual(identity.agent_slug, f"agents/{agent}-oc")
+
+        payload["identities"][-1]["agent_slug"] = "agents/unknown-oc"
+        self._write_json(path, payload)
+        with self.assertRaisesRegex(ValueError, "wrong schema"):
+            HandoffDispatcherAuth.from_file(path)
+
     def test_provisioner_hashes_three_explicit_private_identity_configs(self) -> None:
         config_paths: list[Path] = []
         raw_values: list[str] = []

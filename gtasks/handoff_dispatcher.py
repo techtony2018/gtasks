@@ -586,6 +586,16 @@ class DurableHandoffStore:
                 )
                 """,
                 """
+                CREATE TABLE IF NOT EXISTS task_execution_authority (
+                    task_slug TEXT PRIMARY KEY,
+                    owner_agent TEXT,
+                    status TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    verified INTEGER NOT NULL
+                )
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS authority_control_events (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_id TEXT NOT NULL UNIQUE,
@@ -698,6 +708,13 @@ class DurableHandoffStore:
                             + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
                         ),
                     ),
+                )
+                self._observe_task_authority_in_transaction(
+                    row["task_slug"],
+                    owner_agent=row["permanent_owner"],
+                    status="active",
+                    version=row["canonical_version"],
+                    observed_at=now,
                 )
             except sqlite3.IntegrityError:
                 self._quarantine_unfenced_handoff_in_transaction(
@@ -897,6 +914,82 @@ class DurableHandoffStore:
                 observed_at=observed_at,
             )
 
+    def observe_task_authority(
+        self,
+        task_slug: str,
+        *,
+        owner_agent: str | None,
+        status: str,
+        version: str,
+        observed_at: datetime,
+    ) -> None:
+        """Persist the latest verified canonical task owner/status control."""
+        observed_at = _require_utc(observed_at, "observed_at")
+        with self._write_transaction():
+            self._observe_task_authority_in_transaction(
+                task_slug,
+                owner_agent=owner_agent,
+                status=status,
+                version=version,
+                observed_at=observed_at,
+            )
+
+    def _observe_task_authority_in_transaction(
+        self,
+        task_slug: str,
+        *,
+        owner_agent: str | None,
+        status: str,
+        version: str,
+        observed_at: datetime,
+    ) -> None:
+        _require_structured_id(task_slug, "task_slug")
+        if owner_agent is not None:
+            _require_structured_id(owner_agent, "owner_agent")
+        _require_structured_id(status, "task status")
+        _require_structured_id(version, "task version")
+        observed_at = _require_utc(observed_at, "observed_at")
+        current = self._connection.execute(
+            "SELECT * FROM task_execution_authority WHERE task_slug = ?",
+            (task_slug,),
+        ).fetchone()
+        if current is not None:
+            current_observed = _parse_timestamp(current["observed_at"])
+            if current_observed > observed_at:
+                return
+            if current_observed == observed_at:
+                if (
+                    current["owner_agent"] != owner_agent
+                    or current["status"] != status
+                    or current["verified"] != 1
+                ):
+                    raise ValueError(
+                        "task authority conflicts at the same observation instant"
+                    )
+                if current["version"] == version:
+                    return
+        self._connection.execute(
+            """
+            INSERT INTO task_execution_authority (
+                task_slug, owner_agent, status, version, observed_at, verified
+            ) VALUES (?, ?, ?, ?, ?, 1)
+            ON CONFLICT(task_slug) DO UPDATE SET
+                owner_agent = excluded.owner_agent,
+                status = excluded.status,
+                version = excluded.version,
+                observed_at = excluded.observed_at,
+                verified = 1
+            """,
+            (task_slug, owner_agent, status, version, _timestamp(observed_at)),
+        )
+        self._append_authority_event(
+            control_kind="task",
+            subject_slug=task_slug,
+            version=version,
+            state=f"{owner_agent or 'unowned'}-{status}",
+            observed_at=observed_at,
+        )
+
     def observe_delegation_absence(
         self, delegation_slug: str, *, observed_at: datetime
     ) -> None:
@@ -1069,6 +1162,13 @@ class DurableHandoffStore:
             execution_claim: ExecutionClaim | None = None
             execution_created = False
             if classification.actionable and execution_request is not None:
+                self._observe_task_authority_in_transaction(
+                    change.task_slug,
+                    owner_agent=execution_request.permanent_owner,
+                    status=execution_request.task_status,
+                    version=change.canonical_version,
+                    observed_at=now,
+                )
                 execution_claim, execution_created = (
                     self._claim_execution_in_transaction(
                         self.get(handoff_id),
@@ -1179,6 +1279,13 @@ class DurableHandoffStore:
         )
         with self._write_transaction():
             record = self.get(handoff_id)
+            self._observe_task_authority_in_transaction(
+                record.task_slug,
+                owner_agent=permanent_owner,
+                status=task_status,
+                version=record.canonical_version,
+                observed_at=now,
+            )
             claim, created = self._claim_execution_in_transaction(
                 record, request=request, now=now
             )
@@ -1739,6 +1846,7 @@ class DurableHandoffStore:
         execution_row: sqlite3.Row,
         *,
         now: datetime,
+        allow_task_completion: bool = False,
     ) -> tuple[str, str, str] | None:
         """Return the terminal reconciliation required by current control state."""
         terminal_state = execution_row["terminal_state"]
@@ -1753,6 +1861,29 @@ class DurableHandoffStore:
                 "expired",
                 "execution_claim_expired",
                 "Expired execution must checkpoint and hand back.",
+            )
+        task = self._connection.execute(
+            "SELECT * FROM task_execution_authority WHERE task_slug = ?",
+            (execution_row["task_slug"],),
+        ).fetchone()
+        allowed_statuses = {"planned", "active", "blocked"}
+        if allow_task_completion:
+            allowed_statuses.add("completed")
+        if (
+            task is None
+            or task["verified"] != 1
+            or task["owner_agent"] != execution_row["permanent_owner"]
+            or task["status"] not in allowed_statuses
+            or (
+                execution_row["delegation_slug"] is not None
+                and task["status"] != "planned"
+                and not (allow_task_completion and task["status"] == "completed")
+            )
+        ):
+            return (
+                "checkpointed",
+                "task_authority_changed",
+                "Canonical task ownership or status changed; checkpoint and hand back.",
             )
         delegation_slug = execution_row["delegation_slug"]
         if delegation_slug is None:
@@ -1807,6 +1938,74 @@ class DurableHandoffStore:
                 "Owned work now has priority; delegated execution must checkpoint and hand back.",
             )
         return None
+
+    def authorize_execution(
+        self,
+        handoff_id: str,
+        *,
+        registration_id: str,
+        lease_token: str,
+        lease_generation: int,
+        wake_token: str,
+        now: datetime,
+    ) -> HandoffRecord:
+        """Revalidate an accepted inbox item at the external command boundary."""
+        _require_structured_id(handoff_id, "handoff_id")
+        _require_structured_id(wake_token, "wake_token")
+        if not isinstance(lease_generation, int) or lease_generation < 1:
+            raise ValueError("lease_generation must be a positive integer")
+        now = _require_utc(now, "now")
+        lease_capability_ref = _reference(lease_token)
+        wake_token_ref = _reference(wake_token)
+        with self._write_transaction():
+            current = self._connection.execute(
+                """
+                SELECT h.status, l.registration_id, l.lease_generation,
+                    l.lease_capability_ref, e.*
+                FROM handoffs h
+                JOIN leases l ON l.handoff_id = h.handoff_id
+                JOIN execution_claims e ON e.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(handoff_id)
+            if (
+                current["status"] != "received"
+                or current["registration_id"] != registration_id
+                or current["lease_generation"] != lease_generation
+                or current["lease_capability_ref"] is None
+                or not hmac.compare_digest(
+                    current["lease_capability_ref"], lease_capability_ref
+                )
+            ):
+                raise ValueError(
+                    "execution requires the exact received lease owner and capability"
+                )
+            wake = self._connection.execute(
+                "SELECT * FROM wake_intents WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if (
+                wake is None
+                or not hmac.compare_digest(wake["wake_token_ref"], wake_token_ref)
+                or wake["execution_idempotency_key"] != current["idempotency_key"]
+            ):
+                raise ValueError("execution wake intent does not match its durable claim")
+            authority_failure = self._execution_authority_failure_in_transaction(
+                current, now=now
+            )
+            if authority_failure is not None:
+                terminal_state, reason, detail = authority_failure
+                self._suppress_execution_authority_in_transaction(
+                    current,
+                    terminal_state=terminal_state,
+                    reason=reason,
+                    detail=detail,
+                    now=now,
+                )
+            return self.get(handoff_id)
 
     def authorize_wake(
         self,
@@ -2156,10 +2355,7 @@ class DurableHandoffStore:
             active = self._connection.execute(
                 """
                 SELECT h.status, l.registration_id, l.lease_capability_ref,
-                    l.lease_generation,
-                    e.delegation_slug AS execution_delegation_slug,
-                    e.expires_at AS execution_expires_at,
-                    e.terminal_state AS execution_terminal_state
+                    l.lease_generation, e.*
                 FROM handoffs h
                 JOIN leases l ON l.handoff_id = h.handoff_id
                 LEFT JOIN execution_claims e ON e.handoff_id = h.handoff_id
@@ -2178,15 +2374,30 @@ class DurableHandoffStore:
             ):
                 raise ValueError("mutation requires the active lease owner and token")
             if (
-                active["execution_delegation_slug"] is not None
+                active["delegation_slug"] is not None
                 and (
-                    active["execution_terminal_state"] is not None
-                    or now >= _parse_timestamp(active["execution_expires_at"])
+                    active["terminal_state"] is not None
+                    or now >= _parse_timestamp(active["expires_at"])
                 )
             ):
                 raise ValueError(
                     "expired delegated execution must checkpoint and hand back"
                 )
+            authority_failure = self._execution_authority_failure_in_transaction(
+                active,
+                now=now,
+                allow_task_completion=acknowledgement and status == "completed",
+            )
+            if authority_failure is not None:
+                terminal_state, reason, authority_detail = authority_failure
+                self._suppress_execution_authority_in_transaction(
+                    active,
+                    terminal_state=terminal_state,
+                    reason=reason,
+                    detail=authority_detail,
+                    now=now,
+                )
+                return self.get(handoff_id)
             current_status = active["status"]
             if acknowledgement:
                 if status not in ACKNOWLEDGEMENT_TRANSITIONS.get(
@@ -2637,6 +2848,16 @@ class HandoffDispatcher:
 
     def record(self, change: ActionableChange, *, now: datetime) -> HandoffRecord:
         now = _require_utc(now, "now")
+        if self._lease_aware:
+            self.store.observe_task_authority(
+                change.task_slug,
+                owner_agent=(
+                    change.assigned_to[0] if len(change.assigned_to) == 1 else None
+                ),
+                status=change.task_status,
+                version=change.canonical_version,
+                observed_at=now,
+            )
         executor_agent = change.assigned_to[0] if len(change.assigned_to) == 1 else None
         selected_lease: AgentDelegationLease | None = None
         owned_work_ready = False

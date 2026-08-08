@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import ipaddress
 import json
@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 from typing import Callable, Mapping, Sequence
+from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -78,6 +79,12 @@ RECOVERY_RECONCILIATION_KEYS = frozenset(
 WAKE_AUTHORIZATION_KEYS = frozenset(
     {"handoff_id", "status", "wake_authorized"}
 )
+EXECUTION_AUTHORITY_KEYS = frozenset(
+    {"handoff_id", "status", "execution_authorized"}
+)
+LEGACY_CODEX_AGENTS = frozenset(
+    {"agents/tammy", "agents/timmy", "agents/toddy"}
+)
 RECOVERABLE_STATES = frozenset(
     {"leased", "received", "actively_executing", "still_blocked"}
 )
@@ -132,6 +139,8 @@ def _normalize_claim_shape(claim: Mapping[str, object]) -> dict[str, object]:
     keys = set(claim)
     if keys == LEGACY_CLAIM_KEYS:
         agent_slug = _require_identifier(claim.get("agent_slug"), "agent_slug")
+        if agent_slug not in LEGACY_CODEX_AGENTS:
+            raise ValueError("legacy claim normalization is limited to existing Codex Agents")
         return {
             **dict(claim),
             "claim_schema_version": CLAIM_SCHEMA_VERSION,
@@ -504,22 +513,26 @@ class PrivateClaimStore:
             return None
         return pending["sequence"], pending["status"], pending["detail"]
 
-    def complete_ack(self, sequence: int, response: Mapping[str, object]) -> None:
+    def complete_ack(self, sequence: int, response: Mapping[str, object]) -> bool:
         state = self._load_state()
         pending = state["pending_ack"]
         if pending is None or pending["sequence"] != sequence:
             raise ValueError("acknowledgement completion does not match pending operation")
         if response.get("status") != pending["status"]:
+            if response.get("status") in RECONCILED_CLEAR_STATES:
+                self.path.unlink()
+                return False
             raise ValueError("acknowledgement response did not verify the requested status")
         if pending["status"] == "completed":
             self.path.unlink()
-            return
+            return True
         claim = state["claim"]
         claim["status"] = pending["status"]
         claim["detail"] = response.get("detail", pending["detail"])
         state["next_ack_sequence"] = sequence + 1
         state["pending_ack"] = None
         self._write(state)
+        return True
 
     def prepare_failure(self, failure_class: str) -> None:
         if failure_class not in {"retryable", "terminal"}:
@@ -548,11 +561,36 @@ class PrivateClaimStore:
         self.path.unlink()
 
 
-class PrivateWakeDedupStore:
-    """Target-side durable acceptance fence for stable wake tokens."""
+@dataclass(frozen=True, slots=True)
+class WakeInboxItem:
+    wake_token_ref: str
+    handoff_id: str
+    state: str
+    attempt: int
+    max_attempts: int
+    claim: dict[str, object]
+    last_error: str | None
+    retry_at: datetime | None
 
-    def __init__(self, path: str | Path) -> None:
+    @property
+    def retryable(self) -> bool:
+        return self.state == "failed" and self.attempt < self.max_attempts
+
+
+@dataclass(frozen=True, slots=True)
+class WakeInboxClaim:
+    item: WakeInboxItem
+    worker_token: str
+
+
+class PrivateWakeInbox:
+    """Target-side durable accepted/pending/executing wake lifecycle."""
+
+    def __init__(self, path: str | Path, *, max_attempts: int = 3) -> None:
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
         self.path = Path(path) if str(path) != ":memory:" else None
+        self.max_attempts = max_attempts
         sqlite_path = ":memory:" if self.path is None else str(self.path)
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -563,60 +601,463 @@ class PrivateWakeDedupStore:
             try:
                 metadata = os.fstat(descriptor)
                 if not stat.S_ISREG(metadata.st_mode):
-                    raise ValueError("wake dedupe store must be a regular private file")
+                    raise ValueError("wake inbox must be a regular private file")
                 os.fchmod(descriptor, 0o600)
             finally:
                 os.close(descriptor)
         self._connection = sqlite3.connect(sqlite_path, isolation_level=None)
+        self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA synchronous = FULL")
         self._connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS accepted_wakes (
+            CREATE TABLE IF NOT EXISTS wake_inbox (
                 wake_token_ref TEXT PRIMARY KEY,
                 handoff_id TEXT NOT NULL UNIQUE,
-                accepted_at TEXT NOT NULL
+                execution_idempotency_key TEXT NOT NULL UNIQUE,
+                claim_json TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                accepted_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                retry_at TEXT,
+                last_error TEXT,
+                worker_claim_ref TEXT,
+                worker_claim_until TEXT
             )
             """
         )
+        self._has_legacy_tombstones = self._connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'accepted_wakes'
+            """
+        ).fetchone() is not None
 
     def close(self) -> None:
         self._connection.close()
 
-    def accept(self, *, wake_token: str, handoff_id: str) -> bool:
-        """Return true only for the first durable acceptance of this wake."""
+    @staticmethod
+    def _timestamp(value: datetime) -> str:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("inbox time must be UTC-aware")
+        return value.astimezone(timezone.utc).isoformat()
+
+    @staticmethod
+    def _item(row: sqlite3.Row) -> WakeInboxItem:
+        claim = json.loads(row["claim_json"])
+        if not isinstance(claim, dict):
+            raise ValueError("wake inbox claim is invalid")
+        return WakeInboxItem(
+            wake_token_ref=row["wake_token_ref"],
+            handoff_id=row["handoff_id"],
+            state=row["state"],
+            attempt=row["attempt"],
+            max_attempts=row["max_attempts"],
+            claim=claim,
+            last_error=row["last_error"],
+            retry_at=(
+                datetime.fromisoformat(row["retry_at"]).astimezone(timezone.utc)
+                if row["retry_at"] is not None
+                else None
+            ),
+        )
+
+    def _row(self, handoff_id: str) -> sqlite3.Row:
+        row = self._connection.execute(
+            "SELECT * FROM wake_inbox WHERE handoff_id = ?", (handoff_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(handoff_id)
+        return row
+
+    def get(self, handoff_id: str) -> WakeInboxItem:
+        return self._item(self._row(_require_identifier(handoff_id, "handoff_id")))
+
+    def enqueue(
+        self,
+        claim: Mapping[str, object],
+        *,
+        wake_token: str,
+        now: datetime,
+    ) -> WakeInboxItem:
+        """Durably own one accepted wake; exact duplicate enqueue replays it."""
+        normalized = _normalize_claim_shape(claim)
         wake_token = _require_identifier(wake_token, "wake_token")
-        handoff_id = _require_identifier(handoff_id, "handoff_id")
+        handoff_id = _require_identifier(normalized.get("handoff_id"), "handoff_id")
+        execution_key = _require_identifier(
+            normalized.get("idempotency_key"), "idempotency_key"
+        )
         wake_token_ref = hashlib.sha256(wake_token.encode("utf-8")).hexdigest()
+        stored_claim = {**normalized, "wake_token": wake_token}
+        claim_json = json.dumps(stored_claim, sort_keys=True, separators=(",", ":"))
+        timestamp = self._timestamp(now)
         self._connection.execute("BEGIN IMMEDIATE")
         try:
             existing = self._connection.execute(
                 """
-                SELECT wake_token_ref, handoff_id FROM accepted_wakes
+                SELECT * FROM wake_inbox
                 WHERE wake_token_ref = ? OR handoff_id = ?
+                    OR execution_idempotency_key = ?
                 """,
-                (wake_token_ref, handoff_id),
+                (wake_token_ref, handoff_id, execution_key),
             ).fetchone()
             if existing is not None:
-                if existing[0] != wake_token_ref or existing[1] != handoff_id:
+                if (
+                    existing["wake_token_ref"] != wake_token_ref
+                    or existing["handoff_id"] != handoff_id
+                    or existing["execution_idempotency_key"] != execution_key
+                ):
                     raise ValueError("wake token is bound to a different handoff")
+                if existing["state"] in {"accepted", "pending", "failed"}:
+                    self._connection.execute(
+                        """
+                        UPDATE wake_inbox SET claim_json = ?, updated_at = ?
+                        WHERE handoff_id = ?
+                        """,
+                        (claim_json, timestamp, handoff_id),
+                    )
                 self._connection.commit()
-                return False
+                return self.get(handoff_id)
+            if self._has_legacy_tombstones:
+                legacy = self._connection.execute(
+                    """
+                    SELECT wake_token_ref, handoff_id FROM accepted_wakes
+                    WHERE wake_token_ref = ? OR handoff_id = ?
+                    """,
+                    (wake_token_ref, handoff_id),
+                ).fetchone()
+                if legacy is not None:
+                    if (
+                        legacy["wake_token_ref"] != wake_token_ref
+                        or legacy["handoff_id"] != handoff_id
+                    ):
+                        raise ValueError("legacy wake token is bound to another handoff")
+                    self._connection.execute(
+                        """
+                        INSERT INTO wake_inbox (
+                            wake_token_ref, handoff_id, execution_idempotency_key,
+                            claim_json, state, attempt, max_attempts, accepted_at,
+                            updated_at, retry_at, last_error, worker_claim_ref,
+                            worker_claim_until
+                        ) VALUES (?, ?, ?, ?, 'suppressed', 0, ?, ?, ?, NULL,
+                            'legacy_acceptance_ambiguous', NULL, NULL)
+                        """,
+                        (
+                            wake_token_ref,
+                            handoff_id,
+                            execution_key,
+                            claim_json,
+                            self.max_attempts,
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    self._connection.commit()
+                    return self.get(handoff_id)
             self._connection.execute(
                 """
-                INSERT INTO accepted_wakes (wake_token_ref, handoff_id, accepted_at)
-                VALUES (?, ?, ?)
+                INSERT INTO wake_inbox (
+                    wake_token_ref, handoff_id, execution_idempotency_key,
+                    claim_json, state, attempt, max_attempts, accepted_at,
+                    updated_at, retry_at, last_error, worker_claim_ref,
+                    worker_claim_until
+                ) VALUES (?, ?, ?, ?, 'accepted', 0, ?, ?, ?, NULL, NULL, NULL, NULL)
                 """,
                 (
                     wake_token_ref,
                     handoff_id,
-                    datetime.now(timezone.utc).isoformat(),
+                    execution_key,
+                    claim_json,
+                    self.max_attempts,
+                    timestamp,
+                    timestamp,
                 ),
             )
             self._connection.commit()
-            return True
+            return self.get(handoff_id)
         except BaseException:
             self._connection.rollback()
             raise
+
+    def mark_pending(
+        self,
+        *,
+        handoff_id: str,
+        wake_token: str,
+        now: datetime,
+    ) -> WakeInboxItem:
+        handoff_id = _require_identifier(handoff_id, "handoff_id")
+        wake_token_ref = hashlib.sha256(
+            _require_identifier(wake_token, "wake_token").encode("utf-8")
+        ).hexdigest()
+        timestamp = self._timestamp(now)
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(handoff_id)
+            if row["wake_token_ref"] != wake_token_ref:
+                raise ValueError("wake token does not match the accepted inbox item")
+            if row["state"] == "accepted":
+                self._connection.execute(
+                    """
+                    UPDATE wake_inbox SET state = 'pending', updated_at = ?
+                    WHERE handoff_id = ? AND state = 'accepted'
+                    """,
+                    (timestamp, handoff_id),
+                )
+            self._connection.commit()
+            return self.get(handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def reconcile_delivery(
+        self,
+        *,
+        handoff_id: str,
+        wake_token: str,
+        status: str,
+        now: datetime,
+    ) -> WakeInboxItem:
+        """Terminalize accepted work when the server rejects its receipt."""
+        handoff_id = _require_identifier(handoff_id, "handoff_id")
+        wake_token_ref = hashlib.sha256(
+            _require_identifier(wake_token, "wake_token").encode("utf-8")
+        ).hexdigest()
+        state = "completed" if status == "completed" else "suppressed"
+        changed = self._connection.execute(
+            """
+            UPDATE wake_inbox SET state = ?, last_error = ?, updated_at = ?,
+                worker_claim_ref = NULL, worker_claim_until = NULL
+            WHERE handoff_id = ? AND wake_token_ref = ?
+                AND state IN ('accepted', 'pending', 'failed')
+            """,
+            (
+                state,
+                f"server_{status}",
+                self._timestamp(now),
+                handoff_id,
+                wake_token_ref,
+            ),
+        ).rowcount
+        current = self.get(handoff_id)
+        if changed != 1 and current.state != state:
+            raise ValueError("delivery reconciliation does not match its inbox item")
+        return current
+
+    def claim_next(
+        self,
+        *,
+        now: datetime,
+        claim_seconds: int = 30,
+    ) -> WakeInboxClaim | None:
+        if not isinstance(claim_seconds, int) or isinstance(claim_seconds, bool) or claim_seconds < 1:
+            raise ValueError("claim_seconds must be positive")
+        timestamp = self._timestamp(now)
+        claim_until = self._timestamp(now + timedelta(seconds=claim_seconds))
+        worker_token = uuid4().hex
+        worker_ref = hashlib.sha256(worker_token.encode("utf-8")).hexdigest()
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET worker_claim_ref = NULL,
+                    worker_claim_until = NULL
+                WHERE state IN ('pending', 'failed')
+                    AND worker_claim_until IS NOT NULL AND worker_claim_until <= ?
+                """,
+                (timestamp,),
+            )
+            row = self._connection.execute(
+                """
+                SELECT * FROM wake_inbox
+                WHERE (state = 'pending' OR (
+                        state = 'failed' AND attempt < max_attempts
+                        AND (retry_at IS NULL OR retry_at <= ?)
+                    ))
+                    AND worker_claim_ref IS NULL
+                ORDER BY accepted_at, handoff_id LIMIT 1
+                """,
+                (timestamp,),
+            ).fetchone()
+            if row is None:
+                self._connection.commit()
+                return None
+            changed = self._connection.execute(
+                """
+                UPDATE wake_inbox SET worker_claim_ref = ?, worker_claim_until = ?,
+                    updated_at = ?
+                WHERE handoff_id = ? AND worker_claim_ref IS NULL
+                """,
+                (worker_ref, claim_until, timestamp, row["handoff_id"]),
+            ).rowcount
+            if changed != 1:
+                self._connection.rollback()
+                return None
+            claimed = self._row(row["handoff_id"])
+            self._connection.commit()
+            return WakeInboxClaim(self._item(claimed), worker_token)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def _worker_ref(self, claim: WakeInboxClaim) -> str:
+        return hashlib.sha256(claim.worker_token.encode("utf-8")).hexdigest()
+
+    def release_worker_claim(self, claim: WakeInboxClaim, *, now: datetime) -> None:
+        self._connection.execute(
+            """
+            UPDATE wake_inbox SET worker_claim_ref = NULL,
+                worker_claim_until = NULL, updated_at = ?
+            WHERE handoff_id = ? AND worker_claim_ref = ?
+                AND state IN ('pending', 'failed')
+            """,
+            (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
+        )
+
+    def begin_execution(
+        self, claim: WakeInboxClaim, *, now: datetime
+    ) -> WakeInboxItem:
+        changed = self._connection.execute(
+            """
+            UPDATE wake_inbox SET state = 'executing', attempt = attempt + 1,
+                retry_at = NULL, last_error = NULL, updated_at = ?
+            WHERE handoff_id = ? AND worker_claim_ref = ?
+                AND state IN ('pending', 'failed') AND attempt < max_attempts
+            """,
+            (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("inbox execution requires the active worker claim")
+        return self.get(claim.item.handoff_id)
+
+    def mark_completed(self, claim: WakeInboxClaim, *, now: datetime) -> WakeInboxItem:
+        changed = self._connection.execute(
+            """
+            UPDATE wake_inbox SET state = 'completed', updated_at = ?,
+                worker_claim_ref = NULL, worker_claim_until = NULL
+            WHERE handoff_id = ? AND worker_claim_ref = ? AND state = 'executing'
+            """,
+            (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
+        ).rowcount
+        if changed != 1 and self.get(claim.item.handoff_id).state != "completed":
+            raise ValueError("completed inbox item does not match its execution claim")
+        return self.get(claim.item.handoff_id)
+
+    def mark_failed(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        error: str,
+        retry_at: datetime,
+        now: datetime,
+    ) -> WakeInboxItem:
+        error = " ".join(str(error).split())[:160]
+        changed = self._connection.execute(
+            """
+            UPDATE wake_inbox SET state = 'failed', last_error = ?, retry_at = ?,
+                updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL
+            WHERE handoff_id = ? AND worker_claim_ref = ? AND state = 'executing'
+            """,
+            (
+                error,
+                self._timestamp(retry_at),
+                self._timestamp(now),
+                claim.item.handoff_id,
+                self._worker_ref(claim),
+            ),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("failed inbox item does not match its execution claim")
+        return self.get(claim.item.handoff_id)
+
+    def mark_suppressed(
+        self, claim: WakeInboxClaim, *, reason: str, now: datetime
+    ) -> WakeInboxItem:
+        changed = self._connection.execute(
+            """
+            UPDATE wake_inbox SET state = 'suppressed', last_error = ?,
+                updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL
+            WHERE handoff_id = ? AND worker_claim_ref = ?
+                AND state IN ('pending', 'failed')
+            """,
+            (
+                " ".join(reason.split())[:160],
+                self._timestamp(now),
+                claim.item.handoff_id,
+                self._worker_ref(claim),
+            ),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("suppressed inbox item does not match its worker claim")
+        return self.get(claim.item.handoff_id)
+
+
+class WakeInboxWorker:
+    """Authority-check and execute at most one durable target inbox item."""
+
+    def __init__(
+        self,
+        client: object,
+        adapter: object,
+        inbox: PrivateWakeInbox,
+        *,
+        retry_delay_seconds: float = 1,
+    ) -> None:
+        if retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must not be negative")
+        self.client = client
+        self.adapter = adapter
+        self.inbox = inbox
+        self.retry_delay_seconds = retry_delay_seconds
+
+    def run_once(self, *, now: datetime) -> WakeInboxItem | None:
+        claimed = self.inbox.claim_next(now=now)
+        if claimed is None:
+            return None
+        wake_token = _require_identifier(
+            claimed.item.claim.get("wake_token"), "wake_token"
+        )
+        try:
+            authority = self.client.execution_authority(
+                claimed.item.claim, wake_token=wake_token
+            )
+        except (OSError, TimeoutError):
+            self.inbox.release_worker_claim(claimed, now=now)
+            return None
+        if (
+            not isinstance(authority, Mapping)
+            or authority.get("handoff_id") != claimed.item.handoff_id
+            or authority.get("execution_authorized") is not True
+        ):
+            status = authority.get("status") if isinstance(authority, Mapping) else None
+            return self.inbox.mark_suppressed(
+                claimed,
+                reason=f"execution_authority_{status or 'invalid'}",
+                now=now,
+            )
+        self.inbox.begin_execution(claimed, now=now)
+        try:
+            result = self.adapter.resume_existing_thread(claimed.item.claim)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return self.inbox.mark_failed(
+                claimed,
+                error=(
+                    "command_timeout"
+                    if isinstance(exc, subprocess.TimeoutExpired)
+                    else "command_launch_failed"
+                ),
+                retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+                now=now,
+            )
+        if result.returncode == 0:
+            return self.inbox.mark_completed(claimed, now=now)
+        return self.inbox.mark_failed(
+            claimed,
+            error=f"command_exit_{result.returncode}",
+            retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+            now=now,
+        )
 
 
 class LocalDispatcherClient:
@@ -806,6 +1247,41 @@ class LocalDispatcherClient:
             return response
         raise ValueError("wake authorization response is inconsistent")
 
+    def execution_authority(
+        self,
+        claim: Mapping[str, object],
+        *,
+        wake_token: str,
+    ) -> dict[str, object]:
+        """Revalidate the exact accepted inbox item immediately before execution."""
+        handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        wake_token = _require_identifier(wake_token, "wake_token")
+        headers = self._claim_headers(claim)
+        headers["Idempotency-Key"] = _mutation_id(
+            handoff_id, f"execution-authority/{wake_token}"
+        )
+        _, response = self._post(
+            f"/api/handoffs/{quote(handoff_id, safe='')}/execution-authority",
+            {"wake_token": wake_token},
+            headers=headers,
+        )
+        if not isinstance(response, dict) or set(response) != EXECUTION_AUTHORITY_KEYS:
+            raise ValueError("execution authority response shape is invalid")
+        if response.get("handoff_id") != handoff_id:
+            raise ValueError("execution authority does not match the accepted handoff")
+        if not isinstance(response.get("execution_authorized"), bool):
+            raise ValueError("execution authority response is inconsistent")
+        if response["execution_authorized"] is True and response.get("status") != "received":
+            raise ValueError("execution authority response is inconsistent")
+        if response["execution_authorized"] is False and response.get("status") not in {
+            "suppressed",
+            "completed",
+            "dead_letter",
+            "retrying",
+        }:
+            raise ValueError("execution authority response is inconsistent")
+        return response
+
     def _claim_headers(self, claim: Mapping[str, object]) -> dict[str, str]:
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
         capability = claim.get("lease_capability")
@@ -896,7 +1372,6 @@ class CodexResumeAdapter:
         verify_timeout: float = 10,
         resume_timeout: float = 300,
         acknowledgement_helper: Sequence[str] | None = None,
-        wake_dedupe_store: PrivateWakeDedupStore | None = None,
     ) -> None:
         if _THREAD_ID.fullmatch(fixed_thread_id) is None:
             raise ValueError("fixed_thread_id must be one bounded existing thread id")
@@ -909,7 +1384,6 @@ class CodexResumeAdapter:
         self.acknowledgement_helper = (
             tuple(acknowledgement_helper) if acknowledgement_helper is not None else None
         )
-        self.wake_dedupe_store = wake_dedupe_store
 
     def _invoke(self, arguments: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         try:
@@ -996,24 +1470,6 @@ class CodexResumeAdapter:
         claim: Mapping[str, object],
     ) -> subprocess.CompletedProcess[str]:
         prompt = self._safe_prompt(claim)
-        wake_token = claim.get("wake_token")
-        if wake_token is not None:
-            wake_token = _require_identifier(wake_token, "wake_token")
-            if self.wake_dedupe_store is None:
-                raise CodexContractError(
-                    "durable target wake deduplication is not configured"
-                )
-            first_acceptance = self.wake_dedupe_store.accept(
-                wake_token=wake_token,
-                handoff_id=_require_identifier(claim.get("handoff_id"), "handoff_id"),
-            )
-            if not first_acceptance:
-                return subprocess.CompletedProcess(
-                    [self.codex_path, "exec", "resume"],
-                    0,
-                    stdout='{"wake":"already_accepted"}\n',
-                    stderr="",
-                )
         return self._run(
             [
                 self.codex_path,
@@ -1032,6 +1488,13 @@ class CodexResumeAdapter:
         )
 
 
+def _wake_inbox_path(claim_path: Path) -> Path:
+    legacy = claim_path.with_name(f"{claim_path.stem}.wake-dedupe.sqlite3")
+    if legacy.exists():
+        return legacy
+    return claim_path.with_name(f"{claim_path.stem}.wake-inbox.sqlite3")
+
+
 def run_forever(
     client: LocalDispatcherClient,
     adapter: CodexResumeAdapter,
@@ -1043,9 +1506,10 @@ def run_forever(
     stop_requested: Callable[[], bool] = lambda: False,
     sleep: Callable[[float], None] = time.sleep,
     claim_store: PrivateClaimStore | None = None,
+    wake_inbox: PrivateWakeInbox | None = None,
     max_recovery_reconciliations: int = 2,
 ) -> None:
-    """Run a bounded long-poll loop without worker threads."""
+    """Accept into a durable inbox, receipt it, then run a separate inbox worker."""
 
     if max_iterations is not None and max_iterations < 0:
         raise ValueError("max_iterations must not be negative")
@@ -1053,9 +1517,25 @@ def run_forever(
         raise ValueError("max_recovery_reconciliations must not be negative")
     iterations = 0
     recovered_handoffs: set[str] = set()
+    if wake_inbox is None and claim_store is not None:
+        wake_inbox = PrivateWakeInbox(_wake_inbox_path(claim_store.path))
+    inbox_worker = (
+        WakeInboxWorker(
+            client,
+            adapter,
+            wake_inbox,
+            retry_delay_seconds=retry_delay,
+        )
+        if wake_inbox is not None
+        else None
+    )
     while not stop_requested() and (max_iterations is None or iterations < max_iterations):
         iterations += 1
         try:
+            if inbox_worker is not None:
+                executed = inbox_worker.run_once(now=datetime.now(timezone.utc))
+                if executed is not None:
+                    continue
             claim = claim_store.load_current() if claim_store is not None else None
             if claim is not None:
                 handoff_id = str(claim["handoff_id"])
@@ -1069,6 +1549,7 @@ def run_forever(
                 pending = claim_store.pending_ack()
                 if pending is not None:
                     sequence, status, detail = pending
+                    wake_token = claim_store.pending_wake()
                     response = client.ack(
                         claim,
                         status=status,
@@ -1077,9 +1558,31 @@ def run_forever(
                     )
                     if not isinstance(response, Mapping):
                         raise ValueError("pending acknowledgement retry was not verified")
-                    claim_store.complete_ack(sequence, response)
+                    applied = claim_store.complete_ack(sequence, response)
+                    if not applied:
+                        if wake_inbox is not None and wake_token is not None:
+                            wake_inbox.reconcile_delivery(
+                                handoff_id=handoff_id,
+                                wake_token=wake_token,
+                                status=str(response.get("status")),
+                                now=datetime.now(timezone.utc),
+                            )
+                        recovered_handoffs.discard(handoff_id)
+                        continue
                     if status == "completed":
                         recovered_handoffs.discard(handoff_id)
+                    elif status == "received" and wake_inbox is not None and wake_token is not None:
+                        received_claim = claim_store.load(handoff_id)
+                        wake_inbox.enqueue(
+                            received_claim,
+                            wake_token=wake_token,
+                            now=datetime.now(timezone.utc),
+                        )
+                        wake_inbox.mark_pending(
+                            handoff_id=handoff_id,
+                            wake_token=wake_token,
+                            now=datetime.now(timezone.utc),
+                        )
                     continue
                 if (
                     handoff_id in recovered_handoffs
@@ -1113,6 +1616,23 @@ def run_forever(
                         continue
                     claim_store.complete_recovery(recovered)
                     claim = recovered
+                    wake_token = claim_store.pending_wake()
+                    if wake_inbox is not None and wake_token is not None:
+                        wake_inbox.enqueue(
+                            claim,
+                            wake_token=wake_token,
+                            now=datetime.now(timezone.utc),
+                        )
+                        if claim.get("status") in {
+                            "received",
+                            "actively_executing",
+                            "still_blocked",
+                        }:
+                            wake_inbox.mark_pending(
+                                handoff_id=str(claim["handoff_id"]),
+                                wake_token=wake_token,
+                                now=datetime.now(timezone.utc),
+                            )
                     recovered_handoffs.add(str(claim["handoff_id"]))
                     break
                 if recovery_cleared:
@@ -1142,28 +1662,13 @@ def run_forever(
             )
             if not claim_store.complete_wake_authorization(authorization):
                 continue
-            wake_claim = dict(claim)
-            wake_claim["wake_token"] = wake_token
-            try:
-                result = adapter.resume_existing_thread(wake_claim)
-            except subprocess.TimeoutExpired:
-                claim_store.prepare_failure("retryable")
-                response = client.fail(claim, failure_class="retryable")
-                if not isinstance(response, Mapping):
-                    raise ValueError("delivery failure was not verified")
-                claim_store.complete_failure("retryable", response)
-                if retry_delay > 0:
-                    sleep(retry_delay)
-                continue
-            if result.returncode != 0:
-                claim_store.prepare_failure("retryable")
-                response = client.fail(claim, failure_class="retryable")
-                if not isinstance(response, Mapping):
-                    raise ValueError("delivery failure was not verified")
-                claim_store.complete_failure("retryable", response)
-                if retry_delay > 0:
-                    sleep(retry_delay)
-                continue
+            if wake_inbox is None or inbox_worker is None:
+                raise ValueError("a private wake inbox is required before accepting a handoff")
+            wake_inbox.enqueue(
+                claim,
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
             sequence = claim_store.prepare_ack("received", None)
             response = client.ack(
                 claim,
@@ -1172,8 +1677,29 @@ def run_forever(
             )
             if not isinstance(response, Mapping):
                 raise ValueError("received acknowledgement was not verified")
-            claim_store.complete_ack(sequence, response)
+            applied = claim_store.complete_ack(sequence, response)
+            if not applied:
+                wake_inbox.reconcile_delivery(
+                    handoff_id=handoff_id,
+                    wake_token=wake_token,
+                    status=str(response.get("status")),
+                    now=datetime.now(timezone.utc),
+                )
+                recovered_handoffs.discard(handoff_id)
+                continue
+            received_claim = claim_store.load(handoff_id)
+            wake_inbox.enqueue(
+                received_claim,
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
+            wake_inbox.mark_pending(
+                handoff_id=handoff_id,
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
             recovered_handoffs.add(handoff_id)
+            inbox_worker.run_once(now=datetime.now(timezone.utc))
         except (OSError, TimeoutError):
             if retry_delay > 0:
                 sleep(retry_delay)
@@ -1270,9 +1796,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = DispatcherConfig.from_file(args.config)
     claim_path = args.claim_file or args.config.with_name(f"{args.config.stem}.active-claim.json")
     claim_store = PrivateClaimStore(claim_path)
-    wake_dedupe_store = PrivateWakeDedupStore(
-        claim_path.with_name(f"{claim_path.stem}.wake-dedupe.sqlite3")
-    )
+    wake_inbox = PrivateWakeInbox(_wake_inbox_path(claim_path))
     client = LocalDispatcherClient(
         config.mission_control_url,
         registration_id=config.registration_id,
@@ -1294,7 +1818,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--claim-file",
             str(claim_path.resolve()),
         ),
-        wake_dedupe_store=wake_dedupe_store,
     )
     try:
         adapter.verify_contract()
@@ -1305,9 +1828,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             lease_seconds=args.lease_seconds,
             stop_requested=install_signal_handlers(),
             claim_store=claim_store,
+            wake_inbox=wake_inbox,
         )
     finally:
-        wake_dedupe_store.close()
+        wake_inbox.close()
     return 0
 
 

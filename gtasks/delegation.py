@@ -15,6 +15,10 @@ _PAIRED_OPENCLAW_AGENTS = {
     "agents/timmy": "agents/timmy-oc",
     "agents/toddy": "agents/toddy-oc",
 }
+_APPROVED_SHARED_ROUTE_GROUPS = frozenset(
+    frozenset((source, executor))
+    for source, executor in _PAIRED_OPENCLAW_AGENTS.items()
+)
 
 
 class DelegationState(StrEnum):
@@ -56,6 +60,15 @@ def paired_openclaw_agent(source_agent: str) -> str:
         return _PAIRED_OPENCLAW_AGENTS[source_agent]
     except KeyError as exc:
         raise ValueError("source_agent must be a paired Codex Agent") from exc
+
+
+def agent_route_group_is_approved(agent_slugs: object) -> bool:
+    """Allow a singleton route or exactly one reviewed Codex/OpenClaw pair."""
+    try:
+        group = frozenset(agent_slugs)
+    except TypeError:
+        return False
+    return len(group) == 1 or group in _APPROVED_SHARED_ROUTE_GROUPS
 
 
 @dataclass(frozen=True, slots=True)

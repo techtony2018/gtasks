@@ -1118,6 +1118,87 @@ class HandoffRuntimeConstructionTests(unittest.TestCase):
         self.assertEqual(captured["record"].reason, "missing_registration")
         self.assertIsNone(captured["claim"])
 
+    def test_runtime_accepts_only_the_three_approved_shared_codex_openclaw_pairs(self) -> None:
+        raw_registrations = {
+            agent: f"private-registration-{agent.rsplit('/', 1)[-1]}"
+            for agent in (
+                "agents/tammy",
+                "agents/tammy-oc",
+                "agents/timmy",
+                "agents/timmy-oc",
+                "agents/toddy",
+                "agents/toddy-oc",
+            )
+        }
+        routes = {
+            "agents/tammy": "hosts/tammy",
+            "agents/tammy-oc": "hosts/tammy",
+            "agents/timmy": "hosts/timmy",
+            "agents/timmy-oc": "hosts/timmy",
+            "agents/toddy": "hosts/toddy",
+            "agents/toddy-oc": "hosts/toddy",
+        }
+
+        class PairedAdapter(self.RuntimeAdapter):
+            def list_agent_delegations(inner_self):
+                return ()
+
+        adapter = PairedAdapter(routes)
+        auth = HandoffDispatcherAuth.from_plaintext_tokens_for_tests(
+            {
+                agent: (registration, f"token-{agent.rsplit('/', 1)[-1]}")
+                for agent, registration in raw_registrations.items()
+            }
+        )
+        store = DurableHandoffStore(":memory:")
+        self.addCleanup(store.close)
+        bridge = server_module.build_runtime_handoff_event_bridge(
+            adapter, store, auth
+        )
+
+        self.assertEqual(
+            {registration.agent_slug for registration in bridge.dispatcher.registrations},
+            set(raw_registrations),
+        )
+
+        record = bridge.dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/shared-pair-runtime",
+                canonical_version="versions/1",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-shared-pair-runtime",
+                task_status="planned",
+            ),
+            now=self.NOW,
+        )
+        harness = ServerHarness(
+            self,
+            adapter,
+            handoff_store=store,
+            handoff_dispatcher_auth=auth,
+            handoff_event_bridge=bridge,
+            handoff_waiter=lambda _seconds: None,
+        )
+        status, claim, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {
+                "registration_id": raw_registrations["agents/tammy"],
+                "wait_seconds": 0,
+                "lease_seconds": 30,
+            },
+            {"Authorization": "Bearer token-tammy"},
+        )
+
+        self.assertEqual(record.status, "queued")
+        self.assertEqual(status, 200)
+        self.assertEqual(claim["agent_slug"], "agents/tammy")
+
 class HandoffMutationBridgeTests(unittest.TestCase):
     TASK = "tasks/agent-work"
     TODO = "todos/question"
@@ -2213,6 +2294,164 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             ).total,
             0,
         )
+
+    def test_execution_authority_catches_revocation_between_server_checks(self) -> None:
+        lease = AgentDelegationLease(
+            slug="agent-delegations/33333333-3333-4333-8333-333333333333",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=self.NOW - timedelta(minutes=15),
+            ends_at=self.NOW + timedelta(minutes=45),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("todo",),
+            state=DelegationState.ACTIVE,
+            created_at=self.NOW - timedelta(minutes=20),
+            updated_at=self.NOW - timedelta(minutes=20),
+        )
+        revoked = replace(
+            lease,
+            state=DelegationState.REVOKED,
+            updated_at=self.NOW + timedelta(seconds=2),
+        )
+        task_slug = "tasks/delegated-execution-authority"
+        task = replace(
+            new_task(
+                title="Delegated execution authority",
+                now=self.NOW,
+                identity="delegatedauthority",
+            ),
+            slug=task_slug,
+            owner_agent="agents/tammy",
+            status="planned",
+        )
+
+        class RacyAdapter(FakeAdapter):
+            def __init__(inner_self):
+                super().__init__(active=(task,), delegations=(lease,))
+                inner_self.race = False
+                inner_self.delegation_reads = 0
+
+            def list_agent_delegations(inner_self):
+                inner_self.delegation_reads += 1
+                if inner_self.race and inner_self.delegation_reads % 2 == 0:
+                    return (revoked,)
+                return (lease,)
+
+        adapter = RacyAdapter()
+        oc_registration = AgentRegistration(
+            registration_id="private-registration-tammy-oc-authority",
+            agent_slug="agents/tammy-oc",
+            route="hosts/tammy",
+            verified=True,
+        )
+        path = Path(self.harness.runtime_directory.name) / "execution-authority.sqlite3"
+        store = DurableHandoffStore(str(path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(
+            store,
+            registrations=(self.registration, oc_registration),
+            delegations=(lease,),
+            owned_work_snapshot=lambda executor: (
+                server_module._canonical_executor_priority_snapshot(adapter, executor)
+            ),
+        )
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=task_slug,
+                canonical_event_id="events/delegated-execution-authority",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-delegated-execution-authority",
+                task_status="planned",
+                requested_operation="todo",
+            ),
+            now=self.NOW,
+        )
+        auth = HandoffDispatcherAuth.from_plaintext_tokens_for_tests(
+            {
+                "agents/tammy-oc": (
+                    oc_registration.registration_id,
+                    "tammy-oc-authority-token",
+                )
+            }
+        )
+        harness = ServerHarness(
+            self,
+            adapter,
+            clock=lambda: self.NOW + timedelta(seconds=3),
+            handoff_store=store,
+            handoff_dispatcher_auth=auth,
+            handoff_registration_validator=lambda agent, registration: (
+                oc_registration
+                if agent == oc_registration.agent_slug
+                and registration == oc_registration.registration_id
+                else None
+            ),
+        )
+        token_header = {"Authorization": "Bearer tammy-oc-authority-token"}
+        status, claim, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {
+                "registration_id": oc_registration.registration_id,
+                "wait_seconds": 0,
+                "lease_seconds": 30,
+            },
+            token_header,
+        )
+        self.assertEqual(status, 200)
+        wake_token = f"wake/{record.idempotency_key}"
+        headers = {
+            **token_header,
+            "X-Handoff-Registration-ID": oc_registration.registration_id,
+            "X-Handoff-Lease-Capability": claim["lease_capability"],
+            "X-Handoff-Lease-Generation": str(claim["lease_generation"]),
+            "Idempotency-Key": "mutation-execution-authority",
+        }
+        self.assertEqual(
+            harness.request(
+                "POST",
+                f"/api/handoffs/{record.handoff_id}/wake",
+                {"wake_token": wake_token},
+                headers,
+            )[0],
+            200,
+        )
+        self.assertEqual(
+            harness.request(
+                "POST",
+                f"/api/handoffs/{record.handoff_id}/ack",
+                {"status": "received", "detail": None},
+                {**headers, "Idempotency-Key": "mutation-received-before-authority"},
+            )[0],
+            200,
+        )
+
+        adapter.race = True
+        adapter.delegation_reads = 0
+        authority_status, authority, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-authority",
+            {"wake_token": wake_token},
+            {**headers, "Idempotency-Key": "mutation-authority-race"},
+        )
+
+        self.assertEqual(authority_status, 200)
+        self.assertEqual(
+            authority,
+            {
+                "handoff_id": record.handoff_id,
+                "status": "suppressed",
+                "execution_authorized": False,
+            },
+        )
+        self.assertGreaterEqual(adapter.delegation_reads, 2)
+        self.assertIsNone(store.get_execution_claim(task_slug))
 
     def test_acknowledgements_enforce_owner_state_and_blocked_detail(self) -> None:
         allowed = ("received", "actively_executing", "still_blocked", "completed")

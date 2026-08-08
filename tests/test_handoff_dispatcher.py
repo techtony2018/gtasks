@@ -946,6 +946,153 @@ class HandoffDispatcherTests(unittest.TestCase):
                 now=NOW + timedelta(seconds=3),
             )
 
+    def test_durable_revocation_blocks_received_to_actively_executing_transition(self) -> None:
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id="events/revoked-received-to-active"),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID, now=NOW, lease_seconds=30
+        )
+        wake_token = f"wake/{delivery.record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW,
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-received-before-durable-revocation",
+            now=NOW + timedelta(seconds=1),
+        )
+        self.store.observe_delegation_authority(
+            delegation(
+                state=DelegationState.REVOKED,
+                updated_at=NOW + timedelta(seconds=2),
+            ),
+            observed_at=NOW + timedelta(seconds=2),
+        )
+
+        result = self.store.acknowledge(
+            delivery.handoff_id,
+            "actively_executing",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-active-after-durable-revocation",
+            now=NOW + timedelta(seconds=3),
+        )
+
+        self.assertEqual(result.status, "suppressed")
+        self.assertEqual(result.reason, "delegation_authority_changed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+    def test_execution_authority_rechecks_exact_wake_and_task_ownership(self) -> None:
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id="events/task-authority-before-execution"),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID, now=NOW, lease_seconds=30
+        )
+        wake_token = f"wake/{delivery.record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW,
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-received-before-task-owner-change",
+            now=NOW + timedelta(seconds=1),
+        )
+        with self.assertRaisesRegex(ValueError, "wake intent"):
+            self.store.authorize_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                wake_token="wake/wrong-token",
+                now=NOW + timedelta(seconds=2),
+            )
+
+        self.store.observe_task_authority(
+            TASK,
+            owner_agent="agents/timmy",
+            status="planned",
+            version="43",
+            observed_at=NOW + timedelta(seconds=2),
+        )
+        result = self.store.authorize_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=3),
+        )
+
+        self.assertEqual(result.status, "suppressed")
+        self.assertEqual(result.reason, "task_authority_changed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+    def test_verified_nonactionable_owner_change_updates_durable_task_control(self) -> None:
+        dispatcher = self.dispatcher(leases=(delegation(),))
+        dispatcher.record(
+            change(canonical_event_id="events/owner-before-change"),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID, now=NOW, lease_seconds=30
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-received-before-owner-change",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        changed = dispatcher.record(
+            change(
+                canonical_event_id="events/owner-changed-away",
+                canonical_version="43",
+                assigned_to=("agents/timmy",),
+                route="hosts/timmy",
+                correlation_id="correlation-owner-changed-away",
+            ),
+            now=NOW + timedelta(seconds=2),
+        )
+        result = self.store.acknowledge(
+            delivery.handoff_id,
+            "actively_executing",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-active-after-owner-change",
+            now=NOW + timedelta(seconds=3),
+        )
+
+        self.assertEqual(changed.status, "suppressed")
+        self.assertEqual(result.status, "suppressed")
+        self.assertEqual(result.reason, "task_authority_changed")
+
     def test_claim_release_is_idempotent_and_fenced(self) -> None:
         self.dispatcher(leases=(delegation(),)).record(
             change(canonical_event_id="events/release-fence"),

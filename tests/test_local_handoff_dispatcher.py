@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import plistlib
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
@@ -22,7 +24,8 @@ from gtasks.local_handoff_dispatcher import (
     LocalDispatcherClient,
     RejectRedirectHandler,
     PrivateClaimStore,
-    PrivateWakeDedupStore,
+    PrivateWakeInbox,
+    WakeInboxWorker,
     acknowledge_handoff,
     install_signal_handlers,
     run_forever,
@@ -237,6 +240,34 @@ class LocalDispatcherClientTests(unittest.TestCase):
         self.assertEqual(claimed["permanent_owner"], "agents/tammy")
         self.assertIsNone(claimed["delegation_slug"])
 
+    def test_legacy_claim_normalization_rejects_openclaw_and_unknown_agents(self) -> None:
+        for agent_slug in ("agents/tammy-oc", "agents/unknown"):
+            with self.subTest(agent_slug=agent_slug):
+                payload = claim_payload(
+                    agent_slug=agent_slug,
+                    registration_ref=hashlib.sha256(
+                        f"private-registration-{agent_slug.rsplit('/', 1)[-1]}".encode()
+                    ).hexdigest(),
+                )
+                for key in (
+                    "claim_schema_version",
+                    "executor_agent",
+                    "permanent_owner",
+                    "delegation_slug",
+                ):
+                    payload.pop(key)
+                self.responses.append(FakeResponse(200, payload))
+                client = LocalDispatcherClient(
+                    "http://127.0.0.1:4176",
+                    registration_id=f"private-registration-{agent_slug.rsplit('/', 1)[-1]}",
+                    bearer_token="local-bearer-token",
+                    agent_slug=agent_slug,
+                    opener=self.client._opener,
+                )
+
+                with self.assertRaisesRegex(ValueError, "legacy.*Codex"):
+                    client.claim(wait_seconds=0, lease_seconds=5)
+
     def test_claim_accepts_versioned_execution_provenance_for_codex_and_delegated_routes(self) -> None:
         payloads = (
             claim_payload(
@@ -304,6 +335,35 @@ class LocalDispatcherClientTests(unittest.TestCase):
             "private-lease-capability",
         )
         self.assertEqual(response["status"], "leased")
+
+    def test_execution_authority_uses_exact_claim_and_wake_fences(self) -> None:
+        claim = claim_payload(status="received")
+        self.responses.append(
+            FakeResponse(
+                200,
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "execution_authorized": True,
+                },
+            )
+        )
+
+        response = self.client.execution_authority(
+            claim, wake_token="wake/handoff-key-100"
+        )
+
+        url, method, body, headers, _timeout = self.request_details()
+        self.assertEqual(
+            url,
+            "http://127.0.0.1:4176/api/handoffs/handoff-100/execution-authority",
+        )
+        self.assertEqual(method, "POST")
+        self.assertEqual(body, {"wake_token": "wake/handoff-key-100"})
+        self.assertEqual(
+            headers["x-handoff-lease-capability"], "private-lease-capability"
+        )
+        self.assertTrue(response["execution_authorized"])
 
     def test_default_http_transport_rejects_every_redirect(self) -> None:
         handler = RejectRedirectHandler()
@@ -639,6 +699,257 @@ class CodexResumeAdapterTests(unittest.TestCase):
         self.assertNotIn('"exec", "fork"', source)
 
 
+class PrivateWakeInboxTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 8, 17, 0, tzinfo=timezone.utc)
+
+    class AuthorityClient:
+        def __init__(self, responses: list[dict[str, object]]) -> None:
+            self.responses = responses
+            self.calls: list[tuple[str, str]] = []
+
+        def execution_authority(self, claim, *, wake_token):
+            self.calls.append((claim["handoff_id"], wake_token))
+            return self.responses.pop(0)
+
+    class Adapter:
+        def __init__(self, results: list[object], callback=lambda: None) -> None:
+            self.results = results
+            self.callback = callback
+            self.calls: list[str] = []
+
+        def resume_existing_thread(self, claim):
+            self.calls.append(claim["handoff_id"])
+            self.callback()
+            result = self.results.pop(0)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+    def _accepted(self, inbox: PrivateWakeInbox) -> str:
+        wake_token = "wake/handoff-key-100"
+        item = inbox.enqueue(
+            claim_payload(status="received"),
+            wake_token=wake_token,
+            now=self.NOW,
+        )
+        self.assertEqual(item.state, "accepted")
+        inbox.mark_pending(
+            handoff_id="handoff-100", wake_token=wake_token, now=self.NOW
+        )
+        return wake_token
+
+    def test_duplicate_enqueue_returns_the_same_durable_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            first = inbox.enqueue(
+                claim_payload(status="leased"),
+                wake_token="wake/handoff-key-100",
+                now=self.NOW,
+            )
+            replay = inbox.enqueue(
+                claim_payload(status="received"),
+                wake_token="wake/handoff-key-100",
+                now=self.NOW + timedelta(seconds=1),
+            )
+
+            self.assertEqual(first.wake_token_ref, replay.wake_token_ref)
+            self.assertEqual(replay.state, "accepted")
+            self.assertEqual(replay.claim["status"], "received")
+
+    def test_legacy_acceptance_tombstone_is_quarantined_without_duplicate_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "wake-dedupe.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """
+                CREATE TABLE accepted_wakes (
+                    wake_token_ref TEXT PRIMARY KEY,
+                    handoff_id TEXT NOT NULL UNIQUE,
+                    accepted_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO accepted_wakes VALUES (?, ?, ?)",
+                (
+                    hashlib.sha256(b"wake/handoff-key-100").hexdigest(),
+                    "handoff-100",
+                    self.NOW.isoformat(),
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            inbox = PrivateWakeInbox(path)
+            self.addCleanup(inbox.close)
+            item = inbox.enqueue(
+                claim_payload(status="received"),
+                wake_token="wake/handoff-key-100",
+                now=self.NOW,
+            )
+            adapter = self.Adapter([])
+
+            WakeInboxWorker(self.AuthorityClient([]), adapter, inbox).run_once(
+                now=self.NOW
+            )
+
+            self.assertEqual(item.state, "suppressed")
+            self.assertEqual(adapter.calls, [])
+
+    def test_crash_before_command_recovers_pending_item_without_duplicate_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "wake-inbox.sqlite3"
+            first = PrivateWakeInbox(path)
+            self._accepted(first)
+            first.close()
+
+            recovered = PrivateWakeInbox(path)
+            self.addCleanup(recovered.close)
+            client = self.AuthorityClient(
+                [{"handoff_id": "handoff-100", "status": "received", "execution_authorized": True}]
+            )
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            worker = WakeInboxWorker(client, adapter, recovered, retry_delay_seconds=0)
+
+            worker.run_once(now=self.NOW + timedelta(seconds=1))
+            worker.run_once(now=self.NOW + timedelta(seconds=2))
+
+            self.assertEqual(adapter.calls, ["handoff-100"])
+            self.assertEqual(recovered.get("handoff-100").state, "completed")
+
+    def test_crash_after_worker_claim_keeps_item_pending_until_claim_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "wake-inbox.sqlite3"
+            first = PrivateWakeInbox(path)
+            self._accepted(first)
+            claimed = first.claim_next(now=self.NOW, claim_seconds=5)
+            self.assertIsNotNone(claimed)
+            self.assertEqual(first.get("handoff-100").state, "pending")
+            first.close()
+
+            recovered = PrivateWakeInbox(path)
+            self.addCleanup(recovered.close)
+            client = self.AuthorityClient(
+                [{"handoff_id": "handoff-100", "status": "received", "execution_authorized": True}]
+            )
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            worker = WakeInboxWorker(client, adapter, recovered, retry_delay_seconds=0)
+
+            self.assertIsNone(worker.run_once(now=self.NOW + timedelta(seconds=4)))
+            worker.run_once(now=self.NOW + timedelta(seconds=6))
+
+            self.assertEqual(adapter.calls, ["handoff-100"])
+            self.assertEqual(recovered.get("handoff-100").state, "completed")
+
+    def test_ambiguous_executing_item_is_never_reissued_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "wake-inbox.sqlite3"
+            first = PrivateWakeInbox(path)
+            self._accepted(first)
+            claimed = first.claim_next(now=self.NOW)
+            self.assertIsNotNone(claimed)
+            first.begin_execution(claimed, now=self.NOW)
+            first.close()
+
+            recovered = PrivateWakeInbox(path)
+            self.addCleanup(recovered.close)
+            adapter = self.Adapter([])
+            worker = WakeInboxWorker(self.AuthorityClient([]), adapter, recovered)
+
+            self.assertIsNone(worker.run_once(now=self.NOW + timedelta(hours=1)))
+            self.assertEqual(adapter.calls, [])
+            self.assertEqual(recovered.get("handoff-100").state, "executing")
+
+    def test_nonzero_command_records_retryable_failure_then_retries_by_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(
+                Path(temporary) / "wake-inbox.sqlite3", max_attempts=2
+            )
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            authorized = {
+                "handoff_id": "handoff-100",
+                "status": "received",
+                "execution_authorized": True,
+            }
+            client = self.AuthorityClient([authorized, authorized])
+            adapter = self.Adapter(
+                [
+                    subprocess.CompletedProcess([], 7),
+                    subprocess.CompletedProcess([], 0),
+                ]
+            )
+            worker = WakeInboxWorker(
+                client, adapter, inbox, retry_delay_seconds=0
+            )
+
+            worker.run_once(now=self.NOW)
+            failed = inbox.get("handoff-100")
+            self.assertEqual(failed.state, "failed")
+            self.assertTrue(failed.retryable)
+            worker.run_once(now=self.NOW + timedelta(seconds=1))
+
+            self.assertEqual(adapter.calls, ["handoff-100", "handoff-100"])
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
+    def test_known_command_launch_failure_is_retryable_not_ambiguous_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = self.AuthorityClient(
+                [{"handoff_id": "handoff-100", "status": "received", "execution_authorized": True}]
+            )
+            adapter = self.Adapter([OSError("executable unavailable")])
+
+            WakeInboxWorker(client, adapter, inbox).run_once(now=self.NOW)
+
+            item = inbox.get("handoff-100")
+            self.assertEqual(item.state, "failed")
+            self.assertTrue(item.retryable)
+
+    def test_revoked_between_enqueue_and_start_is_suppressed_without_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = self.AuthorityClient(
+                [{"handoff_id": "handoff-100", "status": "suppressed", "execution_authorized": False}]
+            )
+            adapter = self.Adapter([])
+
+            WakeInboxWorker(client, adapter, inbox).run_once(now=self.NOW)
+
+            self.assertEqual(adapter.calls, [])
+            self.assertEqual(inbox.get("handoff-100").state, "suppressed")
+
+    def test_helper_can_complete_during_execution_without_state_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            claim_store = PrivateClaimStore(directory / "active.json")
+            claim_store.save(claim_payload(status="received"))
+            sequence = claim_store.prepare_ack("completed", None)
+
+            def helper_complete() -> None:
+                claim_store.complete_ack(sequence, {"status": "completed"})
+
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = self.AuthorityClient(
+                [{"handoff_id": "handoff-100", "status": "received", "execution_authorized": True}]
+            )
+            adapter = self.Adapter(
+                [subprocess.CompletedProcess([], 0)], callback=helper_complete
+            )
+
+            WakeInboxWorker(client, adapter, inbox).run_once(now=self.NOW)
+
+            self.assertFalse(claim_store.path.exists())
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
+
 class RunForeverTests(unittest.TestCase):
     class Client:
         def __init__(self, claims: list[object]) -> None:
@@ -663,6 +974,13 @@ class RunForeverTests(unittest.TestCase):
                 "wake_authorized": True,
             }
 
+        def execution_authority(self, claim, *, wake_token):
+            return {
+                "handoff_id": claim["handoff_id"],
+                "status": "received",
+                "execution_authorized": True,
+            }
+
         def fail(self, claim, *, failure_class):
             self.failures.append((claim["handoff_id"], failure_class))
             return {"status": "retrying" if failure_class == "retryable" else "dead_letter"}
@@ -679,23 +997,49 @@ class RunForeverTests(unittest.TestCase):
                 raise result
             return result
 
-    def test_resumes_then_durably_acknowledges_received(self) -> None:
+    def test_durable_enqueue_precedes_received_and_worker_command(self) -> None:
         client = self.Client([claim_payload()])
-        adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
 
         with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
             store = PrivateClaimStore(Path(temporary) / "active.json")
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+
+            class Client(type(client)):
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    self.assertEqual(inbox.get(claim["handoff_id"]).state, "accepted")
+                    return super().ack(
+                        claim,
+                        status=status,
+                        detail=detail,
+                        operation_sequence=operation_sequence,
+                    )
+
+            ordered_client = Client([claim_payload()])
+
+            class Adapter(self.Adapter):
+                def resume_existing_thread(inner_self, claim):
+                    self.assertEqual(
+                        ordered_client.acks, [(claim["handoff_id"], "received")]
+                    )
+                    self.assertEqual(inbox.get(claim["handoff_id"]).state, "executing")
+                    return super().resume_existing_thread(claim)
+
+            adapter = Adapter([subprocess.CompletedProcess([], 0)])
             run_forever(
-                client,
+                ordered_client,
                 adapter,
                 claim_store=store,
+                wake_inbox=inbox,
                 max_iterations=1,
                 retry_delay=0,
             )
 
-        self.assertEqual(client.acks, [("handoff-100", "received")])
+        self.assertEqual(ordered_client.acks, [("handoff-100", "received")])
         self.assertEqual(adapter.claims, ["handoff-100"])
-        self.assertEqual(client.failures, [])
+        self.assertEqual(ordered_client.failures, [])
+        self.assertEqual(inbox.get("handoff-100").state, "completed")
 
     def test_network_loss_retries_without_losing_loop(self) -> None:
         client = self.Client([URLError("offline"), None])
@@ -706,7 +1050,7 @@ class RunForeverTests(unittest.TestCase):
 
         self.assertEqual(sleeps, [0.25])
 
-    def test_nonzero_and_timeout_report_retryable_failure_for_same_handoff(self) -> None:
+    def test_nonzero_and_timeout_remain_retryable_in_the_accepted_inbox(self) -> None:
         for result in (
             subprocess.CompletedProcess([], 7),
             subprocess.TimeoutExpired(["codex"], 30),
@@ -714,30 +1058,36 @@ class RunForeverTests(unittest.TestCase):
             with self.subTest(result=result):
                 client = self.Client([claim_payload()])
                 adapter = self.Adapter([result])
-                sleeps: list[float] = []
                 with tempfile.TemporaryDirectory() as temporary:
+                    directory = Path(temporary)
+                    inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
                     run_forever(
                         client,
                         adapter,
                         claim_store=PrivateClaimStore(
-                            Path(temporary) / "active.json"
+                            directory / "active.json"
                         ),
+                        wake_inbox=inbox,
                         max_iterations=1,
                         retry_delay=0.25,
-                        sleep=sleeps.append,
                     )
-                self.assertEqual(client.acks, [])
-                self.assertEqual(client.failures, [("handoff-100", "retryable")])
-                self.assertEqual(sleeps, [0.25])
+                    item = inbox.get("handoff-100")
+                    self.assertEqual(item.state, "failed")
+                    self.assertTrue(item.retryable)
+                    inbox.close()
+                self.assertEqual(client.acks, [("handoff-100", "received")])
+                self.assertEqual(client.failures, [])
 
     def test_process_restart_can_retry_same_handoff_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "active.json"
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
             first_client = self.Client([claim_payload()])
             run_forever(
                 first_client,
                 self.Adapter([subprocess.CompletedProcess([], 1)]),
                 claim_store=PrivateClaimStore(path),
+                wake_inbox=inbox,
                 max_iterations=1,
                 retry_delay=0,
             )
@@ -750,11 +1100,14 @@ class RunForeverTests(unittest.TestCase):
                 second_client,
                 second_adapter,
                 claim_store=PrivateClaimStore(path),
+                wake_inbox=inbox,
                 max_iterations=1,
                 retry_delay=0,
             )
 
-        self.assertEqual(first_client.failures, [("handoff-100", "retryable")])
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+            inbox.close()
+        self.assertEqual(first_client.failures, [])
         self.assertEqual(second_adapter.claims, ["handoff-100"])
 
     def test_process_restart_recovers_persisted_in_progress_before_claiming_new_work(self) -> None:
@@ -818,75 +1171,118 @@ class RunForeverTests(unittest.TestCase):
 
             self.assertEqual(events, ["recover:leased:3", "resume:4"])
 
-    def test_crash_after_target_dedup_acceptance_never_resumes_twice_before_received(self) -> None:
+    def test_crash_after_enqueue_before_received_recovers_and_executes_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             claim_store = PrivateClaimStore(directory / "active.json")
-            dedupe = PrivateWakeDedupStore(directory / "wake.sqlite3")
-            self.addCleanup(dedupe.close)
-            resume_calls: list[list[str]] = []
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
 
-            def invoke(arguments, **kwargs):
-                resume_calls.append(list(arguments))
-                return subprocess.CompletedProcess(arguments, 0, stdout="{}", stderr="")
+            class CrashClient(self.Client):
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    raise RuntimeError("crash after durable enqueue")
 
-            class CrashAfterAcceptance(CodexResumeAdapter):
-                def resume_existing_thread(inner_self, claim):
-                    super().resume_existing_thread(claim)
-                    raise RuntimeError("crash after target acceptance")
-
-            first_client = self.Client([claim_payload(status="leased")])
-            first_adapter = CrashAfterAcceptance(
-                "codex",
-                fixed_thread_id="thread-fixed-tammy",
-                working_directory=directory,
-                run=invoke,
-                wake_dedupe_store=dedupe,
-            )
-            with self.assertRaisesRegex(RuntimeError, "target acceptance"):
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+            with self.assertRaisesRegex(RuntimeError, "durable enqueue"):
                 run_forever(
-                    first_client,
-                    first_adapter,
+                    CrashClient([claim_payload(status="leased")]),
+                    adapter,
                     claim_store=claim_store,
+                    wake_inbox=inbox,
                     max_iterations=1,
                     retry_delay=0,
                 )
-            wake_token = claim_store.pending_wake()
+            self.assertEqual(inbox.get("handoff-100").state, "accepted")
+            self.assertEqual(adapter.claims, [])
 
-            class RecoveryClient(self.Client):
+            second_client = self.Client([])
+            run_forever(
+                second_client,
+                adapter,
+                claim_store=PrivateClaimStore(claim_store.path),
+                wake_inbox=inbox,
+                max_iterations=2,
+                retry_delay=0,
+            )
+
+            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(second_client.acks, [("handoff-100", "received")])
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
+    def test_crash_after_received_before_pending_recovers_and_executes_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            claim_store = PrivateClaimStore(directory / "active.json")
+            claim = claim_payload(status="leased", lease_generation=3)
+            claim_store.save(claim)
+            wake_token = claim_store.prepare_wake()
+            claim_store.complete_wake_authorization(
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "leased",
+                    "wake_authorized": True,
+                }
+            )
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            inbox.enqueue(claim, wake_token=wake_token, now=datetime.now(timezone.utc))
+            sequence = claim_store.prepare_ack("received", None)
+            claim_store.complete_ack(
+                sequence, {"status": "received", "detail": None}
+            )
+
+            class Client(self.Client):
                 def __init__(inner_self):
                     super().__init__([])
 
-                def recover(inner_self, claim):
+                def recover(inner_self, recovered_claim):
                     return claim_payload(
-                        status="leased",
+                        status="received",
                         lease_capability="rotated-capability",
                         lease_generation=4,
                     )
 
-            second_client = RecoveryClient()
-            second_adapter = CodexResumeAdapter(
-                "codex",
-                fixed_thread_id="thread-fixed-tammy",
-                working_directory=directory,
-                run=invoke,
-                wake_dedupe_store=dedupe,
-            )
+            adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
             run_forever(
-                second_client,
-                second_adapter,
+                Client(),
+                adapter,
                 claim_store=PrivateClaimStore(claim_store.path),
+                wake_inbox=inbox,
+                max_iterations=2,
+                retry_delay=0,
+            )
+
+            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
+    def test_authority_loss_during_received_ack_suppresses_inbox_without_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            claim_store = PrivateClaimStore(directory / "active.json")
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+
+            class SuppressedClient(self.Client):
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    inner_self.acks.append((claim["handoff_id"], status))
+                    return {
+                        "status": "suppressed",
+                        "reason": "delegation_authority_changed",
+                    }
+
+            adapter = self.Adapter([])
+            run_forever(
+                SuppressedClient([claim_payload(status="leased")]),
+                adapter,
+                claim_store=claim_store,
+                wake_inbox=inbox,
                 max_iterations=1,
                 retry_delay=0,
             )
 
-            self.assertEqual(len(resume_calls), 1)
-            self.assertEqual(second_client.acks, [("handoff-100", "received")])
-            self.assertEqual(PrivateClaimStore(claim_store.path).pending_wake(), wake_token)
-            self.assertEqual(
-                PrivateClaimStore(claim_store.path).load_current()["status"],
-                "received",
-            )
+            self.assertFalse(claim_store.path.exists())
+            self.assertEqual(inbox.get("handoff-100").state, "suppressed")
+            self.assertEqual(adapter.claims, [])
 
     def test_recovery_crash_window_reconciles_authoritative_generation_before_waking(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1207,26 +1603,23 @@ class RunForeverTests(unittest.TestCase):
 
         adapter = Adapter([subprocess.CompletedProcess([], 0)])
 
-        class Store:
-            def load_current(self):
-                return None
-
+        class Store(PrivateClaimStore):
             def save(self, claim):
                 events.append(f"save:{claim['handoff_id']}")
+                return super().save(claim)
 
-            def prepare_wake(self):
-                return "wake/handoff-key-100"
-
-            def complete_wake_authorization(self, response):
-                return True
-
-            def prepare_ack(self, status, detail):
-                return 1
-
-            def complete_ack(self, sequence, response):
-                return None
-
-        run_forever(client, adapter, claim_store=Store(), max_iterations=1, retry_delay=0)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            run_forever(
+                client,
+                adapter,
+                claim_store=Store(directory / "active.json"),
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+            inbox.close()
 
         self.assertEqual(events[:2], ["save:handoff-100", "resume:handoff-100"])
 
@@ -1574,6 +1967,23 @@ class InstallerTests(unittest.TestCase):
 
 
 class InstalledAcknowledgementHelperTests(unittest.TestCase):
+    def test_authority_suppression_clears_a_pending_helper_ack_without_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="received"))
+            sequence = store.prepare_ack("actively_executing", None)
+
+            applied = store.complete_ack(
+                sequence,
+                {
+                    "status": "suppressed",
+                    "reason": "delegation_authority_changed",
+                },
+            )
+
+            self.assertFalse(applied)
+            self.assertFalse(store.path.exists())
+
     def test_recovery_intent_is_persisted_before_request_and_stable_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "active-claim.json"

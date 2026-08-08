@@ -258,6 +258,7 @@ def _seed_handoff_events(
                     if sequence == 1
                     else "correlation-fixture-task"
                 ),
+                task_status=adapter.task.status,
             ),
             now=now,
         )
@@ -372,6 +373,7 @@ def _seed_handoff_events(
                 summary=f"Synthetic suppressed handoff event for {trigger.replace('_', ' ')}.",
                 occurred_at=now,
                 correlation_id="correlation-fixture-task",
+                task_status=adapter.task.status,
             ),
             now=now,
         )
