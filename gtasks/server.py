@@ -2228,7 +2228,8 @@ def _handler_class(
                     "supersedes",
                     "idempotency_key",
                 }
-                if set(payload) != required:
+                optional = {"delegation_ref"}
+                if set(payload) not in (required, required | optional):
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
@@ -2294,6 +2295,7 @@ def _handler_class(
                         goal=payload["goal"],
                         git_url=payload["git_url"],
                         supersedes=payload["supersedes"],
+                        delegation_ref=payload.get("delegation_ref"),
                         now=clock(),
                     )
                     with foreground_operation():

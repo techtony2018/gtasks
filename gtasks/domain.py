@@ -613,6 +613,27 @@ def _artifact_uuid_slug(value: Any, field: str) -> str:
     return value
 
 
+def _optional_delegation_ref(value: Any) -> str | None:
+    if value in {None, ""}:
+        return None
+    if not isinstance(value, str) or not value.startswith("agent-delegations/"):
+        raise DomainValidationError(
+            "delegation_ref must use a canonical UUID slug"
+        )
+    suffix = value.split("/", 1)[1]
+    try:
+        parsed = uuid.UUID(suffix)
+    except (AttributeError, ValueError) as exc:
+        raise DomainValidationError(
+            "delegation_ref must use a canonical UUID slug"
+        ) from exc
+    if str(parsed) != suffix.lower() or parsed.version not in {4, 5}:
+        raise DomainValidationError(
+            "delegation_ref must use a canonical UUIDv4 or UUIDv5 slug"
+        )
+    return value
+
+
 _GIT_COMMIT_ID = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
@@ -671,6 +692,7 @@ class AgentArtifact:
     git_url: str | None
     supersedes: str | None
     created_at: datetime
+    delegation_ref: str | None = None
 
     @classmethod
     def from_page(
@@ -860,6 +882,9 @@ class AgentArtifact:
         created_at = _required_zoned_datetime(
             frontmatter.get("created_at"), "artifact created_at"
         )
+        delegation_ref = _optional_delegation_ref(
+            frontmatter.get("delegation_ref")
+        )
         return cls(
             slug=slug,
             title=title,
@@ -874,6 +899,7 @@ class AgentArtifact:
             git_url=git_url,
             supersedes=supersedes,
             created_at=created_at,
+            delegation_ref=delegation_ref,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -891,6 +917,7 @@ class AgentArtifact:
             "git_url": self.git_url,
             "supersedes": self.supersedes,
             "created_at": self.created_at.isoformat(),
+            "delegation_ref": self.delegation_ref,
         }
         return result
 
@@ -907,6 +934,7 @@ def new_agent_artifact(
     goal: str | None = None,
     git_url: str | None = None,
     supersedes: str | None = None,
+    delegation_ref: str | None = None,
     now: datetime,
 ) -> AgentArtifact:
     slug = f"artifacts/{uuid.uuid4()}"
@@ -937,6 +965,7 @@ def new_agent_artifact(
                 "produced_for": produced_for,
                 "attachments": list(dict.fromkeys(attachments)),
                 "git_url": git_url,
+                "delegation_ref": delegation_ref,
                 "created_at": now.isoformat(),
                 "links": links,
             },

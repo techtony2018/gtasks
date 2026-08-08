@@ -74,6 +74,32 @@ OPENCLAW_SUBMIT_CALLER_TIMEOUT_SECONDS = 8.0
 OPENCLAW_STATUS_CALLER_TIMEOUT_SECONDS = 4.0
 TONY_PROFILE_SLUG = "people/tony-guan"
 _MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+APPROVED_OPENCLAW_DECLARATIONS: dict[str, dict[str, str]] = {
+    "agents/tammy-oc": {
+        "slug": "agents/tammy-oc",
+        "name": "Tammy-OC",
+        "runtime": "openclaw",
+        "route": "hosts/tammy",
+        "task_collection": "collections/tammy-oc-tasks",
+        "artifact_collection": "collections/tammy-oc-artifacts",
+    },
+    "agents/timmy-oc": {
+        "slug": "agents/timmy-oc",
+        "name": "Timmy-OC",
+        "runtime": "openclaw",
+        "route": "hosts/timmy",
+        "task_collection": "collections/timmy-oc-tasks",
+        "artifact_collection": "collections/timmy-oc-artifacts",
+    },
+    "agents/toddy-oc": {
+        "slug": "agents/toddy-oc",
+        "name": "Toddy-OC",
+        "runtime": "openclaw",
+        "route": "hosts/toddy",
+        "task_collection": "collections/toddy-oc-tasks",
+        "artifact_collection": "collections/toddy-oc-artifacts",
+    },
+}
 
 
 def _openclaw_active_manifest_identity_is_valid(
@@ -1680,55 +1706,6 @@ def render_artifact_collection_page(
     return "\n".join(lines)
 
 
-def _render_openclaw_collection_page(
-    *,
-    title: str,
-    collection_kind: str,
-    agent_slug: str,
-) -> str:
-    return "\n".join(
-        [
-            "---",
-            "type: collection",
-            f"title: {_yaml_scalar(title)}",
-            f"collection_kind: {collection_kind}",
-            f"agent: {_yaml_scalar(agent_slug)}",
-            "member_type: task" if collection_kind == "mission_control_agent_tasks" else "member_type: artifact",
-            "---",
-            "",
-            f"# {title}",
-            "",
-            "Canonical Mission Control Agent collection.",
-            "",
-        ]
-    )
-
-
-def _render_openclaw_agent_page(declaration: Mapping[str, str]) -> str:
-    name = declaration["name"]
-    host = declaration["route"].rsplit("/", 1)[-1].title()
-    lines = [
-        "---",
-        "type: agent",
-        f"title: {_yaml_scalar(f'Agent {name}')}",
-        "runtime: openclaw",
-        f"route: {_yaml_scalar(declaration['route'])}",
-        f"work_root: {_yaml_scalar(declaration['task_collection'])}",
-        f"artifact_collection: {_yaml_scalar(declaration['artifact_collection'])}",
-        'capabilities: ["read_own_work", "update_authorized_task_state", "publish_own_artifacts"]',
-        "---",
-        "",
-        f"# Agent {name}",
-        "",
-        (
-            f"Independent OpenClaw Agent on {host}. It can read its own canonical "
-            "work, update authorized task state, and publish its own Artifacts."
-        ),
-        "",
-    ]
-    return "\n".join(lines)
-
-
 def render_qa_fixtures_collection_page() -> str:
     return "\n".join(
         [
@@ -1770,6 +1747,7 @@ def render_agent_artifact_page(
         f"produced_for: {_yaml_scalar(artifact.produced_for)}",
         "attachments: " + json.dumps(list(artifact.attachments), ensure_ascii=False),
         f"git_url: {_yaml_scalar(artifact.git_url)}",
+        f"delegation_ref: {_yaml_scalar(artifact.delegation_ref)}",
         f"created_at: {_yaml_scalar(artifact.created_at.isoformat())}",
     ]
     if idempotency_key is not None:
@@ -3167,8 +3145,22 @@ class GBrainAdapter:
             )
         if idempotency_key is not None:
             idempotency_key = idempotency_key.strip()
-        self._preflight_artifact_task(artifact)
-        self.ensure_artifact_collections()
+        if AGENT_RUNTIME_BY_SLUG.get(executing_agent) == "openclaw":
+            activation = self._active_openclaw_activation(executing_agent)
+            if (
+                artifact.agent_collection
+                != activation["canonical_artifact_collection"]
+            ):
+                raise DomainValidationError(
+                    "Artifact collection does not match the activated logical OpenClaw identity"
+                )
+            self._openclaw_profile_from_activation(activation)
+            self._verify_openclaw_task_anchor(activation)
+            self._verify_openclaw_artifact_anchor(activation)
+            self._preflight_artifact_task(artifact)
+        else:
+            self._preflight_artifact_task(artifact)
+            self.ensure_artifact_collections()
         backlinks = (
             self.runner.run(
                 "get_backlinks", {"slug": artifact.agent_collection}
@@ -4163,7 +4155,7 @@ class GBrainAdapter:
         )
         return tuple(dict.fromkeys(scopes))
 
-    def _activated_openclaw_profiles(self) -> tuple[Mapping[str, str], ...]:
+    def _activated_openclaw_profiles(self) -> tuple[Mapping[str, Any], ...]:
         """Return only profiles named by Stargraph's CAS-active manifest.
 
         The regular GBrain agent directory intentionally cannot activate an
@@ -4173,9 +4165,35 @@ class GBrainAdapter:
         if self.openclaw_profiles is None:
             return ()
         projection = self.openclaw_profiles.active_projection()
-        raw_profiles = projection.get("profiles") if isinstance(projection, Mapping) else None
+        if not isinstance(projection, Mapping):
+            raise GBrainProtocolError(
+                "OpenClaw active profile projection was invalid"
+            )
+        generation = projection.get("generation")
+        active_manifest = projection.get("active_manifest")
+        manifest_digest = projection.get("manifest_digest")
+        raw_profiles = projection.get("profiles")
         if not isinstance(raw_profiles, list):
             raise GBrainProtocolError("OpenClaw active profile projection was invalid")
+        if not _openclaw_active_manifest_identity_is_valid(
+            generation, active_manifest, manifest_digest
+        ):
+            raise GBrainProtocolError(
+                "OpenClaw active profile manifest identity was invalid"
+            )
+        if generation == 0:
+            if raw_profiles:
+                raise GBrainProtocolError(
+                    "OpenClaw generation zero cannot expose active profiles"
+                )
+            return ()
+        assert isinstance(generation, int)
+        assert isinstance(active_manifest, str)
+        operation_id = active_manifest.split(f"g{generation:06d}-", 1)[1]
+        staged_prefix = (
+            "system/openclaw-profile-staging/"
+            f"g{generation:06d}-{operation_id}/staged/"
+        )
         expected = {
             "canonical_agent_slug",
             "canonical_task_collection",
@@ -4186,11 +4204,19 @@ class GBrainAdapter:
             "page_hashes",
             "metadata",
         }
-        profiles: list[Mapping[str, str]] = []
+        if len(raw_profiles) != len(APPROVED_OPENCLAW_DECLARATIONS):
+            raise GBrainProtocolError(
+                "OpenClaw active profile manifest must contain exactly three Agents"
+            )
+        profiles: list[Mapping[str, Any]] = []
         for item in raw_profiles:
             if not isinstance(item, Mapping) or set(item) != expected:
                 raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
-            values = {key: item.get(key) for key in expected if key not in {"page_hashes", "metadata"}}
+            values = {
+                key: item.get(key)
+                for key in expected
+                if key not in {"page_hashes", "metadata"}
+            }
             page_hashes = item.get("page_hashes")
             metadata = item.get("metadata")
             if (
@@ -4202,27 +4228,185 @@ class GBrainAdapter:
             canonical = str(values["canonical_agent_slug"])
             staged_agent = str(values["staged_agent_slug"])
             staged_tasks = str(values["staged_task_collection"])
+            staged_artifacts = str(values["staged_artifact_collection"])
+            declaration = APPROVED_OPENCLAW_DECLARATIONS.get(canonical)
             if (
-                canonical not in AGENT_RUNTIME_BY_SLUG
-                or AGENT_RUNTIME_BY_SLUG[canonical] != "openclaw"
-                or not staged_agent.startswith("system/openclaw-profile-staging/")
-                or not staged_tasks.startswith("system/openclaw-profile-staging/")
-                or not str(values["staged_artifact_collection"]).startswith("system/openclaw-profile-staging/")
+                declaration is None
+                or values["canonical_task_collection"]
+                != declaration["task_collection"]
+                or values["canonical_artifact_collection"]
+                != declaration["artifact_collection"]
+                or staged_agent != f"{staged_prefix}{canonical}"
+                or staged_tasks
+                != f"{staged_prefix}{declaration['task_collection']}"
+                or staged_artifacts
+                != f"{staged_prefix}{declaration['artifact_collection']}"
                 or set(page_hashes) != {
                     staged_agent,
                     staged_tasks,
-                    str(values["staged_artifact_collection"]),
+                    staged_artifacts,
                 }
                 or not all(
-                    isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+                    isinstance(digest, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", digest)
                     for digest in page_hashes.values()
                 )
             ):
-                raise GBrainProtocolError("OpenClaw active profile manifest has an invalid identity")
-            profiles.append({**{key: str(value) for key, value in values.items()}, "metadata": dict(metadata)})
-        if len(profiles) != 3 or len({item["canonical_agent_slug"] for item in profiles}) != 3:
-            raise GBrainProtocolError("OpenClaw active profile manifest must contain exactly three Agents")
+                raise GBrainProtocolError(
+                    "OpenClaw active profile manifest has an invalid approved identity mapping"
+                )
+            metadata_frontmatter = metadata.get("frontmatter")
+            if (
+                metadata.get("slug") != staged_agent
+                or metadata.get("type") != "agent"
+                or not isinstance(metadata.get("title"), str)
+                or not str(metadata["title"]).strip()
+                or not isinstance(metadata.get("compiled_truth"), str)
+                or not isinstance(metadata_frontmatter, Mapping)
+                or metadata_frontmatter.get("runtime") != "openclaw"
+                or metadata_frontmatter.get("route") != declaration["route"]
+                or metadata_frontmatter.get("activation_generation") != generation
+                or metadata_frontmatter.get("activation_operation_id")
+                != operation_id
+                or metadata_frontmatter.get("canonical_slug") != canonical
+                or metadata_frontmatter.get("staged") is not True
+            ):
+                raise GBrainProtocolError(
+                    "OpenClaw active profile metadata was not bound to its approved declaration"
+                )
+            profiles.append(
+                {
+                    **{key: str(value) for key, value in values.items()},
+                    "metadata": deepcopy(dict(metadata)),
+                }
+            )
+        if {
+            str(item["canonical_agent_slug"]) for item in profiles
+        } != set(APPROVED_OPENCLAW_DECLARATIONS):
+            raise GBrainProtocolError(
+                "OpenClaw active profile manifest did not contain the approved identities"
+            )
         return tuple(sorted(profiles, key=lambda item: item["canonical_agent_slug"]))
+
+    def _openclaw_profile_from_activation(
+        self, activation: Mapping[str, Any]
+    ) -> AgentProfile:
+        canonical_slug = str(activation["canonical_agent_slug"])
+        logical_page = self.runner.run("get_page", {"slug": canonical_slug})
+        logical_edges = self.runner.run("get_links", {"slug": canonical_slug})
+        if not isinstance(logical_page, Mapping) or not isinstance(
+            logical_edges, list
+        ):
+            raise GBrainProtocolError(
+                f"{canonical_slug} logical Agent anchor readback was not structured"
+            )
+        frontmatter = logical_page.get("frontmatter")
+        if (
+            logical_page.get("slug") != canonical_slug
+            or logical_page.get("type") != "agent"
+            or not isinstance(frontmatter, Mapping)
+            or frontmatter.get("runtime") != "openclaw"
+            or frontmatter.get("logical_anchor") is not True
+        ):
+            raise GBrainProtocolError(
+                f"{canonical_slug} is not a canonical logical OpenClaw Agent anchor"
+            )
+        metadata_page = deepcopy(dict(activation["metadata"]))
+        metadata_page["slug"] = canonical_slug
+        profile = AgentProfile.from_page(
+            metadata_page,
+            work_root=str(activation["canonical_task_collection"]),
+            edges=logical_edges,
+        )
+        if profile.runtime != "openclaw":
+            raise GBrainProtocolError(
+                "activated OpenClaw profile has the wrong runtime"
+            )
+        return profile
+
+    def _active_openclaw_activation(
+        self, agent_slug: str
+    ) -> Mapping[str, Any]:
+        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) != "openclaw":
+            raise ValueError(f"{agent_slug} is not an approved OpenClaw Agent")
+        activation = next(
+            (
+                item
+                for item in self._activated_openclaw_profiles()
+                if item["canonical_agent_slug"] == agent_slug
+            ),
+            None,
+        )
+        if activation is None:
+            raise ValueError(f"OpenClaw Agent {agent_slug} is not activated")
+        return activation
+
+    def _verify_openclaw_task_anchor(
+        self, activation: Mapping[str, Any]
+    ) -> None:
+        agent_slug = str(activation["canonical_agent_slug"])
+        collection_slug = str(activation["canonical_task_collection"])
+        page = self.runner.run("get_page", {"slug": collection_slug})
+        links = self.runner.run("get_links", {"slug": collection_slug})
+        frontmatter = page.get("frontmatter") if isinstance(page, Mapping) else None
+        if not isinstance(links, list):
+            raise GBrainProtocolError(
+                f"{collection_slug} logical task collection links were not a list"
+            )
+        for_agent = [
+            edge.get("to_slug")
+            for edge in links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == collection_slug
+            and edge.get("link_type") == "for_agent"
+        ]
+        if (
+            not isinstance(page, Mapping)
+            or page.get("slug") != collection_slug
+            or page.get("type") != "collection"
+            or not isinstance(frontmatter, Mapping)
+            or frontmatter.get("collection_kind")
+            != "mission_control_agent_tasks"
+            or frontmatter.get("agent") != agent_slug
+            or frontmatter.get("logical_anchor") is not True
+            or for_agent != [agent_slug]
+        ):
+            raise GBrainProtocolError(
+                f"{collection_slug} is not the verified logical task collection for {agent_slug}"
+            )
+
+    def _verify_openclaw_artifact_anchor(
+        self, activation: Mapping[str, Any]
+    ) -> None:
+        collection_slug = str(activation["canonical_artifact_collection"])
+        page = self.runner.run("get_page", {"slug": collection_slug})
+        links = self.runner.run("get_links", {"slug": collection_slug})
+        frontmatter = page.get("frontmatter") if isinstance(page, Mapping) else None
+        if (
+            not isinstance(frontmatter, Mapping)
+            or frontmatter.get("logical_anchor") is not True
+        ):
+            raise GBrainProtocolError(
+                f"{collection_slug} is not a verified logical Artifact collection"
+            )
+        try:
+            self._verify_artifact_collection(collection_slug, page, links)
+        except GBrainProtocolError as exc:
+            raise GBrainProtocolError(
+                f"{collection_slug} is not a verified logical Artifact collection: {exc}"
+            ) from exc
+
+    def _require_task_openclaw_activation(self, task: Task) -> None:
+        owner = task.owner_agent
+        if owner is None or AGENT_RUNTIME_BY_SLUG.get(owner) != "openclaw":
+            return
+        activation = self._active_openclaw_activation(owner)
+        if task.lifecycle_root != activation["canonical_task_collection"]:
+            raise GBrainProtocolError(
+                "OpenClaw task is not in its stable logical task collection"
+            )
+        self._openclaw_profile_from_activation(activation)
+        self._verify_openclaw_task_anchor(activation)
 
     def list_agent_profiles(self) -> AgentRead:
         def read_agent(
@@ -4262,9 +4446,11 @@ class GBrainAdapter:
             if issue is not None:
                 issues.append(issue)
         try:
-            activated_openclaw = self._activated_openclaw_profiles()
-        except GBrainError as exc:
-            activated_openclaw = ()
+            activated_openclaw = tuple(
+                self._openclaw_profile_from_activation(activation)
+                for activation in self._activated_openclaw_profiles()
+            )
+        except (DomainValidationError, GBrainError, ValueError) as exc:
             issues.append(
                 CollectionIssue(
                     slug="system/openclaw-profile-activation",
@@ -4273,27 +4459,8 @@ class GBrainAdapter:
                     impact="Existing Codex Agents remain available; OpenClaw activation could not be read.",
                 )
             )
-        for activation in activated_openclaw:
-            canonical_slug = activation["canonical_agent_slug"]
-            staged_agent = activation["staged_agent_slug"]
-            staged_work_root = activation["canonical_task_collection"]
-            try:
-                canonical_page = dict(activation["metadata"])
-                if canonical_page.get("slug") != staged_agent:
-                    raise GBrainProtocolError("activated OpenClaw metadata is not manifest-bound")
-                canonical_page["slug"] = canonical_slug
-                profile = AgentProfile.from_page(canonical_page, work_root=staged_work_root)
-                if profile.runtime != "openclaw":
-                    raise GBrainProtocolError("activated OpenClaw profile has the wrong runtime")
-                agents.append(profile)
-            except (DomainValidationError, GBrainError) as exc:
-                issues.append(
-                    CollectionIssue(
-                        slug=canonical_slug,
-                        message=str(exc),
-                        impact="This activated OpenClaw profile is unavailable until its staged page is repaired.",
-                    )
-                )
+        else:
+            agents.extend(activated_openclaw)
         return AgentRead(agents=tuple(agents), issues=tuple(issues))
 
     def set_agent_avatar(self, agent_slug: str, served_url: str) -> AgentProfile:
@@ -4329,15 +4496,30 @@ class GBrainAdapter:
         """Read one exact canonical agent slug; never derive it from a name."""
         scope_by_agent = dict(self._agent_scopes())
         work_root = scope_by_agent.get(agent_slug)
-        if work_root is None:
+        if work_root is not None:
+            page = self.runner.run("get_page", {"slug": agent_slug})
+            links = self.runner.run("get_links", {"slug": agent_slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError("agent profile readback was not structured")
+            return AgentProfile.from_page(page, work_root=work_root, edges=links)
+        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) == "openclaw":
+            activation = next(
+                (
+                    item
+                    for item in self._activated_openclaw_profiles()
+                    if item["canonical_agent_slug"] == agent_slug
+                ),
+                None,
+            )
+            if activation is None:
+                raise ValueError(
+                    f"OpenClaw Agent {agent_slug} is not activated"
+                )
+            return self._openclaw_profile_from_activation(activation)
+        else:
             raise ValueError(
                 "Agent profile is not available in the active directory. Refresh and select the listed agent."
             )
-        page = self.runner.run("get_page", {"slug": agent_slug})
-        links = self.runner.run("get_links", {"slug": agent_slug})
-        if not isinstance(page, Mapping) or not isinstance(links, list):
-            raise GBrainProtocolError("agent profile readback was not structured")
-        return AgentProfile.from_page(page, work_root=work_root, edges=links)
 
     @staticmethod
     def _openclaw_declaration(declaration: Mapping[str, str]) -> dict[str, str]:
@@ -4354,226 +4536,32 @@ class GBrainAdapter:
         ):
             raise ValueError("OpenClaw declaration must contain the exact public fields")
         normalized = {key: value.strip() for key, value in declaration.items()}
-        slug = normalized["slug"]
-        if (
-            AGENT_RUNTIME_BY_SLUG.get(slug) != "openclaw"
-            or normalized["runtime"] != "openclaw"
-            or dict(AGENT_SCOPES).get(slug) != normalized["task_collection"]
-            or ARTIFACT_BY_AGENT.get(slug) != normalized["artifact_collection"]
-            or re.fullmatch(r"agents/[a-z0-9][a-z0-9._-]{0,63}", slug) is None
-            or re.fullmatch(r"hosts/[a-z0-9][a-z0-9._-]{0,63}", normalized["route"])
-            is None
-        ):
+        if APPROVED_OPENCLAW_DECLARATIONS.get(normalized["slug"]) != normalized:
             raise ValueError("OpenClaw declaration does not match the approved scope")
         return normalized
 
     @staticmethod
-    def _openclaw_page_spec(
-        declaration: Mapping[str, str],
-    ) -> tuple[tuple[str, str, str, dict[str, Any], str], ...]:
-        agent_slug = declaration["slug"]
-        name = declaration["name"]
-        task_collection = declaration["task_collection"]
-        artifact_collection = declaration["artifact_collection"]
-        agent_content = _render_openclaw_agent_page(declaration)
-        return (
-            (
-                agent_slug,
-                "agent",
-                f"Agent {name}",
-                {
-                    "runtime": "openclaw",
-                    "route": declaration["route"],
-                    "work_root": task_collection,
-                    "artifact_collection": artifact_collection,
-                    "capabilities": [
-                        "read_own_work",
-                        "update_authorized_task_state",
-                        "publish_own_artifacts",
-                    ],
-                },
-                agent_content,
-            ),
-            (
-                task_collection,
-                "collection",
-                f"{name} Tasks",
-                {
-                    "collection_kind": "mission_control_agent_tasks",
-                    "agent": agent_slug,
-                    "member_type": "task",
-                },
-                _render_openclaw_collection_page(
-                    title=f"{name} Tasks",
-                    collection_kind="mission_control_agent_tasks",
-                    agent_slug=agent_slug,
-                ),
-            ),
-            (
-                artifact_collection,
-                "collection",
-                f"{name} Artifacts",
-                {
-                    "collection_kind": "mission_control_artifacts",
-                    "agent": agent_slug,
-                    "member_type": "artifact",
-                },
-                _render_openclaw_collection_page(
-                    title=f"{name} Artifacts",
-                    collection_kind="mission_control_artifacts",
-                    agent_slug=agent_slug,
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _openclaw_page_matches(
-        page: object,
-        *,
-        slug: str,
-        page_type: str,
-        title: str,
-        frontmatter: Mapping[str, Any],
-        content: str,
-    ) -> bool:
-        if not isinstance(page, Mapping):
-            return False
-        stored_frontmatter = page.get("frontmatter")
-        return (
-            page.get("slug") == slug
-            and page.get("type") == page_type
-            and page.get("title") == title
-            and isinstance(stored_frontmatter, Mapping)
-            and dict(stored_frontmatter) == dict(frontmatter)
-            and page.get("compiled_truth") == content.split("---", 2)[-1].strip()
-        )
-
-    @staticmethod
-    def _openclaw_expected_links(
-        declaration: Mapping[str, str],
-    ) -> tuple[tuple[str, str, str, str], ...]:
-        agent = declaration["slug"]
-        return (
-            (
-                declaration["task_collection"],
-                agent,
-                "for_agent",
-                "This collection stores canonical work for this Agent.",
-            ),
-            (
-                declaration["artifact_collection"],
-                ARTIFACTS_ROOT,
-                "part_of",
-                "This Agent Artifact collection belongs to Mission Control Artifacts.",
-            ),
-            (
-                declaration["artifact_collection"],
-                agent,
-                "for_agent",
-                "This collection stores durable output from this Agent.",
-            ),
-        )
-
-    @staticmethod
-    def _validated_openclaw_links(
-        raw_links: object,
-        *,
-        slug: str,
-    ) -> list[Mapping[str, Any]]:
-        if not isinstance(raw_links, list):
-            raise GBrainProtocolError(f"{slug} relationship readback was not a list")
-        validated: list[Mapping[str, Any]] = []
-        for edge in raw_links:
-            if not isinstance(edge, Mapping) or any(
-                not isinstance(edge.get(field), str) or not edge[field].strip()
-                for field in ("from_slug", "to_slug", "link_type")
-            ):
-                raise GBrainProtocolError(f"{slug} relationship is malformed")
-            if edge["from_slug"] != slug:
-                raise GBrainProtocolError(f"{slug} relationship source is malformed")
-            validated.append(edge)
-        return validated
-
-    @staticmethod
     def _openclaw_receipt(
         declaration: Mapping[str, str],
-        specs: Sequence[tuple[str, str, str, dict[str, Any], str]],
-        expected_links: Sequence[tuple[str, str, str, str]],
-        *,
-        verified: bool,
-        mutated: bool,
     ) -> AgentProvisioningReceipt:
+        agent = declaration["slug"]
+        task_collection = declaration["task_collection"]
+        artifact_collection = declaration["artifact_collection"]
         return AgentProvisioningReceipt(
-            agent_slug=declaration["slug"],
-            collection_slugs=(
-                declaration["task_collection"],
-                declaration["artifact_collection"],
-            ),
+            agent_slug=agent,
+            collection_slugs=(task_collection, artifact_collection),
             default_goal_slugs=(),
-            operations=tuple(
-                [f"put_page:{slug}" for slug, *_rest in specs]
-                + [
-                    f"add_link:{source}->{target}:{link_type}"
-                    for source, target, link_type, _context in expected_links
-                ]
+            operations=(
+                f"put_page:{agent}",
+                f"put_page:{task_collection}",
+                f"put_page:{artifact_collection}",
+                f"add_link:{task_collection}->{agent}:for_agent",
+                f"add_link:{artifact_collection}->{ARTIFACTS_ROOT}:part_of",
+                f"add_link:{artifact_collection}->{agent}:for_agent",
             ),
-            verified=verified,
-            mutated=mutated,
+            verified=False,
+            mutated=False,
         )
-
-    def _rollback_openclaw_provisioning(
-        self,
-        *,
-        snapshots: Mapping[str, object | None],
-        links_by_slug: Mapping[str, list[Mapping[str, Any]]],
-        created_slugs: Sequence[str],
-        added_links: Sequence[tuple[str, str, str]],
-    ) -> bool:
-        try:
-            for source, target, link_type in reversed(added_links):
-                self.runner.run(
-                    "remove_link",
-                    {"from": source, "to": target, "link_type": link_type},
-                )
-            for slug in reversed(created_slugs):
-                try:
-                    self.runner.run("delete_page", {"slug": slug})
-                except GBrainCommandError as exc:
-                    if not is_page_not_found_error(exc):
-                        raise
-            for slug, before in snapshots.items():
-                if before is None:
-                    try:
-                        self.runner.run("get_page", {"slug": slug})
-                    except GBrainCommandError as exc:
-                        if not is_page_not_found_error(exc):
-                            raise
-                    else:
-                        return False
-                    try:
-                        deleted = self.runner.run(
-                            "get_page", {"slug": slug, "include_deleted": True}
-                        )
-                    except GBrainCommandError as exc:
-                        if not is_page_not_found_error(exc):
-                            raise
-                    else:
-                        if (
-                            not isinstance(deleted, Mapping)
-                            or deleted.get("slug") != slug
-                            or not deleted.get("deleted_at")
-                        ):
-                            return False
-                elif self.runner.run("get_page", {"slug": slug}) != before:
-                    return False
-                restored_links = self._validated_openclaw_links(
-                    self.runner.run("get_links", {"slug": slug}), slug=slug
-                )
-                if restored_links != links_by_slug[slug]:
-                    return False
-            return True
-        except GBrainError:
-            return False
 
     def provision_agent_profiles(
         self,
@@ -4581,163 +4569,24 @@ class GBrainAdapter:
         *,
         execute: bool,
     ) -> tuple[AgentProvisioningReceipt, ...]:
-        """Batch-provision OpenClaw profiles with one fail-closed boundary."""
+        """Validate legacy plans without directly provisioning OpenClaw pages."""
         if execute:
             raise GBrainProtocolError(
                 "direct OpenClaw provisioning is disabled; use Memory Stargraph activation"
             )
-        items = tuple(self._openclaw_declaration(declaration) for declaration in declarations)
+        items = tuple(
+            self._openclaw_declaration(declaration)
+            for declaration in declarations
+        )
         if not items:
-            raise ValueError("OpenClaw provisioning requires at least one declaration")
-        if len({item["slug"] for item in items}) != len(items) or len(
-            {
-                collection
-                for item in items
-                for collection in (item["task_collection"], item["artifact_collection"])
-            }
-        ) != len(items) * 2:
-            raise ValueError("OpenClaw declarations must not share canonical identities")
-        plans = tuple(
-            (item, self._openclaw_page_spec(item), self._openclaw_expected_links(item))
-            for item in items
-        )
-        if not execute:
-            return tuple(
-                self._openclaw_receipt(
-                    item, specs, expected_links, verified=False, mutated=False
-                )
-                for item, specs, expected_links in plans
+            raise ValueError(
+                "OpenClaw provisioning requires at least one declaration"
             )
-
-        snapshots: dict[str, object | None] = {}
-        links_by_slug: dict[str, list[Mapping[str, Any]]] = {}
-        expected_by_source: dict[str, set[tuple[str, str]]] = {}
-        for item, specs, expected_links in plans:
-            for slug, page_type, title, frontmatter, content in specs:
-                try:
-                    snapshots[slug] = self.runner.run("get_page", {"slug": slug})
-                except GBrainCommandError as exc:
-                    if not is_page_not_found_error(exc):
-                        raise
-                    snapshots[slug] = None
-                links_by_slug[slug] = self._validated_openclaw_links(
-                    self.runner.run("get_links", {"slug": slug}), slug=slug
-                )
-                existing = snapshots[slug]
-                if existing is not None and not self._openclaw_page_matches(
-                    existing,
-                    slug=slug,
-                    page_type=page_type,
-                    title=title,
-                    frontmatter=frontmatter,
-                    content=content,
-                ):
-                    label = "Agent" if page_type == "agent" else "collection"
-                    raise GBrainProtocolError(f"{slug} is not a canonical {label} page")
-            for source, target, link_type, _context in expected_links:
-                expected_by_source.setdefault(source, set()).add((target, link_type))
-
-        root = self.runner.run("get_page", {"slug": ARTIFACTS_ROOT})
-        if (
-            not isinstance(root, Mapping)
-            or root.get("slug") != ARTIFACTS_ROOT
-            or root.get("type") != "collection"
-            or not isinstance(root.get("frontmatter"), Mapping)
-            or root["frontmatter"].get("collection_kind")
-            != "mission_control_artifacts"
-        ):
-            raise GBrainProtocolError("global Artifact collection is not canonical")
-        for slug, links in links_by_slug.items():
-            if any(edge["link_type"] == "default_agent_for" for edge in links):
-                raise GBrainProtocolError(
-                    f"{slug} has a Goal relationship; provisioning will not repair it"
-                )
-            actual = {(edge["to_slug"], edge["link_type"]) for edge in links}
-            unexpected = actual - expected_by_source.get(slug, set())
-            if unexpected:
-                raise GBrainProtocolError(
-                    f"{slug} has unexpected collection membership or relationship"
-                )
-
-        created_slugs: list[str] = []
-        added_links: list[tuple[str, str, str]] = []
-        mutated_by_agent = {item["slug"]: False for item in items}
-        try:
-            for item, specs, _expected_links in plans:
-                for slug, _page_type, _title, _frontmatter, content in specs:
-                    if snapshots[slug] is None:
-                        created_slugs.append(slug)
-                        self.runner.run("put_page", {"slug": slug, "content": content})
-                        mutated_by_agent[item["slug"]] = True
-            for item, _specs, expected_links in plans:
-                for source, target, link_type, context in expected_links:
-                    actual = {
-                        (edge["to_slug"], edge["link_type"])
-                        for edge in links_by_slug[source]
-                    }
-                    if (target, link_type) not in actual:
-                        added_links.append((source, target, link_type))
-                        self.runner.run(
-                            "add_link",
-                            {
-                                "from": source,
-                                "to": target,
-                                "link_type": link_type,
-                                "context": context,
-                                "link_source": "gtasks",
-                            },
-                        )
-                        mutated_by_agent[item["slug"]] = True
-
-            for item, specs, _expected_links in plans:
-                for slug, page_type, title, frontmatter, content in specs:
-                    stored = self.runner.run("get_page", {"slug": slug})
-                    if not self._openclaw_page_matches(
-                        stored,
-                        slug=slug,
-                        page_type=page_type,
-                        title=title,
-                        frontmatter=frontmatter,
-                        content=content,
-                    ):
-                        raise GBrainProtocolError(f"{slug} page did not read back exactly")
-                    stored_links = self._validated_openclaw_links(
-                        self.runner.run("get_links", {"slug": slug}), slug=slug
-                    )
-                    actual = {
-                        (edge["to_slug"], edge["link_type"])
-                        for edge in stored_links
-                    }
-                    if actual != expected_by_source.get(slug, set()):
-                        raise GBrainProtocolError(
-                            f"{slug} relationships did not read back exactly"
-                        )
-        except (GBrainError, ValueError) as exc:
-            rollback_verified = self._rollback_openclaw_provisioning(
-                snapshots=snapshots,
-                links_by_slug=links_by_slug,
-                created_slugs=created_slugs,
-                added_links=added_links,
+        if len({item["slug"] for item in items}) != len(items):
+            raise ValueError(
+                "OpenClaw declarations must not share canonical identities"
             )
-            raise PartialMutationError(
-                items[0]["slug"],
-                "OpenClaw profile provisioning failed. "
-                + (
-                    "Rollback verified."
-                    if rollback_verified
-                    else "Rollback could not be verified."
-                ),
-            ) from exc
-        return tuple(
-            self._openclaw_receipt(
-                item,
-                specs,
-                expected_links,
-                verified=True,
-                mutated=mutated_by_agent[item["slug"]],
-            )
-            for item, specs, expected_links in plans
-        )
+        return tuple(self._openclaw_receipt(item) for item in items)
 
     def provision_agent_profile(
         self,
@@ -4745,7 +4594,7 @@ class GBrainAdapter:
         *,
         execute: bool,
     ) -> AgentProvisioningReceipt:
-        """Provision one explicit profile through the same rollback boundary."""
+        """Return one legacy dry-run plan or reject direct execution."""
         return self.provision_agent_profiles((declaration,), execute=execute)[0]
 
     def read_handoff_dispatcher_registration(
@@ -6015,17 +5864,22 @@ class GBrainAdapter:
                 "new agent work must start planned/queued in exactly the "
                 "selected agent work collection"
             )
-        agent_page = self.runner.run("get_page", {"slug": agent_slug})
-        agent_links = self.runner.run("get_links", {"slug": agent_slug})
-        if not isinstance(agent_page, Mapping) or not isinstance(
-            agent_links, list
-        ):
-            raise ValueError("selected agent profile could not be verified")
-        AgentProfile.from_page(
-            agent_page,
-            work_root=work_root,
-            edges=agent_links,
-        )
+        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) == "openclaw":
+            activation = self._active_openclaw_activation(agent_slug)
+            self._openclaw_profile_from_activation(activation)
+            self._verify_openclaw_task_anchor(activation)
+        else:
+            agent_page = self.runner.run("get_page", {"slug": agent_slug})
+            agent_links = self.runner.run("get_links", {"slug": agent_slug})
+            if not isinstance(agent_page, Mapping) or not isinstance(
+                agent_links, list
+            ):
+                raise ValueError("selected agent profile could not be verified")
+            AgentProfile.from_page(
+                agent_page,
+                work_root=work_root,
+                edges=agent_links,
+            )
         if task.project:
             project_page = self.runner.run("get_page", {"slug": task.project})
             project_links = self.runner.run("get_links", {"slug": task.project})
@@ -6768,7 +6622,9 @@ class GBrainAdapter:
             raise ValueError(
                 f"task has unexpected page type {page.get('type') or 'missing'}; repair the task type before editing"
             )
-        return Task.from_page(page, edges=links)
+        task = Task.from_page(page, edges=links)
+        self._require_task_openclaw_activation(task)
+        return task
 
     def edit_task(
         self,
@@ -6803,6 +6659,7 @@ class GBrainAdapter:
                 f"task has unexpected page type {raw_page.get('type') or 'missing'}; repair the task type before editing"
             )
         task = Task.from_page(raw_page, edges=raw_links)
+        self._require_task_openclaw_activation(task)
         if status not in EDITABLE_TASK_STATUSES | {"proposed"}:
             raise ValueError("task status is not supported")
         if task.status == "proposed" and status == "proposed" and assignee_slug != (task.owner_agent or "tony"):
@@ -7011,6 +6868,7 @@ class GBrainAdapter:
             except DomainValidationError as recovery_exc:
                 raise ValueError(str(exc)) from recovery_exc
             recovering_terminal_handoff = True
+        self._require_task_openclaw_activation(task)
         existing_lifecycle_edges = initial_lifecycle_edges
         existing_lifecycle_edge = _require_single_lifecycle_edge(
             task_slug, raw_links
@@ -9253,7 +9111,9 @@ class GBrainAdapter:
 
     def get_todo(self, todo_slug: str) -> TodoItem:
         """Return the authoritative hydrated To Do used for mutation snapshots."""
-        return self._read_todo(todo_slug)
+        todo = self._read_todo(todo_slug)
+        self.get_task(todo.parent_task)
+        return todo
 
     def _todo_mutation_snapshot(
         self,
@@ -9264,7 +9124,9 @@ class GBrainAdapter:
     ) -> tuple[TodoItem, Mapping[str, Any], Mapping[str, Any]] | TodoMutationReceipt:
         existing_event = self._optional_todo_event(event_slug)
         if existing_event is not None:
-            return TodoMutationReceipt(self._read_todo(todo_slug), True, idempotent=True)
+            todo = self._read_todo(todo_slug)
+            self.get_task(todo.parent_task)
+            return TodoMutationReceipt(todo, True, idempotent=True)
         todo = self._read_todo(todo_slug)
         if todo.updated_at != expected_updated_at:
             raise ConcurrentTodoUpdateError(todo_slug)
@@ -9404,7 +9266,9 @@ class GBrainAdapter:
                 or existing_comment.author != author
             ):
                 raise GBrainProtocolError("comment idempotency readback was incomplete")
-            return TodoMutationReceipt(self._read_todo(todo_slug), True, idempotent=True)
+            todo = self._read_todo(todo_slug)
+            self.get_task(todo.parent_task)
+            return TodoMutationReceipt(todo, True, idempotent=True)
         todo, raw_todo, _todo_links = self._read_todo_snapshot(todo_slug)
         if todo.updated_at != expected_updated_at:
             raise ConcurrentTodoUpdateError(todo_slug)
@@ -9413,6 +9277,7 @@ class GBrainAdapter:
         if not isinstance(raw_parent, Mapping) or not isinstance(raw_parent_links, list):
             raise GBrainProtocolError("todo comment parent snapshot was not structured")
         task = Task.from_page(raw_parent, edges=raw_parent_links)
+        self._require_task_openclaw_activation(task)
         self._validate_todo_actor_source(actor=author, source=source, task=task)
         if now < todo.updated_at:
             raise ValueError("todo updated_at cannot move backwards")

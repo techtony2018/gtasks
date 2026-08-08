@@ -858,6 +858,7 @@ def stored_artifact(artifact) -> dict:
             "produced_for": artifact.produced_for,
             "attachments": list(artifact.attachments),
             "git_url": artifact.git_url,
+            "delegation_ref": artifact.delegation_ref,
             "created_at": artifact.created_at.isoformat(),
             "links": links,
         },
@@ -925,6 +926,21 @@ class StatefulArtifactRunner(StatefulIdentityMigrationRunner):
                 lines[end + 1 :]
             ).strip()
         return result
+
+
+class StaticOpenClawProfiles:
+    def __init__(self, projection: dict) -> None:
+        self.projection = deepcopy(projection)
+        self.calls = 0
+
+    def active_projection(self) -> dict:
+        self.calls += 1
+        return deepcopy(self.projection)
+
+
+class FailingOpenClawProfiles:
+    def active_projection(self) -> dict:
+        raise GBrainCommandError("OpenClaw activation endpoint unavailable")
 
 
 class CanonicalIdentityMigrationTests(unittest.TestCase):
@@ -3743,170 +3759,187 @@ OPENCLAW_DECLARATIONS = (
 )
 
 
-class ProvisioningRunner:
-    """In-memory canonical surface for OpenClaw profile provisioning tests."""
-
-    def __init__(
-        self,
-        pages: dict[str, dict] | None = None,
-        links: list[dict] | None = None,
-    ) -> None:
-        self.pages = {
-            ARTIFACTS_ROOT: {
-                "slug": ARTIFACTS_ROOT,
-                "type": "collection",
-                "title": "Mission Control Artifacts",
-                "compiled_truth": "Mission Control Agent artifacts.",
-                "frontmatter": {"collection_kind": "mission_control_artifacts"},
+def activated_openclaw_projection(*, generation: int = 7) -> dict:
+    operation_id = "op-integrated"
+    prefix = (
+        "system/openclaw-profile-staging/"
+        f"g{generation:06d}-{operation_id}/staged/"
+    )
+    profiles = []
+    for declaration in OPENCLAW_DECLARATIONS:
+        staged_agent = f"{prefix}{declaration['slug']}"
+        staged_tasks = f"{prefix}{declaration['task_collection']}"
+        staged_artifacts = f"{prefix}{declaration['artifact_collection']}"
+        frontmatter = {
+            "runtime": "openclaw",
+            "route": declaration["route"],
+            "activation_generation": generation,
+            "activation_operation_id": operation_id,
+            "canonical_slug": declaration["slug"],
+            "staged": True,
+        }
+        if declaration["slug"] == "agents/tammy-oc":
+            frontmatter["avatar"] = {
+                "kind": "attachment",
+                "value": "/media/agents/tammy-oc/avatar.png",
             }
+        profiles.append(
+            {
+                "canonical_agent_slug": declaration["slug"],
+                "canonical_task_collection": declaration["task_collection"],
+                "canonical_artifact_collection": declaration["artifact_collection"],
+                "staged_agent_slug": staged_agent,
+                "staged_task_collection": staged_tasks,
+                "staged_artifact_collection": staged_artifacts,
+                "page_hashes": {
+                    staged_agent: "a" * 64,
+                    staged_tasks: "b" * 64,
+                    staged_artifacts: "c" * 64,
+                },
+                "metadata": {
+                    "slug": staged_agent,
+                    "type": "agent",
+                    "title": f"Agent {declaration['name']}",
+                    "compiled_truth": (
+                        f"Activated generation {generation} profile for "
+                        f"{declaration['name']}."
+                    ),
+                    "frontmatter": frontmatter,
+                },
+            }
+        )
+    return {
+        "generation": generation,
+        "active_manifest": (
+            "system/openclaw-profile-manifests/"
+            f"g{generation:06d}-{operation_id}"
+        ),
+        "manifest_digest": "d" * 64,
+        "profiles": profiles,
+    }
+
+
+def openclaw_anchor_fixture(
+    *, extra_pages: dict[str, dict] | None = None,
+    extra_links: list[dict] | None = None,
+) -> tuple[dict[str, dict], list[dict]]:
+    pages: dict[str, dict] = {
+        ARTIFACTS_ROOT: {
+            "slug": ARTIFACTS_ROOT,
+            "type": "collection",
+            "title": "Mission Control Artifacts",
+            "compiled_truth": "Mission Control Agent artifacts.",
+            "frontmatter": {"collection_kind": "mission_control_artifacts"},
         }
-        self.pages.update(deepcopy(pages or {}))
-        self.links = deepcopy(links or [])
+    }
+    links: list[dict] = []
+    for agent, root in domain.EXISTING_CODEX_AGENT_SCOPES:
+        pages[agent] = {
+            "slug": agent,
+            "type": "agent",
+            "title": f"Agent {agent.rsplit('/', 1)[-1].title()}",
+            "compiled_truth": "Existing Codex Agent.",
+            "frontmatter": {"work_root": root},
+        }
+    for declaration in OPENCLAW_DECLARATIONS:
+        agent = declaration["slug"]
+        tasks = declaration["task_collection"]
+        artifacts = declaration["artifact_collection"]
+        pages[agent] = {
+            "slug": agent,
+            "type": "agent",
+            "title": declaration["name"],
+            "compiled_truth": "OpenClaw logical identity anchor.",
+            "frontmatter": {"runtime": "openclaw", "logical_anchor": True},
+        }
+        pages[tasks] = {
+            "slug": tasks,
+            "type": "collection",
+            "title": f"{declaration['name']} Tasks",
+            "compiled_truth": "OpenClaw logical task collection anchor.",
+            "frontmatter": {
+                "collection_kind": "mission_control_agent_tasks",
+                "agent": agent,
+                "logical_anchor": True,
+            },
+        }
+        pages[artifacts] = {
+            "slug": artifacts,
+            "type": "collection",
+            "title": f"{declaration['name']} Artifacts",
+            "compiled_truth": "OpenClaw logical Artifact collection anchor.",
+            "frontmatter": {
+                "collection_kind": "mission_control_artifacts",
+                "agent": agent,
+                "logical_anchor": True,
+            },
+        }
+        links.extend(
+            (
+                {
+                    "from_slug": tasks,
+                    "to_slug": agent,
+                    "link_type": "for_agent",
+                    "context": "Logical OpenClaw task scope.",
+                    "link_source": "memory-stargraph",
+                },
+                {
+                    "from_slug": artifacts,
+                    "to_slug": ARTIFACTS_ROOT,
+                    "link_type": "part_of",
+                    "context": "Logical OpenClaw Artifact scope.",
+                    "link_source": "memory-stargraph",
+                },
+                {
+                    "from_slug": artifacts,
+                    "to_slug": agent,
+                    "link_type": "for_agent",
+                    "context": "Logical OpenClaw Artifact owner.",
+                    "link_source": "memory-stargraph",
+                },
+            )
+        )
+    pages.update(deepcopy(extra_pages or {}))
+    links.extend(deepcopy(extra_links or []))
+    return pages, links
+
+
+class ActivatedOpenClawRunner(StatefulArtifactRunner):
+    def run(self, tool: str, params: dict) -> object:
+        if tool == "list_pages":
+            self.calls.append((tool, deepcopy(params)))
+            return [
+                deepcopy(page)
+                for page in self.pages.values()
+                if page.get("type") == "agent" and not page.get("deleted_at")
+            ]
+        return super().run(tool, params)
+
+
+class NoCallRunner:
+    def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-
-    def links_of_type(self, slug: str, link_type: str) -> list[dict]:
-        return [
-            deepcopy(edge)
-            for edge in self.links
-            if edge["from_slug"] == slug and edge["link_type"] == link_type
-        ]
-
-    def active_pages(self) -> dict[str, dict]:
-        return {
-            slug: deepcopy(page)
-            for slug, page in self.pages.items()
-            if not page.get("deleted_at")
-        }
 
     def run(self, tool: str, params: dict) -> object:
         self.calls.append((tool, deepcopy(params)))
-        if tool == "get_page":
-            try:
-                page = self.pages[params["slug"]]
-            except KeyError as exc:
-                raise GBrainCommandError("page_not_found") from exc
-            if page.get("deleted_at") and not params.get("include_deleted"):
-                raise GBrainCommandError("page_not_found")
-            return deepcopy(page)
-        if tool == "get_links":
-            return [
-                deepcopy(edge)
-                for edge in self.links
-                if not isinstance(edge, dict)
-                or not edge.get("from_slug")
-                or edge.get("from_slug") == params["slug"]
-            ]
-        if tool == "put_page":
-            lines = params["content"].splitlines()
-            end = lines.index("---", 1)
-            frontmatter = {}
-            for line in lines[1:end]:
-                key, value = line.split(": ", 1)
-                try:
-                    frontmatter[key] = json.loads(value)
-                except json.JSONDecodeError:
-                    frontmatter[key] = value
-            self.pages[params["slug"]] = {
-                "slug": params["slug"],
-                "type": frontmatter.pop("type"),
-                "title": frontmatter.pop("title"),
-                "compiled_truth": "\n".join(lines[end + 1 :]).strip(),
-                "frontmatter": frontmatter,
-            }
-            return {"slug": params["slug"]}
-        if tool == "add_link":
-            edge = {
-                "from_slug": params["from"],
-                "to_slug": params["to"],
-                "link_type": params["link_type"],
-            }
-            if edge not in self.links:
-                self.links.append(edge)
-            return edge
-        if tool == "remove_link":
-            self.links = [
-                edge
-                for edge in self.links
-                if not (
-                    edge["from_slug"] == params["from"]
-                    and edge["to_slug"] == params["to"]
-                    and edge["link_type"] == params["link_type"]
-                )
-            ]
-            return {"removed": True}
-        if tool == "delete_page":
-            try:
-                self.pages[params["slug"]]["deleted_at"] = "2026-08-08T00:00:00Z"
-            except KeyError as exc:
-                raise GBrainCommandError("page_not_found") from exc
-            self.links = [
-                edge
-                for edge in self.links
-                if edge["from_slug"] != params["slug"] and edge["to_slug"] != params["slug"]
-            ]
-            return {"slug": params["slug"], "deleted": True}
-        raise AssertionError(f"unexpected tool: {tool}")
-
-
-class FailingProvisioningRunner(ProvisioningRunner):
-    def __init__(self, *, fail_tool: str, fail_at: int) -> None:
-        super().__init__()
-        self.fail_tool = fail_tool
-        self.fail_at = fail_at
-        self.tool_count = 0
-
-    def run(self, tool: str, params: dict) -> object:
-        if tool == self.fail_tool:
-            self.tool_count += 1
-            if self.tool_count == self.fail_at:
-                raise GBrainCommandError(f"injected {tool} failure")
-        return super().run(tool, params)
-
-
-class FinalMalformedProvisioningRunner(ProvisioningRunner):
-    def __init__(self) -> None:
-        super().__init__()
-        self.mutated = False
-        self.malformed_returned = False
-
-    def run(self, tool: str, params: dict) -> object:
-        if tool in {"put_page", "add_link"}:
-            self.mutated = True
-        if tool == "get_links" and self.mutated and not self.malformed_returned:
-            self.malformed_returned = True
-            self.calls.append((tool, deepcopy(params)))
-            return [{}]
-        return super().run(tool, params)
-
-
-@unittest.skip("Direct OpenClaw provisioning was replaced by Memory Stargraph CAS activation.")
+        raise AssertionError("legacy provisioning must not call GBrain")
 class AgentCreationTests(unittest.TestCase):
-    def test_provision_openclaw_profile_creates_no_goal_relationship(self) -> None:
-        runner = ProvisioningRunner()
-        adapter = GBrainAdapter(runner)
+    def test_direct_execute_is_rejected_before_runner_call(self) -> None:
+        runner = NoCallRunner()
 
-        receipt = adapter.provision_agent_profile(OPENCLAW_DECLARATION, execute=True)
-
-        self.assertTrue(receipt.verified)
-        self.assertTrue(receipt.mutated)
-        self.assertEqual(receipt.agent_slug, "agents/tammy-oc")
-        self.assertEqual(
-            receipt.collection_slugs,
-            ("collections/tammy-oc-tasks", "collections/tammy-oc-artifacts"),
-        )
-        self.assertEqual(receipt.default_goal_slugs, ())
-        self.assertEqual(
-            runner.links_of_type("agents/tammy-oc", "default_agent_for"), []
-        )
-        self.assertFalse(
-            any(
-                tool == "add_link" and params["link_type"] == "default_agent_for"
-                for tool, params in runner.calls
+        with self.assertRaisesRegex(
+            GBrainProtocolError,
+            "Memory Stargraph activation",
+        ):
+            GBrainAdapter(runner).provision_agent_profile(
+                OPENCLAW_DECLARATION,
+                execute=True,
             )
-        )
+
+        self.assertEqual(runner.calls, [])
 
     def test_dry_run_returns_operations_without_mutating_gbrain(self) -> None:
-        runner = ProvisioningRunner()
+        runner = NoCallRunner()
 
         receipt = GBrainAdapter(runner).provision_agent_profile(
             OPENCLAW_DECLARATION,
@@ -3928,140 +3961,14 @@ class AgentCreationTests(unittest.TestCase):
             ),
         )
 
-    def test_existing_mismatched_page_fails_without_repair(self) -> None:
-        runner = ProvisioningRunner(
-            pages={
-                "agents/tammy-oc": {
-                    "slug": "agents/tammy-oc",
-                    "type": "concept",
-                    "title": "Tammy-OC",
-                    "compiled_truth": "Wrong type.",
-                    "frontmatter": {},
-                }
-            }
-        )
+    def test_dry_run_rejects_a_route_outside_the_approved_declaration(self) -> None:
+        tampered = {**OPENCLAW_DECLARATION, "route": "hosts/timmy"}
+        runner = NoCallRunner()
 
-        with self.assertRaisesRegex(GBrainProtocolError, "not a canonical Agent"):
-            GBrainAdapter(runner).provision_agent_profile(
-                OPENCLAW_DECLARATION, execute=True
-            )
+        with self.assertRaisesRegex(ValueError, "approved"):
+            GBrainAdapter(runner).provision_agent_profile(tampered, execute=False)
 
-        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
-        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
-
-    def test_preexisting_goal_link_fails_without_repair(self) -> None:
-        runner = ProvisioningRunner(
-            links=[
-                {
-                    "from_slug": "agents/tammy-oc",
-                    "to_slug": "goals/should-not-exist",
-                    "link_type": "default_agent_for",
-                }
-            ]
-        )
-
-        with self.assertRaisesRegex(GBrainProtocolError, "Goal relationship"):
-            GBrainAdapter(runner).provision_agent_profile(
-                OPENCLAW_DECLARATION, execute=True
-            )
-
-        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
-        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
-
-    def test_unexpected_membership_fails_without_repair(self) -> None:
-        runner = ProvisioningRunner(
-            links=[
-                {
-                    "from_slug": "collections/tammy-oc-tasks",
-                    "to_slug": "collections/not-allowed",
-                    "link_type": "member_of",
-                }
-            ]
-        )
-
-        with self.assertRaisesRegex(GBrainProtocolError, "unexpected collection membership"):
-            GBrainAdapter(runner).provision_agent_profile(
-                OPENCLAW_DECLARATION, execute=True
-            )
-
-        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
-        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
-
-    def test_later_profile_mismatch_prevents_all_batch_writes(self) -> None:
-        runner = ProvisioningRunner(
-            pages={
-                "agents/toddy-oc": {
-                    "slug": "agents/toddy-oc",
-                    "type": "concept",
-                    "title": "Agent Toddy-OC",
-                    "compiled_truth": "Wrong type.",
-                    "frontmatter": {},
-                }
-            }
-        )
-
-        with self.assertRaisesRegex(GBrainProtocolError, "not a canonical Agent"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
-        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
-
-    def test_mutation_failure_rolls_back_new_pages_and_links(self) -> None:
-        runner = FailingProvisioningRunner(fail_tool="add_link", fail_at=2)
-
-        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
-        self.assertEqual(runner.links, [])
-
-    def test_page_mutation_failure_rolls_back_new_pages(self) -> None:
-        runner = FailingProvisioningRunner(fail_tool="put_page", fail_at=2)
-
-        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
-        self.assertEqual(runner.links, [])
-
-    def test_final_readback_failure_rolls_back_new_pages_and_links(self) -> None:
-        runner = FinalMalformedProvisioningRunner()
-
-        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
-        self.assertEqual(runner.links, [])
-
-    def test_malformed_relationship_fails_closed_preflight(self) -> None:
-        runner = ProvisioningRunner(links=[{}])
-
-        with self.assertRaisesRegex(GBrainProtocolError, "relationship is malformed"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertFalse(any(tool == "put_page" for tool, _params in runner.calls))
-        self.assertFalse(any(tool == "add_link" for tool, _params in runner.calls))
-
-    def test_malformed_relationship_fails_closed_final_readback(self) -> None:
-        runner = FinalMalformedProvisioningRunner()
-
-        with self.assertRaisesRegex(PartialMutationError, "Rollback verified"):
-            GBrainAdapter(runner).provision_agent_profiles(
-                OPENCLAW_DECLARATIONS, execute=True
-            )
-
-        self.assertEqual(set(runner.active_pages()), {ARTIFACTS_ROOT})
-        self.assertEqual(runner.links, [])
+        self.assertEqual(runner.calls, [])
 
 
 class AgentReadTests(unittest.TestCase):
@@ -4076,114 +3983,445 @@ class AgentReadTests(unittest.TestCase):
         self.assertNotIn("agents/tammy-oc", dict(scopes))
 
     def test_only_cas_activated_openclaw_manifest_profiles_are_projected(self) -> None:
-        staged_agent = "system/openclaw-profile-staging/g000001-op/staged/agents/tammy-oc"
-        staged_tasks = "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-tasks"
-        runner = FakeRunner(
-            {
-                "list_pages": [[]],
-                "get_page": [
-                    {
-                        "slug": "agents/toddy",
-                        "type": "agent",
-                        "title": "Toddy",
-                        "compiled_truth": "",
-                        "frontmatter": {},
-                    },
-                    {
-                        "slug": "agents/timmy",
-                        "type": "agent",
-                        "title": "Timmy",
-                        "compiled_truth": "",
-                        "frontmatter": {},
-                    },
-                    {
-                        "slug": "agents/tammy",
-                        "type": "agent",
-                        "title": "Tammy",
-                        "compiled_truth": "",
-                        "frontmatter": {},
-                    },
-                    {
-                        "slug": staged_agent,
-                        "type": "agent",
-                        "title": "Tammy-OC",
-                        "compiled_truth": "Staged OpenClaw profile.",
-                        "frontmatter": {"runtime": "openclaw", "staged": True},
-                    },
-                    {
-                        "slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc",
-                        "type": "agent",
-                        "title": "Timmy-OC",
-                        "compiled_truth": "Staged OpenClaw profile.",
-                        "frontmatter": {"runtime": "openclaw", "staged": True},
-                    },
-                    {
-                        "slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc",
-                        "type": "agent",
-                        "title": "Toddy-OC",
-                        "compiled_truth": "Staged OpenClaw profile.",
-                        "frontmatter": {"runtime": "openclaw", "staged": True},
-                    },
-                ],
-                "get_links": [[], [], [], [], [], []],
-            }
-        )
-
-        class ActiveProfiles:
-            def active_projection(self):
-                return {
-                    "profiles": [
-                        {
-                            "canonical_agent_slug": "agents/tammy-oc",
-                            "canonical_task_collection": "collections/tammy-oc-tasks",
-                            "canonical_artifact_collection": "collections/tammy-oc-artifacts",
-                            "staged_agent_slug": staged_agent,
-                            "staged_task_collection": staged_tasks,
-                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-artifacts",
-                            "page_hashes": {
-                                staged_agent: "a" * 64,
-                                staged_tasks: "b" * 64,
-                                "system/openclaw-profile-staging/g000001-op/staged/collections/tammy-oc-artifacts": "c" * 64,
-                            },
-                            "metadata": {"slug": staged_agent, "type": "agent", "title": "Tammy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
-                        },
-                        {
-                            "canonical_agent_slug": "agents/timmy-oc",
-                            "canonical_task_collection": "collections/timmy-oc-tasks",
-                            "canonical_artifact_collection": "collections/timmy-oc-artifacts",
-                            "staged_agent_slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc",
-                            "staged_task_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-tasks",
-                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-artifacts",
-                            "page_hashes": {
-                                "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc": "a" * 64,
-                                "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-tasks": "b" * 64,
-                                "system/openclaw-profile-staging/g000001-op/staged/collections/timmy-oc-artifacts": "c" * 64,
-                            },
-                            "metadata": {"slug": "system/openclaw-profile-staging/g000001-op/staged/agents/timmy-oc", "type": "agent", "title": "Timmy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
-                        },
-                        {
-                            "canonical_agent_slug": "agents/toddy-oc",
-                            "canonical_task_collection": "collections/toddy-oc-tasks",
-                            "canonical_artifact_collection": "collections/toddy-oc-artifacts",
-                            "staged_agent_slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc",
-                            "staged_task_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-tasks",
-                            "staged_artifact_collection": "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-artifacts",
-                            "page_hashes": {
-                                "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc": "a" * 64,
-                                "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-tasks": "b" * 64,
-                                "system/openclaw-profile-staging/g000001-op/staged/collections/toddy-oc-artifacts": "c" * 64,
-                            },
-                            "metadata": {"slug": "system/openclaw-profile-staging/g000001-op/staged/agents/toddy-oc", "type": "agent", "title": "Toddy-OC", "compiled_truth": "Staged OpenClaw profile.", "frontmatter": {"runtime": "openclaw", "staged": True}},
-                        },
-                    ]
+        pages, links = openclaw_anchor_fixture(
+            extra_links=[
+                {
+                    "from_slug": "agents/tammy-oc",
+                    "to_slug": "goals/activated-owner",
+                    "link_type": "default_agent_for",
+                    "context": "Assigned after activation.",
+                    "link_source": "gtasks",
                 }
+            ]
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        profiles = StaticOpenClawProfiles(activated_openclaw_projection())
+        adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
 
-        read = GBrainAdapter(runner, openclaw_profiles=ActiveProfiles()).list_agent_profiles()
+        read = adapter.list_agent_profiles()
+        direct = adapter.get_agent_profile("agents/tammy-oc")
 
         activated = [item for item in read.agents if item.slug == "agents/tammy-oc"]
         self.assertEqual(len(activated), 1)
         self.assertEqual(activated[0].work_root, "collections/tammy-oc-tasks")
         self.assertEqual(activated[0].runtime, "openclaw")
+        self.assertEqual(activated[0].title, "Agent Tammy-OC")
+        self.assertIn("Activated generation 7", activated[0].summary)
+        self.assertEqual(activated[0].avatar_kind, "attachment")
+        self.assertEqual(
+            activated[0].avatar_value,
+            "/media/agents/tammy-oc/avatar.png",
+        )
+        self.assertEqual(activated[0].default_goal_slugs, ("goals/activated-owner",))
+        self.assertEqual(direct, activated[0])
+        self.assertFalse(
+            any(
+                tool == "get_page"
+                and str(params.get("slug", "")).startswith(
+                    "system/openclaw-profile-staging/"
+                )
+                for tool, params in runner.calls
+            )
+        )
+
+    def test_unactivated_generation_is_empty_without_an_activation_issue(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+        runner = ActivatedOpenClawRunner(pages, links)
+        profiles = StaticOpenClawProfiles(
+            {
+                "generation": 0,
+                "active_manifest": None,
+                "manifest_digest": None,
+                "profiles": [],
+            }
+        )
+        adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
+
+        read = adapter.list_agent_profiles()
+
+        self.assertEqual(
+            {profile.slug for profile in read.agents},
+            {"agents/tammy", "agents/timmy", "agents/toddy"},
+        )
+        self.assertEqual(read.issues, ())
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            adapter.get_agent_profile("agents/tammy-oc")
+
+    def test_activation_outage_returns_codex_profiles_and_one_explicit_issue(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+        runner = ActivatedOpenClawRunner(pages, links)
+
+        read = GBrainAdapter(
+            runner,
+            openclaw_profiles=FailingOpenClawProfiles(),
+        ).list_agent_profiles()
+
+        self.assertEqual(
+            {profile.slug for profile in read.agents},
+            {"agents/tammy", "agents/timmy", "agents/toddy"},
+        )
+        self.assertEqual(len(read.issues), 1)
+        self.assertEqual(read.issues[0].category, "openclaw_activation")
+        self.assertIn("Existing Codex Agents remain available", read.issues[0].impact)
+
+    def test_tampered_route_collection_or_staged_mapping_returns_no_partial_oc_roster(
+        self,
+    ) -> None:
+        for field, value in (
+            ("route", "hosts/timmy"),
+            ("canonical_task_collection", "collections/timmy-oc-tasks"),
+            (
+                "staged_agent_slug",
+                "system/openclaw-profile-staging/g000007-other/staged/agents/tammy-oc",
+            ),
+        ):
+            with self.subTest(field=field):
+                projection = activated_openclaw_projection()
+                if field == "route":
+                    projection["profiles"][0]["metadata"]["frontmatter"][field] = value
+                else:
+                    projection["profiles"][0][field] = value
+                pages, links = openclaw_anchor_fixture()
+                runner = ActivatedOpenClawRunner(pages, links)
+
+                read = GBrainAdapter(
+                    runner,
+                    openclaw_profiles=StaticOpenClawProfiles(projection),
+                ).list_agent_profiles()
+
+                self.assertFalse(any(profile.runtime == "openclaw" for profile in read.agents))
+                self.assertEqual(len(read.issues), 1)
+                self.assertEqual(read.issues[0].category, "openclaw_activation")
+
+    def test_one_logical_anchor_read_failure_suppresses_all_oc_profiles(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+
+        class OneAnchorFailure(ActivatedOpenClawRunner):
+            def run(self, tool: str, params: dict) -> object:
+                if tool == "get_links" and params.get("slug") == "agents/timmy-oc":
+                    self.calls.append((tool, deepcopy(params)))
+                    raise GBrainCommandError("canonical OC anchor unavailable")
+                return super().run(tool, params)
+
+        read = GBrainAdapter(
+            OneAnchorFailure(pages, links),
+            openclaw_profiles=StaticOpenClawProfiles(
+                activated_openclaw_projection()
+            ),
+        ).list_agent_profiles()
+
+        self.assertFalse(any(profile.runtime == "openclaw" for profile in read.agents))
+        self.assertEqual(len(read.issues), 1)
+
+
+class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _task_fixture(*, status: str = "planned") -> tuple[Task, dict, list[dict]]:
+        now = datetime.fromisoformat("2026-08-08T10:00:00-07:00")
+        task = replace(
+            new_task(
+                title="Activated OpenClaw work",
+                detail="Exercise stable logical anchors.",
+                next_action="",
+                due_day=date(2026, 8, 9),
+                now=now,
+                identity="11111111-1111-4111-8111-111111111111",
+            ),
+            status=status,
+            inbox=status == "planned",
+            lifecycle_root="collections/tammy-oc-tasks",
+            owner_agent="agents/tammy-oc",
+        )
+        page = stored_page(task)
+        page["frontmatter"].update(
+            {
+                "status": status,
+                "inbox": status == "planned",
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "links": [
+                    {
+                        "to": "collections/tammy-oc-tasks",
+                        "type": "member_of",
+                    },
+                    {"to": "agents/tammy-oc", "type": "assigned_to"},
+                ],
+            }
+        )
+        links = [
+            {
+                "from_slug": task.slug,
+                "to_slug": "collections/tammy-oc-tasks",
+                "link_type": "member_of",
+                "context": "Stable logical OC task scope.",
+                "link_source": "gtasks",
+            },
+            {
+                "from_slug": task.slug,
+                "to_slug": "agents/tammy-oc",
+                "link_type": "assigned_to",
+                "context": "Stable logical OC owner.",
+                "link_source": "gtasks",
+            },
+        ]
+        return Task.from_page(page, edges=links), page, links
+
+    def test_create_edit_status_and_todo_use_only_stable_logical_slugs(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+        runner = ActivatedOpenClawRunner(pages, links)
+        profiles = StaticOpenClawProfiles(activated_openclaw_projection())
+        adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
+        task, _page, _task_links = self._task_fixture()
+
+        created = adapter.create_agent_task(task, "agents/tammy-oc")
+        edited = adapter.edit_task(
+            task.slug,
+            title="Activated OpenClaw work updated",
+            detail="Keep every mutation on logical anchors.",
+            priority="high",
+            due_day=date(2026, 8, 10),
+            next_action="",
+            project_slug=None,
+            goal_slug=None,
+            status="planned",
+            assignee_slug="agents/tammy-oc",
+            progress_metric=None,
+            event_progress=None,
+            handoff_reason="",
+            now=datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+        )
+        status = adapter.set_task_status(
+            task.slug,
+            "active",
+            datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+        )
+        todo = adapter.create_todo(
+            task.slug,
+            text="Publish stable-anchor evidence",
+            detail="Do not target generation staging pages.",
+            kind="action",
+            actor="agents/tammy-oc",
+            source="agent",
+            idempotency_key="oc-stable-todo",
+            now=datetime.fromisoformat("2026-08-08T10:07:00-07:00"),
+        ).todo
+        todo = adapter.edit_todo(
+            todo.slug,
+            text="Publish verified stable-anchor evidence",
+            detail="All writes remain on logical slugs.",
+            expected_updated_at=todo.updated_at,
+            actor="agents/tammy-oc",
+            source="agent",
+            idempotency_key="oc-stable-todo-edit",
+            now=datetime.fromisoformat("2026-08-08T10:08:00-07:00"),
+        ).todo
+        completed_todo = adapter.set_todo_status(
+            todo.slug,
+            status="done",
+            expected_updated_at=todo.updated_at,
+            actor="agents/tammy-oc",
+            source="agent",
+            idempotency_key="oc-stable-todo-done",
+            now=datetime.fromisoformat("2026-08-08T10:09:00-07:00"),
+        ).todo
+
+        self.assertTrue(created.verified)
+        self.assertTrue(edited.verified)
+        self.assertEqual(status.task.owner_agent, "agents/tammy-oc")
+        self.assertEqual(completed_todo.status, "done")
+        self.assertIn(
+            ("get_page", {"slug": "collections/tammy-oc-tasks"}),
+            runner.calls,
+        )
+        mutations = [
+            params
+            for tool, params in runner.calls
+            if tool in {"put_page", "add_link", "remove_link", "delete_page"}
+        ]
+        self.assertFalse(
+            any("system/openclaw-profile-staging/" in json.dumps(params) for params in mutations)
+        )
+
+    def test_unactivated_oc_task_cannot_be_read_or_mutated(self) -> None:
+        task, page, task_links = self._task_fixture()
+        pages, links = openclaw_anchor_fixture(
+            extra_pages={task.slug: page},
+            extra_links=task_links,
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        adapter = GBrainAdapter(
+            runner,
+            openclaw_profiles=StaticOpenClawProfiles(
+                {
+                    "generation": 0,
+                    "active_manifest": None,
+                    "manifest_digest": None,
+                    "profiles": [],
+                }
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            adapter.get_task(task.slug)
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            adapter.set_task_status(
+                task.slug,
+                "active",
+                datetime.fromisoformat("2026-08-08T10:05:00-07:00"),
+            )
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            adapter.create_todo(
+                task.slug,
+                text="Must not be written",
+                detail="",
+                kind="action",
+                actor="agents/tammy-oc",
+                source="agent",
+                idempotency_key="unactivated-oc",
+                now=datetime.fromisoformat("2026-08-08T10:06:00-07:00"),
+            )
+
+        self.assertFalse(
+            any(tool in {"put_page", "add_link", "remove_link", "delete_page"} for tool, _ in runner.calls)
+        )
+
+    def test_tampered_logical_task_anchor_rejects_creation_before_write(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+        pages["collections/tammy-oc-tasks"]["frontmatter"]["agent"] = (
+            "agents/timmy-oc"
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        task, _page, _task_links = self._task_fixture()
+
+        with self.assertRaisesRegex(GBrainProtocolError, "logical task collection"):
+            GBrainAdapter(
+                runner,
+                openclaw_profiles=StaticOpenClawProfiles(
+                    activated_openclaw_projection()
+                ),
+            ).create_agent_task(task, "agents/tammy-oc")
+
+        self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
+
+    def test_oc_artifact_uses_authenticated_logical_identity_and_delegation_ref(
+        self,
+    ) -> None:
+        task, page, task_links = self._task_fixture(status="active")
+        pages, links = openclaw_anchor_fixture(
+            extra_pages={task.slug: page},
+            extra_links=task_links,
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        profiles = StaticOpenClawProfiles(activated_openclaw_projection())
+        adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
+        artifact = new_agent_artifact(
+            title="Delegated OC evidence",
+            artifact_kind="markdown",
+            created_by="agents/tammy-oc",
+            produced_for=task.slug,
+            markdown="# Evidence\n\nStable logical provenance.",
+            delegation_ref=(
+                "agent-delegations/22222222-2222-4222-8222-222222222222"
+            ),
+            now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
+        )
+
+        receipt = adapter.create_agent_artifact(
+            artifact,
+            executing_agent="agents/tammy-oc",
+            idempotency_key="oc-delegated-artifact",
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.artifact.created_by, "agents/tammy-oc")
+        self.assertEqual(
+            receipt.artifact.agent_collection,
+            "collections/tammy-oc-artifacts",
+        )
+        self.assertEqual(receipt.artifact.delegation_ref, artifact.delegation_ref)
+        self.assertGreater(profiles.calls, 0)
+        artifact_writes = [
+            params["slug"]
+            for tool, params in runner.calls
+            if tool == "put_page" and str(params.get("slug", "")).startswith("artifacts/")
+        ]
+        self.assertEqual(artifact_writes, [artifact.slug])
+        self.assertIn(
+            (artifact.slug, "agents/tammy-oc", "created_by"),
+            {
+                (edge["from_slug"], edge["to_slug"], edge["link_type"])
+                for edge in runner.links
+            },
+        )
+        self.assertFalse(
+            any(
+                "system/openclaw-profile-staging/" in json.dumps(params)
+                for tool, params in runner.calls
+                if tool in {"put_page", "add_link", "remove_link"}
+            )
+        )
+
+    def test_cross_identity_oc_artifact_rejected_before_runner_call(self) -> None:
+        task, _page, _task_links = self._task_fixture(status="active")
+        pages, links = openclaw_anchor_fixture()
+        runner = ActivatedOpenClawRunner(pages, links)
+        artifact = new_agent_artifact(
+            title="Wrong identity",
+            artifact_kind="markdown",
+            created_by="agents/tammy-oc",
+            produced_for=task.slug,
+            markdown="Must not publish.",
+            now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
+        )
+
+        with self.assertRaisesRegex(domain.DomainValidationError, "publisher identity"):
+            GBrainAdapter(
+                runner,
+                openclaw_profiles=StaticOpenClawProfiles(
+                    activated_openclaw_projection()
+                ),
+            ).create_agent_artifact(
+                artifact,
+                executing_agent="agents/timmy-oc",
+            )
+
+        self.assertEqual(runner.calls, [])
+
+    def test_unactivated_oc_artifact_rejected_before_mutation(self) -> None:
+        task, page, task_links = self._task_fixture(status="active")
+        pages, links = openclaw_anchor_fixture(
+            extra_pages={task.slug: page},
+            extra_links=task_links,
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        artifact = new_agent_artifact(
+            title="Inactive identity",
+            artifact_kind="markdown",
+            created_by="agents/tammy-oc",
+            produced_for=task.slug,
+            markdown="Must not publish.",
+            now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            GBrainAdapter(
+                runner,
+                openclaw_profiles=StaticOpenClawProfiles(
+                    {
+                        "generation": 0,
+                        "active_manifest": None,
+                        "manifest_digest": None,
+                        "profiles": [],
+                    }
+                ),
+            ).create_agent_artifact(
+                artifact,
+                executing_agent="agents/tammy-oc",
+            )
+
+        self.assertFalse(
+            any(tool in {"put_page", "add_link", "remove_link"} for tool, _ in runner.calls)
+        )
 
     def test_fails_closed_and_reports_non_task_proposed_agent_work(self) -> None:
         agent_pages = [

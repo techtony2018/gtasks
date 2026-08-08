@@ -841,6 +841,9 @@ class ServerHarness:
                     "agents/tammy": "tammy-test-publisher-token",
                     "agents/timmy": "timmy-test-publisher-token",
                     "agents/toddy": "toddy-test-publisher-token",
+                    "agents/tammy-oc": "tammy-oc-test-publisher-token",
+                    "agents/timmy-oc": "timmy-oc-test-publisher-token",
+                    "agents/toddy-oc": "toddy-oc-test-publisher-token",
                 }
             ),
             handoff_store=handoff_store,
@@ -4957,6 +4960,52 @@ class ArtifactApiTests(unittest.TestCase):
         )
         self.assertEqual(accepted_status, 201)
         self.assertTrue(accepted["receipt"]["verified"])
+
+    def test_openclaw_publication_preserves_optional_delegation_provenance(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        delegation_ref = (
+            "agent-delegations/22222222-2222-4222-8222-222222222222"
+        )
+        body = {
+            **self._publish_payload(),
+            "created_by": "agents/tammy-oc",
+            "delegation_ref": delegation_ref,
+        }
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            body,
+            self._execution_headers("agents/tammy-oc"),
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["artifact"]["created_by"], "agents/tammy-oc")
+        self.assertEqual(payload["artifact"]["delegation_ref"], delegation_ref)
+        self.assertEqual(adapter.created_artifacts[0][0].delegation_ref, delegation_ref)
+
+    def test_cross_identity_openclaw_publication_fails_before_adapter_mutation(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        body = {
+            **self._publish_payload(),
+            "created_by": "agents/tammy-oc",
+            "delegation_ref": (
+                "agent-delegations/22222222-2222-4222-8222-222222222222"
+            ),
+        }
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/artifacts",
+            body,
+            self._execution_headers("agents/timmy-oc"),
+        )
+
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "artifact_identity_mismatch")
+        self.assertEqual(adapter.created_artifacts, [])
 
     def test_rejects_unknown_publish_keys_and_malformed_relationships(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
