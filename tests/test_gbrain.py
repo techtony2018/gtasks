@@ -1013,6 +1013,82 @@ class AgentDelegationAdapterTests(unittest.TestCase):
             [],
         )
 
+    def test_idempotent_create_validates_stored_lease_without_activation_dependency(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+        adapter.openclaw_profiles = FailingOpenClawProfiles()
+
+        receipt = adapter.create_agent_delegation(lease)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "put_page"]),
+            1,
+        )
+
+    def test_creation_receipt_replay_rejects_temporally_false_states(self) -> None:
+        cases = (
+            self._lease(
+                starts_at=self.NOW + timedelta(hours=1),
+                ends_at=self.NOW + timedelta(hours=2),
+                state=DelegationState.ACTIVE,
+            ),
+            self._lease(
+                starts_at=self.NOW - timedelta(hours=1),
+                ends_at=self.NOW + timedelta(hours=1),
+                created_at=self.NOW,
+                updated_at=self.NOW,
+                state=DelegationState.SCHEDULED,
+            ),
+            self._lease(
+                starts_at=self.NOW - timedelta(hours=2),
+                ends_at=self.NOW - timedelta(hours=1),
+                created_at=self.NOW,
+                updated_at=self.NOW,
+                state=DelegationState.ACTIVE,
+            ),
+        )
+        for lease in cases:
+            with self.subTest(state=lease.state, starts_at=lease.starts_at):
+                runner = self._runner()
+                receipt = {
+                    "action": "created",
+                    "authorized_by": "people/tony-guan",
+                    "occurred_at": lease.created_at.isoformat(),
+                    "version": lease.updated_at.isoformat(),
+                    "source_agent": lease.source_agent,
+                    "executor_agent": lease.executor_agent,
+                    "starts_at": lease.starts_at.isoformat(),
+                    "previous_ends_at": None,
+                    "ends_at": lease.ends_at.isoformat(),
+                    "display_timezone": lease.display_timezone,
+                    "allowed_operations": list(lease.allowed_operations),
+                    "previous_state": None,
+                    "state": lease.state.value,
+                }
+                runner.run(
+                    "put_page",
+                    {
+                        "slug": lease.slug,
+                        "content": gbrain_module.render_agent_delegation_page(
+                            lease, (receipt,)
+                        ),
+                    },
+                )
+                runner.run(
+                    "add_link",
+                    {
+                        "from": lease.slug,
+                        "to": self.ROOT,
+                        "link_type": "member_of",
+                    },
+                )
+
+                with self.assertRaisesRegex(GBrainProtocolError, "creation receipt"):
+                    self._adapter(runner).list_agent_delegations()
+
     def test_create_reports_partial_write_when_membership_cannot_be_verified(self) -> None:
         class LinkFailureRunner(StatefulIdentityMigrationRunner):
             def run(self, tool: str, params: dict) -> object:
@@ -1059,6 +1135,11 @@ class AgentDelegationAdapterTests(unittest.TestCase):
             )
 
         runner.pages[self.ROOT]["frontmatter"]["collection_kind"] = "mission_control_agent_delegations"
+        runner.pages[self.ROOT]["slug"] = "collections/lookalike-agent-delegations"
+        with self.assertRaisesRegex(GBrainProtocolError, "root"):
+            adapter.list_agent_delegations()
+
+        runner.pages[self.ROOT]["slug"] = self.ROOT
         runner.links.append(
             {
                 "from_slug": self.SLUG,
@@ -1116,18 +1197,16 @@ class AgentDelegationAdapterTests(unittest.TestCase):
         expired_runner = self._runner()
         expired_adapter = self._adapter(expired_runner)
         expired = self._lease(
-            starts_at=self.NOW - timedelta(hours=2),
-            ends_at=self.NOW - timedelta(hours=1),
-            created_at=self.NOW - timedelta(hours=3),
-            updated_at=self.NOW - timedelta(hours=3),
+            starts_at=self.NOW,
+            ends_at=self.NOW + timedelta(hours=1),
         )
         expired_adapter.create_agent_delegation(expired)
         with self.assertRaisesRegex(ValueError, "expired"):
             expired_adapter.update_agent_delegation(
                 replace(
                     expired,
-                    ends_at=self.NOW + timedelta(hours=1),
-                    updated_at=self.NOW,
+                    ends_at=self.NOW + timedelta(hours=3),
+                    updated_at=self.NOW + timedelta(hours=2),
                 ),
                 expected_version=expired.updated_at.isoformat(),
             )

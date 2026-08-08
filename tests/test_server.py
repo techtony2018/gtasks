@@ -2,6 +2,7 @@ import http.client
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -5964,7 +5965,7 @@ class AgentDelegationApiTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "delegation_not_verified")
 
-    def test_patch_rejects_expired_terminal_and_naive_extension_without_mutation(self) -> None:
+    def test_patch_rejects_expired_and_terminal_lease_without_mutation(self) -> None:
         now = datetime(2026, 7, 30, 21, 0, tzinfo=timezone.utc)
         expired = AgentDelegationLease(
             slug="agent-delegations/22222222-2222-4222-8222-222222222222",
@@ -5983,22 +5984,16 @@ class AgentDelegationApiTests(unittest.TestCase):
         harness = ServerHarness(self, adapter, clock=lambda: now)
         slug = expired.slug.replace("/", "%2F")
 
-        for body in (
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{slug}",
             {
                 "ends_at": "2026-07-31T00:00:00Z",
                 "expected_version": expired.updated_at.isoformat(),
             },
-            {
-                "ends_at": "2026-07-31T00:00:00",
-                "expected_version": expired.updated_at.isoformat(),
-            },
-        ):
-            with self.subTest(body=body):
-                status, payload, _ = harness.request(
-                    "PATCH", f"{self.PATH}/{slug}", body
-                )
-                self.assertEqual(status, 422)
-                self.assertEqual(payload["code"], "invalid_agent_delegation")
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_agent_delegation")
         self.assertEqual(adapter.updated_delegations, [])
 
         completed = replace(expired, state=DelegationState.COMPLETED)
@@ -6012,6 +6007,38 @@ class AgentDelegationApiTests(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertEqual(payload["code"], "invalid_agent_delegation")
         self.assertEqual(terminal_adapter.updated_delegations, [])
+
+    def test_patch_rejects_naive_extension_for_otherwise_active_lease(self) -> None:
+        now = datetime(2026, 7, 30, 21, 0, tzinfo=timezone.utc)
+        active = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=now - timedelta(hours=1),
+            ends_at=now + timedelta(hours=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.ACTIVE,
+            created_at=now - timedelta(hours=2),
+            updated_at=now - timedelta(hours=2),
+        )
+        adapter = FakeAdapter(delegations=(active,))
+        harness = ServerHarness(self, adapter, clock=lambda: now)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{active.slug.replace('/', '%2F')}",
+            {
+                "ends_at": "2026-07-31T00:00:00",
+                "expected_version": active.updated_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_agent_delegation")
+        self.assertIn("aware UTC instant", payload["error"])
+        self.assertEqual(adapter.updated_delegations, [])
 
     def test_scheduled_lease_crossing_start_extends_as_active(self) -> None:
         created_at = datetime(2026, 7, 30, 16, 0, tzinfo=timezone.utc)
@@ -6104,6 +6131,77 @@ class AgentDelegationApiTests(unittest.TestCase):
             self.assertEqual(len(lock_files), 1)
             self.assertEqual(lock_path.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(lock_files[0].stat().st_mode & 0o777, 0o600)
+
+    def test_flock_serializes_create_once_across_real_processes(self) -> None:
+        probe = "\n".join(
+            (
+                "import json, sys, time",
+                "from pathlib import Path",
+                "from gtasks.server import AgentDelegationMutationLock",
+                "lock_path, state_path, start_path, slug = map(Path, sys.argv[1:])",
+                "class FileAdapter:",
+                "    def list_agent_delegations(self):",
+                "        if not state_path.exists(): return []",
+                "        return [json.loads(state_path.read_text())]",
+                "    def create_agent_delegation(self, lease):",
+                "        existing = self.list_agent_delegations()",
+                "        if existing:",
+                "            return existing[0], False",
+                "        time.sleep(0.15)",
+                "        stored = {'lease': lease, 'receipt': {'slug': lease['slug'], 'verified': True}}",
+                "        state_path.write_text(json.dumps(stored, sort_keys=True))",
+                "        return stored, True",
+                "deadline = time.time() + 10",
+                "while not start_path.exists():",
+                "    if time.time() > deadline: raise TimeoutError('start barrier')",
+                "    time.sleep(0.01)",
+                "adapter = FileAdapter()",
+                "lease = {'slug': str(slug), 'source_agent': 'agents/tammy'}",
+                "with AgentDelegationMutationLock(lock_path).hold(str(slug)):",
+                "    stored, created = adapter.create_agent_delegation(lease)",
+                "print(json.dumps({'stored': stored, 'created': created}, sort_keys=True))",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            private = base / "private"
+            private.mkdir(mode=0o700)
+            lock_path = private / "delegations.lock"
+            state_path = private / "canonical.json"
+            start_path = private / "start"
+            slug = "agent-delegations/22222222-2222-4222-8222-222222222222"
+            command = [
+                sys.executable,
+                "-c",
+                probe,
+                str(lock_path),
+                str(state_path),
+                str(start_path),
+                slug,
+            ]
+            processes = [
+                subprocess.Popen(
+                    command,
+                    cwd=Path(__file__).resolve().parent.parent,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+            start_path.write_text("go")
+            results = []
+            for process in processes:
+                stdout, stderr = process.communicate(timeout=15)
+                self.assertEqual(process.returncode, 0, stderr)
+                results.append(json.loads(stdout))
+
+            self.assertEqual(sorted(result["created"] for result in results), [False, True])
+            self.assertEqual(results[0]["stored"], results[1]["stored"])
+            canonical = json.loads(state_path.read_text())
+            self.assertEqual(canonical, results[0]["stored"])
+            self.assertEqual(canonical["receipt"], {"slug": slug, "verified": True})
+            self.assertEqual(len(list(private.glob("delegations.lock.*"))), 1)
 
     def test_patch_requires_nonempty_exact_expected_version(self) -> None:
         adapter = FakeAdapter()

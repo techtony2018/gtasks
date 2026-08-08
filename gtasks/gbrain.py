@@ -2352,6 +2352,7 @@ def _agent_delegation_from_page(
                 or version_at != lease.created_at
                 or receipt_state
                 not in {DelegationState.SCHEDULED, DelegationState.ACTIVE}
+                or receipt_state != lease_state_at(snapshot, occurred_at)
             ):
                 raise GBrainProtocolError("agent delegation creation receipt is malformed")
         else:
@@ -5178,6 +5179,7 @@ class GBrainAdapter:
         frontmatter = root.get("frontmatter") if isinstance(root, Mapping) else None
         if (
             not isinstance(root, Mapping)
+            or root.get("slug") != AGENT_DELEGATIONS_ROOT
             or root.get("type") != "collection"
             or not isinstance(frontmatter, Mapping)
             or frontmatter.get("collection_kind")
@@ -5227,7 +5229,6 @@ class GBrainAdapter:
     ) -> MutationReceipt:
         if not isinstance(lease, AgentDelegationLease):
             raise TypeError("lease must be an AgentDelegationLease")
-        self._active_openclaw_activation(lease.executor_agent)
         with self._delegation_mutation_lock:
             self._verify_agent_delegation_root()
             try:
@@ -5254,6 +5255,7 @@ class GBrainAdapter:
                     )
                 return MutationReceipt(lease.slug, True)
 
+            self._active_openclaw_activation(lease.executor_agent)
             receipt = {
                 "action": "created",
                 "authorized_by": TONY_PROFILE_SLUG,
