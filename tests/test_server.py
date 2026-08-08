@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import gtasks.gbrain as gbrain
@@ -74,6 +74,7 @@ from gtasks.handoff_dispatcher import (
     DurableHandoffStore,
     HandoffDispatcher,
 )
+from gtasks.delegation import AgentDelegationLease, DelegationState
 from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 from gtasks.ical import CalendarPreferences
 from gtasks.operational_logs import OperationalLogReader, OperationalLogStore
@@ -149,6 +150,7 @@ class FakeAdapter:
         proposals: tuple[TaskProposal, ...] = (),
         system_tickets: tuple[SystemTicket, ...] = (),
         artifacts: tuple[AgentArtifact, ...] = (),
+        delegations: tuple[AgentDelegationLease, ...] = (),
     ) -> None:
         self.active = active
         self.completed = completed
@@ -159,6 +161,9 @@ class FakeAdapter:
         self.proposals = proposals
         self.system_tickets = system_tickets
         self.artifacts = artifacts
+        self.delegations = delegations
+        self.created_delegations: list[AgentDelegationLease] = []
+        self.updated_delegations: list[AgentDelegationLease] = []
         self.created_artifacts: list[tuple[AgentArtifact, str]] = []
         self.artifact_reads: list[dict[str, object]] = []
         self.created_system_tickets: list[SystemTicket] = []
@@ -276,6 +281,34 @@ class FakeAdapter:
 
     def list_agent_profiles(self) -> AgentRead:
         return AgentRead(agents=self.agents)
+
+    def list_agent_delegations(self) -> tuple[AgentDelegationLease, ...]:
+        return self.delegations
+
+    def create_agent_delegation(self, lease: AgentDelegationLease) -> MutationReceipt:
+        existing = next((item for item in self.delegations if item.slug == lease.slug), None)
+        if existing is not None:
+            if existing != lease:
+                raise ValueError("delegation idempotency input conflicts with canonical lease")
+            return MutationReceipt(slug=lease.slug, verified=True)
+        self.created_delegations.append(lease)
+        self.delegations = (*self.delegations, lease)
+        return MutationReceipt(slug=lease.slug, verified=True)
+
+    def update_agent_delegation(
+        self,
+        lease: AgentDelegationLease,
+        *,
+        expected_version: str | None = None,
+    ) -> MutationReceipt:
+        current = next(item for item in self.delegations if item.slug == lease.slug)
+        if expected_version is not None and current.updated_at.isoformat() != expected_version:
+            raise gbrain.ConcurrentAgentDelegationUpdateError(lease.slug)
+        self.updated_delegations.append(lease)
+        self.delegations = tuple(
+            lease if item.slug == lease.slug else item for item in self.delegations
+        )
+        return MutationReceipt(slug=lease.slug, verified=True)
 
     def list_agent_work(self) -> AgentWorkRead:
         return AgentWorkRead(tasks=self.agent_work)
@@ -5765,6 +5798,164 @@ class ProposalApiTests(unittest.TestCase):
         self.assertEqual(payload["slug"], "collections/toddys-tasks/example")
         self.assertIn("127.0.0.1:8788/?slug=collections%2Ftoddys-tasks%2Fexample", payload["repair_url"])
         self.assertEqual(adapter.proposal_decisions, [])
+
+
+class AgentDelegationApiTests(unittest.TestCase):
+    PATH = "/api/agent-delegations"
+
+    @staticmethod
+    def _body(**changes) -> dict:
+        value = {
+            "source_agent": "agents/tammy",
+            "executor_agent": "agents/tammy-oc",
+            "starts_at": "2026-07-30T16:00:00Z",
+            "ends_at": "2026-07-30T20:00:00Z",
+            "display_timezone": "America/Los_Angeles",
+            "allowed_operations": ["task_status", "todo", "comment", "artifact"],
+        }
+        value.update(changes)
+        return value
+
+    def test_post_derives_tony_and_canonical_id_then_reads_back_exact_lease(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request("POST", self.PATH, self._body())
+        read_status, readback, _ = harness.request("GET", self.PATH)
+
+        self.assertEqual(status, 201)
+        self.assertEqual(read_status, 200)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(payload["lease"], readback["delegations"][0])
+        self.assertEqual(payload["lease"]["authorized_by"], "people/tony-guan")
+        self.assertEqual(payload["lease"]["state"], "active")
+        self.assertRegex(
+            payload["lease"]["slug"],
+            r"^agent-delegations/[0-9a-f-]{36}$",
+        )
+        self.assertEqual(payload["version"], payload["lease"]["updated_at"])
+        self.assertEqual(adapter.created_delegations, [adapter.delegations[0]])
+
+    def test_post_schedules_future_lease_and_is_idempotent(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        body = self._body(
+            starts_at="2026-07-30T17:00:00Z",
+            ends_at="2026-07-31T01:00:00Z",
+        )
+
+        first_status, first, _ = harness.request("POST", self.PATH, body)
+        second_status, second, _ = harness.request("POST", self.PATH, body)
+
+        self.assertEqual(first_status, 201)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(first["lease"], second["lease"])
+        self.assertEqual(first["lease"]["state"], "scheduled")
+        self.assertEqual(len(adapter.created_delegations), 1)
+
+    def test_patch_extends_with_version_then_completes_or_revokes(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        _status, created, _ = harness.request("POST", self.PATH, self._body())
+        slug = created["lease"]["slug"].replace("/", "%2F")
+
+        extension_status, extension, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{slug}",
+            {
+                "ends_at": "2026-07-31T00:00:00Z",
+                "expected_version": created["version"],
+            },
+        )
+        completed_status, completed, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{slug}",
+            {"action": "complete", "expected_version": extension["version"]},
+        )
+
+        self.assertEqual(extension_status, 200)
+        self.assertEqual(extension["lease"]["ends_at"], "2026-07-31T00:00:00+00:00")
+        self.assertEqual(completed_status, 200)
+        self.assertEqual(completed["lease"]["state"], "completed")
+        self.assertEqual(len(adapter.updated_delegations), 2)
+
+        revoked_adapter = FakeAdapter()
+        revoked_harness = ServerHarness(self, revoked_adapter)
+        _status, revoked_created, _ = revoked_harness.request(
+            "POST", self.PATH, self._body(source_agent="agents/timmy", executor_agent="agents/timmy-oc")
+        )
+        revoked_slug = revoked_created["lease"]["slug"].replace("/", "%2F")
+        revoked_status, revoked, _ = revoked_harness.request(
+            "PATCH",
+            f"{self.PATH}/{revoked_slug}",
+            {"action": "revoke", "expected_version": revoked_created["version"]},
+        )
+        self.assertEqual(revoked_status, 200)
+        self.assertEqual(revoked["lease"]["state"], "revoked")
+
+    def test_rejects_stale_version_cross_pair_and_authority_expansion_fields(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        _status, created, _ = harness.request("POST", self.PATH, self._body())
+        slug = created["lease"]["slug"].replace("/", "%2F")
+
+        stale_status, stale, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{slug}",
+            {"action": "complete", "expected_version": "2026-07-30T16:14:00+00:00"},
+        )
+        self.assertEqual(stale_status, 409)
+        self.assertEqual(stale["code"], "delegation_changed")
+
+        cross_status, cross, _ = harness.request(
+            "POST",
+            self.PATH,
+            self._body(executor_agent="agents/timmy-oc"),
+        )
+        self.assertEqual(cross_status, 422)
+        self.assertEqual(cross["code"], "invalid_agent_delegation")
+
+        for field, value in (
+            ("assigned_to", "agents/tammy-oc"),
+            ("authorized_by", "people/tony-guan"),
+            ("credential", "secret"),
+            ("credentials", {"token": "secret"}),
+            ("registration_id", "private-registration"),
+            ("session_key", "private-session"),
+        ):
+            with self.subTest(field=field):
+                status, payload, _ = harness.request(
+                    "POST", self.PATH, self._body(**{field: value})
+                )
+                self.assertEqual(status, 422)
+                self.assertEqual(payload["code"], "invalid_agent_delegation")
+        self.assertEqual(len(adapter.created_delegations), 1)
+
+    def test_rejects_unverified_or_mismatched_canonical_readback(self) -> None:
+        class UnverifiedAdapter(FakeAdapter):
+            def create_agent_delegation(self, lease):
+                super().create_agent_delegation(lease)
+                return MutationReceipt(slug=lease.slug, verified=False)
+
+        status, payload, _ = ServerHarness(self, UnverifiedAdapter()).request(
+            "POST", self.PATH, self._body()
+        )
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["code"], "delegation_not_verified")
+
+        class MismatchAdapter(FakeAdapter):
+            def create_agent_delegation(self, lease):
+                receipt = super().create_agent_delegation(lease)
+                self.delegations = (
+                    replace(lease, ends_at=lease.ends_at + timedelta(minutes=1)),
+                )
+                return receipt
+
+        status, payload, _ = ServerHarness(self, MismatchAdapter()).request(
+            "POST", self.PATH, self._body()
+        )
+        self.assertEqual(status, 502)
+        self.assertEqual(payload["code"], "delegation_not_verified")
 
 
 if __name__ == "__main__":

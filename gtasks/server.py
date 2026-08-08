@@ -12,7 +12,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -63,6 +63,11 @@ from .gbrain import (
     LifecycleIntegrityError,
     PartialMutationError,
     TONY_PROFILE_SLUG,
+    ConcurrentAgentDelegationUpdateError,
+)
+from .delegation import (
+    AgentDelegationLease,
+    DelegationState,
 )
 from .ical import CalendarPreferences, ICalendarError, ICalendarReader
 from .job_application_binding import (
@@ -701,6 +706,43 @@ def _handler_class(
                 return rendered
         return {}
 
+    def delegation_payload(lease: AgentDelegationLease) -> dict[str, Any]:
+        return {
+            "slug": lease.slug,
+            "source_agent": lease.source_agent,
+            "executor_agent": lease.executor_agent,
+            "authorized_by": lease.authorized_by,
+            "starts_at": lease.starts_at.isoformat(),
+            "ends_at": lease.ends_at.isoformat(),
+            "display_timezone": lease.display_timezone,
+            "allowed_operations": list(lease.allowed_operations),
+            "state": lease.state.value,
+            "created_at": lease.created_at.isoformat(),
+            "updated_at": lease.updated_at.isoformat(),
+        }
+
+    def delegation_response(
+        lease: AgentDelegationLease, receipt: object
+    ) -> dict[str, Any] | None:
+        receipt_value = canonical_mapping(receipt)
+        if receipt_value.get("verified") is not True or receipt_value.get("slug") != lease.slug:
+            return None
+        readback = next(
+            (
+                item
+                for item in adapter.list_agent_delegations()
+                if item.slug == lease.slug
+            ),
+            None,
+        )
+        if readback != lease:
+            return None
+        return {
+            "lease": delegation_payload(readback),
+            "version": readback.updated_at.isoformat(),
+            "receipt": receipt_value,
+        }
+
     def mutation_snapshot(
         task: object,
         *,
@@ -1264,6 +1306,29 @@ def _handler_class(
                     },
                 )
                 return
+            if path == "/api/agent-delegations":
+                try:
+                    with foreground_operation():
+                        leases = adapter.list_agent_delegations()
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_agent_delegation"},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "delegations": [delegation_payload(lease) for lease in leases],
+                    },
+                )
+                return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
                 return
@@ -1800,6 +1865,157 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/agent-delegations":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                required = {
+                    "source_agent",
+                    "executor_agent",
+                    "starts_at",
+                    "ends_at",
+                    "display_timezone",
+                    "allowed_operations",
+                }
+                if set(payload) != required:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "agent delegation requires the exact confirmation fields.",
+                            "code": "invalid_agent_delegation",
+                        },
+                    )
+                    return
+                try:
+                    source_agent = payload["source_agent"]
+                    executor_agent = payload["executor_agent"]
+                    display_timezone = payload["display_timezone"]
+                    raw_operations = payload["allowed_operations"]
+                    if (
+                        not isinstance(source_agent, str)
+                        or not isinstance(executor_agent, str)
+                        or not isinstance(display_timezone, str)
+                        or not isinstance(raw_operations, list)
+                        or not raw_operations
+                        or any(not isinstance(item, str) for item in raw_operations)
+                        or len(set(raw_operations)) != len(raw_operations)
+                        or not set(raw_operations).issubset(
+                            {"task_status", "todo", "comment", "artifact"}
+                        )
+                    ):
+                        raise ValueError("agent delegation fields are invalid")
+                    starts_at = datetime.fromisoformat(
+                        str(payload["starts_at"]).replace("Z", "+00:00")
+                    )
+                    ends_at = datetime.fromisoformat(
+                        str(payload["ends_at"]).replace("Z", "+00:00")
+                    )
+                    now = clock().astimezone(timezone.utc)
+                    if ends_at.astimezone(timezone.utc) <= now:
+                        raise ValueError("agent delegation must end in the future")
+                    canonical_input = json.dumps(
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    slug = "agent-delegations/" + str(
+                        uuid.uuid5(uuid.NAMESPACE_URL, canonical_input)
+                    )
+                    existing = next(
+                        (
+                            item
+                            for item in adapter.list_agent_delegations()
+                            if item.slug == slug
+                        ),
+                        None,
+                    )
+                    if existing is not None:
+                        requested = (
+                            source_agent,
+                            executor_agent,
+                            starts_at.astimezone(timezone.utc),
+                            ends_at.astimezone(timezone.utc),
+                            display_timezone,
+                            tuple(raw_operations),
+                        )
+                        canonical = (
+                            existing.source_agent,
+                            existing.executor_agent,
+                            existing.starts_at,
+                            existing.ends_at,
+                            existing.display_timezone,
+                            existing.allowed_operations,
+                        )
+                        if requested != canonical:
+                            self._json(
+                                HTTPStatus.CONFLICT,
+                                {
+                                    "error": "agent delegation idempotency input conflicts with canonical readback.",
+                                    "code": "delegation_conflict",
+                                },
+                            )
+                            return
+                        self._json(
+                            HTTPStatus.OK,
+                            {
+                                "lease": delegation_payload(existing),
+                                "version": existing.updated_at.isoformat(),
+                                "receipt": {"slug": existing.slug, "verified": True},
+                            },
+                        )
+                        return
+                    state = (
+                        DelegationState.SCHEDULED
+                        if starts_at.astimezone(timezone.utc) > now
+                        else DelegationState.ACTIVE
+                    )
+                    lease = AgentDelegationLease(
+                        slug=slug,
+                        source_agent=source_agent,
+                        executor_agent=executor_agent,
+                        authorized_by=TONY_PROFILE_SLUG,
+                        starts_at=starts_at,
+                        ends_at=ends_at,
+                        display_timezone=display_timezone,
+                        allowed_operations=tuple(raw_operations),
+                        state=state,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    with foreground_operation():
+                        receipt = adapter.create_agent_delegation(lease)
+                        response = delegation_response(lease, receipt)
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_agent_delegation"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                if response is None:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": "agent delegation mutation lacked exact verified canonical readback.",
+                            "code": "delegation_not_verified",
+                            "slug": lease.slug,
+                        },
+                    )
+                    return
+                self._json(HTTPStatus.CREATED, response)
+                return
             if path == "/api/handoffs/claim":
                 identity = self._handoff_identity()
                 if identity is None:
@@ -3453,6 +3669,133 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
+            delegation_prefix = "/api/agent-delegations/"
+            if path.startswith(delegation_prefix) and "/" not in path[len(delegation_prefix) :]:
+                slug = unquote(path[len(delegation_prefix) :])
+                payload = self._read_json()
+                if payload is None:
+                    return
+                extension_fields = {"ends_at", "expected_version"}
+                action_fields = {"action", "expected_version"}
+                if frozenset(payload) not in {
+                    frozenset(extension_fields),
+                    frozenset(action_fields),
+                }:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "delegation change requires one extension or terminal action with expected_version.",
+                            "code": "invalid_agent_delegation",
+                        },
+                    )
+                    return
+                try:
+                    expected_version = payload["expected_version"]
+                    if not isinstance(expected_version, str) or not expected_version:
+                        raise ValueError("expected_version must be the canonical lease version")
+                    current = next(
+                        (
+                            item
+                            for item in adapter.list_agent_delegations()
+                            if item.slug == slug
+                        ),
+                        None,
+                    )
+                    if current is None:
+                        self._json(
+                            HTTPStatus.NOT_FOUND,
+                            {
+                                "error": "agent delegation was not found.",
+                                "code": "delegation_not_found",
+                            },
+                        )
+                        return
+                    if current.updated_at.isoformat() != expected_version:
+                        raise ConcurrentAgentDelegationUpdateError(slug)
+                    if current.state in {
+                        DelegationState.COMPLETED,
+                        DelegationState.EXPIRED,
+                        DelegationState.REVOKED,
+                    }:
+                        raise ValueError("terminal agent delegation cannot be changed")
+                    now = clock().astimezone(timezone.utc)
+                    if now <= current.updated_at:
+                        now = current.updated_at + timedelta(microseconds=1)
+                    if set(payload) == extension_fields:
+                        ends_at = datetime.fromisoformat(
+                            str(payload["ends_at"]).replace("Z", "+00:00")
+                        )
+                        ends_at = ends_at.astimezone(timezone.utc)
+                        if ends_at <= current.ends_at:
+                            raise ValueError("agent delegation extension must advance ends_at")
+                        state = (
+                            DelegationState.SCHEDULED
+                            if now < current.starts_at
+                            else DelegationState.ACTIVE
+                        )
+                        updated = replace(
+                            current,
+                            ends_at=ends_at,
+                            state=state,
+                            updated_at=now,
+                        )
+                    else:
+                        action = payload.get("action")
+                        if action not in {"complete", "revoke"}:
+                            raise ValueError(
+                                "agent delegation action must be complete or revoke"
+                            )
+                        updated = replace(
+                            current,
+                            state=(
+                                DelegationState.COMPLETED
+                                if action == "complete"
+                                else DelegationState.REVOKED
+                            ),
+                            updated_at=now,
+                        )
+                    with foreground_operation():
+                        receipt = adapter.update_agent_delegation(
+                            updated,
+                            expected_version=expected_version,
+                        )
+                        response = delegation_response(updated, receipt)
+                except ConcurrentAgentDelegationUpdateError as exc:
+                    self._json(
+                        HTTPStatus.CONFLICT,
+                        {"error": str(exc), "code": "delegation_changed", "slug": exc.slug},
+                    )
+                    return
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_agent_delegation"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                if response is None:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": "agent delegation mutation lacked exact verified canonical readback.",
+                            "code": "delegation_not_verified",
+                            "slug": updated.slug,
+                        },
+                    )
+                    return
+                self._json(HTTPStatus.OK, response)
+                return
             todo_prefix = "/api/todos/"
             todo_status_suffix = "/status"
             if path.startswith(todo_prefix) and path.endswith(todo_status_suffix):

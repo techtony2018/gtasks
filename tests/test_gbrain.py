@@ -58,6 +58,7 @@ from gtasks.gbrain import (
     SubprocessCommandRunner,
     _render_preserved_page,
 )
+from gtasks.delegation import AgentDelegationLease, DelegationState
 
 
 def stored_page(task) -> dict:
@@ -831,6 +832,192 @@ class StatefulIdentityMigrationRunner:
             ]
             return {"slug": slug, "deleted": True}
         raise AssertionError(f"unexpected tool: {tool}")
+
+
+class AgentDelegationAdapterTests(unittest.TestCase):
+    ROOT = "collections/mission-control-agent-delegations"
+    SLUG = "agent-delegations/22222222-2222-4222-8222-222222222222"
+    NOW = datetime(2026, 8, 7, 17, 0, tzinfo=timezone.utc)
+
+    def _lease(self, **changes) -> AgentDelegationLease:
+        values = {
+            "slug": self.SLUG,
+            "source_agent": "agents/tammy",
+            "executor_agent": "agents/tammy-oc",
+            "authorized_by": "people/tony-guan",
+            "starts_at": self.NOW,
+            "ends_at": self.NOW + timedelta(hours=8),
+            "display_timezone": "America/Los_Angeles",
+            "allowed_operations": ("task_status", "todo", "comment", "artifact"),
+            "state": DelegationState.ACTIVE,
+            "created_at": self.NOW,
+            "updated_at": self.NOW,
+        }
+        values.update(changes)
+        return AgentDelegationLease(**values)
+
+    def _runner(self) -> StatefulIdentityMigrationRunner:
+        return StatefulIdentityMigrationRunner(
+            {
+                self.ROOT: {
+                    "slug": self.ROOT,
+                    "type": "collection",
+                    "title": "Mission Control Agent Delegations",
+                    "frontmatter": {
+                        "collection_kind": "mission_control_agent_delegations",
+                    },
+                    "compiled_truth": "# Mission Control Agent Delegations",
+                    "deleted_at": None,
+                }
+            },
+            [],
+        )
+
+    def _adapter(
+        self, runner: StatefulIdentityMigrationRunner
+    ) -> GBrainAdapter:
+        return GBrainAdapter(
+            runner,
+            openclaw_profiles=StaticOpenClawProfiles(
+                activated_openclaw_projection()
+            ),
+        )
+
+    def test_create_is_canonical_idempotent_and_reads_back_exact_lease(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+
+        first = adapter.create_agent_delegation(lease)
+        duplicate = adapter.create_agent_delegation(lease)
+
+        self.assertTrue(first.verified)
+        self.assertTrue(duplicate.verified)
+        self.assertEqual(adapter.list_agent_delegations(), (lease,))
+        self.assertEqual(
+            [
+                (edge["from_slug"], edge["to_slug"], edge["link_type"])
+                for edge in runner.links
+            ],
+            [(self.SLUG, self.ROOT, "member_of")],
+        )
+        self.assertNotIn("assigned_to", runner.pages[self.SLUG]["frontmatter"])
+        self.assertEqual(
+            runner.pages[self.SLUG]["frontmatter"]["receipts"],
+            [
+                {
+                    "action": "created",
+                    "authorized_by": "people/tony-guan",
+                    "occurred_at": self.NOW.isoformat(),
+                    "version": self.NOW.isoformat(),
+                }
+            ],
+        )
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "put_page"]),
+            1,
+        )
+
+    def test_extension_completion_and_revocation_append_immutable_receipts(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+
+        extended = replace(
+            lease,
+            ends_at=lease.ends_at + timedelta(hours=1),
+            updated_at=self.NOW + timedelta(minutes=1),
+        )
+        adapter.update_agent_delegation(
+            extended,
+            expected_version=lease.updated_at.isoformat(),
+        )
+        completed = replace(
+            extended,
+            state=DelegationState.COMPLETED,
+            updated_at=self.NOW + timedelta(minutes=2),
+        )
+        adapter.update_agent_delegation(
+            completed,
+            expected_version=extended.updated_at.isoformat(),
+        )
+
+        receipts = runner.pages[self.SLUG]["frontmatter"]["receipts"]
+        self.assertEqual([item["action"] for item in receipts], ["created", "extended", "completed"])
+        self.assertEqual(receipts[1]["previous_ends_at"], lease.ends_at.isoformat())
+        self.assertEqual(receipts[1]["ends_at"], extended.ends_at.isoformat())
+        self.assertEqual(adapter.list_agent_delegations(), (completed,))
+
+        revoked_runner = self._runner()
+        revoked_adapter = self._adapter(revoked_runner)
+        revoked_adapter.create_agent_delegation(lease)
+        revoked = replace(
+            lease,
+            state=DelegationState.REVOKED,
+            updated_at=self.NOW + timedelta(minutes=1),
+        )
+        revoked_adapter.update_agent_delegation(
+            revoked,
+            expected_version=lease.updated_at.isoformat(),
+        )
+        self.assertEqual(
+            [item["action"] for item in revoked_runner.pages[self.SLUG]["frontmatter"]["receipts"]],
+            ["created", "revoked"],
+        )
+
+    def test_update_rejects_stale_version_and_immutable_field_changes_before_write(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+        writes = len([call for call in runner.calls if call[0] == "put_page"])
+
+        with self.assertRaisesRegex(gbrain_module.ConcurrentAgentDelegationUpdateError, "changed"):
+            adapter.update_agent_delegation(
+                replace(lease, updated_at=self.NOW + timedelta(minutes=1)),
+                expected_version="2026-08-07T16:59:00+00:00",
+            )
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            adapter.update_agent_delegation(
+                replace(
+                    lease,
+                    allowed_operations=("task_status",),
+                    updated_at=self.NOW + timedelta(minutes=1),
+                ),
+                expected_version=lease.updated_at.isoformat(),
+            )
+
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "put_page"]),
+            writes,
+        )
+
+    def test_create_requires_verified_activated_openclaw_projection_before_write(self) -> None:
+        runner = self._runner()
+
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            GBrainAdapter(runner).create_agent_delegation(self._lease())
+
+        self.assertEqual(
+            [call for call in runner.calls if call[0] in {"put_page", "add_link"}],
+            [],
+        )
+
+    def test_create_reports_partial_write_when_membership_cannot_be_verified(self) -> None:
+        class LinkFailureRunner(StatefulIdentityMigrationRunner):
+            def run(self, tool: str, params: dict) -> object:
+                if tool == "add_link":
+                    raise GBrainCommandError("relationship write unavailable")
+                return super().run(tool, params)
+
+        base = self._runner()
+        runner = LinkFailureRunner(base.pages, base.links)
+
+        with self.assertRaisesRegex(PartialMutationError, "not verified"):
+            self._adapter(runner).create_agent_delegation(self._lease())
+
+        self.assertIn(self.SLUG, runner.pages)
 
 
 def stored_artifact(artifact) -> dict:
