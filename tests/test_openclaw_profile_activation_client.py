@@ -151,6 +151,115 @@ class OpenClawProfileActivationClientTests(unittest.TestCase):
         self.assertTrue(requests[1][1].endswith("/api/internal/openclaw-profiles/operations/op-fixed"))
         self.assertEqual([request[2] for request in requests], [10, 5, 5])
 
+    def test_default_client_timeouts_match_documented_endpoint_budgets(self):
+        observed = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def open_request(request, timeout):
+            observed.append((request.get_method(), request.full_url, timeout))
+            if request.full_url.endswith("/provision"):
+                return Response(
+                    {
+                        "ok": True,
+                        "operation_id": "op-budget",
+                        "status": "accepted",
+                        "fence_generation": None,
+                        "receipt": None,
+                        "error": None,
+                    }
+                )
+            if request.full_url.endswith("/recover"):
+                return Response(
+                    {
+                        "ok": True,
+                        "operation_id": "op-budget",
+                        "status": "recovery_required",
+                        "fence_generation": 2,
+                        "receipt": None,
+                        "error": "queued",
+                    }
+                )
+            if request.full_url.endswith("/active"):
+                return Response(
+                    {
+                        "ok": True,
+                        "status": "ready",
+                        "control_revision": 4,
+                        "validated_at": 1000.0,
+                        "generation": 2,
+                        "active_manifest": "system/openclaw-profile-manifests/g000002-op-budget",
+                        "manifest_digest": "a" * 64,
+                        "profiles": [],
+                    }
+                )
+            return Response(
+                {
+                    "ok": True,
+                    "operation_id": "op-budget",
+                    "status": "accepted",
+                    "fence_generation": None,
+                    "receipt": None,
+                    "error": None,
+                }
+            )
+
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788", "unit-token"
+        )
+        with patch("gtasks.gbrain.urlopen", side_effect=open_request):
+            client.submit(
+                DECLARATIONS, owner="worker-a", operation_id="op-budget"
+            )
+            client.status("op-budget")
+            client.recover("op-budget")
+            client.active_projection()
+
+        self.assertEqual(
+            [timeout for _method, _url, timeout in observed],
+            [8.0, 4.0, 8.0, 4.0],
+        )
+
+    def test_active_projection_reports_validation_pending_truthfully(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "status": "validation_pending",
+                        "control_revision": 5,
+                        "generation": 2,
+                        "active_manifest": "system/openclaw-profile-manifests/g000002-op",
+                        "manifest_digest": "b" * 64,
+                    }
+                ).encode("utf-8")
+
+        client = MemoryStargraphOpenClawProfileClient(
+            "http://127.0.0.1:8788", "unit-token"
+        )
+        with (
+            patch("gtasks.gbrain.urlopen", return_value=Response()),
+            self.assertRaisesRegex(GBrainCommandError, "validation is pending"),
+        ):
+            client.active_projection()
+
     def test_client_recovers_the_same_id_and_times_out_with_the_id_visible(self):
         class Client(MemoryStargraphOpenClawProfileClient):
             def __init__(self):

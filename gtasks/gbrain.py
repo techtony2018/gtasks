@@ -68,6 +68,10 @@ from .handoff_dispatcher import (
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
+# Memory Stargraph budgets are 6.5s for provision, 4.5s for recovery request,
+# and 2.5s for status/active. Caller deadlines retain transport margin.
+OPENCLAW_SUBMIT_CALLER_TIMEOUT_SECONDS = 8.0
+OPENCLAW_STATUS_CALLER_TIMEOUT_SECONDS = 4.0
 TONY_PROFILE_SLUG = "people/tony-guan"
 _MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
@@ -179,8 +183,8 @@ class MemoryStargraphOpenClawProfileClient:
         token: str,
         *,
         timeout_seconds: float | None = None,
-        submit_timeout_seconds: float = 10,
-        status_timeout_seconds: float = 5,
+        submit_timeout_seconds: float = OPENCLAW_SUBMIT_CALLER_TIMEOUT_SECONDS,
+        status_timeout_seconds: float = OPENCLAW_STATUS_CALLER_TIMEOUT_SECONDS,
         poll_timeout_seconds: float = 180,
         poll_interval_seconds: float = 0.5,
         sleeper: Callable[[float], None] = sleep,
@@ -475,11 +479,42 @@ class MemoryStargraphOpenClawProfileClient:
         return self.wait(operation_id, initial=accepted)
 
     def active_projection(self) -> Mapping[str, Any]:
-        return self._request(
+        projection = self._request(
             "GET",
             "/api/internal/openclaw-profiles/active",
             timeout_seconds=self.status_timeout_seconds,
         )
+        status = projection.get("status")
+        if status == "validation_pending":
+            raise GBrainCommandError(
+                "Memory Stargraph OpenClaw active projection validation is pending"
+            )
+        if (
+            status != "ready"
+            or isinstance(projection.get("control_revision"), bool)
+            or not isinstance(projection.get("control_revision"), int)
+            or projection["control_revision"] < 0
+            or isinstance(projection.get("validated_at"), bool)
+            or not isinstance(projection.get("validated_at"), (int, float))
+            or isinstance(projection.get("generation"), bool)
+            or not isinstance(projection.get("generation"), int)
+            or projection["generation"] < 0
+            or not isinstance(projection.get("profiles"), list)
+            or (
+                projection.get("manifest_digest") is not None
+                and (
+                    not isinstance(projection.get("manifest_digest"), str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", projection["manifest_digest"]
+                    )
+                    is None
+                )
+            )
+        ):
+            raise GBrainProtocolError(
+                "Memory Stargraph OpenClaw active projection was invalid"
+            )
+        return projection
 
 
 class SubprocessCommandRunner:
