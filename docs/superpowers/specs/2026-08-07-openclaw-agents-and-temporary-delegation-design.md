@@ -39,9 +39,11 @@ task ownership and never overrides the OpenClaw Agent's own work.
 Extend the existing event-driven Handoff Dispatcher with an OpenClaw execution
 adapter. Mission Control remains the central canonical classifier, durable
 outbox, lease/claim service, audit source, and authenticated mutation boundary.
-Each host runs one identity-scoped local Dispatcher capable of serving its
-paired Codex and OpenClaw identities without learning the identities, hosts, or
-credentials installed elsewhere.
+Each host runs one host-local Dispatcher supervisor containing two isolated
+single-identity workers: one Codex worker and its paired OpenClaw worker. A
+worker can claim only its own identity and cannot read or reuse its sibling's
+credential. The supervisor does not learn the identities, hosts, or credentials
+installed elsewhere.
 
 The local execution adapters are distinct:
 
@@ -89,8 +91,10 @@ An Artifact produced during delegation uses the OpenClaw identity in
 ## OpenClaw fixed-session contract
 
 Each OpenClaw Agent uses one fixed, durable session for normal and delegated
-work. Its private host configuration contains exactly one Agent identity, one
-route, one registration, one credential, and one session key.
+work. Its private worker configuration contains exactly one Agent identity, one
+route, one registration, one credential, and one session key. The host
+supervisor loads the Codex and OpenClaw worker config paths but does not merge
+their credentials or execution state.
 
 Before installation, implementation must inspect the installed OpenClaw
 version and validate the host-local invocation contract. The adapter accepts
