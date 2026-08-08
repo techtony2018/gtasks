@@ -27,6 +27,7 @@ from .domain import (
     ARTIFACT_BY_AGENT,
     ARTIFACT_BY_COLLECTION,
     AGENT_SCOPES,
+    EXISTING_CODEX_AGENT_SCOPES,
     AGENT_WORK_ROOTS,
     AGENT_BY_WORK_ROOT,
     AgentProfile,
@@ -3586,11 +3587,11 @@ class GBrainAdapter:
 
     def _agent_scopes(self) -> tuple[tuple[str, str], ...]:
         """Read agent work scopes from canonical Agent nodes with legacy fallback."""
-        legacy = dict(AGENT_SCOPES)
+        legacy = dict(EXISTING_CODEX_AGENT_SCOPES)
         try:
             raw = self.runner.run("list_pages", {"type": "agent"})
         except (GBrainError, KeyError):
-            return tuple(AGENT_SCOPES)
+            return EXISTING_CODEX_AGENT_SCOPES
         pages = raw.get("pages", raw) if isinstance(raw, Mapping) else raw
         if not isinstance(pages, list):
             raise GBrainProtocolError("agent directory list was not a list")
@@ -3614,7 +3615,7 @@ class GBrainAdapter:
         known = {slug for slug, _root in scopes}
         scopes.extend(
             (slug, root)
-            for slug, root in AGENT_SCOPES
+            for slug, root in EXISTING_CODEX_AGENT_SCOPES
             if slug not in known
         )
         return tuple(dict.fromkeys(scopes))

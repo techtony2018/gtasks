@@ -1,6 +1,8 @@
+import json
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import gtasks.domain as domain
 
@@ -1283,6 +1285,88 @@ class GoalTests(unittest.TestCase):
         self.assertRegex(project.slug, r"^projects/[0-9a-f-]{36}$")
         self.assertRegex(ticket.slug, r"^tasks/[0-9a-f-]{36}$")
         self.assertNotIn("mutable", " ".join((goal.slug, project.slug, ticket.slug)))
+
+
+class AgentScopeDeclarationTests(unittest.TestCase):
+    def test_openclaw_declaration_and_domain_scope_tables_remain_in_parity(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "openclaw-agents"
+            / "agents.json"
+        )
+        declaration = json.loads(config_path.read_text(encoding="utf-8"))
+        expected_openclaw = {
+            "agents/tammy-oc": (
+                "hosts/tammy",
+                "collections/tammy-oc-tasks",
+                "collections/tammy-oc-artifacts",
+            ),
+            "agents/timmy-oc": (
+                "hosts/timmy",
+                "collections/timmy-oc-tasks",
+                "collections/timmy-oc-artifacts",
+            ),
+            "agents/toddy-oc": (
+                "hosts/toddy",
+                "collections/toddy-oc-tasks",
+                "collections/toddy-oc-artifacts",
+            ),
+        }
+
+        self.assertEqual(declaration["schema_version"], 1)
+        self.assertEqual(
+            {
+                item["slug"]: (
+                    item["route"],
+                    item["task_collection"],
+                    item["artifact_collection"],
+                )
+                for item in declaration["agents"]
+            },
+            expected_openclaw,
+        )
+        self.assertTrue(
+            all(item["runtime"] == "openclaw" for item in declaration["agents"])
+        )
+
+        task_scopes = dict(domain.AGENT_SCOPES)
+        artifact_scopes = dict(domain.ARTIFACT_AGENT_SCOPES)
+        self.assertEqual(len(task_scopes), 6)
+        self.assertEqual(len(artifact_scopes), 6)
+        self.assertEqual(len(set(task_scopes.values())), 6)
+        self.assertEqual(len(set(artifact_scopes.values())), 6)
+        self.assertEqual(
+            {
+                slug: (task_scopes[slug], artifact_scopes[slug])
+                for slug in expected_openclaw
+            },
+            {
+                slug: (task_collection, artifact_collection)
+                for slug, (_route, task_collection, artifact_collection)
+                in expected_openclaw.items()
+            },
+        )
+        self.assertEqual(
+            {slug: domain.AGENT_RUNTIME_BY_SLUG[slug] for slug in expected_openclaw},
+            {slug: "openclaw" for slug in expected_openclaw},
+        )
+        self.assertEqual(
+            domain.EXISTING_CODEX_AGENT_SCOPES,
+            (
+                ("agents/toddy", "collections/toddys-tasks"),
+                ("agents/timmy", "collections/timmys-tasks"),
+                ("agents/tammy", "collections/tammys-tasks"),
+            ),
+        )
+        self.assertEqual(
+            domain.EXISTING_CODEX_ARTIFACT_AGENT_SCOPES,
+            (
+                ("agents/tammy", "collections/tammys-artifacts"),
+                ("agents/timmy", "collections/timmys-artifacts"),
+                ("agents/toddy", "collections/toddys-artifacts"),
+            ),
+        )
 
 
 class AgentArtifactContractTests(unittest.TestCase):

@@ -25,6 +25,7 @@ from . import __version__
 from .domain import (
     ACTIVE_ROOT,
     AGENT_SCOPES,
+    EXISTING_CODEX_AGENT_SCOPES,
     ARTIFACT_BY_AGENT,
     ARTIFACT_KINDS,
     COMPLETED_ROOT,
@@ -1255,7 +1256,7 @@ def _handler_class(
                         "queue_reader_dependency": "optional",
                         "job_applied_bound_task": JOB_APPLIED_BOUND_TASK_SLUG,
                         "agent_work_roots": [
-                            root for _agent, root in AGENT_SCOPES
+                            root for _agent, root in EXISTING_CODEX_AGENT_SCOPES
                         ],
                         "proposals_root": PROPOSALS_ROOT,
                         "qa_fixtures_root": QA_FIXTURES_ROOT,

@@ -53,6 +53,14 @@ APPROVED_AGENT_RUNTIMES = frozenset({"codex", "openclaw"})
 EXISTING_CODEX_AGENT_SLUGS = frozenset({
     "agents/tammy", "agents/timmy", "agents/toddy",
 })
+EXISTING_CODEX_ARTIFACT_AGENT_SCOPES = tuple(
+    scope for scope in ARTIFACT_AGENT_SCOPES
+    if scope[0] in EXISTING_CODEX_AGENT_SLUGS
+)
+EXISTING_CODEX_AGENT_SCOPES = tuple(
+    scope for scope in AGENT_SCOPES
+    if scope[0] in EXISTING_CODEX_AGENT_SLUGS
+)
 AGENT_WORK_ROOTS = frozenset(root for _agent, root in AGENT_SCOPES)
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 TASK_SCOPE_ROOTS = frozenset({*LIFECYCLE_ROOTS, *AGENT_WORK_ROOTS, QA_FIXTURES_ROOT})

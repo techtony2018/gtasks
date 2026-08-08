@@ -14,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from gtasks.domain import ARTIFACT_BY_AGENT
+from gtasks.domain import EXISTING_CODEX_ARTIFACT_AGENT_SCOPES
+
+
+INSTALLED_ARTIFACT_BY_AGENT = dict(EXISTING_CODEX_ARTIFACT_AGENT_SCOPES)
 
 
 def initialize_token_files(directory: Path) -> dict[str, Path]:
@@ -22,7 +25,7 @@ def initialize_token_files(directory: Path) -> dict[str, Path]:
     if directory.stat().st_mode & 0o077:
         raise ValueError("Publisher token directory must not be group/world accessible")
     result: dict[str, Path] = {}
-    for agent in sorted(ARTIFACT_BY_AGENT):
+    for agent in sorted(INSTALLED_ARTIFACT_BY_AGENT):
         key = agent.split("/", 1)[1]
         path = directory / f"{key}.token"
         try:
@@ -51,7 +54,7 @@ def _read_token(path: Path) -> str:
 
 
 def provision(output: Path, token_files: dict[str, Path]) -> dict[str, object]:
-    expected_agents = set(ARTIFACT_BY_AGENT)
+    expected_agents = set(INSTALLED_ARTIFACT_BY_AGENT)
     if set(token_files) != expected_agents:
         raise ValueError("Publisher token files must cover the installed identities exactly")
     publishers = []

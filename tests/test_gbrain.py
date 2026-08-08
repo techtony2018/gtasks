@@ -3678,6 +3678,16 @@ class GoalLinkMutationTests(unittest.TestCase):
 
 
 class AgentReadTests(unittest.TestCase):
+    def test_unprovisioned_openclaw_scopes_are_not_activated_by_legacy_directory_reads(
+        self,
+    ) -> None:
+        runner = FakeRunner({"list_pages": [[]]})
+
+        scopes = GBrainAdapter(runner)._agent_scopes()
+
+        self.assertEqual(scopes, domain.EXISTING_CODEX_AGENT_SCOPES)
+        self.assertNotIn("agents/tammy-oc", dict(scopes))
+
     def test_fails_closed_and_reports_non_task_proposed_agent_work(self) -> None:
         agent_pages = [
             {
