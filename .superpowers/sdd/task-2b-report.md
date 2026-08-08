@@ -214,3 +214,70 @@ OK (skipped=5)
 
 No live NATS/GBrain activation, canonical graph mutation, service restart,
 dashboard deploy, or external publication was performed during remediation.
+
+## Final authority-contract remediation (2026-08-08)
+
+This section supersedes every earlier statement in this report that assigned
+title, summary, chat URL, or other presentation authority to the logical Agent,
+or avatar authority to immutable generation metadata.
+
+- The CAS-selected, hash-bound generation Agent metadata is authoritative for
+  title/name, summary, runtime, chat URL, and all current or future profile
+  presentation fields.
+- The stable logical Agent is authoritative only for its mutable avatar and
+  canonical outgoing `default_agent_for` Goal edges. Its exact slug/type,
+  `runtime: openclaw`, and `logical_anchor: true` remain immutable activation
+  evidence; runtime tampering suppresses the complete OC roster.
+- GTasks composes an activated profile from generation presentation plus the
+  current logical avatar and Goal edges. Conflicting logical title, summary,
+  and chat fields cannot override generation metadata. A generation avatar
+  likewise cannot override the logical avatar.
+- The supported avatar and default-Goal methods were exercised end to end. The
+  only mutations were the logical Agent page avatar write and one
+  `default_agent_for` edge write. The active generation projection and all
+  invariant `for_agent`/`part_of` links remained unchanged.
+- Memory Stargraph commit `1c923c5` adds the production `GBrainToolBrain`
+  outer-page guard. It compares the current canonical page's immutable identity
+  with its embedded activation payload before returning it, so a stale payload
+  cannot conceal a logical runtime or collection-owner change. Canonical links
+  remain subject to the separate exact-link readback check.
+- The Task 2B brief and Memory activation runbook now record this same authority
+  split and mutation boundary.
+
+Failure-first evidence for the GTasks correction:
+
+```text
+three authority regressions before implementation:
+Ran 3 tests in 0.003s
+FAILED (failures=2)
+
+Observed failures: the logical Agent title overrode the generation title both
+on normal projection and after the supported avatar mutation. The independent
+logical-runtime tamper regression already failed closed as required.
+```
+
+Fresh verification after the final correction:
+
+```text
+Memory Stargraph full suite:
+python3 -m unittest discover -s tests
+Ran 484 tests in 5.846s
+OK
+
+GTasks adjacent Agent and OC integration classes:
+Ran 35 tests in 1.032s
+OK
+
+GTasks full suite:
+python3 -m unittest discover -s tests
+Ran 807 tests in 82.989s
+OK (skipped=5)
+
+python3 -m compileall -q gtasks scripts tests
+git diff --check
+PASS
+```
+
+No live NATS/GBrain activation, canonical graph mutation, service restart,
+dashboard deploy, or external publication was performed during this final
+correction.

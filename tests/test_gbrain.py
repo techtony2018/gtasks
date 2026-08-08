@@ -4009,7 +4009,21 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(scopes, domain.EXISTING_CODEX_AGENT_SCOPES)
         self.assertNotIn("agents/tammy-oc", dict(scopes))
 
-    def test_only_cas_activated_openclaw_manifest_profiles_are_projected(self) -> None:
+    def test_generation_presentation_and_logical_mutable_fields_are_composed(self) -> None:
+        projection = activated_openclaw_projection()
+        activated_tammy = projection["profiles"][0]
+        generation_metadata = activated_tammy["metadata"]
+        generation_metadata["frontmatter"]["chat_url"] = (
+            "https://chat.example.test/tammy-oc"
+        )
+        generation_metadata["frontmatter"]["avatar"] = {
+            "kind": "identicon",
+            "value": "generation-avatar-must-not-win",
+        }
+        staged_agent = activated_tammy["staged_agent_slug"]
+        activated_tammy["page_hashes"][staged_agent] = (
+            canonical_projection_page_hash(generation_metadata)
+        )
         pages, links = openclaw_anchor_fixture(
             extra_links=[
                 {
@@ -4025,12 +4039,15 @@ class AgentReadTests(unittest.TestCase):
         pages["agents/tammy-oc"]["compiled_truth"] = (
             "Logical profile updated after activation."
         )
+        pages["agents/tammy-oc"]["frontmatter"]["chat_url"] = (
+            "https://logical.example.test/must-not-win"
+        )
         pages["agents/tammy-oc"]["frontmatter"]["avatar"] = {
             "kind": "attachment",
             "value": "/media/agents/tammy-oc/avatar.png",
         }
         runner = ActivatedOpenClawRunner(pages, links)
-        profiles = StaticOpenClawProfiles(activated_openclaw_projection())
+        profiles = StaticOpenClawProfiles(projection)
         adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
 
         read = adapter.list_agent_profiles()
@@ -4040,10 +4057,14 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(len(activated), 1)
         self.assertEqual(activated[0].work_root, "collections/tammy-oc-tasks")
         self.assertEqual(activated[0].runtime, "openclaw")
-        self.assertEqual(activated[0].title, "Tammy OpenClaw")
+        self.assertEqual(activated[0].title, "Tammy-OC")
         self.assertEqual(
             activated[0].summary,
-            "Logical profile updated after activation.",
+            "Staged OpenClaw profile for Tammy-OC.",
+        )
+        self.assertEqual(
+            activated[0].chat_url,
+            "https://chat.example.test/tammy-oc",
         )
         self.assertEqual(activated[0].avatar_kind, "attachment")
         self.assertEqual(
@@ -4060,6 +4081,104 @@ class AgentReadTests(unittest.TestCase):
                 )
                 for tool, params in runner.calls
             )
+        )
+
+    def test_logical_runtime_tampering_suppresses_all_oc_profiles(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+        pages["agents/tammy-oc"]["frontmatter"]["runtime"] = "codex"
+
+        read = GBrainAdapter(
+            ActivatedOpenClawRunner(pages, links),
+            openclaw_profiles=StaticOpenClawProfiles(
+                activated_openclaw_projection()
+            ),
+        ).list_agent_profiles()
+
+        self.assertFalse(any(profile.runtime == "openclaw" for profile in read.agents))
+        self.assertEqual(len(read.issues), 1)
+        self.assertEqual(read.issues[0].category, "openclaw_activation")
+        self.assertIn("canonical logical OpenClaw Agent", read.issues[0].message)
+
+    def test_supported_oc_mutations_preserve_generation_presentation_and_invariant_links(
+        self,
+    ) -> None:
+        goal_slug = "goals/activated-owner"
+        pages, links = openclaw_anchor_fixture()
+        pages["agents/tammy-oc"]["title"] = "Logical title must not surface"
+        pages["agents/tammy-oc"]["compiled_truth"] = (
+            "Logical summary must not surface."
+        )
+        pages[goal_slug] = stored_goal(goal_slug, "Activated owner")
+        links.append(
+            {
+                "from_slug": goal_slug,
+                "to_slug": GOALS_ROOT,
+                "link_type": "member_of",
+                "context": "Tony's Goals membership.",
+                "link_source": "gtasks",
+            }
+        )
+        invariant_links = deepcopy(
+            [
+                edge
+                for edge in links
+                if edge["link_type"] in {"for_agent", "part_of"}
+            ]
+        )
+        projection = activated_openclaw_projection()
+        profiles = StaticOpenClawProfiles(projection)
+        runner = ActivatedOpenClawRunner(pages, links)
+        adapter = GBrainAdapter(runner, openclaw_profiles=profiles)
+
+        avatar_profile = adapter.set_agent_avatar(
+            "agents/tammy-oc",
+            "/media/agents/tammy-oc/avatar-v2.png",
+        )
+        goal_profile = adapter.set_agent_default_goal(
+            "agents/tammy-oc",
+            goal_slug,
+            assigned=True,
+        )
+
+        self.assertEqual(avatar_profile.title, "Tammy-OC")
+        self.assertEqual(
+            avatar_profile.summary,
+            "Staged OpenClaw profile for Tammy-OC.",
+        )
+        self.assertEqual(avatar_profile.avatar_kind, "attachment")
+        self.assertEqual(
+            avatar_profile.avatar_value,
+            "/media/agents/tammy-oc/avatar-v2.png",
+        )
+        self.assertEqual(goal_profile.title, "Tammy-OC")
+        self.assertEqual(
+            goal_profile.summary,
+            "Staged OpenClaw profile for Tammy-OC.",
+        )
+        self.assertEqual(goal_profile.default_goal_slugs, (goal_slug,))
+        self.assertEqual(
+            [
+                edge
+                for edge in runner.links
+                if edge["link_type"] in {"for_agent", "part_of"}
+            ],
+            invariant_links,
+        )
+        self.assertEqual(profiles.projection, projection)
+        self.assertEqual(
+            [
+                (
+                    tool,
+                    params.get("slug") or params.get("from"),
+                    params.get("link_type"),
+                )
+                for tool, params in runner.calls
+                if tool in {"put_page", "add_link", "remove_link"}
+            ],
+            [
+                ("put_page", "agents/tammy-oc", None),
+                ("add_link", "agents/tammy-oc", "default_agent_for"),
+            ],
         )
 
     def test_unactivated_generation_is_empty_without_an_activation_issue(self) -> None:

@@ -4331,8 +4331,33 @@ class GBrainAdapter:
             raise GBrainProtocolError(
                 f"{canonical_slug} is not a canonical logical OpenClaw Agent anchor"
             )
+
+        generation_metadata = activation.get("metadata")
+        if not isinstance(generation_metadata, Mapping):
+            raise GBrainProtocolError(
+                "activated OpenClaw profile generation metadata was not structured"
+            )
+        generation_frontmatter = generation_metadata.get("frontmatter")
+        if not isinstance(generation_frontmatter, Mapping):
+            raise GBrainProtocolError(
+                "activated OpenClaw profile generation frontmatter was not structured"
+            )
+        composed_page = deepcopy(dict(generation_metadata))
+        composed_frontmatter = deepcopy(dict(generation_frontmatter))
+        # Generation metadata owns presentation, except for the two explicitly
+        # mutable logical-anchor authorities: avatar here and Goal edges below.
+        composed_frontmatter.pop("avatar", None)
+        if "avatar" in frontmatter:
+            composed_frontmatter["avatar"] = deepcopy(frontmatter["avatar"])
+        composed_page.update(
+            {
+                "slug": canonical_slug,
+                "type": "agent",
+                "frontmatter": composed_frontmatter,
+            }
+        )
         profile = AgentProfile.from_page(
-            logical_page,
+            composed_page,
             work_root=str(activation["canonical_task_collection"]),
             edges=logical_edges,
         )
@@ -4519,6 +4544,8 @@ class GBrainAdapter:
         stored = AgentProfile.from_page(stored_page, work_root=work_root, edges=stored_links)
         if stored.avatar_kind != "attachment" or stored.avatar_value != served_url:
             raise GBrainProtocolError("agent avatar reference did not read back from GBrain")
+        if profile.runtime == "openclaw":
+            return self.get_agent_profile(agent_slug)
         return stored
 
     def get_agent_profile(self, agent_slug: str) -> AgentProfile:
