@@ -24,6 +24,9 @@ ARTIFACT_AGENT_SCOPES = (
     ("agents/tammy", "collections/tammys-artifacts"),
     ("agents/timmy", "collections/timmys-artifacts"),
     ("agents/toddy", "collections/toddys-artifacts"),
+    ("agents/tammy-oc", "collections/tammy-oc-artifacts"),
+    ("agents/timmy-oc", "collections/timmy-oc-artifacts"),
+    ("agents/toddy-oc", "collections/toddy-oc-artifacts"),
 )
 ARTIFACT_BY_AGENT = dict(ARTIFACT_AGENT_SCOPES)
 ARTIFACT_BY_COLLECTION = {
@@ -34,7 +37,22 @@ AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
     ("agents/tammy", "collections/tammys-tasks"),
+    ("agents/tammy-oc", "collections/tammy-oc-tasks"),
+    ("agents/timmy-oc", "collections/timmy-oc-tasks"),
+    ("agents/toddy-oc", "collections/toddy-oc-tasks"),
 )
+AGENT_RUNTIME_BY_SLUG: dict[str, str] = {
+    "agents/tammy": "codex",
+    "agents/timmy": "codex",
+    "agents/toddy": "codex",
+    "agents/tammy-oc": "openclaw",
+    "agents/timmy-oc": "openclaw",
+    "agents/toddy-oc": "openclaw",
+}
+APPROVED_AGENT_RUNTIMES = frozenset({"codex", "openclaw"})
+EXISTING_CODEX_AGENT_SLUGS = frozenset({
+    "agents/tammy", "agents/timmy", "agents/toddy",
+})
 AGENT_WORK_ROOTS = frozenset(root for _agent, root in AGENT_SCOPES)
 LIFECYCLE_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT})
 TASK_SCOPE_ROOTS = frozenset({*LIFECYCLE_ROOTS, *AGENT_WORK_ROOTS, QA_FIXTURES_ROOT})
@@ -928,6 +946,7 @@ class AgentProfile:
     summary: str
     work_root: str
     default_goal_slugs: tuple[str, ...]
+    runtime: str = "codex"
     avatar_kind: str = "initials"
     avatar_value: str = ""
     chat_url: str | None = None
@@ -956,6 +975,13 @@ class AgentProfile:
             summary = ""
         frontmatter = page.get("frontmatter")
         frontmatter = frontmatter if isinstance(frontmatter, Mapping) else {}
+        runtime = frontmatter.get("runtime")
+        if runtime is None and slug in EXISTING_CODEX_AGENT_SLUGS:
+            runtime = "codex"
+        if runtime not in APPROVED_AGENT_RUNTIMES:
+            raise DomainValidationError(
+                "agent runtime must be one of: codex, openclaw"
+            )
         chat_url = frontmatter.get("chat_url")
         if chat_url is not None and (
             not isinstance(chat_url, str)
@@ -1000,6 +1026,7 @@ class AgentProfile:
             summary=summary.strip(),
             work_root=work_root,
             default_goal_slugs=goals,
+            runtime=runtime,
             avatar_kind=avatar_kind,
             avatar_value=avatar_value,
             chat_url=chat_url,
@@ -1013,6 +1040,7 @@ class AgentProfile:
             "summary": self.summary,
             "work_root": self.work_root,
             "default_goal_slugs": list(self.default_goal_slugs),
+            "runtime": self.runtime,
             "avatar": {
                 "kind": self.avatar_kind,
                 "value": self.avatar_value,

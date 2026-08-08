@@ -19,6 +19,7 @@ from gtasks.domain import (
     ACTIVE_ROOT,
     ARTIFACTS_ROOT,
     ARTIFACT_BY_AGENT,
+    AgentProfile,
     COMPLETED_ROOT,
     EventProgress,
     GOALS_ROOT,
@@ -1387,6 +1388,65 @@ class CollectionReadTests(unittest.TestCase):
 
 
 class AgentProfileReadTests(unittest.TestCase):
+    def test_openclaw_agents_have_independent_scopes_and_no_default_goals(self) -> None:
+        self.assertEqual(
+            dict(domain.AGENT_SCOPES)["agents/tammy-oc"],
+            "collections/tammy-oc-tasks",
+        )
+        self.assertEqual(
+            domain.ARTIFACT_BY_AGENT["agents/tammy-oc"],
+            "collections/tammy-oc-artifacts",
+        )
+        page = {
+            "slug": "agents/tammy-oc",
+            "type": "agent",
+            "title": "Agent Tammy-OC",
+            "compiled_truth": "Independent OpenClaw Agent on Tammy.",
+            "frontmatter": {"runtime": "openclaw"},
+        }
+
+        profile = AgentProfile.from_page(
+            page,
+            work_root="collections/tammy-oc-tasks",
+            edges=(),
+        )
+
+        self.assertEqual(profile.runtime, "openclaw")
+        self.assertEqual(profile.default_goal_slugs, ())
+
+    def test_agent_profile_runtime_requires_an_approved_value(self) -> None:
+        page = {
+            "slug": "agents/tammy-oc",
+            "type": "agent",
+            "title": "Agent Tammy-OC",
+            "compiled_truth": "Independent OpenClaw Agent on Tammy.",
+            "frontmatter": {"runtime": "unknown"},
+        }
+
+        with self.assertRaisesRegex(domain.DomainValidationError, "runtime"):
+            AgentProfile.from_page(
+                page,
+                work_root="collections/tammy-oc-tasks",
+                edges=(),
+            )
+
+    def test_existing_codex_agent_profile_defaults_runtime_without_name_inference(self) -> None:
+        page = {
+            "slug": "agents/tammy",
+            "type": "agent",
+            "title": "Agent An Arbitrary Display Name",
+            "compiled_truth": "Existing Codex Agent.",
+            "frontmatter": {},
+        }
+
+        profile = AgentProfile.from_page(
+            page,
+            work_root="collections/tammys-tasks",
+            edges=(),
+        )
+
+        self.assertEqual(profile.runtime, "codex")
+
     def test_reads_tony_board_avatar_from_canonical_person_attachment(self) -> None:
         runner = FakeRunner(
             {
@@ -2044,10 +2104,10 @@ class AgentArtifactAdapterTests(unittest.TestCase):
         first_puts = [call for call in runner.calls if call[0] == "put_page"]
         adapter.ensure_artifact_collections()
 
-        self.assertEqual(len(first_puts), 4)
+        self.assertEqual(len(first_puts), len(domain.ARTIFACT_AGENT_SCOPES) + 1)
         self.assertEqual(
             len([call for call in runner.calls if call[0] == "put_page"]),
-            4,
+            len(domain.ARTIFACT_AGENT_SCOPES) + 1,
         )
         actual = {
             (edge["from_slug"], edge["to_slug"], edge["link_type"])

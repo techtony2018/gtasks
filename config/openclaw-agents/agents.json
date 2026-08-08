@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "agents": [
+    {"slug":"agents/tammy-oc","name":"Tammy-OC","runtime":"openclaw","route":"hosts/tammy","task_collection":"collections/tammy-oc-tasks","artifact_collection":"collections/tammy-oc-artifacts"},
+    {"slug":"agents/timmy-oc","name":"Timmy-OC","runtime":"openclaw","route":"hosts/timmy","task_collection":"collections/timmy-oc-tasks","artifact_collection":"collections/timmy-oc-artifacts"},
+    {"slug":"agents/toddy-oc","name":"Toddy-OC","runtime":"openclaw","route":"hosts/toddy","task_collection":"collections/toddy-oc-tasks","artifact_collection":"collections/toddy-oc-artifacts"}
+  ]
+}
