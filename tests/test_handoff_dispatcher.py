@@ -252,6 +252,35 @@ class HandoffDispatcherTests(unittest.TestCase):
             TASK,
         )
 
+    def test_owned_claim_release_suppresses_its_pending_handoff(self) -> None:
+        record = self.dispatcher().record(
+            change(
+                assigned_to=(OC_AGENT,),
+                canonical_event_id="events/owned-release",
+            ),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+
+        event = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="completed",
+            mutation_id="mutation-owned-release",
+            now=NOW + timedelta(seconds=1),
+        )
+
+        self.assertEqual(event.event_type, "execution_claim_released")
+        self.assertEqual(self.store.get(record.handoff_id).status, "suppressed")
+        self.assertIsNone(
+            self.store.claim(
+                OC_REGISTRATION_ID,
+                now=NOW + timedelta(seconds=2),
+                lease_seconds=30,
+            )
+        )
+
     def test_active_verified_lease_routes_without_rewriting_permanent_owner(self) -> None:
         active = delegation()
         actionable = change(canonical_event_id="events/delegated-active")
@@ -437,6 +466,114 @@ class HandoffDispatcherTests(unittest.TestCase):
         finally:
             other_store.close()
 
+    def test_newer_revocation_and_owned_priority_snapshots_win_before_claim_transaction(self) -> None:
+        revoked = delegation(
+            state=DelegationState.REVOKED,
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        cases = ("revoked", "owned-ready")
+        for index, case in enumerate(cases, start=70):
+            with self.subTest(case=case):
+                path = f"{self.path}.{case}"
+
+                class RaceStore(DurableHandoffStore):
+                    def record(inner_self, *args, **kwargs):
+                        if case == "revoked":
+                            inner_self.observe_delegation_authority(
+                                revoked,
+                                observed_at=NOW + timedelta(seconds=1),
+                            )
+                        else:
+                            inner_self.observe_executor_priority(
+                                OC_AGENT,
+                                owned_work_ready=True,
+                                version="priority-owned-ready",
+                                observed_at=NOW + timedelta(seconds=1),
+                            )
+                        return super().record(*args, **kwargs)
+
+                store = RaceStore(path)
+                try:
+                    dispatcher = HandoffDispatcher(
+                        store,
+                        registrations=(registration(), oc_registration()),
+                        delegations=(delegation(),),
+                        owned_work_ready=lambda _executor: False,
+                    )
+                    record = dispatcher.record(
+                        change(
+                            task_slug=self.task(index),
+                            canonical_event_id=f"events/{case}-before-claim",
+                            correlation_id=f"correlation-{case}-before-claim",
+                        ),
+                        now=NOW,
+                    )
+
+                    self.assertEqual(record.status, "suppressed")
+                    self.assertIsNone(store.get_execution_claim(self.task(index)))
+                finally:
+                    store.close()
+                    os.unlink(path)
+
+    def test_revocation_or_owned_priority_change_before_wake_suppresses_callback(self) -> None:
+        for index, case in enumerate(("revoked", "owned-ready"), start=80):
+            with self.subTest(case=case):
+                path = f"{self.path}.wake-{case}"
+                store = DurableHandoffStore(path)
+                try:
+                    dispatcher = HandoffDispatcher(
+                        store,
+                        registrations=(registration(), oc_registration()),
+                        delegations=(delegation(),),
+                        owned_work_ready=lambda _executor: False,
+                    )
+                    record = dispatcher.record(
+                        change(
+                            task_slug=self.task(index),
+                            canonical_event_id=f"events/{case}-before-wake",
+                            correlation_id=f"correlation-{case}-before-wake",
+                        ),
+                        now=NOW,
+                    )
+                    wake_tokens: list[str] = []
+
+                    def change_authority(_record) -> bool:
+                        if case == "revoked":
+                            store.observe_delegation_authority(
+                                delegation(
+                                    state=DelegationState.REVOKED,
+                                    updated_at=NOW + timedelta(seconds=1),
+                                ),
+                                observed_at=NOW + timedelta(seconds=1),
+                            )
+                        else:
+                            store.observe_executor_priority(
+                                OC_AGENT,
+                                owned_work_ready=True,
+                                version="priority-owned-before-wake",
+                                observed_at=NOW + timedelta(seconds=1),
+                            )
+                        return True
+
+                    local = LocalAgentDispatcher(
+                        store,
+                        registration_id=OC_REGISTRATION_ID,
+                        verify_route=change_authority,
+                        wake=lambda _record, token=None: (
+                            wake_tokens.append(str(token)) or True
+                        ),
+                    )
+
+                    result = local.run_once(now=NOW + timedelta(seconds=2))
+
+                    self.assertEqual(result.status, "suppressed")
+                    self.assertEqual(store.get(record.handoff_id).status, "suppressed")
+                    self.assertEqual(wake_tokens, [])
+                    self.assertIsNone(store.get_execution_claim(self.task(index)))
+                finally:
+                    store.close()
+                    os.unlink(path)
+
     def test_restart_replay_reuses_claim_and_never_wakes_twice(self) -> None:
         active = delegation()
         dispatcher = self.dispatcher(leases=(active,))
@@ -445,7 +582,7 @@ class HandoffDispatcherTests(unittest.TestCase):
         before = self.store.get_execution_claim(TASK)
         wake_count = 0
 
-        def wake(_record) -> bool:
+        def wake(_record, _wake_token) -> bool:
             nonlocal wake_count
             wake_count += 1
             return True
@@ -578,6 +715,85 @@ class HandoffDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(checkpoint.execution_state, "checkpointed")
         self.assertEqual(self.store.get(delivery.handoff_id).status, "suppressed")
+
+    def test_recovery_never_rotates_an_expired_delegated_execution_claim(self) -> None:
+        active = delegation()
+        record = self.dispatcher(leases=(active,)).record(
+            change(canonical_event_id="events/recovery-after-expiry"),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID,
+            now=NOW,
+            lease_seconds=30,
+        )
+
+        with self.assertRaisesRegex(ValueError, "checkpoint|expired"):
+            self.store.recover_in_progress(
+                record.handoff_id,
+                registration=oc_registration(),
+                expected_generation=delivery.lease_generation,
+                now=active.ends_at,
+            )
+
+        self.assertEqual(self.store.get(record.handoff_id).status, "suppressed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+    def test_recovery_revalidates_revocation_and_owned_work_priority(self) -> None:
+        for index, case in enumerate(("revoked", "owned-ready"), start=90):
+            with self.subTest(case=case):
+                path = f"{self.path}.recovery-{case}"
+                store = DurableHandoffStore(path)
+                task_slug = self.task(index)
+                try:
+                    dispatcher = HandoffDispatcher(
+                        store,
+                        registrations=(registration(), oc_registration()),
+                        delegations=(delegation(),),
+                        owned_work_ready=lambda _executor: False,
+                    )
+                    record = dispatcher.record(
+                        change(
+                            task_slug=task_slug,
+                            canonical_event_id=f"events/recovery-{case}",
+                            correlation_id=f"correlation-recovery-{case}",
+                        ),
+                        now=NOW,
+                    )
+                    delivery = store.claim(
+                        OC_REGISTRATION_ID,
+                        now=NOW,
+                        lease_seconds=30,
+                    )
+                    if case == "revoked":
+                        store.observe_delegation_authority(
+                            delegation(
+                                state=DelegationState.REVOKED,
+                                updated_at=NOW + timedelta(seconds=1),
+                            ),
+                            observed_at=NOW + timedelta(seconds=1),
+                        )
+                    else:
+                        store.observe_executor_priority(
+                            OC_AGENT,
+                            owned_work_ready=True,
+                            version="priority-owned-during-recovery",
+                            observed_at=NOW + timedelta(seconds=1),
+                        )
+
+                    with self.assertRaisesRegex(ValueError, "checkpoint|authority"):
+                        store.recover_in_progress(
+                            record.handoff_id,
+                            registration=oc_registration(),
+                            expected_generation=delivery.lease_generation,
+                            now=NOW + timedelta(seconds=2),
+                        )
+
+                    self.assertEqual(store.get(record.handoff_id).status, "suppressed")
+                    self.assertIsNone(store.get_execution_claim(task_slug))
+                finally:
+                    store.close()
+                    os.unlink(path)
 
     def test_completion_and_revocation_emit_exact_handback_evidence(self) -> None:
         active = delegation()
@@ -781,7 +997,7 @@ class HandoffDispatcherTests(unittest.TestCase):
     def test_delegation_identity_mismatch_deadletters_without_wake(self) -> None:
         wake_count = 0
 
-        def wake(_record) -> bool:
+        def wake(_record, _wake_token) -> bool:
             nonlocal wake_count
             wake_count += 1
             return True
@@ -905,7 +1121,10 @@ class DurableHandoffStoreTests(unittest.TestCase):
     def test_acknowledgement_states_validate_blocked_detail(self) -> None:
         for index, status in enumerate(("received", "actively_executing", "completed")):
             with self.subTest(status=status):
-                record = self.record(canonical_event_id=f"events/ack-{index}")
+                record = self.record(
+                    task_slug=f"tasks/ack-{index}",
+                    canonical_event_id=f"events/ack-{index}",
+                )
                 claim = self.claim()
                 acknowledged = self.store.acknowledge(
                     record.handoff_id,
@@ -917,7 +1136,10 @@ class DurableHandoffStoreTests(unittest.TestCase):
                     now=NOW,
                 )
                 self.assertEqual(acknowledged.status, status)
-        record = self.record(canonical_event_id="events/ack-blocked")
+        record = self.record(
+            task_slug="tasks/ack-blocked",
+            canonical_event_id="events/ack-blocked",
+        )
         claim = self.claim()
         with self.assertRaisesRegex(ValueError, "detail"):
             self.store.acknowledge(
@@ -1220,7 +1442,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             self.store,
             registration_id=REGISTRATION_ID,
             verify_route=lambda claimed: claimed.agent_slug == AGENT,
-            wake=lambda claimed: True,
+            wake=lambda claimed, wake_token: True,
         )
         claim = local_dispatcher.run_once(now=NOW)
         self.assertIsNotNone(claim)
@@ -1294,7 +1516,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             self.store,
             registration_id=REGISTRATION_ID,
             verify_route=lambda claimed: claimed.agent_slug == AGENT,
-            wake=lambda claimed: True,
+            wake=lambda claimed, wake_token: True,
         )
         received_claim = local_dispatcher.run_once(now=NOW)
         self.assertIsNotNone(received_claim)
@@ -1821,7 +2043,10 @@ class DurableHandoffStoreTests(unittest.TestCase):
             now=NOW,
         )
 
-        terminal_record = self.record(canonical_event_id="events/terminal")
+        terminal_record = self.record(
+            task_slug="tasks/terminal-audit",
+            canonical_event_id="events/terminal",
+        )
         terminal_claim = self.claim()
         self.store.record_failure(
             terminal_record.handoff_id,
@@ -1917,7 +2142,7 @@ class DurableHandoffStoreTests(unittest.TestCase):
             self.store,
             registration_id=REGISTRATION_ID,
             verify_route=lambda claimed: claimed.agent_slug == AGENT,
-            wake=lambda claimed: True,
+            wake=lambda claimed, wake_token: True,
         )
         claimed = dispatcher.run_once(now=NOW)
 
@@ -2025,6 +2250,217 @@ class DurableHandoffStoreTests(unittest.TestCase):
         page = self.store.query_events(limit=50, after_sequence=0)
         self.assertEqual(restored.handoff_id, record.handoff_id)
         self.assertEqual(page.total, 1)
+
+
+class HandoffSchemaMigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        handle, self.path = tempfile.mkstemp(
+            prefix="handoff-schema-migration-", suffix=".sqlite3"
+        )
+        os.close(handle)
+
+    def tearDown(self) -> None:
+        os.unlink(self.path)
+
+    def _seed_two_unfenced_legacy_handoffs(self) -> None:
+        store = DurableHandoffStore(self.path)
+        store.close()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE execution_claims")
+            connection.execute("DELETE FROM handoff_events")
+            connection.execute("DELETE FROM leases")
+            connection.execute("DELETE FROM handoffs")
+            rows = (
+                (
+                    "handoff-legacy-codex",
+                    "a" * 64,
+                    "events/legacy-codex",
+                    AGENT,
+                    REGISTRATION_ID,
+                ),
+                (
+                    "handoff-legacy-openclaw",
+                    "b" * 64,
+                    "events/legacy-openclaw",
+                    OC_AGENT,
+                    OC_REGISTRATION_ID,
+                ),
+            )
+            for handoff_id, idempotency_key, event_id, agent_slug, registration_id in rows:
+                connection.execute(
+                    """
+                    INSERT INTO handoffs (
+                        handoff_id, idempotency_key, task_slug, canonical_event_id,
+                        canonical_version, trigger, agent_slug, executor_agent,
+                        permanent_owner, delegation_slug, registration_ref, status,
+                        reason, summary, correlation_id, created_at, attempt, detail
+                    ) VALUES (?, ?, ?, ?, '42', 'answer_received', ?, NULL, NULL,
+                        NULL, ?, 'queued', 'answer_received',
+                        'A verified legacy handoff is ready.', NULL, ?, 0, NULL)
+                    """,
+                    (
+                        handoff_id,
+                        idempotency_key,
+                        TASK,
+                        event_id,
+                        agent_slug,
+                        hashlib.sha256(registration_id.encode()).hexdigest(),
+                        NOW.isoformat(),
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO leases (
+                        handoff_id, registration_id, registration_agent_slug,
+                        registration_route, lease_until, lease_capability_ref,
+                        lease_generation
+                    ) VALUES (?, ?, ?, 'hosts/tammy', NULL, NULL, 0)
+                    """,
+                    (handoff_id, registration_id, agent_slug),
+                )
+            connection.commit()
+
+    def test_concurrent_startup_backfills_one_legacy_task_fence_and_quarantines_conflict(self) -> None:
+        self._seed_two_unfenced_legacy_handoffs()
+        barrier = threading.Barrier(2)
+
+        def open_store(_index: int) -> DurableHandoffStore:
+            barrier.wait()
+            return DurableHandoffStore(self.path)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            stores = list(executor.map(open_store, range(2)))
+        try:
+            with sqlite3.connect(self.path) as inspection:
+                active_claims = inspection.execute(
+                    "SELECT handoff_id, executor_agent FROM execution_claims WHERE terminal_state IS NULL"
+                ).fetchall()
+                statuses = inspection.execute(
+                    "SELECT status FROM handoffs ORDER BY handoff_id"
+                ).fetchall()
+
+            self.assertEqual(len(active_claims), 1)
+            self.assertEqual(
+                sorted(status for (status,) in statuses),
+                ["dead_letter", "queued"],
+            )
+            winner_registration = (
+                OC_REGISTRATION_ID
+                if active_claims[0][1] == OC_AGENT
+                else REGISTRATION_ID
+            )
+            claim = stores[0].claim(
+                winner_registration,
+                now=NOW,
+                lease_seconds=30,
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(claim.task_slug, TASK)
+        finally:
+            for store in stores:
+                store.close()
+
+    def test_unversioned_legacy_delegation_is_quarantined_instead_of_downgraded_to_owned(self) -> None:
+        DurableHandoffStore(self.path).close()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO handoffs (
+                    handoff_id, idempotency_key, task_slug, canonical_event_id,
+                    canonical_version, trigger, agent_slug, executor_agent,
+                    permanent_owner, delegation_slug, registration_ref, status,
+                    reason, summary, correlation_id, created_at, attempt, detail
+                ) VALUES (
+                    'handoff-legacy-delegated', ?, ?, 'events/legacy-delegated',
+                    '42', 'answer_received', ?, ?, ?, ?, ?, 'queued',
+                    'answer_received', 'A verified legacy handoff is ready.',
+                    'correlation-legacy-delegated', ?, 0, NULL
+                )
+                """,
+                (
+                    "c" * 64,
+                    TASK,
+                    OC_AGENT,
+                    OC_AGENT,
+                    AGENT,
+                    DELEGATION_SLUG,
+                    hashlib.sha256(OC_REGISTRATION_ID.encode()).hexdigest(),
+                    NOW.isoformat(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO leases (
+                    handoff_id, registration_id, registration_agent_slug,
+                    registration_route, lease_until, lease_capability_ref,
+                    lease_generation
+                ) VALUES (
+                    'handoff-legacy-delegated', ?, ?, 'hosts/tammy', NULL, NULL, 0
+                )
+                """,
+                (OC_REGISTRATION_ID, OC_AGENT),
+            )
+            connection.commit()
+
+        store = DurableHandoffStore(self.path)
+        try:
+            self.assertEqual(
+                store.get("handoff-legacy-delegated").status,
+                "dead_letter",
+            )
+            self.assertIsNone(store.get_execution_claim(TASK, include_terminal=True))
+        finally:
+            store.close()
+
+    def test_failed_schema_upgrade_rolls_back_every_ddl_and_backfill_change(self) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute("CREATE TABLE handoffs (handoff_id TEXT PRIMARY KEY)")
+            connection.commit()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            DurableHandoffStore(self.path)
+
+        with sqlite3.connect(self.path) as inspection:
+            tables = {
+                row[0]
+                for row in inspection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+                if not row[0].startswith("sqlite_")
+            }
+            columns = [
+                row[1] for row in inspection.execute("PRAGMA table_info(handoffs)")
+            ]
+        self.assertEqual(tables, {"handoffs"})
+        self.assertEqual(columns, ["handoff_id"])
+
+    def test_concurrent_empty_store_startup_is_serialized_and_complete(self) -> None:
+        barrier = threading.Barrier(2)
+
+        def open_store(_index: int) -> DurableHandoffStore:
+            barrier.wait()
+            return DurableHandoffStore(self.path)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            stores = list(executor.map(open_store, range(2)))
+        try:
+            with sqlite3.connect(self.path) as inspection:
+                self.assertEqual(
+                    inspection.execute("PRAGMA integrity_check").fetchone()[0],
+                    "ok",
+                )
+                self.assertIn(
+                    "execution_claims",
+                    {
+                        row[0]
+                        for row in inspection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        )
+                    },
+                )
+        finally:
+            for store in stores:
+                store.close()
 
 
 if __name__ == "__main__":

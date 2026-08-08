@@ -22,6 +22,7 @@ from gtasks.local_handoff_dispatcher import (
     LocalDispatcherClient,
     RejectRedirectHandler,
     PrivateClaimStore,
+    PrivateWakeDedupStore,
     acknowledge_handoff,
     install_signal_handlers,
     run_forever,
@@ -66,6 +67,10 @@ def claim_payload(**overrides: object) -> dict[str, object]:
         "idempotency_key": "handoff-key-100",
         "trigger": "answer_received",
         "agent_slug": "agents/tammy",
+        "claim_schema_version": 2,
+        "executor_agent": "agents/tammy",
+        "permanent_owner": "agents/tammy",
+        "delegation_slug": None,
         "registration_ref": hashlib.sha256(b"private-registration-tammy").hexdigest(),
         "status": "leased",
         "reason": "answer_received",
@@ -213,6 +218,92 @@ class LocalDispatcherClientTests(unittest.TestCase):
         self.assertEqual(second[2]["registration_id"], "private-registration-tammy")
         self.assertEqual(first[3]["authorization"], "Bearer local-bearer-token")
         self.assertEqual(first[4], 32)
+
+    def test_legacy_owned_codex_claim_is_upgraded_without_changing_identity(self) -> None:
+        payload = claim_payload()
+        for key in (
+            "claim_schema_version",
+            "executor_agent",
+            "permanent_owner",
+            "delegation_slug",
+        ):
+            payload.pop(key)
+        self.responses.append(FakeResponse(200, payload))
+
+        claimed = self.client.claim(wait_seconds=0, lease_seconds=5)
+
+        self.assertEqual(claimed["claim_schema_version"], 2)
+        self.assertEqual(claimed["executor_agent"], "agents/tammy")
+        self.assertEqual(claimed["permanent_owner"], "agents/tammy")
+        self.assertIsNone(claimed["delegation_slug"])
+
+    def test_claim_accepts_versioned_execution_provenance_for_codex_and_delegated_routes(self) -> None:
+        payloads = (
+            claim_payload(
+                claim_schema_version=2,
+                executor_agent="agents/tammy",
+                permanent_owner="agents/tammy",
+                delegation_slug=None,
+            ),
+            claim_payload(
+                claim_schema_version=2,
+                agent_slug="agents/tammy-oc",
+                executor_agent="agents/tammy-oc",
+                permanent_owner="agents/tammy",
+                delegation_slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+                registration_ref=hashlib.sha256(
+                    b"private-registration-tammy-oc"
+                ).hexdigest(),
+            ),
+        )
+        for payload in payloads:
+            with self.subTest(executor=payload["executor_agent"]):
+                self.responses.append(FakeResponse(200, payload))
+                client = LocalDispatcherClient(
+                    "http://127.0.0.1:4176",
+                    registration_id=(
+                        "private-registration-tammy-oc"
+                        if payload["executor_agent"] == "agents/tammy-oc"
+                        else "private-registration-tammy"
+                    ),
+                    bearer_token="local-bearer-token",
+                    agent_slug=str(payload["executor_agent"]),
+                    opener=self.client._opener,
+                )
+
+                claim = client.claim(wait_seconds=0, lease_seconds=5)
+
+                self.assertEqual(claim["claim_schema_version"], 2)
+                self.assertEqual(claim["executor_agent"], payload["executor_agent"])
+                self.assertEqual(claim["permanent_owner"], "agents/tammy")
+                self.assertEqual(claim["delegation_slug"], payload["delegation_slug"])
+
+    def test_wake_authorization_uses_the_leased_fence_and_stable_token(self) -> None:
+        claim = claim_payload()
+        self.responses.append(
+            FakeResponse(
+                200,
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "leased",
+                    "wake_authorized": True,
+                },
+            )
+        )
+
+        response = self.client.authorize_wake(
+            claim, wake_token="wake/handoff-key-100"
+        )
+
+        url, method, body, headers, _timeout = self.request_details()
+        self.assertEqual(url, "http://127.0.0.1:4176/api/handoffs/handoff-100/wake")
+        self.assertEqual(method, "POST")
+        self.assertEqual(body, {"wake_token": "wake/handoff-key-100"})
+        self.assertEqual(
+            headers["x-handoff-lease-capability"],
+            "private-lease-capability",
+        )
+        self.assertEqual(response["status"], "leased")
 
     def test_default_http_transport_rejects_every_redirect(self) -> None:
         handler = RejectRedirectHandler()
@@ -434,7 +525,16 @@ class LocalDispatcherClientTests(unittest.TestCase):
             with self.subTest(wait_seconds=wait_seconds, lease_seconds=lease_seconds):
                 with self.assertRaises(ValueError):
                     self.client.claim(wait_seconds=wait_seconds, lease_seconds=lease_seconds)
-        self.responses.append(FakeResponse(200, claim_payload(agent_slug="agents/timmy")))
+        self.responses.append(
+            FakeResponse(
+                200,
+                claim_payload(
+                    agent_slug="agents/timmy",
+                    executor_agent="agents/timmy",
+                    permanent_owner="agents/timmy",
+                ),
+            )
+        )
         with self.assertRaisesRegex(ValueError, "identity"):
             self.client.claim(wait_seconds=0, lease_seconds=5, agent_slug="agents/tammy")
 
@@ -552,8 +652,16 @@ class RunForeverTests(unittest.TestCase):
                 raise value
             return value
 
-        def ack(self, claim, *, status, detail=None):
+        def ack(self, claim, *, status, detail=None, operation_sequence=1):
             self.acks.append((claim["handoff_id"], status))
+            return {"status": status, "detail": detail}
+
+        def authorize_wake(self, claim, *, wake_token):
+            return {
+                "handoff_id": claim["handoff_id"],
+                "status": "leased",
+                "wake_authorized": True,
+            }
 
         def fail(self, claim, *, failure_class):
             self.failures.append((claim["handoff_id"], failure_class))
@@ -571,13 +679,21 @@ class RunForeverTests(unittest.TestCase):
                 raise result
             return result
 
-    def test_resumes_and_leaves_acknowledgement_lifecycle_to_installed_helper(self) -> None:
+    def test_resumes_then_durably_acknowledges_received(self) -> None:
         client = self.Client([claim_payload()])
         adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
 
-        run_forever(client, adapter, max_iterations=1, retry_delay=0)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active.json")
+            run_forever(
+                client,
+                adapter,
+                claim_store=store,
+                max_iterations=1,
+                retry_delay=0,
+            )
 
-        self.assertEqual(client.acks, [])
+        self.assertEqual(client.acks, [("handoff-100", "received")])
         self.assertEqual(adapter.claims, ["handoff-100"])
         self.assertEqual(client.failures, [])
 
@@ -599,29 +715,44 @@ class RunForeverTests(unittest.TestCase):
                 client = self.Client([claim_payload()])
                 adapter = self.Adapter([result])
                 sleeps: list[float] = []
-                run_forever(
-                    client,
-                    adapter,
-                    max_iterations=1,
-                    retry_delay=0.25,
-                    sleep=sleeps.append,
-                )
+                with tempfile.TemporaryDirectory() as temporary:
+                    run_forever(
+                        client,
+                        adapter,
+                        claim_store=PrivateClaimStore(
+                            Path(temporary) / "active.json"
+                        ),
+                        max_iterations=1,
+                        retry_delay=0.25,
+                        sleep=sleeps.append,
+                    )
                 self.assertEqual(client.acks, [])
                 self.assertEqual(client.failures, [("handoff-100", "retryable")])
                 self.assertEqual(sleeps, [0.25])
 
     def test_process_restart_can_retry_same_handoff_id(self) -> None:
-        first_client = self.Client([claim_payload()])
-        run_forever(
-            first_client,
-            self.Adapter([subprocess.CompletedProcess([], 1)]),
-            max_iterations=1,
-            retry_delay=0,
-        )
-        second_client = self.Client([claim_payload(attempt=2, lease_generation=4)])
-        second_adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "active.json"
+            first_client = self.Client([claim_payload()])
+            run_forever(
+                first_client,
+                self.Adapter([subprocess.CompletedProcess([], 1)]),
+                claim_store=PrivateClaimStore(path),
+                max_iterations=1,
+                retry_delay=0,
+            )
+            second_client = self.Client(
+                [claim_payload(attempt=2, lease_generation=4)]
+            )
+            second_adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
 
-        run_forever(second_client, second_adapter, max_iterations=1, retry_delay=0)
+            run_forever(
+                second_client,
+                second_adapter,
+                claim_store=PrivateClaimStore(path),
+                max_iterations=1,
+                retry_delay=0,
+            )
 
         self.assertEqual(first_client.failures, [("handoff-100", "retryable")])
         self.assertEqual(second_adapter.claims, ["handoff-100"])
@@ -650,7 +781,7 @@ class RunForeverTests(unittest.TestCase):
             run_forever(client, adapter, claim_store=store, max_iterations=1, retry_delay=0)
 
             self.assertEqual(client.recovered, ["handoff-100"])
-            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(adapter.claims, [])
             self.assertEqual(len(client.claims), 1)
             self.assertEqual(store.load_current()["lease_generation"], 4)
 
@@ -686,6 +817,76 @@ class RunForeverTests(unittest.TestCase):
             )
 
             self.assertEqual(events, ["recover:leased:3", "resume:4"])
+
+    def test_crash_after_target_dedup_acceptance_never_resumes_twice_before_received(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            claim_store = PrivateClaimStore(directory / "active.json")
+            dedupe = PrivateWakeDedupStore(directory / "wake.sqlite3")
+            self.addCleanup(dedupe.close)
+            resume_calls: list[list[str]] = []
+
+            def invoke(arguments, **kwargs):
+                resume_calls.append(list(arguments))
+                return subprocess.CompletedProcess(arguments, 0, stdout="{}", stderr="")
+
+            class CrashAfterAcceptance(CodexResumeAdapter):
+                def resume_existing_thread(inner_self, claim):
+                    super().resume_existing_thread(claim)
+                    raise RuntimeError("crash after target acceptance")
+
+            first_client = self.Client([claim_payload(status="leased")])
+            first_adapter = CrashAfterAcceptance(
+                "codex",
+                fixed_thread_id="thread-fixed-tammy",
+                working_directory=directory,
+                run=invoke,
+                wake_dedupe_store=dedupe,
+            )
+            with self.assertRaisesRegex(RuntimeError, "target acceptance"):
+                run_forever(
+                    first_client,
+                    first_adapter,
+                    claim_store=claim_store,
+                    max_iterations=1,
+                    retry_delay=0,
+                )
+            wake_token = claim_store.pending_wake()
+
+            class RecoveryClient(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, claim):
+                    return claim_payload(
+                        status="leased",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+            second_client = RecoveryClient()
+            second_adapter = CodexResumeAdapter(
+                "codex",
+                fixed_thread_id="thread-fixed-tammy",
+                working_directory=directory,
+                run=invoke,
+                wake_dedupe_store=dedupe,
+            )
+            run_forever(
+                second_client,
+                second_adapter,
+                claim_store=PrivateClaimStore(claim_store.path),
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(len(resume_calls), 1)
+            self.assertEqual(second_client.acks, [("handoff-100", "received")])
+            self.assertEqual(PrivateClaimStore(claim_store.path).pending_wake(), wake_token)
+            self.assertEqual(
+                PrivateClaimStore(claim_store.path).load_current()["status"],
+                "received",
+            )
 
     def test_recovery_crash_window_reconciles_authoritative_generation_before_waking(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -732,7 +933,7 @@ class RunForeverTests(unittest.TestCase):
                 self.fail(f"runner rejected authoritative recovery reconciliation: {exc}")
 
             self.assertEqual(generations, [3, 4])
-            self.assertEqual(adapter.claims, ["handoff-100"])
+            self.assertEqual(adapter.claims, [])
             self.assertEqual(store.load_current()["lease_generation"], 5)
             self.assertIsNone(store.pending_recovery())
 
@@ -928,8 +1129,8 @@ class RunForeverTests(unittest.TestCase):
                 retry_delay=0,
             )
 
-            self.assertEqual(client.failures, [("handoff-100", "retryable")])
-            self.assertIsNone(store.load_current())
+            self.assertEqual(client.failures, [])
+            self.assertEqual(store.load_current()["status"], "still_blocked")
 
     def test_restart_retries_persisted_pending_ack_before_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -962,7 +1163,7 @@ class RunForeverTests(unittest.TestCase):
                 retry_delay=0,
             )
 
-            self.assertEqual(events, [f"ack:{sequence}:received", "recover:received"])
+            self.assertEqual(events, [f"ack:{sequence}:received"])
 
     def test_restart_retries_pending_failure_before_recovery_or_new_claim(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1012,6 +1213,18 @@ class RunForeverTests(unittest.TestCase):
 
             def save(self, claim):
                 events.append(f"save:{claim['handoff_id']}")
+
+            def prepare_wake(self):
+                return "wake/handoff-key-100"
+
+            def complete_wake_authorization(self, response):
+                return True
+
+            def prepare_ack(self, status, detail):
+                return 1
+
+            def complete_ack(self, sequence, response):
+                return None
 
         run_forever(client, adapter, claim_store=Store(), max_iterations=1, retry_delay=0)
 

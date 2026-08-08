@@ -84,6 +84,7 @@ from .handoff_dispatcher import (
     HandoffDispatcher,
     HandoffOwnershipError,
 )
+from .local_handoff_dispatcher import CLAIM_SCHEMA_VERSION
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -385,6 +386,43 @@ def load_handoff_dispatcher_auth(
     return HandoffDispatcherAuth.from_file(path)
 
 
+def _canonical_executor_priority_snapshot(
+    adapter: GBrainAdapter, executor_agent: str
+) -> tuple[bool, str]:
+    """Read and version the exact canonical owned-work priority projection."""
+    try:
+        work = adapter.list_agent_work(include_todos=False)
+    except TypeError:
+        work = adapter.list_agent_work()
+    relevant: list[dict[str, Any]] = []
+    for value in work.tasks:
+        task = dict(value)
+        owner = task.get("owner_agent")
+        if not isinstance(owner, str):
+            owner_value = task.get("owner")
+            owner = owner_value.get("slug") if isinstance(owner_value, dict) else None
+        if owner == executor_agent:
+            relevant.append(task)
+    relevant.sort(key=lambda task: str(task.get("slug", "")))
+    owned_work_ready = bool(work.issues) or any(
+        task.get("status") in {"planned", "active"} for task in relevant
+    )
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "executor_agent": executor_agent,
+                "tasks": relevant,
+                "issues": [issue.to_dict() for issue in work.issues],
+                "roots": list(work.roots),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return owned_work_ready, f"priority/{fingerprint}"
+
+
 def build_runtime_handoff_event_bridge(
     adapter: GBrainAdapter,
     store: DurableHandoffStore,
@@ -422,8 +460,16 @@ def build_runtime_handoff_event_bridge(
         for registration in registrations
         if route_counts[registration.route] == 1
     )
+    delegation_reader = getattr(adapter, "list_agent_delegations", lambda: ())
     return CanonicalHandoffEventBridge(
-        HandoffDispatcher(store, registrations=unambiguous)
+        HandoffDispatcher(
+            store,
+            registrations=unambiguous,
+            delegations=delegation_reader,
+            owned_work_snapshot=lambda executor: _canonical_executor_priority_snapshot(
+                adapter, executor
+            ),
+        )
     )
 
 
@@ -795,6 +841,36 @@ def _handler_class(
             "version": readback.updated_at.isoformat(),
             "receipt": receipt_value,
         }
+
+    def refresh_handoff_execution_authority(
+        record: object, *, observed_at: datetime
+    ) -> None:
+        """Refresh canonical delegation and priority controls just before execution."""
+        if handoff_store is None:
+            raise RuntimeError("handoff storage is unavailable")
+        delegation_slug = getattr(record, "delegation_slug", None)
+        if delegation_slug is None:
+            return
+        leases = tuple(adapter.list_agent_delegations())
+        matches = tuple(lease for lease in leases if lease.slug == delegation_slug)
+        if len(matches) != 1:
+            handoff_store.observe_delegation_absence(
+                delegation_slug, observed_at=observed_at
+            )
+            return
+        lease = matches[0]
+        if not isinstance(lease, AgentDelegationLease):
+            raise ValueError("canonical delegation readback is invalid")
+        handoff_store.observe_delegation_authority(lease, observed_at=observed_at)
+        owned_work_ready, version = _canonical_executor_priority_snapshot(
+            adapter, lease.executor_agent
+        )
+        handoff_store.observe_executor_priority(
+            lease.executor_agent,
+            owned_work_ready=owned_work_ready,
+            version=version,
+            observed_at=observed_at,
+        )
 
     def mutation_snapshot(
         task: object,
@@ -2201,8 +2277,113 @@ def _handler_class(
                     HTTPStatus.OK,
                     {
                         **claim.record.to_dict(),
+                        "claim_schema_version": CLAIM_SCHEMA_VERSION,
                         "lease_capability": claim.lease_token,
                         "lease_generation": claim.lease_generation,
+                    },
+                )
+                return
+            wake_match = re.fullmatch(r"/api/handoffs/([^/]+)/wake", path)
+            if wake_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {"wake_token"} or not isinstance(
+                    payload.get("wake_token"), str
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Wake authorization requires one stable wake token.",
+                            "code": "invalid_handoff_wake",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote(wake_match.group(1))
+                try:
+                    current = handoff_store.get(handoff_id)
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    current.agent_slug != identity.agent_slug
+                    or current.registration_ref is None
+                    or not hmac.compare_digest(
+                        current.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                lease = self._handoff_mutation_headers(identity)
+                if lease is None:
+                    return
+                registration_id, capability, generation, _mutation_id = lease
+                observed_at = clock().astimezone(timezone.utc)
+                try:
+                    self._canonical_handoff_registration(identity, registration_id)
+                    refresh_handoff_execution_authority(
+                        current, observed_at=observed_at
+                    )
+                    self._canonical_handoff_registration(identity, registration_id)
+                    result = handoff_store.authorize_wake(
+                        handoff_id,
+                        registration_id=registration_id,
+                        lease_token=capability,
+                        lease_generation=generation,
+                        wake_token=payload["wake_token"],
+                        now=observed_at,
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except (GBrainError, RuntimeError):
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff authority readback is unavailable.",
+                            "code": "handoff_authority_unavailable",
+                        },
+                    )
+                    return
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_handoff_wake"},
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "handoff_id": result.handoff_id,
+                        "status": result.status,
+                        "wake_authorized": result.status == "leased",
                     },
                 )
                 return
@@ -2286,6 +2467,7 @@ def _handler_class(
                     )
                     return
                 handoff_id = unquote(recover_match.group(1))
+                recovery_now = clock().astimezone(timezone.utc)
 
                 def reconcile(state) -> None:
                     self._json(
@@ -2298,10 +2480,27 @@ def _handler_class(
                     )
 
                 try:
+                    current = handoff_store.get(handoff_id)
+                    refresh_handoff_execution_authority(
+                        current, observed_at=recovery_now
+                    )
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
                     state = handoff_store.read_recovery_state(
                         handoff_id,
                         registration=canonical,
+                        now=recovery_now,
                     )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
                 except HandoffOwnershipError:
                     self._json(
                         HTTPStatus.FORBIDDEN,
@@ -2315,6 +2514,15 @@ def _handler_class(
                     self._json(
                         HTTPStatus.NOT_FOUND,
                         {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff authority readback is unavailable.",
+                            "code": "handoff_authority_unavailable",
+                        },
                     )
                     return
                 if (
@@ -2337,7 +2545,7 @@ def _handler_class(
                         handoff_id,
                         registration=canonical,
                         expected_generation=expected_generation,
-                        now=clock().astimezone(timezone.utc),
+                        now=recovery_now,
                     )
                 except _HandoffIdentityMismatch:
                     self._json(
@@ -2365,6 +2573,7 @@ def _handler_class(
                         state = handoff_store.read_recovery_state(
                             handoff_id,
                             registration=canonical,
+                            now=recovery_now,
                         )
                     except _HandoffIdentityMismatch:
                         self._json(
@@ -2399,6 +2608,7 @@ def _handler_class(
                     HTTPStatus.OK,
                     {
                         **recovered.record.to_dict(),
+                        "claim_schema_version": CLAIM_SCHEMA_VERSION,
                         "lease_capability": recovered.lease_token,
                         "lease_generation": recovered.lease_generation,
                     },

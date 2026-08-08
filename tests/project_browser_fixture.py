@@ -233,13 +233,17 @@ def _seed_handoff_events(
         route="hosts/tammy",
         verified=True,
     )
-    dispatcher = HandoffDispatcher(store, registrations=(registration,))
+    dispatcher = HandoffDispatcher(
+        store,
+        registrations=(registration,),
+        delegations=(),
+    )
     long_summary = (
         "This intentionally long privacy safe summary verifies narrow viewport wrapping "
         "without exposing private payloads and remains readable across the event card."
     )
-    for sequence in range(1, 45):
-        dispatcher.record(
+    def record_actionable(sequence: int, *, summary: str | None = None):
+        return dispatcher.record(
             ActionableChange(
                 task_slug=adapter.task.slug,
                 canonical_event_id=f"events/fixture-{sequence:03d}",
@@ -247,7 +251,7 @@ def _seed_handoff_events(
                 trigger=("task_activated", "todo_added", "answer_received")[sequence % 3],
                 assigned_to=("agents/tammy",),
                 route="hosts/tammy",
-                summary=long_summary if sequence == 1 else f"Synthetic queued handoff event {sequence}.",
+                summary=summary or f"Synthetic queued handoff event {sequence}.",
                 occurred_at=now,
                 correlation_id=(
                     "correlation-redacted-display"
@@ -257,9 +261,105 @@ def _seed_handoff_events(
             ),
             now=now,
         )
+
+    completed_record = record_actionable(1, summary=long_summary)
+    completed = store.claim(registration.registration_id, now=now, lease_seconds=30)
+    if completed is not None:
+        for index, (status, detail) in enumerate(
+            (
+                ("received", None),
+                ("actively_executing", None),
+                ("still_blocked", "Waiting for the synthetic QA dependency."),
+                ("actively_executing", None),
+                ("completed", None),
+            ),
+            start=1,
+        ):
+            store.acknowledge(
+                completed_record.handoff_id,
+                status,
+                registration_id=registration.registration_id,
+                lease_token=completed.lease_token,
+                lease_generation=completed.lease_generation,
+                mutation_id=f"mutations/fixture-ack-{index}",
+                detail=detail,
+                now=now,
+            )
+
+    rotated_record = record_actionable(2)
+    rotated = store.claim(registration.registration_id, now=now, lease_seconds=30)
+    if rotated is not None:
+        recovered = store.recover_in_progress(
+            rotated_record.handoff_id,
+            registration=registration,
+            expected_generation=rotated.lease_generation,
+            now=now,
+        )
+        store.acknowledge(
+            rotated_record.handoff_id,
+            "completed",
+            registration_id=registration.registration_id,
+            lease_token=recovered.lease_token,
+            lease_generation=recovered.lease_generation,
+            mutation_id="mutations/fixture-rotated-completed",
+            now=now,
+        )
+
+    retry_record = record_actionable(3)
+    expiring = store.claim(registration.registration_id, now=now, lease_seconds=1)
+    if expiring is not None:
+        store.reconcile_expired_leases(now=now + timedelta(seconds=2))
+        retrying = store.claim(
+            registration.registration_id,
+            now=now + timedelta(seconds=2),
+            lease_seconds=30,
+        )
+        store.record_failure(
+            retry_record.handoff_id,
+            registration_id=registration.registration_id,
+            lease_token=retrying.lease_token,
+            lease_generation=retrying.lease_generation,
+            mutation_id="mutations/fixture-retrying",
+            retryable=True,
+            summary="Synthetic delivery will retry after a safe delay.",
+            now=now + timedelta(seconds=2),
+        )
+        terminal = store.claim(
+            registration.registration_id,
+            now=now + timedelta(seconds=2),
+            lease_seconds=30,
+        )
+        store.record_failure(
+            retry_record.handoff_id,
+            registration_id=registration.registration_id,
+            lease_token=terminal.lease_token,
+            lease_generation=terminal.lease_generation,
+            mutation_id="mutations/fixture-terminal",
+            retryable=False,
+            summary="Synthetic delivery reached the final safe retry.",
+            now=now + timedelta(seconds=2),
+        )
+
+    for sequence in range(4, 9):
+        record = record_actionable(sequence)
+        claim = store.claim(
+            registration.registration_id,
+            now=now + timedelta(seconds=3),
+            lease_seconds=30,
+        )
+        store.acknowledge(
+            record.handoff_id,
+            "completed",
+            registration_id=registration.registration_id,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id=f"mutations/fixture-bulk-complete-{sequence}",
+            now=now + timedelta(seconds=3),
+        )
+
     for offset, trigger in enumerate(
         ("presentation_only", "duplicate_save", "stale_cache_refresh", "stable_blocker"),
-        start=45,
+        start=9,
     ):
         dispatcher.record(
             ActionableChange(
@@ -274,76 +374,6 @@ def _seed_handoff_events(
                 correlation_id="correlation-fixture-task",
             ),
             now=now,
-        )
-
-    completed = store.claim(registration.registration_id, now=now, lease_seconds=30)
-    if completed is not None:
-        for index, (status, detail) in enumerate(
-            (
-                ("received", None),
-                ("actively_executing", None),
-                ("still_blocked", "Waiting for the synthetic QA dependency."),
-                ("actively_executing", None),
-                ("completed", None),
-            ),
-            start=1,
-        ):
-            store.acknowledge(
-                completed.record.handoff_id,
-                status,
-                registration_id=registration.registration_id,
-                lease_token=completed.lease_token,
-                lease_generation=completed.lease_generation,
-                mutation_id=f"mutations/fixture-ack-{index}",
-                detail=detail,
-                now=now,
-            )
-
-    rotated = store.claim(registration.registration_id, now=now, lease_seconds=30)
-    if rotated is not None:
-        store.recover_in_progress(
-            rotated.record.handoff_id,
-            registration=registration,
-            expected_generation=rotated.lease_generation,
-            now=now,
-        )
-
-    expiring = store.claim(registration.registration_id, now=now, lease_seconds=1)
-    if expiring is not None:
-        store.reconcile_expired_leases(now=now + timedelta(seconds=2))
-
-    retrying = store.claim(
-        registration.registration_id,
-        now=now + timedelta(seconds=2),
-        lease_seconds=30,
-    )
-    if retrying is not None:
-        store.record_failure(
-            retrying.record.handoff_id,
-            registration_id=registration.registration_id,
-            lease_token=retrying.lease_token,
-            lease_generation=retrying.lease_generation,
-            mutation_id="mutations/fixture-retrying",
-            retryable=True,
-            summary="Synthetic delivery will retry after a safe delay.",
-            now=now + timedelta(seconds=2),
-        )
-
-    terminal = store.claim(
-        registration.registration_id,
-        now=now + timedelta(seconds=2),
-        lease_seconds=30,
-    )
-    if terminal is not None:
-        store.record_failure(
-            terminal.record.handoff_id,
-            registration_id=registration.registration_id,
-            lease_token=terminal.lease_token,
-            lease_generation=terminal.lease_generation,
-            mutation_id="mutations/fixture-terminal",
-            retryable=False,
-            summary="Synthetic delivery reached the final safe retry.",
-            now=now + timedelta(seconds=2),
         )
 
     first_event = store.query_events(
