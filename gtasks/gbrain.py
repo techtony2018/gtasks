@@ -60,7 +60,7 @@ from .domain import (
     new_task,
 )
 from .handoff import TaskHandoff
-from .delegation import AgentDelegationLease, DelegationState
+from .delegation import AgentDelegationLease, DelegationState, lease_state_at
 from .handoff_dispatcher import (
     ActionableChange,
     AgentRegistration,
@@ -2236,44 +2236,33 @@ def _agent_delegation_from_page(
         "receipts",
         "links",
     }
-    if set(frontmatter) != expected_fields or frontmatter.get("type") != "agent_delegation_lease":
+    if (
+        set(frontmatter) != expected_fields
+        or frontmatter.get("type") != "agent_delegation_lease"
+        or page.get("type") != "agent_delegation_lease"
+    ):
         raise GBrainProtocolError("agent delegation has an invalid canonical schema")
-    memberships = [
-        edge
-        for edge in links
-        if isinstance(edge, Mapping)
-        and edge.get("from_slug") == slug
-        and edge.get("to_slug") == AGENT_DELEGATIONS_ROOT
-        and edge.get("link_type") == "member_of"
-    ]
-    if len(memberships) != 1 or any(
-        isinstance(edge, Mapping) and edge.get("link_type") == "assigned_to"
-        for edge in links
+    if len(links) != 1 or not isinstance(links[0], Mapping) or not (
+        links[0].get("from_slug") == slug
+        and links[0].get("to_slug") == AGENT_DELEGATIONS_ROOT
+        and links[0].get("link_type") == "member_of"
     ):
         raise GBrainProtocolError(
-            "agent delegation must have one typed collection membership and no assigned_to relationship"
+            "agent delegation must have exactly one outgoing relationship: its canonical member_of link"
         )
+    declared_links = frontmatter.get("links")
+    if (
+        not isinstance(declared_links, list)
+        or len(declared_links) != 1
+        or not isinstance(declared_links[0], Mapping)
+        or declared_links[0].get("to") != AGENT_DELEGATIONS_ROOT
+        or declared_links[0].get("type") != "member_of"
+    ):
+        raise GBrainProtocolError("agent delegation declared links were not canonical")
     operations = frontmatter.get("allowed_operations")
     receipts = frontmatter.get("receipts")
     if not isinstance(operations, list) or not isinstance(receipts, list) or not receipts:
         raise GBrainProtocolError("agent delegation operations or receipts were malformed")
-    normalized_receipts: list[Mapping[str, Any]] = []
-    for index, receipt in enumerate(receipts):
-        if not isinstance(receipt, Mapping):
-            raise GBrainProtocolError("agent delegation receipt was malformed")
-        action = receipt.get("action")
-        required = {"action", "authorized_by", "occurred_at", "version"}
-        if action == "extended":
-            required |= {"previous_ends_at", "ends_at"}
-        if set(receipt) != required or action not in {
-            "created", "extended", "completed", "revoked"
-        }:
-            raise GBrainProtocolError("agent delegation receipt was malformed")
-        if index == 0 and action != "created":
-            raise GBrainProtocolError("agent delegation creation receipt is missing")
-        if receipt.get("authorized_by") != TONY_PROFILE_SLUG:
-            raise GBrainProtocolError("agent delegation receipt was not authorized by Tony")
-        normalized_receipts.append(deepcopy(dict(receipt)))
     try:
         lease = AgentDelegationLease(
             slug=slug,
@@ -2290,8 +2279,116 @@ def _agent_delegation_from_page(
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise GBrainProtocolError(f"agent delegation fields were invalid: {exc}") from exc
+    expected_title = f"{lease.source_agent.rsplit('/', 1)[-1].title()} temporary delegation"
+    if frontmatter.get("title") != expected_title or page.get("title") != expected_title:
+        raise GBrainProtocolError("agent delegation title was not canonical")
+    receipt_fields = {
+        "action",
+        "authorized_by",
+        "occurred_at",
+        "version",
+        "source_agent",
+        "executor_agent",
+        "starts_at",
+        "previous_ends_at",
+        "ends_at",
+        "display_timezone",
+        "allowed_operations",
+        "previous_state",
+        "state",
+    }
+    normalized_receipts: list[Mapping[str, Any]] = []
+    prior_snapshot: AgentDelegationLease | None = None
+    for index, raw_receipt in enumerate(receipts):
+        if not isinstance(raw_receipt, Mapping) or set(raw_receipt) != receipt_fields:
+            raise GBrainProtocolError("agent delegation receipt was malformed")
+        receipt = deepcopy(dict(raw_receipt))
+        action = receipt.get("action")
+        if action not in {"created", "extended", "completed", "revoked"}:
+            raise GBrainProtocolError("agent delegation receipt action was malformed")
+        if receipt.get("authorized_by") != TONY_PROFILE_SLUG:
+            raise GBrainProtocolError("agent delegation receipt was not authorized by Tony")
+        if (
+            receipt.get("source_agent") != lease.source_agent
+            or receipt.get("executor_agent") != lease.executor_agent
+            or receipt.get("starts_at") != lease.starts_at.isoformat()
+            or receipt.get("display_timezone") != lease.display_timezone
+            or receipt.get("allowed_operations") != list(lease.allowed_operations)
+        ):
+            raise GBrainProtocolError("agent delegation receipt identity was altered")
+        try:
+            receipt_instants = []
+            for field in ("occurred_at", "version", "ends_at"):
+                instant = datetime.fromisoformat(
+                    str(receipt[field]).replace("Z", "+00:00")
+                )
+                if instant.tzinfo is None or instant.utcoffset() is None:
+                    raise ValueError(f"{field} must be an aware UTC instant")
+                receipt_instants.append(instant.astimezone(timezone.utc))
+            occurred_at, version_at, receipt_ends_at = receipt_instants
+            receipt_state = DelegationState(str(receipt["state"]))
+            snapshot = AgentDelegationLease(
+                slug=lease.slug,
+                source_agent=lease.source_agent,
+                executor_agent=lease.executor_agent,
+                authorized_by=lease.authorized_by,
+                starts_at=lease.starts_at,
+                ends_at=receipt_ends_at,
+                display_timezone=lease.display_timezone,
+                allowed_operations=lease.allowed_operations,
+                state=receipt_state,
+                created_at=lease.created_at,
+                updated_at=version_at,
+            )
+        except (TypeError, ValueError) as exc:
+            raise GBrainProtocolError(f"agent delegation receipt was malformed: {exc}") from exc
+        if occurred_at != version_at:
+            raise GBrainProtocolError("agent delegation receipt occurrence and version differ")
+        if index == 0:
+            if (
+                action != "created"
+                or receipt.get("previous_ends_at") is not None
+                or receipt.get("previous_state") is not None
+                or version_at != lease.created_at
+                or receipt_state
+                not in {DelegationState.SCHEDULED, DelegationState.ACTIVE}
+            ):
+                raise GBrainProtocolError("agent delegation creation receipt is malformed")
+        else:
+            assert prior_snapshot is not None
+            effective_prior_state = lease_state_at(prior_snapshot, occurred_at)
+            if effective_prior_state in {
+                DelegationState.COMPLETED,
+                DelegationState.EXPIRED,
+                DelegationState.REVOKED,
+            }:
+                raise GBrainProtocolError("agent delegation receipt follows a terminal lease")
+            if (
+                version_at <= prior_snapshot.updated_at
+                or receipt.get("previous_ends_at") != prior_snapshot.ends_at.isoformat()
+                or receipt.get("previous_state") != effective_prior_state.value
+            ):
+                raise GBrainProtocolError("agent delegation receipt chain was altered")
+            if action == "extended":
+                expected_state = lease_state_at(snapshot, occurred_at)
+                if receipt_ends_at <= prior_snapshot.ends_at or receipt_state != expected_state:
+                    raise GBrainProtocolError("agent delegation extension receipt was malformed")
+            elif action in {"completed", "revoked"}:
+                if (
+                    receipt_ends_at != prior_snapshot.ends_at
+                    or receipt_state.value != action
+                ):
+                    raise GBrainProtocolError("agent delegation terminal receipt was malformed")
+            else:
+                raise GBrainProtocolError("agent delegation receipt chain repeated creation")
+        normalized_receipts.append(receipt)
+        prior_snapshot = snapshot
     version = frontmatter.get("version")
-    if version != lease.updated_at.isoformat() or normalized_receipts[-1].get("version") != version:
+    if (
+        version != lease.updated_at.isoformat()
+        or normalized_receipts[-1].get("version") != version
+        or prior_snapshot != lease
+    ):
         raise GBrainProtocolError("agent delegation version did not match its immutable receipt")
     return lease, tuple(normalized_receipts)
 
@@ -5076,7 +5173,22 @@ class GBrainAdapter:
             roots=tuple(agent.work_root for agent in profiles.agents),
         )
 
+    def _verify_agent_delegation_root(self) -> None:
+        root = self.runner.run("get_page", {"slug": AGENT_DELEGATIONS_ROOT})
+        frontmatter = root.get("frontmatter") if isinstance(root, Mapping) else None
+        if (
+            not isinstance(root, Mapping)
+            or root.get("type") != "collection"
+            or not isinstance(frontmatter, Mapping)
+            or frontmatter.get("collection_kind")
+            != "mission_control_agent_delegations"
+        ):
+            raise GBrainProtocolError(
+                "Mission Control Agent Delegations root is not canonical"
+            )
+
     def list_agent_delegations(self) -> tuple[AgentDelegationLease, ...]:
+        self._verify_agent_delegation_root()
         raw = self.runner.run("get_backlinks", {"slug": AGENT_DELEGATIONS_ROOT})
         if not isinstance(raw, list):
             raise GBrainProtocolError("agent delegation backlinks were not a list")
@@ -5117,24 +5229,25 @@ class GBrainAdapter:
             raise TypeError("lease must be an AgentDelegationLease")
         self._active_openclaw_activation(lease.executor_agent)
         with self._delegation_mutation_lock:
-            root = self.runner.run("get_page", {"slug": AGENT_DELEGATIONS_ROOT})
-            frontmatter = root.get("frontmatter") if isinstance(root, Mapping) else None
-            if (
-                not isinstance(root, Mapping)
-                or root.get("type") != "collection"
-                or not isinstance(frontmatter, Mapping)
-                or frontmatter.get("collection_kind")
-                != "mission_control_agent_delegations"
-            ):
-                raise GBrainProtocolError(
-                    "Mission Control Agent Delegations root is not canonical"
-                )
+            self._verify_agent_delegation_root()
             try:
-                existing, _receipts = self._read_agent_delegation(lease.slug)
+                page = self.runner.run("get_page", {"slug": lease.slug})
             except GBrainCommandError as exc:
                 if not is_page_not_found_error(exc):
                     raise
             else:
+                try:
+                    links = self.runner.run("get_links", {"slug": lease.slug})
+                    if not isinstance(page, Mapping) or not isinstance(links, list):
+                        raise GBrainProtocolError(
+                            "agent delegation readback was not structured"
+                        )
+                    existing, _receipts = _agent_delegation_from_page(page, links)
+                except (GBrainError, ValueError) as exc:
+                    raise PartialMutationError(
+                        lease.slug,
+                        "Agent delegation existing page is not verified; inspect before retrying.",
+                    ) from exc
                 if existing != lease:
                     raise ValueError(
                         "delegation idempotency input conflicts with canonical lease"
@@ -5146,6 +5259,15 @@ class GBrainAdapter:
                 "authorized_by": TONY_PROFILE_SLUG,
                 "occurred_at": lease.created_at.isoformat(),
                 "version": lease.updated_at.isoformat(),
+                "source_agent": lease.source_agent,
+                "executor_agent": lease.executor_agent,
+                "starts_at": lease.starts_at.isoformat(),
+                "previous_ends_at": None,
+                "ends_at": lease.ends_at.isoformat(),
+                "display_timezone": lease.display_timezone,
+                "allowed_operations": list(lease.allowed_operations),
+                "previous_state": None,
+                "state": lease.state.value,
             }
             try:
                 self.runner.run(
@@ -5181,14 +5303,17 @@ class GBrainAdapter:
         self,
         lease: AgentDelegationLease,
         *,
-        expected_version: str | None = None,
+        expected_version: str,
     ) -> MutationReceipt:
         if not isinstance(lease, AgentDelegationLease):
             raise TypeError("lease must be an AgentDelegationLease")
+        if not isinstance(expected_version, str) or not expected_version:
+            raise ValueError("expected_version must be the exact canonical version")
         with self._delegation_mutation_lock:
+            self._verify_agent_delegation_root()
             existing, receipts = self._read_agent_delegation(lease.slug)
             canonical_version = existing.updated_at.isoformat()
-            if expected_version is not None and expected_version != canonical_version:
+            if expected_version != canonical_version:
                 raise ConcurrentAgentDelegationUpdateError(lease.slug)
             immutable = (
                 "slug",
@@ -5206,27 +5331,38 @@ class GBrainAdapter:
                 if lease == existing:
                     return MutationReceipt(lease.slug, True)
                 raise ValueError("agent delegation updated_at must advance")
+            effective_existing = lease_state_at(existing, lease.updated_at)
+            if effective_existing in {
+                DelegationState.COMPLETED,
+                DelegationState.EXPIRED,
+                DelegationState.REVOKED,
+            }:
+                raise ValueError(
+                    f"{effective_existing.value} agent delegation cannot be changed"
+                )
             action: str
             receipt: dict[str, Any] = {
                 "authorized_by": TONY_PROFILE_SLUG,
                 "occurred_at": lease.updated_at.isoformat(),
                 "version": lease.updated_at.isoformat(),
+                "source_agent": lease.source_agent,
+                "executor_agent": lease.executor_agent,
+                "starts_at": lease.starts_at.isoformat(),
+                "previous_ends_at": existing.ends_at.isoformat(),
+                "ends_at": lease.ends_at.isoformat(),
+                "display_timezone": lease.display_timezone,
+                "allowed_operations": list(lease.allowed_operations),
+                "previous_state": effective_existing.value,
+                "state": lease.state.value,
             }
             if (
-                lease.state == existing.state
-                and lease.ends_at > existing.ends_at
-                and existing.state in {DelegationState.SCHEDULED, DelegationState.ACTIVE}
+                lease.ends_at > existing.ends_at
+                and lease.state == effective_existing
             ):
                 action = "extended"
-                receipt.update(
-                    {
-                        "previous_ends_at": existing.ends_at.isoformat(),
-                        "ends_at": lease.ends_at.isoformat(),
-                    }
-                )
+                self._active_openclaw_activation(lease.executor_agent)
             elif (
                 lease.ends_at == existing.ends_at
-                and existing.state in {DelegationState.SCHEDULED, DelegationState.ACTIVE}
                 and lease.state in {DelegationState.COMPLETED, DelegationState.REVOKED}
             ):
                 action = lease.state.value
@@ -5236,6 +5372,9 @@ class GBrainAdapter:
                 )
             receipt = {"action": action, **receipt}
             new_receipts = (*receipts, receipt)
+            latest, latest_receipts = self._read_agent_delegation(lease.slug)
+            if latest != existing or latest_receipts != receipts:
+                raise ConcurrentAgentDelegationUpdateError(lease.slug)
             try:
                 self.runner.run(
                     "put_page",

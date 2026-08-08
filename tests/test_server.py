@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
@@ -828,6 +829,8 @@ class ServerHarness:
         handoff_registration_validator=None,
         handoff_waiter=None,
         handoff_event_bridge=None,
+        clock=None,
+        delegation_lock_path: Path | None = None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -857,7 +860,7 @@ class ServerHarness:
             host="127.0.0.1",
             port=0,
             adapter=adapter,
-            clock=lambda: datetime(2026, 7, 30, 9, 15).astimezone(),
+            clock=clock or (lambda: datetime(2026, 7, 30, 9, 15).astimezone()),
             identity_factory=lambda: "a1b2c3",
             warning_store=warning_store,
             log_reader=log_reader,
@@ -884,6 +887,10 @@ class ServerHarness:
             handoff_registration_validator=handoff_registration_validator,
             handoff_waiter=handoff_waiter,
             handoff_event_bridge=handoff_event_bridge,
+            delegation_lock_path=(
+                delegation_lock_path
+                or runtime_path / "agent-delegations.lock"
+            ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -5957,6 +5964,163 @@ class AgentDelegationApiTests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(payload["code"], "delegation_not_verified")
 
+    def test_patch_rejects_expired_terminal_and_naive_extension_without_mutation(self) -> None:
+        now = datetime(2026, 7, 30, 21, 0, tzinfo=timezone.utc)
+        expired = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=now - timedelta(hours=2),
+            ends_at=now - timedelta(hours=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.ACTIVE,
+            created_at=now - timedelta(hours=3),
+            updated_at=now - timedelta(hours=3),
+        )
+        adapter = FakeAdapter(delegations=(expired,))
+        harness = ServerHarness(self, adapter, clock=lambda: now)
+        slug = expired.slug.replace("/", "%2F")
+
+        for body in (
+            {
+                "ends_at": "2026-07-31T00:00:00Z",
+                "expected_version": expired.updated_at.isoformat(),
+            },
+            {
+                "ends_at": "2026-07-31T00:00:00",
+                "expected_version": expired.updated_at.isoformat(),
+            },
+        ):
+            with self.subTest(body=body):
+                status, payload, _ = harness.request(
+                    "PATCH", f"{self.PATH}/{slug}", body
+                )
+                self.assertEqual(status, 422)
+                self.assertEqual(payload["code"], "invalid_agent_delegation")
+        self.assertEqual(adapter.updated_delegations, [])
+
+        completed = replace(expired, state=DelegationState.COMPLETED)
+        terminal_adapter = FakeAdapter(delegations=(completed,))
+        terminal_harness = ServerHarness(self, terminal_adapter, clock=lambda: now)
+        status, payload, _ = terminal_harness.request(
+            "PATCH",
+            f"{self.PATH}/{slug}",
+            {"action": "revoke", "expected_version": completed.updated_at.isoformat()},
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(payload["code"], "invalid_agent_delegation")
+        self.assertEqual(terminal_adapter.updated_delegations, [])
+
+    def test_scheduled_lease_crossing_start_extends_as_active(self) -> None:
+        created_at = datetime(2026, 7, 30, 16, 0, tzinfo=timezone.utc)
+        current = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=created_at + timedelta(minutes=10),
+            ends_at=created_at + timedelta(hours=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.SCHEDULED,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        adapter = FakeAdapter(delegations=(current,))
+        harness = ServerHarness(
+            self,
+            adapter,
+            clock=lambda: created_at + timedelta(minutes=15),
+        )
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"{self.PATH}/{current.slug.replace('/', '%2F')}",
+            {
+                "ends_at": "2026-07-30T18:00:00Z",
+                "expected_version": current.updated_at.isoformat(),
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["lease"]["state"], "active")
+
+    def test_post_is_create_once_across_two_servers_sharing_private_os_lock(self) -> None:
+        class SharedStore:
+            def __init__(self) -> None:
+                self.leases: tuple[AgentDelegationLease, ...] = ()
+                self.creates = 0
+
+        class ProcessStyleAdapter(FakeAdapter):
+            def __init__(self, store: SharedStore) -> None:
+                super().__init__()
+                self.store = store
+
+            def list_agent_delegations(self):
+                return self.store.leases
+
+            def create_agent_delegation(self, lease):
+                existing = next(
+                    (item for item in self.store.leases if item.slug == lease.slug),
+                    None,
+                )
+                if existing is not None:
+                    if existing != lease:
+                        raise ValueError("idempotency conflict")
+                    return MutationReceipt(slug=lease.slug, verified=True)
+                self.store.creates += 1
+                time.sleep(0.05)
+                self.store.leases = (*self.store.leases, lease)
+                return MutationReceipt(slug=lease.slug, verified=True)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            lock_path = Path(temporary) / "private" / "delegations.lock"
+            store = SharedStore()
+            first = ServerHarness(
+                self,
+                ProcessStyleAdapter(store),
+                delegation_lock_path=lock_path,
+            )
+            second = ServerHarness(
+                self,
+                ProcessStyleAdapter(store),
+                delegation_lock_path=lock_path,
+            )
+            barrier = threading.Barrier(2)
+
+            def create(harness):
+                barrier.wait()
+                return harness.request("POST", self.PATH, self._body())
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                responses = list(executor.map(create, (first, second)))
+
+            self.assertEqual(sorted(item[0] for item in responses), [200, 201])
+            self.assertEqual(store.creates, 1)
+            self.assertEqual(len(store.leases), 1)
+            lock_files = list(lock_path.parent.glob("delegations.lock.*"))
+            self.assertEqual(len(lock_files), 1)
+            self.assertEqual(lock_path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(lock_files[0].stat().st_mode & 0o777, 0o600)
+
+    def test_patch_requires_nonempty_exact_expected_version(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        _status, created, _ = harness.request("POST", self.PATH, self._body())
+        path = f"{self.PATH}/{created['lease']['slug'].replace('/', '%2F')}"
+
+        for body in (
+            {"action": "complete"},
+            {"action": "complete", "expected_version": ""},
+            {"action": "complete", "expected_version": 1},
+        ):
+            with self.subTest(body=body):
+                status, payload, _ = harness.request("PATCH", path, body)
+                self.assertEqual(status, 422)
+                self.assertEqual(payload["code"], "invalid_agent_delegation")
+        self.assertEqual(adapter.updated_delegations, [])
 
 if __name__ == "__main__":
     unittest.main()

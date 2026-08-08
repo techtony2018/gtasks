@@ -910,6 +910,15 @@ class AgentDelegationAdapterTests(unittest.TestCase):
                     "authorized_by": "people/tony-guan",
                     "occurred_at": self.NOW.isoformat(),
                     "version": self.NOW.isoformat(),
+                    "source_agent": "agents/tammy",
+                    "executor_agent": "agents/tammy-oc",
+                    "starts_at": self.NOW.isoformat(),
+                    "previous_ends_at": None,
+                    "ends_at": (self.NOW + timedelta(hours=8)).isoformat(),
+                    "display_timezone": "America/Los_Angeles",
+                    "allowed_operations": ["task_status", "todo", "comment", "artifact"],
+                    "previous_state": None,
+                    "state": "active",
                 }
             ],
         )
@@ -1018,6 +1027,230 @@ class AgentDelegationAdapterTests(unittest.TestCase):
             self._adapter(runner).create_agent_delegation(self._lease())
 
         self.assertIn(self.SLUG, runner.pages)
+
+    def test_retrying_page_without_membership_reports_partial_write_without_rewrite(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        adapter.create_agent_delegation(self._lease())
+        runner.links.clear()
+        writes = len([call for call in runner.calls if call[0] == "put_page"])
+
+        with self.assertRaisesRegex(PartialMutationError, "existing.*not verified"):
+            adapter.create_agent_delegation(self._lease())
+
+        self.assertEqual(
+            len([call for call in runner.calls if call[0] == "put_page"]),
+            writes,
+        )
+
+    def test_list_and_update_require_canonical_root_and_exact_outgoing_link(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+
+        runner.pages[self.ROOT]["frontmatter"]["collection_kind"] = "wrong"
+        with self.assertRaisesRegex(GBrainProtocolError, "root"):
+            adapter.list_agent_delegations()
+        with self.assertRaisesRegex(GBrainProtocolError, "root"):
+            adapter.update_agent_delegation(
+                replace(lease, state=DelegationState.COMPLETED, updated_at=self.NOW + timedelta(minutes=1)),
+                expected_version=lease.updated_at.isoformat(),
+            )
+
+        runner.pages[self.ROOT]["frontmatter"]["collection_kind"] = "mission_control_agent_delegations"
+        runner.links.append(
+            {
+                "from_slug": self.SLUG,
+                "to_slug": "agents/tammy",
+                "link_type": "authorized_for",
+                "context": "unexpected",
+                "link_source": "manual",
+            }
+        )
+        with self.assertRaisesRegex(GBrainProtocolError, "exactly one"):
+            adapter.list_agent_delegations()
+
+    def test_receipt_chain_replay_rejects_reordering_tampering_and_final_state_mismatch(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+        extended = replace(
+            lease,
+            ends_at=lease.ends_at + timedelta(hours=1),
+            updated_at=self.NOW + timedelta(minutes=1),
+        )
+        adapter.update_agent_delegation(
+            extended,
+            expected_version=lease.updated_at.isoformat(),
+        )
+        completed = replace(
+            extended,
+            state=DelegationState.COMPLETED,
+            updated_at=self.NOW + timedelta(minutes=2),
+        )
+        adapter.update_agent_delegation(
+            completed,
+            expected_version=extended.updated_at.isoformat(),
+        )
+        canonical = deepcopy(runner.pages[self.SLUG]["frontmatter"]["receipts"])
+
+        mutations = (
+            lambda values: values.reverse(),
+            lambda values: values[1].__setitem__("previous_ends_at", "2026-08-07T18:00:00+00:00"),
+            lambda values: values[1].__setitem__("source_agent", "agents/timmy"),
+            lambda values: values[-1].__setitem__("action", "revoked"),
+            lambda values: values[1].__setitem__("version", values[0]["version"]),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                receipts = deepcopy(canonical)
+                mutate(receipts)
+                runner.pages[self.SLUG]["frontmatter"]["receipts"] = receipts
+                with self.assertRaisesRegex(GBrainProtocolError, "receipt"):
+                    adapter.list_agent_delegations()
+        runner.pages[self.SLUG]["frontmatter"]["receipts"] = canonical
+
+    def test_effective_state_blocks_expired_extension_and_activates_crossed_schedule(self) -> None:
+        expired_runner = self._runner()
+        expired_adapter = self._adapter(expired_runner)
+        expired = self._lease(
+            starts_at=self.NOW - timedelta(hours=2),
+            ends_at=self.NOW - timedelta(hours=1),
+            created_at=self.NOW - timedelta(hours=3),
+            updated_at=self.NOW - timedelta(hours=3),
+        )
+        expired_adapter.create_agent_delegation(expired)
+        with self.assertRaisesRegex(ValueError, "expired"):
+            expired_adapter.update_agent_delegation(
+                replace(
+                    expired,
+                    ends_at=self.NOW + timedelta(hours=1),
+                    updated_at=self.NOW,
+                ),
+                expected_version=expired.updated_at.isoformat(),
+            )
+
+        scheduled_runner = self._runner()
+        scheduled_adapter = self._adapter(scheduled_runner)
+        scheduled = self._lease(
+            starts_at=self.NOW + timedelta(minutes=10),
+            ends_at=self.NOW + timedelta(hours=1),
+            state=DelegationState.SCHEDULED,
+        )
+        scheduled_adapter.create_agent_delegation(scheduled)
+        activated = replace(
+            scheduled,
+            ends_at=self.NOW + timedelta(hours=2),
+            state=DelegationState.ACTIVE,
+            updated_at=self.NOW + timedelta(minutes=15),
+        )
+        scheduled_adapter.update_agent_delegation(
+            activated,
+            expected_version=scheduled.updated_at.isoformat(),
+        )
+        self.assertEqual(scheduled_adapter.list_agent_delegations(), (activated,))
+
+    def test_extension_rechecks_activation_but_terminal_actions_survive_outage(self) -> None:
+        extension_runner = self._runner()
+        extension_adapter = self._adapter(extension_runner)
+        lease = self._lease()
+        extension_adapter.create_agent_delegation(lease)
+        extension_adapter.openclaw_profiles = FailingOpenClawProfiles()
+        with self.assertRaisesRegex(GBrainCommandError, "unavailable"):
+            extension_adapter.update_agent_delegation(
+                replace(
+                    lease,
+                    ends_at=lease.ends_at + timedelta(hours=1),
+                    updated_at=self.NOW + timedelta(minutes=1),
+                ),
+                expected_version=lease.updated_at.isoformat(),
+            )
+
+        terminal_runner = self._runner()
+        terminal_adapter = self._adapter(terminal_runner)
+        terminal_adapter.create_agent_delegation(lease)
+        terminal_adapter.openclaw_profiles = FailingOpenClawProfiles()
+        completed = replace(
+            lease,
+            state=DelegationState.COMPLETED,
+            updated_at=self.NOW + timedelta(minutes=1),
+        )
+        receipt = terminal_adapter.update_agent_delegation(
+            completed,
+            expected_version=lease.updated_at.isoformat(),
+        )
+        self.assertTrue(receipt.verified)
+
+    def test_update_detects_valid_external_write_before_supported_writer_commit(self) -> None:
+        class ExternalWriteRunner(StatefulIdentityMigrationRunner):
+            armed_content: str | None = None
+            slug_reads = 0
+
+            def run(self, tool: str, params: dict) -> object:
+                if (
+                    tool == "get_page"
+                    and params.get("slug") == AgentDelegationAdapterTests.SLUG
+                    and self.armed_content is not None
+                ):
+                    self.slug_reads += 1
+                    if self.slug_reads == 2:
+                        content = self.armed_content
+                        self.armed_content = None
+                        super().run(
+                            "put_page",
+                            {"slug": AgentDelegationAdapterTests.SLUG, "content": content},
+                        )
+                return super().run(tool, params)
+
+        base = self._runner()
+        runner = ExternalWriteRunner(base.pages, base.links)
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+        external = replace(
+            lease,
+            state=DelegationState.COMPLETED,
+            updated_at=self.NOW + timedelta(seconds=30),
+        )
+        receipts = deepcopy(runner.pages[self.SLUG]["frontmatter"]["receipts"])
+        receipts.append(
+            {
+                "action": "completed",
+                "authorized_by": "people/tony-guan",
+                "occurred_at": external.updated_at.isoformat(),
+                "version": external.updated_at.isoformat(),
+                "source_agent": external.source_agent,
+                "executor_agent": external.executor_agent,
+                "starts_at": external.starts_at.isoformat(),
+                "previous_ends_at": lease.ends_at.isoformat(),
+                "ends_at": lease.ends_at.isoformat(),
+                "display_timezone": external.display_timezone,
+                "allowed_operations": list(external.allowed_operations),
+                "previous_state": "active",
+                "state": "completed",
+            }
+        )
+        runner.slug_reads = 0
+        runner.armed_content = gbrain_module.render_agent_delegation_page(
+            external, receipts
+        )
+
+        with self.assertRaisesRegex(
+            gbrain_module.ConcurrentAgentDelegationUpdateError, "changed"
+        ):
+            adapter.update_agent_delegation(
+                replace(
+                    lease,
+                    ends_at=lease.ends_at + timedelta(hours=1),
+                    updated_at=self.NOW + timedelta(minutes=1),
+                ),
+                expected_version=lease.updated_at.isoformat(),
+            )
+
+        stored, _ = adapter._read_agent_delegation(self.SLUG)
+        self.assertEqual(stored, external)
 
 
 def stored_artifact(artifact) -> dict:
