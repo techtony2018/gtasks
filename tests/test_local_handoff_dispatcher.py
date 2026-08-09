@@ -411,6 +411,61 @@ class LocalDispatcherClientTests(unittest.TestCase):
         )
         self.assertTrue(checkpoint["checkpointed"])
 
+    def test_execution_checkpoint_accepts_exact_already_terminal_readbacks(self) -> None:
+        claim = claim_payload(status="execution_started")
+        for status in ("completed", "dead_letter"):
+            with self.subTest(status=status):
+                launch_id = f"launch/client-checkpoint-{status}"
+                self.responses.append(
+                    FakeResponse(
+                        200,
+                        {
+                            "handoff_id": "handoff-100",
+                            "status": status,
+                            "launch_id": launch_id,
+                            "checkpointed": False,
+                        },
+                    )
+                )
+
+                response = self.client.execution_checkpoint(
+                    claim,
+                    launch_id=launch_id,
+                    reason="Launch outcome requires reconciliation.",
+                )
+
+                self.assertEqual(response["status"], status)
+                self.assertFalse(response["checkpointed"])
+
+    def test_execution_checkpoint_rejects_other_status_boolean_pairs(self) -> None:
+        claim = claim_payload(status="execution_started")
+        invalid_pairs = (
+            ("suppressed", False),
+            ("completed", True),
+            ("dead_letter", True),
+            ("received", False),
+        )
+        for index, (status, checkpointed) in enumerate(invalid_pairs):
+            with self.subTest(status=status, checkpointed=checkpointed):
+                launch_id = f"launch/client-checkpoint-invalid-{index}"
+                self.responses.append(
+                    FakeResponse(
+                        200,
+                        {
+                            "handoff_id": "handoff-100",
+                            "status": status,
+                            "launch_id": launch_id,
+                            "checkpointed": checkpointed,
+                        },
+                    )
+                )
+                with self.assertRaisesRegex(ValueError, "inconsistent"):
+                    self.client.execution_checkpoint(
+                        claim,
+                        launch_id=launch_id,
+                        reason="Launch outcome requires reconciliation.",
+                    )
+
     def test_execution_abandon_uses_exact_unused_start_fence(self) -> None:
         claim = claim_payload(status="execution_started")
         self.responses.append(
@@ -448,6 +503,60 @@ class LocalDispatcherClientTests(unittest.TestCase):
             headers["x-handoff-lease-capability"], "private-lease-capability"
         )
         self.assertTrue(response["abandoned"])
+
+    def test_execution_abandon_accepts_exact_terminal_reconciliation(self) -> None:
+        claim = claim_payload(status="execution_started")
+        self.responses.append(
+            FakeResponse(
+                200,
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": "launch/client-abandon-terminal",
+                    "abandoned": False,
+                },
+            )
+        )
+
+        response = self.client.execution_abandon(
+            claim,
+            launch_id="launch/client-abandon-terminal",
+            reason="runner_lost_before_gate",
+        )
+
+        self.assertEqual(
+            (response["status"], response["abandoned"]),
+            ("suppressed", False),
+        )
+
+    def test_execution_abandon_rejects_every_other_status_boolean_pair(self) -> None:
+        claim = claim_payload(status="execution_started")
+        invalid_pairs = (
+            ("received", False),
+            ("suppressed", True),
+            ("completed", False),
+            ("dead_letter", False),
+        )
+        for index, (status, abandoned) in enumerate(invalid_pairs):
+            with self.subTest(status=status, abandoned=abandoned):
+                launch_id = f"launch/client-abandon-invalid-{index}"
+                self.responses.append(
+                    FakeResponse(
+                        200,
+                        {
+                            "handoff_id": "handoff-100",
+                            "status": status,
+                            "launch_id": launch_id,
+                            "abandoned": abandoned,
+                        },
+                    )
+                )
+                with self.assertRaisesRegex(ValueError, "inconsistent"):
+                    self.client.execution_abandon(
+                        claim,
+                        launch_id=launch_id,
+                        reason="runner_lost_before_gate",
+                    )
 
     def test_execution_start_accepts_exact_replay_of_abandoned_launch(self) -> None:
         claim = claim_payload(status="execution_started")
@@ -919,6 +1028,61 @@ class PrivateWakeInboxTests(unittest.TestCase):
         )
         return wake_token
 
+    def _pending_abandon(
+        self, inbox: PrivateWakeInbox
+    ) -> tuple[object, str]:
+        self._accepted(inbox)
+        claimed = inbox.claim_next(now=self.NOW)
+        self.assertIsNotNone(claimed)
+        launch_id = inbox.launch_id_for(claimed)
+        inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+        inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+        inbox.record_ready(claimed, pid=43210, now=self.NOW)
+        inbox.record_start_requesting(
+            claimed,
+            current_claim=inbox.get("handoff-100").claim,
+            now=self.NOW,
+        )
+        inbox.record_start_grant(
+            claimed,
+            launch_grant="grant/pending-abandon",
+            now=self.NOW,
+        )
+        inbox.record_start_abandon_required(
+            claimed,
+            reason="runner_lost_before_gate",
+            retry_at=self.NOW + timedelta(seconds=1),
+            now=self.NOW,
+        )
+        pending = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+        self.assertIsNotNone(pending)
+        return pending, launch_id
+
+    def _queue_checkpoint(self, inbox: PrivateWakeInbox) -> str:
+        self._accepted(inbox)
+        claimed = inbox.claim_next(now=self.NOW)
+        self.assertIsNotNone(claimed)
+        launch_id = inbox.launch_id_for(claimed)
+        inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+        inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+        inbox.record_ready(claimed, pid=43210, now=self.NOW)
+        inbox.record_start_requesting(
+            claimed,
+            current_claim=inbox.get("handoff-100").claim,
+            now=self.NOW,
+        )
+        inbox.record_start_grant(
+            claimed,
+            launch_grant="grant/pending-checkpoint",
+            now=self.NOW,
+        )
+        inbox.record_recovery_required(
+            claimed,
+            reason="ambiguous_launch_outcome",
+            now=self.NOW,
+        )
+        return launch_id
+
     @staticmethod
     def _increment_code(marker: Path, *, delay: float = 0) -> str:
         return (
@@ -939,7 +1103,12 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 now=self.NOW + timedelta(seconds=start_offset + index)
             )
             item = inbox.get("handoff-100")
-            if item.state in {"completed", "suppressed", "recovery_required"} and (
+            if item.state in {
+                "completed",
+                "handed_back",
+                "suppressed",
+                "recovery_required",
+            } and (
                 item.pending_server_action is None
             ):
                 return item
@@ -979,6 +1148,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
             "launch_preparing",
             "launch_spawned",
             "launch_ready",
+            "start_requesting",
             "start_granted",
             "executing",
             "recovery_required",
@@ -1021,19 +1191,25 @@ class PrivateWakeInboxTests(unittest.TestCase):
                         if state not in {"launch_spawned"}:
                             inbox.record_ready(worker_claim, pid=43210, now=self.NOW)
                             if state not in {"launch_ready"}:
-                                inbox.record_start_grant(
+                                inbox.record_start_requesting(
                                     worker_claim,
-                                    launch_grant="grant/immutable-start",
+                                    current_claim=inbox.get("handoff-100").claim,
                                     now=self.NOW,
                                 )
-                                if state == "executing":
-                                    inbox.record_gate_open(worker_claim, now=self.NOW)
-                                elif state == "recovery_required":
-                                    inbox.record_recovery_required(
+                                if state != "start_requesting":
+                                    inbox.record_start_grant(
                                         worker_claim,
-                                        reason="operator_reconciliation",
+                                        launch_grant="grant/immutable-start",
                                         now=self.NOW,
                                     )
+                                    if state == "executing":
+                                        inbox.record_gate_open(worker_claim, now=self.NOW)
+                                    elif state == "recovery_required":
+                                        inbox.record_recovery_required(
+                                            worker_claim,
+                                            reason="operator_reconciliation",
+                                            now=self.NOW,
+                                        )
                 before = inbox.get("handoff-100")
                 launch_evidence = (
                     before.current_launch_id,
@@ -1071,6 +1247,19 @@ class PrivateWakeInboxTests(unittest.TestCase):
                     ),
                     launch_evidence,
                 )
+                if state == "start_requesting":
+                    replay_intent = inbox.record_start_requesting(
+                        worker_claim,
+                        current_claim=refreshed.claim,
+                        now=self.NOW + timedelta(seconds=2),
+                    )
+                    self.assertEqual(replay_intent.start_lease_generation, 4)
+                    self.assertEqual(
+                        replay_intent.start_lease_capability_ref,
+                        hashlib.sha256(
+                            b"rotated-current-capability"
+                        ).hexdigest(),
+                    )
 
     def test_legacy_acceptance_tombstone_is_quarantined_without_duplicate_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1118,6 +1307,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
             "shim_spawned",
             "launch_pid_persisted",
             "runner_ready_persisted",
+            "start_requesting_persisted",
             "launch_grant_persisted",
             "gate_opened",
             "executing_persisted",
@@ -1192,11 +1382,158 @@ class PrivateWakeInboxTests(unittest.TestCase):
                     "preparing",
                     "spawned",
                     "ready",
+                    "start_requesting",
                     "grant_received",
                     "gate_open",
                     "completed",
                 ],
             )
+
+    def test_start_response_loss_crash_and_dead_runner_reconciles_one_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "wake-inbox.sqlite3"
+            first = PrivateWakeInbox(path, max_attempts=2)
+            self._accepted(first)
+
+            class ResponseLostClient(self.LaunchClient):
+                def __init__(inner_self):
+                    super().__init__([])
+                    inner_self.committed_grant = "grant/response-loss-dead-runner"
+
+                def execution_start(inner_self, claim, *, wake_token, launch_id):
+                    inner_self.start_calls.append(
+                        (claim["handoff_id"], wake_token, launch_id)
+                    )
+                    if len(inner_self.start_calls) == 1:
+                        raise OSError("execution-start response lost after commit")
+                    return {
+                        "handoff_id": claim["handoff_id"],
+                        "status": "execution_started",
+                        "launch_id": launch_id,
+                        "launch_grant": inner_self.committed_grant,
+                        "execution_started": True,
+                    }
+
+            client = ResponseLostClient()
+            first_worker = WakeInboxWorker(
+                client,
+                self.Adapter(directory),
+                first,
+                retry_delay_seconds=0,
+            )
+
+            self.assertIsNone(first_worker.run_once(now=self.NOW))
+            requesting = first.get("handoff-100")
+            launch_id = str(requesting.current_launch_id)
+
+            def stop_test_runner() -> None:
+                if requesting.launch_pid is None:
+                    return
+                try:
+                    os.kill(int(requesting.launch_pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    first_worker.launch_controller.observe(launch_id)
+                except (OSError, ValueError):
+                    pass
+
+            self.addCleanup(stop_test_runner)
+            self.assertEqual(requesting.state, "start_requesting")
+            self.assertIsNotNone(requesting.start_request_ref)
+            self.assertEqual(
+                requesting.start_execution_idempotency_key,
+                requesting.claim["idempotency_key"],
+            )
+            self.assertEqual(
+                requesting.start_lease_generation,
+                requesting.claim["lease_generation"],
+            )
+            self.assertEqual(
+                requesting.start_registration_ref,
+                requesting.claim["registration_ref"],
+            )
+            self.assertEqual(
+                requesting.start_lease_capability_ref,
+                hashlib.sha256(b"private-lease-capability").hexdigest(),
+            )
+            os.kill(int(requesting.launch_pid), signal.SIGKILL)
+            deadline = time.monotonic() + 1
+            while first_worker.launch_controller.observe(launch_id).runner_alive:
+                if time.monotonic() >= deadline:
+                    self.fail("gated shim did not stop after SIGKILL")
+                time.sleep(0.01)
+            first.close()
+
+            recovered = PrivateWakeInbox(path, max_attempts=2)
+            self.addCleanup(recovered.close)
+
+            class NoRebuildAdapter:
+                def launch_request(inner_self, _claim):
+                    raise AssertionError(
+                        "start-intent replay must not rebuild the target request"
+                    )
+
+            result = WakeInboxWorker(
+                client,
+                NoRebuildAdapter(),
+                recovered,
+                retry_delay_seconds=0,
+            ).run_once(now=self.NOW + timedelta(seconds=31))
+
+            self.assertEqual(result.state, "failed")
+            self.assertTrue(result.retryable)
+            self.assertEqual(len(client.start_calls), 2)
+            self.assertEqual({call[2] for call in client.start_calls}, {launch_id})
+            self.assertEqual(
+                client.abandon_calls,
+                [("handoff-100", launch_id, "runner_lost_before_gate")],
+            )
+            events = recovered.launch_events("handoff-100")
+            self.assertEqual({event["launch_id"] for event in events}, {launch_id})
+            self.assertIn("grant_received", [event["state"] for event in events])
+            self.assertIn("start_abandoned", [event["state"] for event in events])
+
+    def test_gate_open_requires_a_persisted_start_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            claimed = inbox.claim_next(now=self.NOW)
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+            inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+            inbox.record_ready(claimed, pid=43210, now=self.NOW)
+
+            with self.assertRaisesRegex(ValueError, "current state"):
+                inbox.record_gate_open(claimed, now=self.NOW)
+            with self.assertRaisesRegex(ValueError, "started launch"):
+                inbox.record_recovery_required(
+                    claimed,
+                    reason="no start grant exists",
+                    now=self.NOW,
+                )
+            self.assertEqual(inbox.get("handoff-100").state, "launch_ready")
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=self.NOW,
+            )
+            inbox.record_start_grant(
+                claimed,
+                launch_grant="grant/no-prelaunch-regression",
+                now=self.NOW,
+            )
+            with self.assertRaisesRegex(ValueError, "pre-launch failure"):
+                inbox.record_prelaunch_failure(
+                    claimed,
+                    error="runner_lost_before_gate",
+                    retry_at=self.NOW + timedelta(seconds=1),
+                    now=self.NOW,
+                )
+            self.assertEqual(inbox.get("handoff-100").state, "start_granted")
 
     def test_live_post_gate_pid_is_observed_without_a_second_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1237,7 +1574,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 settled = self._run_until_settled(worker, inbox)
                 worker.run_once(now=self.NOW + timedelta(minutes=2))
 
-                self.assertEqual(settled.state, "recovery_required")
+                self.assertEqual(settled.state, "handed_back")
                 self.assertEqual(len(client.checkpoint_calls), 1)
                 self.assertEqual(len({call[2] for call in client.start_calls}), 1)
                 self.assertEqual(settled.attempt, 1)
@@ -1263,6 +1600,182 @@ class PrivateWakeInboxTests(unittest.TestCase):
 
             self.assertEqual(len(client.checkpoint_calls), 2)
             self.assertEqual(len({call[2] for call in client.start_calls}), 1)
+
+    def test_checkpoint_completion_hands_back_and_clears_private_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            store = PrivateClaimStore(directory / "active.json")
+            store.save(claim_payload(status="execution_started"))
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            launch_id = self._queue_checkpoint(inbox)
+            client = self.LaunchClient()
+
+            completed = WakeInboxWorker(
+                client,
+                self.Adapter(directory),
+                inbox,
+                retry_delay_seconds=0,
+                claim_store=store,
+            ).run_once(now=self.NOW + timedelta(seconds=1))
+
+            self.assertEqual(completed.state, "handed_back")
+            self.assertIsNone(completed.pending_server_action)
+            self.assertFalse(store.path.exists())
+            self.assertEqual(
+                client.checkpoint_calls,
+                [("handoff-100", launch_id, "ambiguous_launch_outcome")],
+            )
+
+    def test_restart_finishes_claim_cleanup_after_checkpoint_terminal_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "wake-inbox.sqlite3"
+            store = PrivateClaimStore(directory / "active.json")
+            store.save(claim_payload(status="execution_started"))
+            first = PrivateWakeInbox(path)
+            self._queue_checkpoint(first)
+            first_client = self.LaunchClient()
+
+            def crash_after_inbox_terminal(phase: str) -> None:
+                if phase == "server_action_checkpoint_inbox_terminalized":
+                    raise RuntimeError("crash after checkpoint inbox commit")
+
+            with self.assertRaisesRegex(
+                RuntimeError, "crash after checkpoint inbox commit"
+            ):
+                WakeInboxWorker(
+                    first_client,
+                    self.Adapter(directory),
+                    first,
+                    retry_delay_seconds=0,
+                    claim_store=store,
+                    phase_hook=crash_after_inbox_terminal,
+                ).run_once(now=self.NOW + timedelta(seconds=1))
+            self.assertEqual(first.get("handoff-100").state, "handed_back")
+            self.assertTrue(store.path.exists())
+            first.close()
+
+            class RestartClient(self.LaunchClient):
+                def __init__(inner_self):
+                    super().__init__([])
+                    inner_self.claim_calls = 0
+                    inner_self.recover_calls = 0
+
+                def claim(inner_self, **_kwargs):
+                    inner_self.claim_calls += 1
+                    return None
+
+                def recover(inner_self, _claim):
+                    inner_self.recover_calls += 1
+                    raise AssertionError("terminal inbox must clear before recovery")
+
+            restarted_client = RestartClient()
+            restarted = PrivateWakeInbox(path)
+            self.addCleanup(restarted.close)
+            run_forever(
+                restarted_client,
+                self.Adapter(directory),
+                claim_store=store,
+                wake_inbox=restarted,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertFalse(store.path.exists())
+            self.assertEqual(restarted_client.recover_calls, 0)
+            self.assertEqual(restarted_client.claim_calls, 1)
+            self.assertEqual(len(first_client.checkpoint_calls), 1)
+
+    def test_checkpoint_completion_accepts_exact_terminal_shapes(self) -> None:
+        accepted = (
+            ("suppressed", True, "handed_back"),
+            ("completed", False, "suppressed"),
+            ("dead_letter", False, "suppressed"),
+        )
+        for status, checkpointed, expected_state in accepted:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
+                inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+                self.addCleanup(inbox.close)
+                launch_id = self._queue_checkpoint(inbox)
+                pending = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+                self.assertIsNotNone(pending)
+
+                completed = inbox.complete_server_action(
+                    pending,
+                    action="checkpoint",
+                    response={
+                        "handoff_id": "handoff-100",
+                        "status": status,
+                        "launch_id": launch_id,
+                        "checkpointed": checkpointed,
+                    },
+                    now=self.NOW + timedelta(seconds=2),
+                )
+                replay = inbox.complete_server_action(
+                    pending,
+                    action="checkpoint",
+                    response={
+                        "handoff_id": "handoff-100",
+                        "status": status,
+                        "launch_id": launch_id,
+                        "checkpointed": checkpointed,
+                    },
+                    now=self.NOW + timedelta(seconds=3),
+                )
+
+                self.assertEqual(completed.state, expected_state)
+                self.assertIsNone(completed.pending_server_action)
+                self.assertEqual(replay, completed)
+
+    def test_checkpoint_completion_rejects_every_other_exact_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            launch_id = self._queue_checkpoint(inbox)
+            pending = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+            self.assertIsNotNone(pending)
+            invalid = (
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": launch_id,
+                    "checkpointed": False,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "completed",
+                    "launch_id": launch_id,
+                    "checkpointed": True,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "launch_id": launch_id,
+                    "checkpointed": False,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": launch_id,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": launch_id,
+                    "checkpointed": True,
+                    "extra": "not-allowed",
+                },
+            )
+            for response in invalid:
+                with self.subTest(response=response):
+                    with self.assertRaises(ValueError):
+                        inbox.complete_server_action(
+                            pending,
+                            action="checkpoint",
+                            response=response,
+                            now=self.NOW + timedelta(seconds=2),
+                        )
 
     def test_lost_or_malformed_post_gate_result_requires_recovery_without_retry(self) -> None:
         for evidence in ("missing", "malformed"):
@@ -1327,7 +1840,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
                     retry_delay_seconds=0,
                 ).run_once(now=self.NOW + timedelta(seconds=31))
 
-                self.assertEqual(recovered.state, "recovery_required")
+                self.assertEqual(recovered.state, "handed_back")
                 self.assertEqual(len(client.checkpoint_calls), 1)
                 self.assertEqual(len({call[2] for call in client.start_calls}), 1)
                 time.sleep(0.2)
@@ -1376,7 +1889,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(marker.read_text(encoding="utf-8"), "1")
             self.assertEqual(len(client.start_calls), 1)
 
-    def test_dead_ready_runner_never_consumes_execution_start_grant(self) -> None:
+    def test_dead_ready_launch_reconciles_execution_start_before_retry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
@@ -1417,12 +1930,105 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 launch_controller=DeadReadyController(),
             ).run_once(now=self.NOW + timedelta(seconds=1))
 
-            self.assertEqual(client.start_calls, [])
+            self.assertEqual(
+                client.start_calls,
+                [("handoff-100", "wake/handoff-key-100", launch_id)],
+            )
+            self.assertEqual(
+                client.abandon_calls,
+                [("handoff-100", launch_id, "runner_lost_before_gate")],
+            )
             self.assertEqual(result.state, "failed")
             self.assertTrue(result.retryable)
             retried = inbox.claim_next(now=self.NOW + timedelta(seconds=2))
             self.assertIsNotNone(retried)
             self.assertNotEqual(inbox.launch_id_for(retried), launch_id)
+
+    def test_durable_launch_ready_reconciles_before_dead_evidence_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            claimed = inbox.claim_next(now=self.NOW)
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+            inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+            inbox.record_ready(claimed, pid=43210, now=self.NOW)
+            inbox.release_worker_claim(claimed, now=self.NOW)
+
+            class RegressedDeadController:
+                def observe(self, observed_launch_id):
+                    return LaunchObservation(
+                        observed_launch_id,
+                        "preparing",
+                        43210,
+                        False,
+                    )
+
+                def start(self, observed_launch_id, _request):
+                    return self.observe(observed_launch_id)
+
+                def open_gate(self, *_args, **_kwargs):
+                    raise AssertionError("dead regressed runner must not receive a gate")
+
+            client = self.LaunchClient()
+            result = WakeInboxWorker(
+                client,
+                self.Adapter(directory),
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=RegressedDeadController(),
+            ).run_once(now=self.NOW + timedelta(seconds=1))
+
+            self.assertEqual(
+                client.start_calls,
+                [("handoff-100", "wake/handoff-key-100", launch_id)],
+            )
+            self.assertEqual(
+                client.abandon_calls,
+                [("handoff-100", launch_id, "runner_lost_before_gate")],
+            )
+            self.assertEqual(result.state, "failed")
+            self.assertTrue(result.retryable)
+
+    def test_terminal_start_reconciliation_suppresses_malformed_ready_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            claimed = inbox.claim_next(now=self.NOW)
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+            inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+            inbox.record_ready(claimed, pid=43210, now=self.NOW)
+            inbox.release_worker_claim(claimed, now=self.NOW)
+
+            class MalformedController:
+                def observe(self, _launch_id):
+                    raise ValueError("malformed ready evidence")
+
+                def cancel(self, _launch_id):
+                    raise AssertionError("malformed evidence cannot be cancelled safely")
+
+            client = self.LaunchClient([False])
+            result = WakeInboxWorker(
+                client,
+                self.Adapter(directory),
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=MalformedController(),
+            ).run_once(now=self.NOW + timedelta(seconds=1))
+
+            self.assertEqual(result.state, "suppressed")
+            self.assertEqual(
+                client.start_calls,
+                [("handoff-100", "wake/handoff-key-100", launch_id)],
+            )
+            self.assertEqual(client.abandon_calls, [])
 
     def test_runner_dying_after_start_cas_but_before_gate_resets_unused_grant(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1563,6 +2169,126 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(len({call[2] for call in client.start_calls}), 2)
             self.assertEqual(marker.read_text(encoding="utf-8"), "1")
 
+    def test_terminal_abandon_reconciliation_suppresses_and_clears_pending_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            pending, launch_id = self._pending_abandon(inbox)
+            response = {
+                "handoff_id": "handoff-100",
+                "status": "suppressed",
+                "launch_id": launch_id,
+                "abandoned": False,
+            }
+
+            completed = inbox.complete_server_action(
+                pending,
+                action="abandon_start",
+                response=response,
+                now=self.NOW + timedelta(seconds=2),
+            )
+            replay = inbox.complete_server_action(
+                pending,
+                action="abandon_start",
+                response=response,
+                now=self.NOW + timedelta(seconds=3),
+            )
+
+            self.assertEqual(completed.state, "suppressed")
+            self.assertIsNone(completed.pending_server_action)
+            self.assertEqual(replay, completed)
+
+    def test_inbox_abandon_completion_rejects_every_other_exact_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            pending, launch_id = self._pending_abandon(inbox)
+            invalid = (
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "launch_id": launch_id,
+                    "abandoned": False,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": launch_id,
+                    "abandoned": True,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "completed",
+                    "launch_id": launch_id,
+                    "abandoned": False,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "launch_id": launch_id,
+                },
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "launch_id": launch_id,
+                    "abandoned": True,
+                    "extra": "not-allowed",
+                },
+            )
+            for response in invalid:
+                with self.subTest(response=response):
+                    with self.assertRaises(ValueError):
+                        inbox.complete_server_action(
+                            pending,
+                            action="abandon_start",
+                            response=response,
+                            now=self.NOW + timedelta(seconds=2),
+                        )
+
+    def test_terminal_action_replay_requires_matching_completion_evidence(self) -> None:
+        cases = (
+            (
+                "abandon_start",
+                {
+                    "status": "suppressed",
+                    "abandoned": False,
+                },
+            ),
+            (
+                "checkpoint",
+                {
+                    "status": "completed",
+                    "checkpointed": False,
+                },
+            ),
+        )
+        for action, fields in cases:
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as temporary:
+                inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+                self.addCleanup(inbox.close)
+                self._accepted(inbox)
+                claimed = inbox.claim_next(now=self.NOW)
+                self.assertIsNotNone(claimed)
+                launch_id = inbox.launch_id_for(claimed)
+                inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+                inbox.mark_suppressed(
+                    claimed,
+                    reason="launch_cancelled_before_gate",
+                    now=self.NOW,
+                )
+
+                with self.assertRaisesRegex(ValueError, "pending inbox action"):
+                    inbox.complete_server_action(
+                        claimed,
+                        action=action,
+                        response={
+                            "handoff_id": "handoff-100",
+                            "launch_id": launch_id,
+                            **fields,
+                        },
+                        now=self.NOW + timedelta(seconds=1),
+                    )
+
     def test_abandoned_start_replay_reconciles_without_cancelling_gated_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -1575,6 +2301,11 @@ class PrivateWakeInboxTests(unittest.TestCase):
             inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
             inbox.record_spawned(claimed, pid=43210, now=self.NOW)
             inbox.record_ready(claimed, pid=43210, now=self.NOW)
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=self.NOW,
+            )
             inbox.record_start_grant(
                 claimed, launch_grant="grant/test-launch", now=self.NOW
             )
@@ -1803,19 +2534,19 @@ class RunForeverTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary:
                     directory = Path(temporary)
                     inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+                    store = PrivateClaimStore(directory / "active.json")
                     run_forever(
                         client,
                         adapter,
-                        claim_store=PrivateClaimStore(
-                            directory / "active.json"
-                        ),
+                        claim_store=store,
                         wake_inbox=inbox,
                         max_iterations=1,
                         retry_delay=0.25,
                     )
                     item = inbox.get("handoff-100")
-                    self.assertEqual(item.state, "recovery_required")
+                    self.assertEqual(item.state, "handed_back")
                     self.assertFalse(item.retryable)
+                    self.assertFalse(store.path.exists())
                     inbox.close()
                 self.assertEqual(client.acks, [("handoff-100", "received")])
                 self.assertEqual(client.failures, [])
@@ -1835,7 +2566,8 @@ class RunForeverTests(unittest.TestCase):
                 max_iterations=1,
                 retry_delay=0,
             )
-            self.assertEqual(inbox.get("handoff-100").state, "recovery_required")
+            self.assertEqual(inbox.get("handoff-100").state, "handed_back")
+            self.assertFalse(path.exists())
             inbox.close()
 
             recovered = PrivateWakeInbox(inbox_path)
@@ -1850,13 +2582,71 @@ class RunForeverTests(unittest.TestCase):
                 ).run_once(now=datetime.now(timezone.utc) + timedelta(minutes=1))
             )
             self.assertEqual(
-                recovered.get("handoff-100").state, "recovery_required"
+                recovered.get("handoff-100").state, "handed_back"
             )
             recovered.close()
 
         self.assertEqual(first_client.failures, [])
         self.assertEqual(second_adapter.claims, [])
         self.assertEqual(len(first_client.checkpoints), 1)
+
+    def test_restart_does_not_clear_claim_for_local_only_suppression(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            store = PrivateClaimStore(directory / "active.json")
+            store.save(claim_payload(status="received"))
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            wake_token = "wake/handoff-key-100"
+            inbox.enqueue(
+                claim_payload(status="received"),
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
+            inbox.mark_pending(
+                handoff_id="handoff-100",
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
+            claimed = inbox.claim_next(now=datetime.now(timezone.utc))
+            self.assertIsNotNone(claimed)
+            inbox.mark_suppressed(
+                claimed,
+                reason="launch_cancelled_before_gate",
+                now=datetime.now(timezone.utc),
+            )
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+                    inner_self.recover_calls = 0
+
+                def claim(inner_self, **_kwargs):
+                    raise AssertionError(
+                        "unverified local suppression must reconcile active claim"
+                    )
+
+                def recover(inner_self, claim):
+                    inner_self.recover_calls += 1
+                    self.assertTrue(store.path.exists())
+                    return claim_payload(
+                        status="received",
+                        lease_generation=4,
+                        lease_capability="rotated-after-local-suppression",
+                    )
+
+            client = Client()
+            run_forever(
+                client,
+                self.Adapter([]),
+                claim_store=store,
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(client.recover_calls, 1)
+            self.assertTrue(store.path.exists())
 
     def test_process_restart_recovers_persisted_in_progress_before_claiming_new_work(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2152,6 +2942,11 @@ class RunForeverTests(unittest.TestCase):
             )
             inbox.record_ready(
                 claimed, pid=43210, now=datetime.now(timezone.utc)
+            )
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=datetime.now(timezone.utc),
             )
             inbox.record_start_grant(
                 claimed,

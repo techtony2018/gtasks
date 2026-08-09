@@ -36,11 +36,12 @@ received
   -> local launch_preparing
   -> local launch_spawned (PID durable)
   -> local launch_ready (runner ready evidence durable)
+  -> local start_requesting (request and current credential durable)
   -> server execution_started (one launch grant)
   -> local start_granted (grant reference durable)
   -> atomic gate_open
   -> local executing
-  -> completed | recovery_required | exhausted failed
+  -> completed | handed_back | suppressed | exhausted failed
 ```
 
 A start that is later proven unused branches through
@@ -57,6 +58,15 @@ canonical Task authority, delegation version/window/scope, and owned-work
 priority in the same transaction that changes `received` to
 `execution_started`. The same launch id replays the same grant; a different
 launch id is fenced out.
+
+Before every first request or replay, the inbox commits `start_requesting` with
+the launch id, a reference to the exact execution-start mutation, the execution
+idempotency identity, and references to the current registration, generation,
+and capability. Therefore a durable `launch_ready` item is never classified as
+safely prelaunch after a crash until that exact launch is reconciled with the
+server. If the CAS committed, replay returns and locally persists the original
+grant. If replay proves that launch was already abandoned (`received`, no
+grant), only then may the failed attempt become retryable.
 
 The start row is immutable fence evidence: its launch id, original lease
 generation/reference, grant reference, and start instant never change during
@@ -81,8 +91,9 @@ For a claim file named `<name>.json`, the host keeps the private inbox in
 `<name>.wake-inbox.sqlite3` and launch directories under
 `<name>.wake-inbox.launches/`. The inbox file and every request, lock, ready,
 gate, cancel, and result file are private. `wake_launches` is append-preserving
-evidence for preparing, spawned, ready, grant received, gate open, completion,
-pre-launch failure, abandon required, verified start abandonment, and ambiguity. It stores only bounded state, PID, grant
+evidence for preparing, spawned, ready, start requesting, grant received, gate
+open, completion, handback, pre-launch failure, abandon required, verified
+start abandonment, terminal reconciliation, and ambiguity. It stores only bounded state, PID, grant
 reference, and privacy-safe detail—not bearer tokens, raw capabilities, fixed
 session ids, prompts, stdout, or stderr.
 
@@ -295,11 +306,13 @@ logs.
 
 - A retryable delivery failure moves the same handoff to `retrying`; a later
   identity-scoped claim increments its attempt and lease generation.
-- A dead runner with durable ready evidence is checked before, immediately
-  before, and immediately after the execution-start CAS while the gate remains
-  absent. Before a grant, this is a proven pre-gate failure. After a grant, the
-  host first persists `abandon_start` and must verify the server reset before
-  allocating another launch.
+- A dead runner before durable readiness and before any start intent is a proven
+  pre-gate failure. Durable `launch_ready` evidence is different: the host first
+  commits `start_requesting` and reconciles the same launch even if the runner
+  is now dead or its local evidence regressed. A replayed grant is persisted,
+  then the host records `abandon_start` and verifies the server reset before
+  allocating another launch. An exact `received`/no-grant replay proves the
+  start was already reset and is also safe to retry.
 - Only a proven pre-gate shim failure or a verified unused-start reset may
   create another local launch attempt. The new attempt has a new deterministic
   launch id and a different server grant. Exhaustion persists a pending
@@ -315,10 +328,21 @@ logs.
   archives the immutable start row, changes `execution_started` back to
   `received`, and appends one audit event. A lost response retries only this
   idempotent CAS. Only after verified reset may a fresh runner be created.
+- Execution-abandon has only two successful response pairs: `received/true`
+  proves the unused start reset, while `suppressed/false` proves authority ended
+  instead. The latter clears the pending action and terminalizes the inbox as
+  `suppressed`; completed/dead-letter or mismatched boolean pairs are rejected.
 - Timeout, nonzero exit, a dead runner after gate open, or malformed/missing
   post-gate result evidence is ambiguous. The local state becomes
   `recovery_required`; only the idempotent execution-checkpoint request is
-  retried. The target command is never automatically reissued.
+  retried. A verified `suppressed/true` checkpoint commits local `handed_back`;
+  exact already-completed or dead-letter readback commits local `suppressed`.
+  The target command is never automatically reissued.
+- Handback cleanup is terminal-first: the SQLite inbox commits
+  `handed_back`/`suppressed`, then the matching private `active.json` claim is
+  removed. If the host crashes between those writes, restart observes the
+  terminal inbox and idempotently removes `active.json` before the inbox worker,
+  recovery request, or `recovered_handoffs` deferral can run.
 - An exhausted proven-prelaunch or verified-unused-start retry moves the
   handoff to `dead_letter`, releases the execution claim as
   `terminal_delivery_failure`, and retains the
