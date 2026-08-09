@@ -1,0 +1,4 @@
+interface:
+  display_name: "MC Add Task"
+  short_description: "Create Mission Control tasks"
+  default_prompt: "Use $mc-add-task to create a Mission Control task for Tony or a named Agent."
