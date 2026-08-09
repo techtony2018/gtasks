@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,6 +14,7 @@ from gtasks.domain import (
     Project,
     new_inbox_task,
 )
+from gtasks.delegation import AgentDelegationLease, DelegationState
 from gtasks.gbrain import (
     AgentRead,
     AgentWorkRead,
@@ -36,6 +39,7 @@ from gtasks.handoff_dispatcher import (
     ActionableChange,
     AgentRegistration,
     DurableHandoffStore,
+    ExecutionClaim,
     HandoffDispatcher,
 )
 from gtasks.ical import CalendarPreferences
@@ -63,8 +67,14 @@ class SyntheticCalendarReader:
 
 
 class IsolatedProjectAdapter:
-    def __init__(self, *, read_cache_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        read_cache_path: Path,
+        delegations: tuple[AgentDelegationLease, ...] = (),
+    ) -> None:
         self.read_cache_path = read_cache_path
+        self.fixture_now: datetime | None = None
         self.task = replace(new_inbox_task(
             "Isolated project task",
             datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
@@ -82,7 +92,59 @@ class IsolatedProjectAdapter:
                 default_goal_slugs=(),
                 avatar_value="TA",
             ),
+            AgentProfile(
+                slug="agents/timmy",
+                name="Timmy",
+                title="Agent Timmy",
+                summary="Synthetic browser QA agent.",
+                work_root="collections/timmys-tasks",
+                default_goal_slugs=(),
+                avatar_value="TI",
+            ),
+            AgentProfile(
+                slug="agents/toddy",
+                name="Toddy",
+                title="Agent Toddy",
+                summary="Synthetic browser QA agent.",
+                work_root="collections/toddys-tasks",
+                default_goal_slugs=(),
+                avatar_value="TO",
+            ),
+            AgentProfile(
+                slug="agents/tammy-oc",
+                name="Tammy-OC",
+                title="Agent Tammy-OC",
+                summary="Synthetic browser QA OpenClaw agent.",
+                work_root="collections/tammy-oc-tasks",
+                default_goal_slugs=(),
+                avatar_value="TO",
+                runtime="openclaw",
+            ),
+            AgentProfile(
+                slug="agents/timmy-oc",
+                name="Timmy-OC",
+                title="Agent Timmy-OC",
+                summary="Synthetic browser QA OpenClaw agent.",
+                work_root="collections/timmy-oc-tasks",
+                default_goal_slugs=(),
+                avatar_value="IO",
+                runtime="openclaw",
+            ),
+            AgentProfile(
+                slug="agents/toddy-oc",
+                name="Toddy-OC",
+                title="Agent Toddy-OC",
+                summary="Synthetic browser QA OpenClaw agent.",
+                work_root="collections/toddy-oc-tasks",
+                default_goal_slugs=(),
+                avatar_value="DO",
+                runtime="openclaw",
+            ),
         )
+        self.delegations = delegations
+        self.synthetic_mutation_log: list[dict[str, str]] = []
+        # This fixture has no external adapter, broker, agent, or canonical writer.
+        self.external_mutation_count = 0
 
     def get_tony_profile(self) -> dict:
         return {
@@ -106,6 +168,52 @@ class IsolatedProjectAdapter:
             tasks=({**self.task.to_dict(), "open_todos": 0},),
             roots=(self.agents[0].work_root,),
         )
+
+    def list_agent_delegations(self) -> tuple[AgentDelegationLease, ...]:
+        return self.delegations
+
+    def create_agent_delegation(self, lease: AgentDelegationLease) -> MutationReceipt:
+        existing = next(
+            (item for item in self.delegations if item.slug == lease.slug), None
+        )
+        if existing is None:
+            self.delegations = (*self.delegations, lease)
+            self.synthetic_mutation_log.append({
+                "operation": "create",
+                "slug": lease.slug,
+            })
+        elif existing != lease:
+            raise ValueError("synthetic delegation idempotency conflict")
+        return MutationReceipt(slug=lease.slug, verified=True)
+
+    def update_agent_delegation(
+        self,
+        lease: AgentDelegationLease,
+        *,
+        expected_version: str | None = None,
+    ) -> MutationReceipt:
+        current = next(
+            (item for item in self.delegations if item.slug == lease.slug), None
+        )
+        if current is None:
+            raise ValueError("unknown synthetic delegation")
+        if (
+            expected_version is not None
+            and current.updated_at.isoformat() != expected_version
+        ):
+            raise ValueError("synthetic delegation version conflict")
+        operation = "extend" if lease.ends_at != current.ends_at else {
+            DelegationState.COMPLETED: "complete",
+            DelegationState.REVOKED: "revoke",
+        }.get(lease.state, lease.state.value)
+        self.delegations = tuple(
+            lease if item.slug == lease.slug else item for item in self.delegations
+        )
+        self.synthetic_mutation_log.append({
+            "operation": operation,
+            "slug": lease.slug,
+        })
+        return MutationReceipt(slug=lease.slug, verified=True)
 
     def list_task_todos(
         self,
@@ -391,12 +499,112 @@ def _seed_handoff_events(
     )
 
 
-def build_fixture_server(runtime_directory: Path, *, port: int = 4182):
+_DELEGATION_SCENARIOS = frozenset(
+    {"inactive", "active", "expired", "unknown", "mismatched"}
+)
+
+
+class SyntheticClaimHandoffStore:
+    """Test-only claim projection over the isolated SQLite event fixture."""
+
+    def __init__(
+        self,
+        event_store: DurableHandoffStore,
+        claim: ExecutionClaim | None,
+    ) -> None:
+        self._event_store = event_store
+        self._claim = claim
+
+    def get_execution_claim(
+        self,
+        task_slug: str,
+        *,
+        include_terminal: bool = False,
+    ) -> ExecutionClaim | None:
+        del include_terminal
+        return (
+            self._claim
+            if self._claim is not None and self._claim.task_slug == task_slug
+            else None
+        )
+
+    def __getattr__(self, name: str):
+        return getattr(self._event_store, name)
+
+
+def _delegation_fixture_state(
+    scenario: str,
+    *,
+    now: datetime,
+    task_slug: str,
+) -> tuple[tuple[AgentDelegationLease, ...], ExecutionClaim | None]:
+    if scenario not in _DELEGATION_SCENARIOS:
+        raise ValueError(
+            "delegation_scenario must be one of: "
+            + ", ".join(sorted(_DELEGATION_SCENARIOS))
+        )
+    if scenario == "inactive":
+        return (), None
+    expired = scenario == "expired"
+    lease = AgentDelegationLease(
+        slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+        source_agent="agents/tammy",
+        executor_agent="agents/tammy-oc",
+        authorized_by="people/tony-guan",
+        starts_at=now - timedelta(hours=2),
+        ends_at=(now - timedelta(minutes=1) if expired else now + timedelta(hours=2)),
+        display_timezone="America/Los_Angeles",
+        allowed_operations=("task_status", "todo", "comment", "artifact"),
+        state=DelegationState.ACTIVE,
+        created_at=now - timedelta(hours=2),
+        updated_at=now - timedelta(minutes=10),
+    )
+    claim = ExecutionClaim(
+        task_slug=task_slug,
+        executor_agent="agents/tammy-oc",
+        permanent_owner=("agents/timmy" if scenario == "mismatched" else "agents/tammy"),
+        delegation_slug=(
+            "agent-delegations/33333333-3333-4333-8333-333333333333"
+            if scenario == "unknown"
+            else lease.slug
+        ),
+        correlation_id=f"correlation-fixture-{scenario}",
+        idempotency_key=f"fixture-{scenario}-claim",
+        claimed_at=now - timedelta(minutes=5),
+        expires_at=(now - timedelta(minutes=1) if expired else now + timedelta(hours=1)),
+    )
+    return (lease,), claim
+
+
+def build_fixture_server(
+    runtime_directory: Path,
+    *,
+    port: int = 4182,
+    delegation_scenario: str = "inactive",
+):
+    """Build a source-blind QA server with synthetic, runtime-local state only.
+
+    Delegation scenarios are deterministic and selected before launch. Mutations
+    update only the in-memory adapter and return synthetic verified receipts;
+    this fixture never instantiates a GBrain runner, NATS client, or OpenClaw
+    client.
+    """
     runtime_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fixture_now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+    # Match browser wall time so countdown and expiry behavior are renderable;
+    # the selected scenario remains deterministic relative to this launch instant.
+    fixture_now = datetime.now(timezone.utc).replace(microsecond=0)
     read_cache_path = runtime_directory / "read-snapshots.json"
     calendar_preferences_path = runtime_directory / "calendar-preferences.json"
+    # Construct once to obtain the deterministic task slug, then attach scenario
+    # state without any canonical or external reads.
     adapter = IsolatedProjectAdapter(read_cache_path=read_cache_path)
+    adapter.fixture_now = fixture_now
+    delegations, claim = _delegation_fixture_state(
+        delegation_scenario,
+        now=fixture_now,
+        task_slug=adapter.task.slug,
+    )
+    adapter.delegations = delegations
     adapter.calendar_preferences_path = calendar_preferences_path
     adapter.calendar_reader = SyntheticCalendarReader()
     handoff_store = DurableHandoffStore(
@@ -434,12 +642,55 @@ def build_fixture_server(runtime_directory: Path, *, port: int = 4182):
         ),
         ical_reader=adapter.calendar_reader,
         calendar_preferences=CalendarPreferences(calendar_preferences_path),
-        handoff_store=handoff_store,
+        handoff_store=SyntheticClaimHandoffStore(handoff_store, claim),
     )
+    production_handler = server.RequestHandlerClass
+
+    class FixtureStatusHandler(production_handler):
+        """Expose source-blind evidence only on this synthetic server instance."""
+
+        def do_GET(self) -> None:
+            if self.path.split("?", 1)[0] == "/api/qa-fixture-status":
+                self._json(HTTPStatus.OK, {
+                    "fixture_only": True,
+                    "scenario": delegation_scenario,
+                    "in_memory_mutation_count": len(adapter.synthetic_mutation_log),
+                    "external_mutation_count": adapter.external_mutation_count,
+                    "connections": {
+                        "gbrain_writer": False,
+                        "nats": False,
+                        "openclaw": False,
+                        "wake": False,
+                    },
+                })
+                return
+            super().do_GET()
+
+    server.RequestHandlerClass = FixtureStatusHandler
     return server, adapter
 
 
 if __name__ == "__main__":
+    # Source-blind independent QA launch examples:
+    #   MISSION_CONTROL_QA_DELEGATION_SCENARIO=active \
+    #     MISSION_CONTROL_QA_PORT=4182 python3 -m tests.project_browser_fixture
+    # Replace `active` with inactive, expired, unknown, or mismatched. Every run
+    # uses a fresh TemporaryDirectory and has no GBrain/NATS/OpenClaw writer.
+    # Source-blind safety evidence:
+    #   curl -fsS http://127.0.0.1:4182/api/qa-fixture-status
+    scenario = os.environ.get(
+        "MISSION_CONTROL_QA_DELEGATION_SCENARIO", "inactive"
+    )
+    port = int(os.environ.get("MISSION_CONTROL_QA_PORT", "4182"))
     with TemporaryDirectory() as directory:
-        server, _adapter = build_fixture_server(Path(directory))
+        server, _adapter = build_fixture_server(
+            Path(directory),
+            port=port,
+            delegation_scenario=scenario,
+        )
+        print(
+            f"Synthetic QA fixture: http://127.0.0.1:{port} "
+            f"(delegation scenario: {scenario}; external writes: disabled)",
+            flush=True,
+        )
         server.serve_forever()

@@ -3127,10 +3127,14 @@ function renderAgentHandoffStatus(agent) {
 function agentRuntimeLabel(agent) {
   if (agent.runtime !== "openclaw") return "Codex";
   const latest = verifiedHandoffEventsForAgent(agent)
+    .filter((event) => (
+      event.executor_agent === agent.slug &&
+      ["execution_started", "acknowledgement"].includes(event.event_type)
+    ))
     .slice()
     .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0))[0];
-  if (!latest) return "OpenClaw · no verified session activity";
-  return `OpenClaw · last verified session activity ${latest.occurred_at ? new Date(latest.occurred_at).toLocaleString() : "time unavailable"}`;
+  if (!latest) return "OpenClaw · Session health unavailable";
+  return `OpenClaw · verified fixed-session activity ${latest.occurred_at ? new Date(latest.occurred_at).toLocaleString() : "time unavailable"}`;
 }
 
 function renderSystemHandoffAttention() {
@@ -3272,6 +3276,22 @@ function activeDelegationForSource(sourceSlug) {
   )) || null;
 }
 
+function activeTemporaryExecution(task) {
+  const execution = task?.temporary_execution;
+  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
+  const lease = execution ? activeDelegationForSource(ownerSlug) : null;
+  if (
+    !execution ||
+    !lease ||
+    lease.slug !== execution.delegation_slug ||
+    execution.permanent_owner !== ownerSlug ||
+    execution.executor_agent !== lease.executor_agent ||
+    !Number.isFinite(new Date(execution.expires_at).getTime()) ||
+    new Date(execution.expires_at).getTime() <= Date.now()
+  ) return null;
+  return execution;
+}
+
 function delegationRemainingLabel(lease) {
   if (!lease) return "No temporary delegation is active.";
   const end = new Date(lease.ends_at);
@@ -3283,12 +3303,51 @@ function delegationRemainingLabel(lease) {
   const duration = minutes >= 1440
     ? `${Math.ceil(minutes / 1440)}d`
     : minutes >= 60 ? `${Math.ceil(minutes / 60)}h` : `${minutes}m`;
-  return `${lease.state === "scheduled" ? "Starts later" : "Active"} · ${duration} remaining · ends ${end.toLocaleString()}`;
+  return `${lease.state === "scheduled" ? "Starts later" : "Active"} · ${duration} remaining · ends ${formatPacificDisplay(end)}`;
 }
 
-function localDateTimeValue(date) {
-  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return shifted.toISOString().slice(0, 16);
+const PACIFIC_TIME_ZONE = "America/Los_Angeles";
+const PACIFIC_INPUT_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: PACIFIC_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+function formatPacificInstant(date) {
+  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) return "";
+  const parts = Object.fromEntries(
+    PACIFIC_INPUT_FORMATTER.formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function formatPacificDisplay(date) {
+  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) return "time unavailable";
+  return date.toLocaleString("en-US", { timeZone: PACIFIC_TIME_ZONE });
+}
+
+function parsePacificLocalDateTime(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return new Date(Number.NaN);
+  const [, year, month, day, hour, minute] = match;
+  const target = `${year}-${month}-${day}T${hour}:${minute}`;
+  const localAsUtc = Date.UTC(
+    Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute),
+  );
+  const candidates = [];
+  for (let offsetMinutes = -12 * 60; offsetMinutes <= 14 * 60; offsetMinutes += 15) {
+    const candidate = new Date(localAsUtc - offsetMinutes * 60000);
+    if (formatPacificInstant(candidate) === target) candidates.push(candidate);
+  }
+  if (!candidates.length) return new Date(Number.NaN);
+  candidates.sort((left, right) => left.getTime() - right.getTime());
+  return candidates[0];
 }
 
 function delegationMutationError(section, message) {
@@ -3311,14 +3370,20 @@ async function createTemporaryDelegation(event, sourceAgent, executorAgent) {
   const form = event.currentTarget;
   const section = form.closest(".delegation-card");
   const endInput = form.querySelector('[name="delegation-end"]');
-  const endsAt = new Date(endInput.value);
+  const endsAt = parsePacificLocalDateTime(endInput.value);
   if (!Number.isFinite(endsAt.getTime()) || endsAt <= new Date()) {
     delegationMutationError(section, "Choose a future end time between 15 minutes and 7 days.");
     return;
   }
   const ownerName = state.agents.find((agent) => agent.slug === sourceAgent)?.name || sourceAgent;
   const executorName = state.agents.find((agent) => agent.slug === executorAgent)?.name || executorAgent;
-  if (!window.confirm(`Temporarily delegate eligible ${ownerName} work to ${executorName} until ${endsAt.toLocaleString()}? Permanent ownership will not change.`)) return;
+  const confirmation = [
+    `Temporarily delegate eligible ${ownerName} work to ${executorName} until ${formatPacificDisplay(endsAt)} (${PACIFIC_TIME_ZONE})?`,
+    "Allowed: task status, TODOs, comments, and Artifacts.",
+    "No account access, external actions, trading, or scope expansion.",
+    "Permanent ownership will not change.",
+  ].join("\n");
+  if (!window.confirm(confirmation)) return;
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
@@ -3351,14 +3416,18 @@ async function createTemporaryDelegation(event, sourceAgent, executorAgent) {
 
 async function changeTemporaryDelegation(lease, action, section, requestedEnd = null) {
   const verb = action === "extend" ? "Extend" : action === "revoke" ? "Revoke" : "End Early";
-  if (!window.confirm(`${verb} this temporary authorization? Permanent ownership will not change.`)) return;
+  const requested = requestedEnd ? parsePacificLocalDateTime(requestedEnd) : null;
+  const exactEnd = action === "extend" && requested && Number.isFinite(requested.getTime())
+    ? ` The requested new end is ${formatPacificDisplay(requested)} (${PACIFIC_TIME_ZONE}).`
+    : "";
+  if (!window.confirm(`${verb} this temporary authorization?${exactEnd} Allowed: task status, TODOs, comments, and Artifacts. No account access, external actions, trading, or scope expansion. Permanent ownership will not change.`)) return;
   try {
     if (!await loadAgentDelegations()) throw new Error("Canonical authorization could not be refreshed. No change was made.");
     const current = state.delegations.find((item) => item.slug === lease.slug);
     if (!current || !["active", "scheduled"].includes(current.state)) {
       throw new Error("This authorization is no longer active. No change was made.");
     }
-    const extendedEnd = requestedEnd ? new Date(requestedEnd) : null;
+    const extendedEnd = requestedEnd ? parsePacificLocalDateTime(requestedEnd) : null;
     if (action === "extend" && (!extendedEnd || !Number.isFinite(extendedEnd.getTime()))) {
       throw new Error("Choose a valid later end time.");
     }
@@ -3384,7 +3453,10 @@ async function changeTemporaryDelegation(lease, action, section, requestedEnd = 
 function renderDelegationControls(agent) {
   const section = node("section", "delegation-card");
   section.dataset.delegationAgent = agent.slug;
-  const sourceSlug = SOURCE_BY_OPENCLAW_PAIR[agent.slug];
+  const sourceSlug = OPENCLAW_PAIR_BY_SOURCE[agent.slug]
+    ? agent.slug
+    : SOURCE_BY_OPENCLAW_PAIR[agent.slug];
+  const executorSlug = OPENCLAW_PAIR_BY_SOURCE[sourceSlug];
   const lease = sourceSlug ? activeDelegationForSource(sourceSlug) : null;
   section.append(node("h3", "", "Temporarily delegate work"));
   const status = node("p", "delegation-status", delegationRemainingLabel(lease));
@@ -3404,9 +3476,9 @@ function renderDelegationControls(agent) {
     endInput.setAttribute("aria-label", "New delegation end time (America/Los_Angeles)");
     const minimumExtension = new Date(new Date(lease.ends_at).getTime() + 15 * 60000);
     const maximumExtension = new Date(new Date(lease.starts_at).getTime() + 7 * 86400000);
-    endInput.min = localDateTimeValue(minimumExtension);
-    endInput.max = localDateTimeValue(maximumExtension);
-    endInput.value = localDateTimeValue(new Date(Math.min(
+    endInput.min = formatPacificInstant(minimumExtension);
+    endInput.max = formatPacificInstant(maximumExtension);
+    endInput.value = formatPacificInstant(new Date(Math.min(
       new Date(lease.ends_at).getTime() + 60 * 60000,
       maximumExtension.getTime(),
     )));
@@ -3427,26 +3499,30 @@ function renderDelegationControls(agent) {
     section.append(endInput, actions, error);
     return section;
   }
+  if (agent.runtime === "openclaw") {
+    section.append(node("p", "delegation-owner-copy", "Start temporary delegation from the paired Codex Agent card."), error);
+    return section;
+  }
   const form = node("form", "delegation-form");
   const label = node("label", "", "Authorization ends (America/Los_Angeles)");
   const input = document.createElement("input");
   input.type = "datetime-local";
   input.name = "delegation-end";
   input.required = true;
-  input.min = localDateTimeValue(new Date(Date.now() + 15 * 60000));
-  input.max = localDateTimeValue(new Date(Date.now() + 7 * 86400000));
-  input.value = localDateTimeValue(new Date(Date.now() + 8 * 3600000));
+  input.min = formatPacificInstant(new Date(Date.now() + 15 * 60000));
+  input.max = formatPacificInstant(new Date(Date.now() + 7 * 86400000));
+  input.value = formatPacificInstant(new Date(Date.now() + 8 * 3600000));
   label.append(input);
   const shortcuts = node("div", "delegation-shortcuts");
   [["1 hour", 1], ["8 hours", 8], ["24 hours", 24]].forEach(([copy, hours]) => {
     const button = node("button", "secondary-button", copy);
     button.type = "button";
-    button.addEventListener("click", () => { input.value = localDateTimeValue(new Date(Date.now() + hours * 3600000)); });
+    button.addEventListener("click", () => { input.value = formatPacificInstant(new Date(Date.now() + hours * 3600000)); });
     shortcuts.append(button);
   });
   const submit = node("button", "primary-button", "Temporarily delegate work");
   submit.type = "submit";
-  form.addEventListener("submit", (event) => void createTemporaryDelegation(event, sourceSlug, agent.slug));
+  form.addEventListener("submit", (event) => void createTemporaryDelegation(event, sourceSlug, executorSlug));
   form.append(label, shortcuts, node("p", "delegation-owner-copy", "Permanent owner does not change. Delegated work is additional and only starts when this Agent has no owned work ready."), submit);
   section.append(form, error);
   return section;
@@ -3496,11 +3572,9 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       goalList.append(item);
     });
     const allWork = agentWorkFor(agent);
-    const delegatedSource = SOURCE_BY_OPENCLAW_PAIR[agent.slug];
-    const activeLease = delegatedSource ? activeDelegationForSource(delegatedSource) : null;
-    const delegatedWork = activeLease
-      ? state.agentTasks.filter((task) => task.owner?.slug === delegatedSource && task.status === "planned")
-      : [];
+    const delegatedWork = state.agentTasks.filter(
+      (task) => activeTemporaryExecution(task)?.executor_agent === agent.slug,
+    );
     const counts = agentStatusCounts(allWork);
     const work = allWork.filter((task) => task.status !== "proposed");
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
@@ -3545,7 +3619,9 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       delegatedSummary,
       renderAgentHandoffStatus(agent),
     );
-    if (agent.runtime === "openclaw") card.append(renderDelegationControls(agent));
+    if (agent.runtime === "openclaw" || OPENCLAW_PAIR_BY_SOURCE[agent.slug]) {
+      card.append(renderDelegationControls(agent));
+    }
     if (agent.chat_url) {
       const chat = node("a", "secondary-button", "Open Codex chat");
       chat.href = agent.chat_url;
@@ -6711,16 +6787,12 @@ function renderTaskHandoffTimeline(taskSlug) {
 }
 
 function renderTaskTemporaryExecutor(task) {
-  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
-  const lease = ownerSlug ? activeDelegationForSource(ownerSlug) : null;
-  const events = task ? taskHandoffEntry(task.slug).events : [];
-  const latestDelegated = events
-    .filter((event) => event.delegation_slug === lease?.slug && event.executor_agent === lease?.executor_agent)
-    .slice()
-    .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0))[0];
-  const terminal = new Set(["completed", "revoked", "expired", "terminal_delivery_failure", "dead_letter"]);
-  const executor = latestDelegated && !terminal.has(latestDelegated.execution_state)
-    ? state.agents.find((agent) => agent.slug === latestDelegated.executor_agent)
+  const projectedTask = state.agentTasks.find((item) => item.slug === task?.slug) || task;
+  const execution = activeTemporaryExecution(projectedTask);
+  const ownerSlug = projectedTask?.owner_agent || projectedTask?.owner?.slug || null;
+  const lease = execution ? activeDelegationForSource(ownerSlug) : null;
+  const executor = execution
+    ? state.agents.find((agent) => agent.slug === execution.executor_agent)
     : null;
   elements.taskTemporaryExecutor.classList.toggle("is-hidden", !executor);
   if (!executor) return;

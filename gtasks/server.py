@@ -863,6 +863,61 @@ def _handler_class(
             "receipt": receipt_value,
         }
 
+    def decorate_agent_work_execution(payload: dict[str, Any]) -> dict[str, Any]:
+        """Project only currently verified, non-terminal per-task claims."""
+        if handoff_store is None:
+            return payload
+        claim_reader = getattr(handoff_store, "get_execution_claim", None)
+        delegation_reader = getattr(adapter, "list_agent_delegations", None)
+        if not callable(claim_reader) or not callable(delegation_reader):
+            return payload
+        now = clock().astimezone(timezone.utc)
+        try:
+            leases = {
+                lease.slug: lease
+                for lease in delegation_reader()
+                if lease_state_at(lease, now) == DelegationState.ACTIVE
+            }
+        except (DomainValidationError, GBrainError, ValueError):
+            return payload
+        tasks: list[dict[str, Any]] = []
+        for raw_task in payload.get("tasks", []):
+            task = dict(raw_task) if isinstance(raw_task, dict) else raw_task
+            if not isinstance(task, dict):
+                tasks.append(task)
+                continue
+            slug = task.get("slug")
+            owner = task.get("owner")
+            permanent_owner = task.get("owner_agent") or (
+                owner.get("slug") if isinstance(owner, dict) else None
+            )
+            try:
+                claim = (
+                    claim_reader(slug, include_terminal=False)
+                    if isinstance(slug, str)
+                    else None
+                )
+            except (RuntimeError, ValueError):
+                claim = None
+            lease = leases.get(claim.delegation_slug) if claim is not None else None
+            if (
+                claim is not None
+                and lease is not None
+                and claim.expires_at > now
+                and claim.permanent_owner == permanent_owner
+                and claim.executor_agent == lease.executor_agent
+                and claim.permanent_owner == lease.source_agent
+            ):
+                task["temporary_execution"] = {
+                    "executor_agent": claim.executor_agent,
+                    "permanent_owner": claim.permanent_owner,
+                    "delegation_slug": claim.delegation_slug,
+                    "claimed_at": claim.claimed_at.isoformat(),
+                    "expires_at": claim.expires_at.isoformat(),
+                }
+            tasks.append(task)
+        return {**payload, "tasks": tasks}
+
     def refresh_handoff_execution_authority(
         record: object,
         *,
@@ -1593,7 +1648,9 @@ def _handler_class(
                 return
             if path == "/api/agent-work":
                 try:
-                    payload = adapter.list_agent_work().to_dict()
+                    payload = decorate_agent_work_execution(
+                        adapter.list_agent_work().to_dict()
+                    )
                 except GBrainError as exc:
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,

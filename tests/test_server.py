@@ -74,6 +74,8 @@ from gtasks.handoff_dispatcher import (
     ActionableChange,
     AgentRegistration,
     DurableHandoffStore,
+    EXECUTION_TERMINAL_STATES,
+    ExecutionClaim,
     HandoffDispatcher,
 )
 from gtasks.delegation import AgentDelegationLease, DelegationState
@@ -5476,6 +5478,133 @@ class AgentApiTests(unittest.TestCase):
         self.assertNotIn("session_key", encoded)
         self.assertNotIn("registration_id", encoded)
 
+    def test_agent_work_projects_only_verified_active_per_task_execution_claim(self) -> None:
+        now = datetime(2026, 7, 30, 16, 15, tzinfo=timezone.utc)
+        task_slug = "tasks/delegated-active-claim"
+        task = {
+            "slug": task_slug,
+            "title": "Prepare report",
+            "status": "planned",
+            "owner_agent": "agents/tammy",
+            "owner": {"slug": "agents/tammy", "name": "Tammy"},
+        }
+        lease = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=now - timedelta(minutes=15),
+            ends_at=now + timedelta(hours=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.ACTIVE,
+            created_at=now - timedelta(minutes=20),
+            updated_at=now - timedelta(minutes=20),
+        )
+        claim = ExecutionClaim(
+            task_slug=task_slug,
+            executor_agent="agents/tammy-oc",
+            permanent_owner="agents/tammy",
+            delegation_slug=lease.slug,
+            correlation_id="correlation-active-claim",
+            idempotency_key="delegated-active-claim",
+            claimed_at=now - timedelta(minutes=1),
+            expires_at=now + timedelta(minutes=30),
+        )
+
+        class ClaimStore:
+            def get_execution_claim(self, slug, *, include_terminal=False):
+                self.include_terminal = include_terminal
+                return claim if slug == task_slug else None
+
+        store = ClaimStore()
+        status, payload, _ = ServerHarness(
+            self,
+            FakeAdapter(agent_work=(task,), delegations=(lease,)),
+            handoff_store=store,
+            clock=lambda: now,
+        ).request("GET", "/api/agent-work")
+
+        self.assertEqual(status, 200)
+        self.assertFalse(store.include_terminal)
+        self.assertEqual(payload["tasks"][0]["temporary_execution"], {
+            "executor_agent": "agents/tammy-oc",
+            "permanent_owner": "agents/tammy",
+            "delegation_slug": lease.slug,
+            "claimed_at": claim.claimed_at.isoformat(),
+            "expires_at": claim.expires_at.isoformat(),
+        })
+
+    def test_agent_work_suppresses_unknown_and_every_central_terminal_claim_state(self) -> None:
+        now = datetime(2026, 7, 30, 16, 15, tzinfo=timezone.utc)
+        task = {
+            "slug": "tasks/no-active-claim",
+            "status": "planned",
+            "owner_agent": "agents/tammy",
+            "owner": {"slug": "agents/tammy"},
+        }
+
+        self.assertIn("checkpointed", EXECUTION_TERMINAL_STATES)
+        for terminal_state in (None, *sorted(EXECUTION_TERMINAL_STATES)):
+            with self.subTest(execution_state=terminal_state):
+                class NoClaimStore:
+                    def get_execution_claim(self, _slug, *, include_terminal=False):
+                        self.include_terminal = include_terminal
+                        self.observed_terminal_state = terminal_state
+                        # The central store excludes every terminal execution claim.
+                        return None
+
+                store = NoClaimStore()
+                status, payload, _ = ServerHarness(
+                    self,
+                    FakeAdapter(agent_work=(task,)),
+                    handoff_store=store,
+                    clock=lambda: now,
+                ).request("GET", "/api/agent-work")
+
+                self.assertEqual(status, 200)
+                self.assertFalse(store.include_terminal)
+                self.assertNotIn("temporary_execution", payload["tasks"][0])
+
+    def test_agent_work_suppresses_expired_or_mismatched_active_claim(self) -> None:
+        now = datetime(2026, 7, 30, 16, 15, tzinfo=timezone.utc)
+        task_slug = "tasks/unverified-claim"
+        task = {
+            "slug": task_slug,
+            "status": "planned",
+            "owner_agent": "agents/tammy",
+            "owner": {"slug": "agents/tammy"},
+        }
+        lease = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=now - timedelta(minutes=15),
+            ends_at=now + timedelta(hours=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.ACTIVE,
+            created_at=now - timedelta(minutes=20),
+            updated_at=now - timedelta(minutes=20),
+        )
+        for claim in (
+            ExecutionClaim(task_slug, "agents/tammy-oc", "agents/tammy", lease.slug, "correlation-expired", "expired", now - timedelta(hours=2), now - timedelta(seconds=1)),
+            ExecutionClaim(task_slug, "agents/tammy-oc", "agents/timmy", lease.slug, "correlation-owner", "owner", now - timedelta(minutes=1), now + timedelta(minutes=30)),
+        ):
+            with self.subTest(idempotency_key=claim.idempotency_key):
+                class ClaimStore:
+                    def get_execution_claim(self, _slug, *, include_terminal=False):
+                        return claim
+                status, payload, _ = ServerHarness(
+                    self,
+                    FakeAdapter(agent_work=(task,), delegations=(lease,)),
+                    handoff_store=ClaimStore(),
+                    clock=lambda: now,
+                ).request("GET", "/api/agent-work")
+                self.assertEqual(status, 200)
+                self.assertNotIn("temporary_execution", payload["tasks"][0])
+
 
 class ArtifactApiTests(unittest.TestCase):
 
@@ -6039,6 +6168,7 @@ class ProjectBrowserFixtureTests(unittest.TestCase):
                 return response.status, payload
 
             task_status, tasks = read("/api/tasks")
+            agents_status, agents = read("/api/agents")
             work_status, agent_work = read("/api/agent-work")
             release_status, releases = read("/api/releases")
             calendar_status, calendars = read("/api/ical-calendars")
@@ -6051,6 +6181,22 @@ class ProjectBrowserFixtureTests(unittest.TestCase):
             )
 
             self.assertEqual(task_status, 200)
+            self.assertEqual(agents_status, 200)
+            self.assertEqual(
+                [agent["name"] for agent in agents["agents"]],
+                ["Tammy", "Timmy", "Toddy", "Tammy-OC", "Timmy-OC", "Toddy-OC"],
+            )
+            self.assertEqual(
+                [agent["runtime"] for agent in agents["agents"]],
+                ["codex", "codex", "codex", "openclaw", "openclaw", "openclaw"],
+            )
+            self.assertTrue(
+                all(
+                    not agent["default_goal_slugs"]
+                    for agent in agents["agents"]
+                    if agent["runtime"] == "openclaw"
+                )
+            )
             self.assertEqual(work_status, 200)
             self.assertEqual(release_status, 200)
             self.assertIn("current_version", releases)
@@ -6121,6 +6267,194 @@ class ProjectBrowserFixtureTests(unittest.TestCase):
                 "correlation-redacted-display",
                 {event["correlation_id"] for event in all_events["events"]},
             )
+
+    def test_fixture_delegation_scenarios_are_isolated_and_deterministic(self) -> None:
+        from tests.project_browser_fixture import build_fixture_server
+
+        expected = {
+            "inactive": (0, False),
+            "active": (1, True),
+            "expired": (1, False),
+            "unknown": (1, False),
+            "mismatched": (1, False),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outside = root / "outside-sentinel.txt"
+            outside.write_text("unchanged\n", encoding="utf-8")
+            for scenario, (lease_count, has_executor) in expected.items():
+                with self.subTest(scenario=scenario):
+                    server, adapter = build_fixture_server(
+                        root / scenario,
+                        port=0,
+                        delegation_scenario=scenario,
+                    )
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", server.server_address[1], timeout=3
+                        )
+                        connection.request("GET", "/api/agent-delegations")
+                        response = connection.getresponse()
+                        leases = json.loads(response.read().decode("utf-8"))
+                        connection.close()
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", server.server_address[1], timeout=3
+                        )
+                        connection.request("GET", "/api/agent-work")
+                        response = connection.getresponse()
+                        work = json.loads(response.read().decode("utf-8"))
+                        connection.close()
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", server.server_address[1], timeout=3
+                        )
+                        connection.request("GET", "/api/qa-fixture-status")
+                        response = connection.getresponse()
+                        fixture_status = json.loads(response.read().decode("utf-8"))
+                        connection.close()
+                    finally:
+                        server.shutdown()
+                        server.server_close()
+                    self.assertEqual(len(leases["delegations"]), lease_count)
+                    self.assertEqual(
+                        "temporary_execution" in work["tasks"][0], has_executor
+                    )
+                    self.assertEqual(adapter.external_mutation_count, 0)
+                    self.assertEqual(fixture_status, {
+                        "fixture_only": True,
+                        "scenario": scenario,
+                        "in_memory_mutation_count": 0,
+                        "external_mutation_count": 0,
+                        "connections": {
+                            "gbrain_writer": False,
+                            "nats": False,
+                            "openclaw": False,
+                            "wake": False,
+                        },
+                    })
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged\n")
+
+    def test_fixture_delegation_mutations_return_verified_receipts_without_external_writes(self) -> None:
+        from tests.project_browser_fixture import build_fixture_server
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "fixture-runtime"
+            server, adapter = build_fixture_server(
+                runtime,
+                port=0,
+                delegation_scenario="inactive",
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            def request(method: str, path: str, payload: dict) -> tuple[int, dict]:
+                body = json.dumps(payload).encode("utf-8")
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_address[1], timeout=3
+                )
+                connection.request(
+                    method,
+                    path,
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                decoded = json.loads(response.read().decode("utf-8"))
+                connection.close()
+                return response.status, decoded
+
+            self.assertIsNotNone(adapter.fixture_now)
+            starts_at = (adapter.fixture_now - timedelta(minutes=5)).isoformat()
+            ends_at = (adapter.fixture_now + timedelta(hours=1)).isoformat()
+            create_status, created = request("POST", "/api/agent-delegations", {
+                "source_agent": "agents/tammy",
+                "executor_agent": "agents/tammy-oc",
+                "starts_at": starts_at,
+                "ends_at": ends_at,
+                "display_timezone": "America/Los_Angeles",
+                "allowed_operations": ["task_status", "todo", "comment", "artifact"],
+            })
+            self.assertEqual(create_status, 201)
+            self.assertTrue(created["receipt"]["verified"])
+            slug = created["lease"]["slug"]
+            encoded_slug = slug.replace("/", "%2F")
+            version = created["lease"]["updated_at"]
+
+            extend_status, extended = request(
+                "PATCH",
+                f"/api/agent-delegations/{encoded_slug}",
+                {
+                    "ends_at": (adapter.fixture_now + timedelta(hours=2)).isoformat(),
+                    "expected_version": version,
+                },
+            )
+            self.assertEqual(extend_status, 200)
+            self.assertTrue(extended["receipt"]["verified"])
+            version = extended["lease"]["updated_at"]
+
+            end_status, ended = request(
+                "PATCH",
+                f"/api/agent-delegations/{encoded_slug}",
+                {"action": "complete", "expected_version": version},
+            )
+            self.assertEqual(end_status, 200)
+            self.assertTrue(ended["receipt"]["verified"])
+            self.assertEqual(ended["lease"]["state"], "completed")
+
+            self.assertEqual(adapter.external_mutation_count, 0)
+            self.assertEqual(
+                [entry["operation"] for entry in adapter.synthetic_mutation_log],
+                ["create", "extend", "complete"],
+            )
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.server_address[1], timeout=3
+            )
+            connection.request("GET", "/api/qa-fixture-status")
+            response = connection.getresponse()
+            fixture_status = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(fixture_status["in_memory_mutation_count"], 3)
+            self.assertEqual(fixture_status["external_mutation_count"], 0)
+            self.assertFalse(any(fixture_status["connections"].values()))
+
+            revoke_server, revoke_adapter = build_fixture_server(
+                Path(temporary) / "revoke-runtime",
+                port=0,
+                delegation_scenario="active",
+            )
+            revoke_thread = threading.Thread(
+                target=revoke_server.serve_forever, daemon=True
+            )
+            revoke_thread.start()
+            try:
+                lease = revoke_adapter.delegations[0]
+                encoded_lease_slug = lease.slug.replace("/", "%2F")
+                body = json.dumps({
+                    "action": "revoke",
+                    "expected_version": lease.updated_at.isoformat(),
+                }).encode("utf-8")
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", revoke_server.server_address[1], timeout=3
+                )
+                connection.request(
+                    "PATCH",
+                    f"/api/agent-delegations/{encoded_lease_slug}",
+                    body=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                revoked = json.loads(response.read().decode("utf-8"))
+                connection.close()
+            finally:
+                revoke_server.shutdown()
+                revoke_server.server_close()
+            self.assertEqual(response.status, 200)
+            self.assertTrue(revoked["receipt"]["verified"])
+            self.assertEqual(revoked["lease"]["state"], "revoked")
+            self.assertEqual(revoke_adapter.external_mutation_count, 0)
 
 
 class SystemTicketApiTests(unittest.TestCase):
