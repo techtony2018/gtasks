@@ -39,6 +39,9 @@ against one reachable Mission Control origin through authenticated,
 no-side-effect `POST /api/handoffs/preflight` requests. For a pair running on
 the Mission Control host, use `http://127.0.0.1:4179`; a successful health
 `GET` alone is insufficient.
+The paired LaunchAgent PATH includes the verified OpenClaw launcher directory
+so an installed `#!/usr/bin/env node` launcher resolves Node under launchd's
+otherwise minimal environment; the resolved runtime executable remains exact.
 
 Private state belongs under:
 

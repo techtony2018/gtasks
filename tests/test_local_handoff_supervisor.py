@@ -629,6 +629,24 @@ class SupervisorInstallerTests(SupervisorFixture):
         path.chmod(0o755)
         return path
 
+    def test_command_parent_preserves_launcher_directory_before_symlink_resolution(self) -> None:
+        target = self.root / "lib" / "openclaw.mjs"
+        target.parent.mkdir(parents=True)
+        target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        target.chmod(0o755)
+        launcher = self.root / "launcher-bin" / "openclaw"
+        launcher.parent.mkdir()
+        launcher.symlink_to(target)
+
+        self.assertEqual(
+            self.installer._resolve_command_parent(str(launcher)),
+            launcher.parent.resolve(),
+        )
+        self.assertEqual(
+            self.installer._resolve_executable(str(launcher)),
+            str(target.resolve()),
+        )
+
     def expected_arguments(self) -> list[str]:
         return [
             self.python_path,
@@ -653,6 +671,22 @@ class SupervisorInstallerTests(SupervisorFixture):
         rendered_arguments = "\n".join(
             f"\t\t{value}" for value in (arguments or self.expected_arguments())
         )
+        runtime_path = ""
+        if (label or self.installer.DEFAULT_LABEL) == self.installer.DEFAULT_LABEL:
+            runtime_path = (
+                "\t\tPATH => "
+                + os.pathsep.join(
+                    (
+                        str(self.openclaw.parent.resolve()),
+                        "/usr/local/bin",
+                        "/usr/bin",
+                        "/bin",
+                        "/usr/sbin",
+                        "/sbin",
+                    )
+                )
+                + "\n"
+            )
         return (
             "service = {\n"
             "\targuments = {\n"
@@ -661,6 +695,7 @@ class SupervisorInstallerTests(SupervisorFixture):
             f"\tworking directory = {ROOT.resolve()}\n"
             "\tenvironment = {\n"
             f"\t\tXPC_SERVICE_NAME => {label or self.installer.DEFAULT_LABEL}\n"
+            f"{runtime_path}"
             f"\t\tPYTHONPATH => {ROOT.resolve()}\n"
             "\t}\n"
             "}\n"
@@ -1868,7 +1903,17 @@ class SupervisorInstallerTests(SupervisorFixture):
         parsed_plist = plistlib.loads(self.paths.plist.read_bytes())
         self.assertEqual(parsed_plist["ProgramArguments"], self.expected_arguments())
         self.assertEqual(parsed_plist["EnvironmentVariables"], {
-            "PYTHONPATH": str(ROOT.resolve())
+            "PYTHONPATH": str(ROOT.resolve()),
+            "PATH": os.pathsep.join(
+                (
+                    str(self.openclaw.parent.resolve()),
+                    "/usr/local/bin",
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/sbin",
+                    "/sbin",
+                )
+            ),
         })
         self.assertEqual(rendered_plist.count("<key>Label</key>"), 1)
         for secret in (

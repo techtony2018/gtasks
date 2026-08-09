@@ -195,6 +195,20 @@ def _resolve_executable(value: str) -> str:
     return str(Path(discovered).resolve())
 
 
+def _resolve_command_parent(value: str) -> Path:
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        launcher = candidate.absolute()
+    else:
+        discovered = shutil.which(value)
+        if discovered is None:
+            raise ValueError("executable could not be resolved to an absolute path")
+        launcher = Path(discovered).absolute()
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise ValueError("executable launcher must exist and be executable")
+    return launcher.parent.resolve()
+
+
 def _atomic_write(path: Path, content: bytes, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -262,12 +276,17 @@ def _loaded_contract_matches(
     expected_arguments: list[str],
     expected_working_directory: str,
     expected_module_root: str,
+    expected_runtime_path: str | None = None,
 ) -> bool:
     arguments, working_directory, environment = _parse_launchctl_contract(output)
     return (
         arguments == expected_arguments
         and working_directory == expected_working_directory
         and environment.get("PYTHONPATH") == expected_module_root
+        and (
+            expected_runtime_path is None
+            or environment.get("PATH") == expected_runtime_path
+        )
     )
 
 
@@ -277,12 +296,16 @@ def _expected_supervisor_plist(
     arguments: list[str],
     working_directory: str,
     module_root: str,
+    runtime_path: str | None = None,
 ) -> dict[str, object]:
+    environment = {"PYTHONPATH": module_root}
+    if runtime_path is not None:
+        environment["PATH"] = runtime_path
     return {
         "Label": label,
         "ProgramArguments": arguments,
         "WorkingDirectory": working_directory,
-        "EnvironmentVariables": {"PYTHONPATH": module_root},
+        "EnvironmentVariables": environment,
         "RunAtLoad": True,
         "KeepAlive": True,
         "ProcessType": "Background",
@@ -920,6 +943,7 @@ def _snapshot_loaded_contract_matches(
         expected_arguments=arguments,
         expected_working_directory=working_directory,
         expected_module_root=environment["PYTHONPATH"],
+        expected_runtime_path=environment.get("PATH"),
     )
 
 
@@ -1250,9 +1274,16 @@ def _validate_recovery_record(
             or not isinstance(working_directory, str)
             or arguments[10] != working_directory
             or not isinstance(environment, dict)
-            or set(environment) != {"PYTHONPATH"}
+            or set(environment) not in ({"PYTHONPATH"}, {"PYTHONPATH", "PATH"})
             or not isinstance(environment.get("PYTHONPATH"), str)
             or not Path(environment["PYTHONPATH"]).is_absolute()
+            or (
+                "PATH" in environment
+                and (
+                    not isinstance(environment["PATH"], str)
+                    or not environment["PATH"]
+                )
+            )
         ):
             raise ValueError("supervisor recovery plist contract is invalid")
     if record.supervisor.loaded and not all(
@@ -1383,7 +1414,20 @@ def install(
     if Path(resolved_python) == Path("/usr/bin/python3"):
         raise ValueError("installer must not use /usr/bin/python3")
     resolved_codex = _resolve_executable(codex_path)
+    openclaw_command_parent = _resolve_command_parent(openclaw_path)
     resolved_openclaw = _resolve_executable(openclaw_path)
+    runtime_path = os.pathsep.join(
+        dict.fromkeys(
+            (
+                str(openclaw_command_parent),
+                "/usr/local/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            )
+        )
+    )
     resolved_module_root = Path(module_root).resolve()
     resolved_runner = Path(runner_path).resolve()
     expected_runner = resolved_module_root / "gtasks" / "local_handoff_supervisor.py"
@@ -1558,6 +1602,7 @@ def install(
             "OPENCLAW_PATH": resolved_openclaw,
             "WORKING_DIRECTORY": str(resolved_working_directory),
             "MODULE_ROOT": str(resolved_module_root),
+            "RUNTIME_PATH": runtime_path,
         },
     )
     plist_bytes = plist_text.encode("utf-8")
@@ -1566,6 +1611,7 @@ def install(
         arguments=expected_arguments,
         working_directory=str(resolved_working_directory),
         module_root=str(resolved_module_root),
+        runtime_path=runtime_path,
     )
     _parse_exact_plist(
         plist_bytes,
@@ -1597,14 +1643,29 @@ def install(
         for name, path in _canonical_file_paths(paths).items()
     }
     prior_supervisor_plist = prior_files["plist"]
+    prior_supervisor_runtime_path: str | None = runtime_path
     if prior_supervisor_plist.exists:
         if prior_supervisor_plist.content is None:
             raise ValueError("existing canonical supervisor plist is invalid")
-        _parse_exact_plist(
-            prior_supervisor_plist.content,
-            expected=expected_plist,
-            description="existing canonical supervisor plist",
+        previous_plist = _expected_supervisor_plist(
+            label=label,
+            arguments=expected_arguments,
+            working_directory=str(resolved_working_directory),
+            module_root=str(resolved_module_root),
         )
+        try:
+            _parse_exact_plist(
+                prior_supervisor_plist.content,
+                expected=expected_plist,
+                description="existing canonical supervisor plist",
+            )
+        except ValueError:
+            _parse_exact_plist(
+                prior_supervisor_plist.content,
+                expected=previous_plist,
+                description="existing canonical supervisor plist",
+            )
+            prior_supervisor_runtime_path = None
 
     disabled_readback = _run_launchctl(
         run,
@@ -1640,6 +1701,7 @@ def install(
         expected_arguments=expected_arguments,
         expected_working_directory=str(resolved_working_directory),
         expected_module_root=str(resolved_module_root),
+        expected_runtime_path=prior_supervisor_runtime_path,
     ):
         raise ValueError("loaded supervisor does not match the exact canonical contract")
     supervisor = LaunchLabelSnapshot(
@@ -1812,6 +1874,7 @@ def install(
             expected_arguments=expected_arguments,
             expected_working_directory=str(resolved_working_directory),
             expected_module_root=str(resolved_module_root),
+            expected_runtime_path=runtime_path,
         ):
             raise RuntimeError("supervisor LaunchAgent readback failed")
         legacy_final = _loaded_readback(

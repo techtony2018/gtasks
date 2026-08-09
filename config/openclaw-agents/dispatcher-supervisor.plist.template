@@ -22,6 +22,8 @@
   <string>__WORKING_DIRECTORY__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>PATH</key>
+    <string>__RUNTIME_PATH__</string>
     <key>PYTHONPATH</key>
     <string>__MODULE_ROOT__</string>
   </dict>
