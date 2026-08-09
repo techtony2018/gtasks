@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -23,6 +24,8 @@ from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from .handoff_launch_runner import GatedLaunchController, LaunchObservation, LaunchRequest
 
 
 CONFIG_KEYS = frozenset(
@@ -79,20 +82,32 @@ RECOVERY_RECONCILIATION_KEYS = frozenset(
 WAKE_AUTHORIZATION_KEYS = frozenset(
     {"handoff_id", "status", "wake_authorized"}
 )
-EXECUTION_AUTHORITY_KEYS = frozenset(
-    {"handoff_id", "status", "execution_authorized"}
+EXECUTION_START_KEYS = frozenset(
+    {"handoff_id", "status", "launch_id", "launch_grant", "execution_started"}
+)
+EXECUTION_CHECKPOINT_KEYS = frozenset(
+    {"handoff_id", "status", "launch_id", "checkpointed"}
 )
 LEGACY_CODEX_AGENTS = frozenset(
     {"agents/tammy", "agents/timmy", "agents/toddy"}
 )
 RECOVERABLE_STATES = frozenset(
-    {"leased", "received", "actively_executing", "still_blocked"}
+    {"leased", "received", "execution_started", "actively_executing", "still_blocked"}
 )
 RECONCILED_CLEAR_STATES = frozenset(
     {"queued", "retrying", "suppressed", "completed", "dead_letter"}
 )
 ACKNOWLEDGEMENT_STATES = frozenset(
     {"received", "actively_executing", "still_blocked", "completed"}
+)
+INBOX_LAUNCH_STATES = frozenset(
+    {
+        "launch_preparing",
+        "launch_spawned",
+        "launch_ready",
+        "start_granted",
+        "executing",
+    }
 )
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
 _AGENT_SLUG = re.compile(r"agents/[a-z0-9][a-z0-9._-]{0,63}")
@@ -132,6 +147,12 @@ def _require_identifier(value: object, field: str) -> str:
 def _mutation_id(handoff_id: str, operation: str) -> str:
     digest = hashlib.sha256(f"{handoff_id}\0{operation}".encode("utf-8")).hexdigest()
     return f"local/{digest}"
+
+
+def _require_positive_pid(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("launch ready PID must be positive")
+    return value
 
 
 def _normalize_claim_shape(claim: Mapping[str, object]) -> dict[str, object]:
@@ -571,10 +592,19 @@ class WakeInboxItem:
     claim: dict[str, object]
     last_error: str | None
     retry_at: datetime | None
+    current_launch_id: str | None
+    launch_pid: int | None
+    launch_grant_ref: str | None
+    pending_server_action: str | None
+    pending_action_reason: str | None
 
     @property
     def retryable(self) -> bool:
-        return self.state == "failed" and self.attempt < self.max_attempts
+        return (
+            self.state == "failed"
+            and self.attempt < self.max_attempts
+            and self.pending_server_action is None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,7 +653,44 @@ class PrivateWakeInbox:
                 retry_at TEXT,
                 last_error TEXT,
                 worker_claim_ref TEXT,
-                worker_claim_until TEXT
+                worker_claim_until TEXT,
+                current_launch_id TEXT,
+                launch_pid INTEGER,
+                launch_grant_ref TEXT,
+                pending_server_action TEXT,
+                pending_action_reason TEXT
+            )
+            """
+        )
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(wake_inbox)").fetchall()
+        }
+        for name, declaration in (
+            ("current_launch_id", "TEXT"),
+            ("launch_pid", "INTEGER"),
+            ("launch_grant_ref", "TEXT"),
+            ("pending_server_action", "TEXT"),
+            ("pending_action_reason", "TEXT"),
+        ):
+            if name not in columns:
+                self._connection.execute(
+                    f"ALTER TABLE wake_inbox ADD COLUMN {name} {declaration}"
+                )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wake_launches (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                launch_id TEXT NOT NULL,
+                handoff_id TEXT NOT NULL,
+                attempt INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                pid INTEGER,
+                grant_ref TEXT,
+                detail TEXT,
+                occurred_at TEXT NOT NULL,
+                UNIQUE (launch_id, state),
+                FOREIGN KEY (handoff_id) REFERENCES wake_inbox(handoff_id)
             )
             """
         )
@@ -661,6 +728,11 @@ class PrivateWakeInbox:
                 if row["retry_at"] is not None
                 else None
             ),
+            current_launch_id=row["current_launch_id"],
+            launch_pid=row["launch_pid"],
+            launch_grant_ref=row["launch_grant_ref"],
+            pending_server_action=row["pending_server_action"],
+            pending_action_reason=row["pending_action_reason"],
         )
 
     def _row(self, handoff_id: str) -> sqlite3.Row:
@@ -863,7 +935,11 @@ class PrivateWakeInbox:
                 """
                 UPDATE wake_inbox SET worker_claim_ref = NULL,
                     worker_claim_until = NULL
-                WHERE state IN ('pending', 'failed')
+                WHERE state IN (
+                        'pending', 'failed', 'launch_preparing', 'launch_spawned',
+                        'launch_ready', 'start_granted', 'executing',
+                        'recovery_required'
+                    )
                     AND worker_claim_until IS NOT NULL AND worker_claim_until <= ?
                 """,
                 (timestamp,),
@@ -871,10 +947,18 @@ class PrivateWakeInbox:
             row = self._connection.execute(
                 """
                 SELECT * FROM wake_inbox
-                WHERE (state = 'pending' OR (
-                        state = 'failed' AND attempt < max_attempts
-                        AND (retry_at IS NULL OR retry_at <= ?)
-                    ))
+                WHERE (
+                        pending_server_action IS NOT NULL
+                        OR state IN (
+                            'launch_preparing', 'launch_spawned', 'launch_ready',
+                            'start_granted', 'executing'
+                        )
+                        OR state = 'pending'
+                        OR (
+                            state = 'failed' AND attempt < max_attempts
+                            AND (retry_at IS NULL OR retry_at <= ?)
+                        )
+                    )
                     AND worker_claim_ref IS NULL
                 ORDER BY accepted_at, handoff_id LIMIT 1
                 """,
@@ -910,65 +994,352 @@ class PrivateWakeInbox:
             UPDATE wake_inbox SET worker_claim_ref = NULL,
                 worker_claim_until = NULL, updated_at = ?
             WHERE handoff_id = ? AND worker_claim_ref = ?
-                AND state IN ('pending', 'failed')
+                AND state IN (
+                    'pending', 'failed', 'launch_preparing', 'launch_spawned',
+                    'launch_ready', 'start_granted', 'executing',
+                    'recovery_required'
+                )
             """,
             (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
         )
 
-    def begin_execution(
+    def _append_launch_event(
+        self,
+        *,
+        handoff_id: str,
+        launch_id: str,
+        attempt: int,
+        state: str,
+        now: datetime,
+        pid: int | None = None,
+        grant_ref: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO wake_launches (
+                launch_id, handoff_id, attempt, state, pid, grant_ref, detail,
+                occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                launch_id,
+                handoff_id,
+                attempt,
+                state,
+                pid,
+                grant_ref,
+                " ".join(detail.split())[:160] if detail else None,
+                self._timestamp(now),
+            ),
+        )
+
+    def launch_events(self, handoff_id: str) -> tuple[dict[str, object], ...]:
+        handoff_id = _require_identifier(handoff_id, "handoff_id")
+        rows = self._connection.execute(
+            """
+            SELECT launch_id, handoff_id, attempt, state, pid, grant_ref, detail,
+                occurred_at
+            FROM wake_launches WHERE handoff_id = ? ORDER BY sequence
+            """,
+            (handoff_id,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    @staticmethod
+    def launch_id_for(claim: WakeInboxClaim) -> str:
+        attempt = claim.item.attempt + 1
+        execution_key = _require_identifier(
+            claim.item.claim.get("idempotency_key"), "idempotency_key"
+        )
+        digest = hashlib.sha256(
+            f"{execution_key}\0launch-attempt\0{attempt}".encode("utf-8")
+        ).hexdigest()
+        return f"launch/{digest}"
+
+    def prepare_launch(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        launch_id: str,
+        now: datetime,
+    ) -> WakeInboxItem:
+        launch_id = _require_identifier(launch_id, "launch_id")
+        timestamp = self._timestamp(now)
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            worker_ref = self._worker_ref(claim)
+            if (
+                row["worker_claim_ref"] != worker_ref
+                or row["state"] not in {"pending", "failed"}
+                or row["attempt"] >= row["max_attempts"]
+            ):
+                raise ValueError("launch preparation requires a retryable worker claim")
+            changed = self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = 'launch_preparing',
+                    attempt = attempt + 1, current_launch_id = ?, launch_pid = NULL,
+                    launch_grant_ref = NULL, retry_at = NULL, last_error = NULL,
+                    updated_at = ?
+                WHERE handoff_id = ? AND worker_claim_ref = ?
+                    AND state IN ('pending', 'failed') AND attempt < max_attempts
+                """,
+                (launch_id, timestamp, claim.item.handoff_id, worker_ref),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("launch preparation lost its worker claim")
+            current = self._row(claim.item.handoff_id)
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=launch_id,
+                attempt=current["attempt"],
+                state="preparing",
+                now=now,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def _advance_launch(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        from_states: tuple[str, ...],
+        state: str,
+        event_state: str,
+        now: datetime,
+        pid: int | None = None,
+        grant_ref: str | None = None,
+    ) -> WakeInboxItem:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if row["worker_claim_ref"] != self._worker_ref(claim):
+                raise ValueError("launch transition requires the active worker claim")
+            if row["current_launch_id"] is None:
+                raise ValueError("launch transition requires one current launch")
+            if row["state"] not in from_states and row["state"] != state:
+                raise ValueError("launch transition does not match its current state")
+            assignments = ["state = ?", "updated_at = ?"]
+            parameters: list[object] = [state, self._timestamp(now)]
+            if pid is not None:
+                if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+                    raise ValueError("launch PID must be positive")
+                assignments.append("launch_pid = ?")
+                parameters.append(pid)
+            if grant_ref is not None:
+                assignments.append("launch_grant_ref = ?")
+                parameters.append(grant_ref)
+            parameters.extend((claim.item.handoff_id, self._worker_ref(claim)))
+            changed = self._connection.execute(
+                f"""
+                UPDATE wake_inbox SET {', '.join(assignments)}
+                WHERE handoff_id = ? AND worker_claim_ref = ?
+                """,
+                parameters,
+            ).rowcount
+            if changed != 1:
+                raise ValueError("launch transition lost its worker claim")
+            current = self._row(claim.item.handoff_id)
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=current["current_launch_id"],
+                attempt=current["attempt"],
+                state=event_state,
+                now=now,
+                pid=pid if pid is not None else current["launch_pid"],
+                grant_ref=grant_ref,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def record_spawned(
+        self, claim: WakeInboxClaim, *, pid: int, now: datetime
+    ) -> WakeInboxItem:
+        return self._advance_launch(
+            claim,
+            from_states=("launch_preparing",),
+            state="launch_spawned",
+            event_state="spawned",
+            pid=pid,
+            now=now,
+        )
+
+    def record_ready(
+        self, claim: WakeInboxClaim, *, pid: int, now: datetime
+    ) -> WakeInboxItem:
+        return self._advance_launch(
+            claim,
+            from_states=("launch_preparing", "launch_spawned"),
+            state="launch_ready",
+            event_state="ready",
+            pid=pid,
+            now=now,
+        )
+
+    def record_start_grant(
+        self, claim: WakeInboxClaim, *, launch_grant: str, now: datetime
+    ) -> WakeInboxItem:
+        launch_grant = _require_identifier(launch_grant, "launch_grant")
+        return self._advance_launch(
+            claim,
+            from_states=("launch_ready",),
+            state="start_granted",
+            event_state="grant_received",
+            grant_ref=hashlib.sha256(launch_grant.encode("utf-8")).hexdigest(),
+            now=now,
+        )
+
+    def record_gate_open(
         self, claim: WakeInboxClaim, *, now: datetime
     ) -> WakeInboxItem:
-        changed = self._connection.execute(
-            """
-            UPDATE wake_inbox SET state = 'executing', attempt = attempt + 1,
-                retry_at = NULL, last_error = NULL, updated_at = ?
-            WHERE handoff_id = ? AND worker_claim_ref = ?
-                AND state IN ('pending', 'failed') AND attempt < max_attempts
-            """,
-            (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
-        ).rowcount
-        if changed != 1:
-            raise ValueError("inbox execution requires the active worker claim")
-        return self.get(claim.item.handoff_id)
+        return self._advance_launch(
+            claim,
+            from_states=("start_granted", "launch_ready"),
+            state="executing",
+            event_state="gate_open",
+            now=now,
+        )
 
-    def mark_completed(self, claim: WakeInboxClaim, *, now: datetime) -> WakeInboxItem:
-        changed = self._connection.execute(
+    def record_completed(
+        self, claim: WakeInboxClaim, *, now: datetime
+    ) -> WakeInboxItem:
+        current = self._advance_launch(
+            claim,
+            from_states=("executing",),
+            state="completed",
+            event_state="completed",
+            now=now,
+        )
+        self._connection.execute(
             """
-            UPDATE wake_inbox SET state = 'completed', updated_at = ?,
-                worker_claim_ref = NULL, worker_claim_until = NULL
-            WHERE handoff_id = ? AND worker_claim_ref = ? AND state = 'executing'
+            UPDATE wake_inbox SET worker_claim_ref = NULL,
+                worker_claim_until = NULL WHERE handoff_id = ?
             """,
-            (self._timestamp(now), claim.item.handoff_id, self._worker_ref(claim)),
-        ).rowcount
-        if changed != 1 and self.get(claim.item.handoff_id).state != "completed":
-            raise ValueError("completed inbox item does not match its execution claim")
-        return self.get(claim.item.handoff_id)
+            (claim.item.handoff_id,),
+        )
+        return self.get(current.handoff_id)
 
-    def mark_failed(
+    def record_prelaunch_failure(
         self,
         claim: WakeInboxClaim,
         *,
         error: str,
         retry_at: datetime,
         now: datetime,
+        terminal: bool = False,
     ) -> WakeInboxItem:
-        error = " ".join(str(error).split())[:160]
-        changed = self._connection.execute(
+        error = " ".join(str(error).split())[:160] or "prelaunch_failure"
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if (
+                row["worker_claim_ref"] != self._worker_ref(claim)
+                or row["state"] not in INBOX_LAUNCH_STATES
+                or row["current_launch_id"] is None
+            ):
+                raise ValueError("pre-launch failure requires the current launch claim")
+            exhausted = terminal or row["attempt"] >= row["max_attempts"]
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = 'failed', last_error = ?, retry_at = ?,
+                    pending_server_action = ?, pending_action_reason = ?,
+                    updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL,
+                    attempt = CASE WHEN ? THEN max_attempts ELSE attempt END
+                WHERE handoff_id = ?
+                """,
+                (
+                    error,
+                    None if exhausted else self._timestamp(retry_at),
+                    "terminal_failure" if exhausted else None,
+                    error if exhausted else None,
+                    self._timestamp(now),
+                    1 if terminal else 0,
+                    claim.item.handoff_id,
+                ),
+            )
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=row["current_launch_id"],
+                attempt=row["max_attempts"] if terminal else row["attempt"],
+                state="pre_launch_failed",
+                now=now,
+                pid=row["launch_pid"],
+                detail=error,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def record_recovery_required(
+        self, claim: WakeInboxClaim, *, reason: str, now: datetime
+    ) -> WakeInboxItem:
+        reason = " ".join(str(reason).split())[:160] or "ambiguous_launch_outcome"
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if (
+                row["worker_claim_ref"] != self._worker_ref(claim)
+                or row["state"] not in {"start_granted", "executing", "launch_ready"}
+                or row["current_launch_id"] is None
+            ):
+                raise ValueError("recovery-required outcome requires one started launch")
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = 'recovery_required', last_error = ?,
+                    pending_server_action = 'checkpoint', pending_action_reason = ?,
+                    retry_at = NULL, updated_at = ?, worker_claim_ref = NULL,
+                    worker_claim_until = NULL WHERE handoff_id = ?
+                """,
+                (reason, reason, self._timestamp(now), claim.item.handoff_id),
+            )
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=row["current_launch_id"],
+                attempt=row["attempt"],
+                state="ambiguous",
+                now=now,
+                pid=row["launch_pid"],
+                grant_ref=row["launch_grant_ref"],
+                detail=reason,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def complete_server_action(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        action: str,
+        response: Mapping[str, object],
+        now: datetime,
+    ) -> WakeInboxItem:
+        row = self._row(claim.item.handoff_id)
+        if row["pending_server_action"] != action:
+            raise ValueError("server action does not match the pending inbox action")
+        expected = "suppressed" if action == "checkpoint" else "dead_letter"
+        if response.get("status") != expected:
+            raise ValueError("server action response did not terminalize the handoff")
+        self._connection.execute(
             """
-            UPDATE wake_inbox SET state = 'failed', last_error = ?, retry_at = ?,
-                updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL
-            WHERE handoff_id = ? AND worker_claim_ref = ? AND state = 'executing'
+            UPDATE wake_inbox SET pending_server_action = NULL,
+                pending_action_reason = NULL, updated_at = ?,
+                worker_claim_ref = NULL, worker_claim_until = NULL
+            WHERE handoff_id = ?
             """,
-            (
-                error,
-                self._timestamp(retry_at),
-                self._timestamp(now),
-                claim.item.handoff_id,
-                self._worker_ref(claim),
-            ),
-        ).rowcount
-        if changed != 1:
-            raise ValueError("failed inbox item does not match its execution claim")
+            (self._timestamp(now), claim.item.handoff_id),
+        )
         return self.get(claim.item.handoff_id)
 
     def mark_suppressed(
@@ -979,7 +1350,10 @@ class PrivateWakeInbox:
             UPDATE wake_inbox SET state = 'suppressed', last_error = ?,
                 updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL
             WHERE handoff_id = ? AND worker_claim_ref = ?
-                AND state IN ('pending', 'failed')
+                AND state IN (
+                    'pending', 'failed', 'launch_preparing', 'launch_spawned',
+                    'launch_ready', 'start_granted'
+                )
             """,
             (
                 " ".join(reason.split())[:160],
@@ -994,7 +1368,7 @@ class PrivateWakeInbox:
 
 
 class WakeInboxWorker:
-    """Authority-check and execute at most one durable target inbox item."""
+    """Advance at most one inbox item through the durable gated handshake."""
 
     def __init__(
         self,
@@ -1003,6 +1377,8 @@ class WakeInboxWorker:
         inbox: PrivateWakeInbox,
         *,
         retry_delay_seconds: float = 1,
+        launch_controller: GatedLaunchController | None = None,
+        phase_hook: Callable[[str], None] = lambda _phase: None,
     ) -> None:
         if retry_delay_seconds < 0:
             raise ValueError("retry_delay_seconds must not be negative")
@@ -1010,54 +1386,247 @@ class WakeInboxWorker:
         self.adapter = adapter
         self.inbox = inbox
         self.retry_delay_seconds = retry_delay_seconds
+        if launch_controller is None:
+            if inbox.path is None:
+                raise ValueError("an in-memory inbox requires an explicit launch controller")
+            launch_controller = GatedLaunchController(
+                inbox.path.with_name(f"{inbox.path.stem}.launches")
+            )
+        self.launch_controller = launch_controller
+        self.phase_hook = phase_hook
+
+    def _deliver_pending_action(
+        self, claimed: WakeInboxClaim, *, now: datetime
+    ) -> WakeInboxItem | None:
+        item = self.inbox.get(claimed.item.handoff_id)
+        action = item.pending_server_action
+        if action is None:
+            return item
+        launch_id = _require_identifier(item.current_launch_id, "launch_id")
+        reason = item.pending_action_reason or item.last_error or "launch recovery required"
+        try:
+            if action == "checkpoint":
+                response = self.client.execution_checkpoint(
+                    item.claim,
+                    launch_id=launch_id,
+                    reason=reason,
+                )
+            elif action == "terminal_failure":
+                response = self.client.fail(item.claim, failure_class="terminal")
+            else:
+                raise ValueError("inbox contains an unsupported pending server action")
+        except (OSError, TimeoutError):
+            self.inbox.release_worker_claim(claimed, now=now)
+            return None
+        if not isinstance(response, Mapping):
+            raise ValueError("pending server action was not verified")
+        completed = self.inbox.complete_server_action(
+            claimed,
+            action=action,
+            response=response,
+            now=now,
+        )
+        self.phase_hook(f"server_action_{action}_completed")
+        return completed
+
+    def _record_prelaunch_failure(
+        self,
+        claimed: WakeInboxClaim,
+        *,
+        error: str,
+        now: datetime,
+        terminal: bool = False,
+    ) -> WakeInboxItem | None:
+        failed = self.inbox.record_prelaunch_failure(
+            claimed,
+            error=error,
+            retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+            now=now,
+            terminal=terminal,
+        )
+        self.phase_hook("prelaunch_failure_recorded")
+        if failed.pending_server_action is None:
+            return failed
+        return self._deliver_pending_action(claimed, now=now)
+
+    def _record_ambiguous(
+        self, claimed: WakeInboxClaim, *, reason: str, now: datetime
+    ) -> WakeInboxItem | None:
+        self.inbox.record_recovery_required(claimed, reason=reason, now=now)
+        self.phase_hook("recovery_required_recorded")
+        return self._deliver_pending_action(claimed, now=now)
 
     def run_once(self, *, now: datetime) -> WakeInboxItem | None:
         claimed = self.inbox.claim_next(now=now)
         if claimed is None:
             return None
-        wake_token = _require_identifier(
-            claimed.item.claim.get("wake_token"), "wake_token"
-        )
-        try:
-            authority = self.client.execution_authority(
-                claimed.item.claim, wake_token=wake_token
+        if claimed.item.pending_server_action is not None:
+            return self._deliver_pending_action(claimed, now=now)
+
+        item = claimed.item
+        if item.state in {"pending", "failed"}:
+            launch_id = self.inbox.launch_id_for(claimed)
+            item = self.inbox.prepare_launch(
+                claimed, launch_id=launch_id, now=now
             )
-        except (OSError, TimeoutError):
-            self.inbox.release_worker_claim(claimed, now=now)
-            return None
-        if (
-            not isinstance(authority, Mapping)
-            or authority.get("handoff_id") != claimed.item.handoff_id
-            or authority.get("execution_authorized") is not True
-        ):
-            status = authority.get("status") if isinstance(authority, Mapping) else None
+            self.phase_hook("launch_id_persisted")
+        launch_id = _require_identifier(item.current_launch_id, "launch_id")
+        try:
+            request = self.adapter.launch_request(item.claim)
+        except (OSError, ValueError) as exc:
+            return self._record_prelaunch_failure(
+                claimed,
+                error=f"launch_request_failed_{type(exc).__name__}",
+                now=now,
+            )
+        if not isinstance(request, LaunchRequest):
+            raise ValueError("adapter launch_request must return LaunchRequest")
+
+        try:
+            observation = self.launch_controller.observe(launch_id)
+        except ValueError:
+            if item.state in {"start_granted", "executing"}:
+                return self._record_ambiguous(
+                    claimed, reason="malformed_post_gate_evidence", now=now
+                )
+            return self._record_prelaunch_failure(
+                claimed, error="malformed_pre_gate_evidence", now=now
+            )
+        if observation.state in {"absent", "preparing"}:
+            try:
+                observation = self.launch_controller.start(launch_id, request)
+            except OSError as exc:
+                return self._record_prelaunch_failure(
+                    claimed,
+                    error=f"shim_spawn_failed_{type(exc).__name__}",
+                    now=now,
+                )
+            self.phase_hook("shim_spawned")
+        if observation.pid is not None and item.launch_pid != observation.pid:
+            item = self.inbox.record_spawned(
+                claimed, pid=observation.pid, now=now
+            )
+            self.phase_hook("launch_pid_persisted")
+
+        deadline = time.monotonic() + 1.0
+        while observation.state in {"preparing", "spawned"} and observation.runner_alive:
+            if time.monotonic() >= deadline:
+                self.inbox.release_worker_claim(claimed, now=now)
+                return self.inbox.get(item.handoff_id)
+            time.sleep(0.01)
+            observation = self.launch_controller.observe(launch_id)
+        if observation.state in {"preparing", "spawned"}:
+            if observation.runner_alive:
+                self.inbox.release_worker_claim(claimed, now=now)
+                return self.inbox.get(item.handoff_id)
+            return self._record_prelaunch_failure(
+                claimed, error="shim_lost_before_ready", now=now
+            )
+        if observation.state == "cancelled":
             return self.inbox.mark_suppressed(
+                claimed, reason="launch_cancelled_before_gate", now=now
+            )
+        if observation.state == "prelaunch_failure" and item.state not in {
+            "start_granted",
+            "executing",
+        }:
+            return self._record_prelaunch_failure(
                 claimed,
-                reason=f"execution_authority_{status or 'invalid'}",
+                error=observation.reason or "prelaunch_failure",
                 now=now,
             )
-        self.inbox.begin_execution(claimed, now=now)
+        if observation.state == "ready" and item.state in {
+            "launch_preparing",
+            "launch_spawned",
+        }:
+            item = self.inbox.record_ready(
+                claimed,
+                pid=_require_positive_pid(observation.pid),
+                now=now,
+            )
+            self.phase_hook("runner_ready_persisted")
+
+        if item.state in {"launch_ready", "start_granted"}:
+            wake_token = _require_identifier(item.claim.get("wake_token"), "wake_token")
+            try:
+                start = self.client.execution_start(
+                    item.claim,
+                    wake_token=wake_token,
+                    launch_id=launch_id,
+                )
+            except (OSError, TimeoutError):
+                self.inbox.release_worker_claim(claimed, now=now)
+                return None
+            if (
+                not isinstance(start, Mapping)
+                or start.get("handoff_id") != item.handoff_id
+                or start.get("launch_id") != launch_id
+                or start.get("execution_started") is not True
+            ):
+                self.launch_controller.cancel(launch_id)
+                return self.inbox.mark_suppressed(
+                    claimed,
+                    reason=f"execution_start_{start.get('status', 'invalid') if isinstance(start, Mapping) else 'invalid'}",
+                    now=now,
+                )
+            launch_grant = _require_identifier(
+                start.get("launch_grant"), "launch_grant"
+            )
+            expected_grant_ref = hashlib.sha256(
+                launch_grant.encode("utf-8")
+            ).hexdigest()
+            if item.launch_grant_ref is not None and not hmac.compare_digest(
+                item.launch_grant_ref, expected_grant_ref
+            ):
+                raise ValueError("replayed launch grant does not match local evidence")
+            if item.state == "launch_ready":
+                item = self.inbox.record_start_grant(
+                    claimed, launch_grant=launch_grant, now=now
+                )
+                self.phase_hook("launch_grant_persisted")
+            observation = self.launch_controller.open_gate(
+                launch_id, launch_grant
+            )
+            self.phase_hook("gate_opened")
+            item = self.inbox.record_gate_open(claimed, now=now)
+            self.phase_hook("executing_persisted")
+
         try:
-            result = self.adapter.resume_existing_thread(claimed.item.claim)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return self.inbox.mark_failed(
+            observation = self.launch_controller.observe(launch_id)
+        except ValueError:
+            return self._record_ambiguous(
+                claimed, reason="malformed_post_gate_evidence", now=now
+            )
+        result_deadline = time.monotonic() + 0.2
+        while observation.state == "executing" and observation.runner_alive:
+            if time.monotonic() >= result_deadline:
+                break
+            time.sleep(0.01)
+            try:
+                observation = self.launch_controller.observe(launch_id)
+            except ValueError:
+                return self._record_ambiguous(
+                    claimed, reason="malformed_post_gate_evidence", now=now
+                )
+        if observation.state == "completed":
+            completed = self.inbox.record_completed(claimed, now=now)
+            self.phase_hook("launch_completed")
+            return completed
+        if observation.state == "prelaunch_failure":
+            return self._record_prelaunch_failure(
                 claimed,
-                error=(
-                    "command_timeout"
-                    if isinstance(exc, subprocess.TimeoutExpired)
-                    else "command_launch_failed"
-                ),
-                retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+                error=observation.reason or "command_not_started",
+                now=now,
+                terminal=True,
+            )
+        if observation.state == "ambiguous":
+            return self._record_ambiguous(
+                claimed,
+                reason=observation.reason or "ambiguous_launch_outcome",
                 now=now,
             )
-        if result.returncode == 0:
-            return self.inbox.mark_completed(claimed, now=now)
-        return self.inbox.mark_failed(
-            claimed,
-            error=f"command_exit_{result.returncode}",
-            retry_at=now + timedelta(seconds=self.retry_delay_seconds),
-            now=now,
-        )
+        self.inbox.release_worker_claim(claimed, now=now)
+        return self.inbox.get(item.handoff_id)
 
 
 class LocalDispatcherClient:
@@ -1247,39 +1816,80 @@ class LocalDispatcherClient:
             return response
         raise ValueError("wake authorization response is inconsistent")
 
-    def execution_authority(
+    def execution_start(
         self,
         claim: Mapping[str, object],
         *,
         wake_token: str,
+        launch_id: str,
     ) -> dict[str, object]:
-        """Revalidate the exact accepted inbox item immediately before execution."""
+        """Atomically bind the exact accepted inbox item to one gated launch."""
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
         wake_token = _require_identifier(wake_token, "wake_token")
+        launch_id = _require_identifier(launch_id, "launch_id")
         headers = self._claim_headers(claim)
         headers["Idempotency-Key"] = _mutation_id(
-            handoff_id, f"execution-authority/{wake_token}"
+            handoff_id, f"execution-start/{wake_token}/{launch_id}"
         )
         _, response = self._post(
-            f"/api/handoffs/{quote(handoff_id, safe='')}/execution-authority",
-            {"wake_token": wake_token},
+            f"/api/handoffs/{quote(handoff_id, safe='')}/execution-start",
+            {"wake_token": wake_token, "launch_id": launch_id},
             headers=headers,
         )
-        if not isinstance(response, dict) or set(response) != EXECUTION_AUTHORITY_KEYS:
-            raise ValueError("execution authority response shape is invalid")
-        if response.get("handoff_id") != handoff_id:
-            raise ValueError("execution authority does not match the accepted handoff")
-        if not isinstance(response.get("execution_authorized"), bool):
-            raise ValueError("execution authority response is inconsistent")
-        if response["execution_authorized"] is True and response.get("status") != "received":
-            raise ValueError("execution authority response is inconsistent")
-        if response["execution_authorized"] is False and response.get("status") not in {
+        if not isinstance(response, dict) or set(response) != EXECUTION_START_KEYS:
+            raise ValueError("execution start response shape is invalid")
+        if response.get("handoff_id") != handoff_id or response.get("launch_id") != launch_id:
+            raise ValueError("execution start does not match the accepted launch")
+        if not isinstance(response.get("execution_started"), bool):
+            raise ValueError("execution start response is inconsistent")
+        if response["execution_started"] is True:
+            if response.get("status") not in {
+                "execution_started",
+                "actively_executing",
+                "still_blocked",
+            }:
+                raise ValueError("execution start response is inconsistent")
+            _require_identifier(response.get("launch_grant"), "launch_grant")
+        elif response.get("launch_grant") is not None or response.get("status") not in {
             "suppressed",
             "completed",
             "dead_letter",
             "retrying",
         }:
-            raise ValueError("execution authority response is inconsistent")
+            raise ValueError("execution start response is inconsistent")
+        return response
+
+    def execution_checkpoint(
+        self,
+        claim: Mapping[str, object],
+        *,
+        launch_id: str,
+        reason: str,
+    ) -> dict[str, object]:
+        """Idempotently checkpoint and hand back one ambiguous started launch."""
+        handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        launch_id = _require_identifier(launch_id, "launch_id")
+        reason = " ".join(str(reason).split())[:160]
+        if not reason:
+            raise ValueError("execution checkpoint reason is required")
+        headers = self._claim_headers(claim)
+        headers["Idempotency-Key"] = _mutation_id(
+            handoff_id, f"execution-checkpoint/{launch_id}/{reason}"
+        )
+        _, response = self._post(
+            f"/api/handoffs/{quote(handoff_id, safe='')}/execution-checkpoint",
+            {"launch_id": launch_id, "reason": reason},
+            headers=headers,
+        )
+        if not isinstance(response, dict) or set(response) != EXECUTION_CHECKPOINT_KEYS:
+            raise ValueError("execution checkpoint response shape is invalid")
+        if (
+            response.get("handoff_id") != handoff_id
+            or response.get("launch_id") != launch_id
+            or response.get("status") != "suppressed"
+            or response.get("checkpointed") is not True
+        ):
+            raise ValueError("execution checkpoint response is inconsistent")
         return response
 
     def _claim_headers(self, claim: Mapping[str, object]) -> dict[str, str]:
@@ -1469,22 +2079,26 @@ class CodexResumeAdapter:
         self,
         claim: Mapping[str, object],
     ) -> subprocess.CompletedProcess[str]:
-        prompt = self._safe_prompt(claim)
+        request = self.launch_request(claim)
         return self._run(
-            [
+            list(request.argv),
+            timeout=request.timeout_seconds,
+        )
+
+    def launch_request(self, claim: Mapping[str, object]) -> LaunchRequest:
+        """Build the private request consumed only by the gated launch shim."""
+        return LaunchRequest(
+            argv=(
                 self.codex_path,
                 "exec",
                 "resume",
                 "--skip-git-repo-check",
                 self.fixed_thread_id,
-                prompt,
+                self._safe_prompt(claim),
                 "--json",
-            ],
-            cwd=self.working_directory,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self.resume_timeout,
+            ),
+            working_directory=str(Path(self.working_directory).resolve()),
+            timeout_seconds=self.resume_timeout,
         )
 
 

@@ -54,6 +54,9 @@ ACKNOWLEDGEMENT_STATES = frozenset(
 ACKNOWLEDGEMENT_TRANSITIONS = {
     "leased": ACKNOWLEDGEMENT_STATES,
     "received": frozenset({"actively_executing", "still_blocked", "completed"}),
+    "execution_started": frozenset(
+        {"actively_executing", "still_blocked", "completed"}
+    ),
     "actively_executing": frozenset({"still_blocked", "completed"}),
     "still_blocked": frozenset({"actively_executing", "completed"}),
     "completed": frozenset(),
@@ -61,7 +64,14 @@ ACKNOWLEDGEMENT_TRANSITIONS = {
 DEFAULT_RECOVERY_LEASE_SECONDS = 30
 DEFAULT_EXECUTION_CLAIM_SECONDS = 3600
 EXECUTION_TERMINAL_STATES = frozenset(
-    {"completed", "revoked", "expired", "checkpointed", "dead_letter"}
+    {
+        "completed",
+        "revoked",
+        "expired",
+        "checkpointed",
+        "dead_letter",
+        "terminal_delivery_failure",
+    }
 )
 _STRUCTURED_ID = re.compile(r"[a-z0-9][a-z0-9._/-]{0,127}")
 _CORRELATION_ID = re.compile(r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}")
@@ -259,6 +269,24 @@ class LeaseClaim:
     @property
     def task_slug(self) -> str:
         return self.record.task_slug
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionStartGrant:
+    handoff_id: str
+    status: str
+    launch_id: str
+    launch_grant: str | None
+    execution_started: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "handoff_id": self.handoff_id,
+            "status": self.status,
+            "launch_id": self.launch_id,
+            "launch_grant": self.launch_grant,
+            "execution_started": self.execution_started,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -615,6 +643,19 @@ class DurableHandoffStore:
                     authorized_at TEXT NOT NULL
                 )
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS execution_starts (
+                    handoff_id TEXT PRIMARY KEY REFERENCES handoffs(handoff_id),
+                    launch_id TEXT NOT NULL UNIQUE,
+                    wake_token_ref TEXT NOT NULL,
+                    execution_idempotency_key TEXT NOT NULL,
+                    registration_ref TEXT NOT NULL,
+                    lease_generation INTEGER NOT NULL,
+                    lease_capability_ref TEXT NOT NULL,
+                    launch_grant_ref TEXT NOT NULL,
+                    started_at TEXT NOT NULL
+                )
+                """,
             )
             for statement in statements:
                 self._connection.execute(statement)
@@ -658,7 +699,7 @@ class DurableHandoffStore:
             LEFT JOIN execution_claims e ON e.handoff_id = h.handoff_id
             WHERE h.status IN (
                 'queued', 'retrying', 'leased', 'received',
-                'actively_executing', 'still_blocked'
+                'execution_started', 'actively_executing', 'still_blocked'
             ) AND e.claim_sequence IS NULL
             ORDER BY h.created_at, h.handoff_id
             """
@@ -731,7 +772,7 @@ class DurableHandoffStore:
                 detail = 'Legacy handoff could not acquire a unique task fence.'
             WHERE handoff_id = ? AND status IN (
                 'queued', 'retrying', 'leased', 'received',
-                'actively_executing', 'still_blocked'
+                'execution_started', 'actively_executing', 'still_blocked'
             )
             """,
             (handoff_id,),
@@ -1500,6 +1541,7 @@ class DurableHandoffStore:
                     "retrying",
                     "leased",
                     "received",
+                    "execution_started",
                     "actively_executing",
                     "still_blocked",
                 }:
@@ -1510,7 +1552,7 @@ class DurableHandoffStore:
                             detail = ?
                         WHERE handoff_id = ? AND status IN (
                             'queued', 'retrying', 'leased', 'received',
-                            'actively_executing', 'still_blocked'
+                            'execution_started', 'actively_executing', 'still_blocked'
                         )
                         """,
                         (
@@ -1763,6 +1805,7 @@ class DurableHandoffStore:
             if current["status"] not in {
                 "leased",
                 "received",
+                "execution_started",
                 "actively_executing",
                 "still_blocked",
             }:
@@ -1939,7 +1982,19 @@ class DurableHandoffStore:
             )
         return None
 
-    def authorize_execution(
+    @staticmethod
+    def _launch_grant(
+        *, execution_idempotency_key: str, wake_token_ref: str, launch_id: str
+    ) -> str:
+        digest = hashlib.sha256(
+            (
+                "handoff-launch-grant\0"
+                f"{execution_idempotency_key}\0{wake_token_ref}\0{launch_id}"
+            ).encode("utf-8")
+        ).hexdigest()
+        return f"grant/{digest}"
+
+    def start_execution(
         self,
         handoff_id: str,
         *,
@@ -1947,14 +2002,17 @@ class DurableHandoffStore:
         lease_token: str,
         lease_generation: int,
         wake_token: str,
+        launch_id: str,
         now: datetime,
-    ) -> HandoffRecord:
-        """Revalidate an accepted inbox item at the external command boundary."""
+    ) -> ExecutionStartGrant:
+        """Atomically fence one received delivery as semantically started."""
         _require_structured_id(handoff_id, "handoff_id")
         _require_structured_id(wake_token, "wake_token")
+        _require_structured_id(launch_id, "launch_id")
         if not isinstance(lease_generation, int) or lease_generation < 1:
             raise ValueError("lease_generation must be a positive integer")
         now = _require_utc(now, "now")
+        registration_ref = _registration_reference(registration_id)
         lease_capability_ref = _reference(lease_token)
         wake_token_ref = _reference(wake_token)
         with self._write_transaction():
@@ -1971,6 +2029,87 @@ class DurableHandoffStore:
             ).fetchone()
             if current is None:
                 raise KeyError(handoff_id)
+            wake = self._connection.execute(
+                "SELECT * FROM wake_intents WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if (
+                wake is None
+                or not hmac.compare_digest(wake["wake_token_ref"], wake_token_ref)
+                or wake["execution_idempotency_key"] != current["idempotency_key"]
+            ):
+                raise ValueError("execution start wake does not match its durable intent")
+            grant = self._launch_grant(
+                execution_idempotency_key=current["idempotency_key"],
+                wake_token_ref=wake_token_ref,
+                launch_id=launch_id,
+            )
+            existing = self._connection.execute(
+                "SELECT * FROM execution_starts WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["launch_id"] != launch_id:
+                    raise ValueError("execution start is already bound to another launch")
+                if (
+                    existing["wake_token_ref"] != wake_token_ref
+                    or existing["execution_idempotency_key"]
+                    != current["idempotency_key"]
+                    or existing["registration_ref"] != registration_ref
+                    or not hmac.compare_digest(
+                        existing["launch_grant_ref"], _reference(grant)
+                    )
+                ):
+                    raise ValueError("execution start replay does not match its launch")
+                current_capability_matches = (
+                    current["registration_id"] == registration_id
+                    and current["lease_generation"] == lease_generation
+                    and current["lease_capability_ref"] is not None
+                    and hmac.compare_digest(
+                        current["lease_capability_ref"], lease_capability_ref
+                    )
+                )
+                original_capability_matches = (
+                    existing["lease_generation"] == lease_generation
+                    and hmac.compare_digest(
+                        existing["lease_capability_ref"], lease_capability_ref
+                    )
+                )
+                if not current_capability_matches and not original_capability_matches:
+                    raise ValueError("execution start replay requires its exact lease")
+                if current_capability_matches and (
+                    existing["lease_generation"] != lease_generation
+                    or existing["lease_capability_ref"] != lease_capability_ref
+                ):
+                    self._connection.execute(
+                        """
+                        UPDATE execution_starts
+                        SET lease_generation = ?, lease_capability_ref = ?
+                        WHERE handoff_id = ? AND launch_id = ?
+                        """,
+                        (
+                            lease_generation,
+                            lease_capability_ref,
+                            handoff_id,
+                            launch_id,
+                        ),
+                    )
+                replay_started = (
+                    current["terminal_state"] is None
+                    and current["status"]
+                    in {
+                        "execution_started",
+                        "actively_executing",
+                        "still_blocked",
+                    }
+                )
+                return ExecutionStartGrant(
+                    handoff_id=handoff_id,
+                    status=current["status"],
+                    launch_id=launch_id,
+                    launch_grant=grant if replay_started else None,
+                    execution_started=replay_started,
+                )
             if (
                 current["status"] != "received"
                 or current["registration_id"] != registration_id
@@ -1981,18 +2120,8 @@ class DurableHandoffStore:
                 )
             ):
                 raise ValueError(
-                    "execution requires the exact received lease owner and capability"
+                    "execution start requires the exact received lease owner and capability"
                 )
-            wake = self._connection.execute(
-                "SELECT * FROM wake_intents WHERE handoff_id = ?",
-                (handoff_id,),
-            ).fetchone()
-            if (
-                wake is None
-                or not hmac.compare_digest(wake["wake_token_ref"], wake_token_ref)
-                or wake["execution_idempotency_key"] != current["idempotency_key"]
-            ):
-                raise ValueError("execution wake intent does not match its durable claim")
             authority_failure = self._execution_authority_failure_in_transaction(
                 current, now=now
             )
@@ -2005,6 +2134,157 @@ class DurableHandoffStore:
                     detail=detail,
                     now=now,
                 )
+                record = self.get(handoff_id)
+                return ExecutionStartGrant(
+                    handoff_id=handoff_id,
+                    status=record.status,
+                    launch_id=launch_id,
+                    launch_grant=None,
+                    execution_started=False,
+                )
+            self._connection.execute(
+                """
+                INSERT INTO execution_starts (
+                    handoff_id, launch_id, wake_token_ref,
+                    execution_idempotency_key, registration_ref,
+                    lease_generation, lease_capability_ref, launch_grant_ref,
+                    started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    handoff_id,
+                    launch_id,
+                    wake_token_ref,
+                    current["idempotency_key"],
+                    registration_ref,
+                    lease_generation,
+                    lease_capability_ref,
+                    _reference(grant),
+                    _timestamp(now),
+                ),
+            )
+            changed = self._connection.execute(
+                """
+                UPDATE handoffs SET status = 'execution_started', detail = NULL
+                WHERE handoff_id = ? AND status = 'received'
+                """,
+                (handoff_id,),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("execution start lost its received-state compare-and-swap")
+            record = self.get(handoff_id)
+            self._append_event_from_record(
+                record,
+                event_type="execution_started",
+                summary="Dispatcher granted one durable external execution start.",
+                detail=None,
+                mutation_ref=_reference(f"execution-start|{launch_id}"),
+                occurred_at=now,
+                recorded_at=now,
+                execution_state="execution_started",
+            )
+            return ExecutionStartGrant(
+                handoff_id=handoff_id,
+                status=record.status,
+                launch_id=launch_id,
+                launch_grant=grant,
+                execution_started=True,
+            )
+
+    def checkpoint_started_execution(
+        self,
+        handoff_id: str,
+        *,
+        registration_id: str,
+        lease_token: str,
+        lease_generation: int,
+        launch_id: str,
+        mutation_id: str,
+        reason: str,
+        now: datetime,
+    ) -> HandoffRecord:
+        """Idempotently hand back one started launch with an ambiguous result."""
+        _require_structured_id(handoff_id, "handoff_id")
+        _require_structured_id(launch_id, "launch_id")
+        _require_structured_id(mutation_id, "mutation_id")
+        reason = _require_safe_text(reason, "checkpoint reason")
+        if not isinstance(lease_generation, int) or lease_generation < 1:
+            raise ValueError("lease_generation must be a positive integer")
+        now = _require_utc(now, "now")
+        registration_ref = _registration_reference(registration_id)
+        capability_ref = _reference(lease_token)
+        mutation_ref = _reference(mutation_id)
+        with self._write_transaction():
+            current = self._connection.execute(
+                """
+                SELECT h.status, l.registration_id, l.lease_generation,
+                    l.lease_capability_ref, e.*, s.launch_id,
+                    s.registration_ref AS start_registration_ref,
+                    s.lease_generation AS start_lease_generation,
+                    s.lease_capability_ref AS start_capability_ref
+                FROM handoffs h
+                JOIN leases l ON l.handoff_id = h.handoff_id
+                JOIN execution_claims e ON e.handoff_id = h.handoff_id
+                JOIN execution_starts s ON s.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(handoff_id)
+            start_matches = (
+                current["launch_id"] == launch_id
+                and current["start_registration_ref"] == registration_ref
+                and current["start_lease_generation"] == lease_generation
+                and hmac.compare_digest(
+                    current["start_capability_ref"], capability_ref
+                )
+            )
+            if (
+                current["terminal_state"] == "checkpointed"
+                and current["release_mutation_ref"] == mutation_ref
+                and start_matches
+            ):
+                return self.get(handoff_id)
+            if (
+                not start_matches
+                or current["registration_id"] != registration_id
+                or current["lease_generation"] != lease_generation
+                or current["lease_capability_ref"] is None
+                or not hmac.compare_digest(
+                    current["lease_capability_ref"], capability_ref
+                )
+                or current["status"]
+                not in {
+                    "execution_started",
+                    "actively_executing",
+                    "still_blocked",
+                }
+            ):
+                raise ValueError("checkpoint requires the exact started launch lease")
+            self._connection.execute(
+                """
+                UPDATE handoffs SET status = 'suppressed',
+                    reason = 'execution_recovery_required', detail = ?
+                WHERE handoff_id = ? AND status IN (
+                    'execution_started', 'actively_executing', 'still_blocked'
+                )
+                """,
+                (reason, handoff_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE leases SET lease_until = NULL, lease_capability_ref = NULL
+                WHERE handoff_id = ?
+                """,
+                (handoff_id,),
+            )
+            self._terminalize_execution_claim_in_transaction(
+                current,
+                terminal_state="checkpointed",
+                mutation_ref=mutation_ref,
+                now=now,
+            )
             return self.get(handoff_id)
 
     def authorize_wake(
@@ -2017,7 +2297,7 @@ class DurableHandoffStore:
         wake_token: str,
         now: datetime,
     ) -> HandoffRecord:
-        """Persist one stable wake intent after the final execution-authority check."""
+        """Persist one stable wake intent after the wake-time authority check."""
         _require_structured_id(handoff_id, "handoff_id")
         _require_structured_id(wake_token, "wake_token")
         if not isinstance(lease_generation, int) or lease_generation < 1:
@@ -2131,7 +2411,7 @@ class DurableHandoffStore:
             UPDATE handoffs SET status = 'suppressed', reason = ?, detail = ?
             WHERE handoff_id = ? AND status IN (
                 'queued', 'retrying', 'leased', 'received',
-                'actively_executing', 'still_blocked'
+                'execution_started', 'actively_executing', 'still_blocked'
             )
             """,
             (reason, detail, execution_row["handoff_id"]),
@@ -2203,6 +2483,7 @@ class DurableHandoffStore:
                     "retrying",
                     "leased",
                     "received",
+                    "execution_started",
                     "actively_executing",
                     "still_blocked",
                 }:
@@ -2248,9 +2529,9 @@ class DurableHandoffStore:
     ) -> HandoffRecord:
         """Advance a fenced acknowledgement lifecycle.
 
-        A lease may acknowledge any current state directly. Normal progression is
-        received -> actively_executing -> still_blocked or completed; blocked work
-        may resume actively_executing or complete. Completed work never regresses.
+        Owned legacy delivery retains its direct acknowledgements. Delegated
+        execution progresses received -> execution_started before an Agent may
+        acknowledge actively_executing, still_blocked, or completed.
         """
         now = _require_utc(now, "now")
         if status not in ACKNOWLEDGEMENT_STATES:
@@ -2400,6 +2681,14 @@ class DurableHandoffStore:
                 return self.get(handoff_id)
             current_status = active["status"]
             if acknowledgement:
+                if (
+                    active["delegation_slug"] is not None
+                    and current_status == "received"
+                    and status != "received"
+                ):
+                    raise ValueError(
+                        "delegated acknowledgement requires execution start"
+                    )
                 if status not in ACKNOWLEDGEMENT_TRANSITIONS.get(
                     current_status, frozenset()
                 ):
@@ -2409,6 +2698,7 @@ class DurableHandoffStore:
             elif current_status not in {
                 "leased",
                 "received",
+                "execution_started",
                 "actively_executing",
                 "still_blocked",
             }:
@@ -2485,7 +2775,7 @@ class DurableHandoffStore:
             execution_terminal = (
                 "completed"
                 if acknowledgement and status == "completed"
-                else "dead_letter"
+                else "terminal_delivery_failure"
                 if not acknowledgement and status == "dead_letter"
                 else None
             )
@@ -2989,6 +3279,24 @@ class LocalAgentDispatcher:
             return None
         record = claim.record
         mutation_id = f"mutation-local-{uuid4().hex}"
+        if record.delegation_slug is not None:
+            self.store.record_failure(
+                record.handoff_id,
+                registration_id=self.registration_id,
+                lease_token=claim.lease_token,
+                lease_generation=claim.lease_generation,
+                mutation_id=mutation_id,
+                retryable=False,
+                summary=(
+                    "Delegated delivery requires the durable gated target launcher."
+                ),
+                now=now,
+            )
+            return LeaseClaim(
+                self.store.get(record.handoff_id),
+                claim.lease_token,
+                claim.lease_generation,
+            )
         if not self.verify_route(record):
             self.store.record_failure(
                 record.handoff_id,

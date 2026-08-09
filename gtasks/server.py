@@ -2452,24 +2452,29 @@ def _handler_class(
                     },
                 )
                 return
-            execution_authority_match = re.fullmatch(
-                r"/api/handoffs/([^/]+)/execution-authority", path
+            execution_start_match = re.fullmatch(
+                r"/api/handoffs/([^/]+)/execution-start", path
             )
-            if execution_authority_match:
+            if execution_start_match:
                 identity = self._handoff_identity()
                 if identity is None:
                     return
                 payload = self._read_json()
                 if payload is None:
                     return
-                if set(payload) != {"wake_token"} or not isinstance(
-                    payload.get("wake_token"), str
+                if (
+                    set(payload) != {"wake_token", "launch_id"}
+                    or not isinstance(payload.get("wake_token"), str)
+                    or not isinstance(payload.get("launch_id"), str)
                 ):
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
-                            "error": "Execution authority requires one stable wake token.",
-                            "code": "invalid_handoff_execution_authority",
+                            "error": (
+                                "Execution start requires exactly one stable wake token "
+                                "and launch id."
+                            ),
+                            "code": "invalid_handoff_execution_start",
                         },
                     )
                     return
@@ -2482,7 +2487,7 @@ def _handler_class(
                         },
                     )
                     return
-                handoff_id = unquote(execution_authority_match.group(1))
+                handoff_id = unquote(execution_start_match.group(1))
                 try:
                     current = handoff_store.get(handoff_id)
                 except KeyError:
@@ -2524,12 +2529,13 @@ def _handler_class(
                         observed_at=observed_at + timedelta(microseconds=1),
                         include_task=True,
                     )
-                    result = handoff_store.authorize_execution(
+                    result = handoff_store.start_execution(
                         handoff_id,
                         registration_id=registration_id,
                         lease_token=capability,
                         lease_generation=generation,
                         wake_token=payload["wake_token"],
+                        launch_id=payload["launch_id"],
                         now=observed_at,
                     )
                 except _HandoffIdentityMismatch:
@@ -2545,7 +2551,7 @@ def _handler_class(
                     self._json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
                         {
-                            "error": "Handoff authority readback is unavailable.",
+                            "error": "Handoff execution-start readback is unavailable.",
                             "code": "handoff_authority_unavailable",
                         },
                     )
@@ -2555,7 +2561,115 @@ def _handler_class(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
                             "error": str(exc),
-                            "code": "invalid_handoff_execution_authority",
+                            "code": "invalid_handoff_execution_start",
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    result.to_dict(),
+                )
+                return
+            execution_checkpoint_match = re.fullmatch(
+                r"/api/handoffs/([^/]+)/execution-checkpoint", path
+            )
+            if execution_checkpoint_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if (
+                    set(payload) != {"launch_id", "reason"}
+                    or not isinstance(payload.get("launch_id"), str)
+                    or not isinstance(payload.get("reason"), str)
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "Execution checkpoint requires exactly one launch id "
+                                "and reason."
+                            ),
+                            "code": "invalid_handoff_execution_checkpoint",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote(execution_checkpoint_match.group(1))
+                try:
+                    current = handoff_store.get(handoff_id)
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    current.agent_slug != identity.agent_slug
+                    or current.registration_ref is None
+                    or not hmac.compare_digest(
+                        current.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                lease = self._handoff_mutation_headers(identity)
+                if lease is None:
+                    return
+                registration_id, capability, generation, mutation_id = lease
+                observed_at = clock().astimezone(timezone.utc)
+                try:
+                    self._canonical_handoff_registration(identity, registration_id)
+                    result = handoff_store.checkpoint_started_execution(
+                        handoff_id,
+                        registration_id=registration_id,
+                        lease_token=capability,
+                        lease_generation=generation,
+                        launch_id=payload["launch_id"],
+                        mutation_id=mutation_id,
+                        reason=payload["reason"],
+                        now=observed_at,
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except (GBrainError, RuntimeError):
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff checkpoint readback is unavailable.",
+                            "code": "handoff_authority_unavailable",
+                        },
+                    )
+                    return
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": "invalid_handoff_execution_checkpoint",
                         },
                     )
                     return
@@ -2564,7 +2678,8 @@ def _handler_class(
                     {
                         "handoff_id": result.handoff_id,
                         "status": result.status,
-                        "execution_authorized": result.status == "received",
+                        "launch_id": payload["launch_id"],
+                        "checkpointed": result.status == "suppressed",
                     },
                 )
                 return

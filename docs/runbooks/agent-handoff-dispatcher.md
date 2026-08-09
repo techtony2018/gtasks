@@ -25,6 +25,54 @@ host state and are never written to repository files or audit events.
 `--skip-git-repo-check` is required because an existing Agent workspace may be
 a trusted non-Git directory; it does not bypass approvals or sandboxing.
 
+## Durable delegated launch boundary
+
+`received` proves only that the target host durably accepted the wake. It does
+not prove that a target command started. Delegated delivery follows this
+ordered boundary:
+
+```text
+received
+  -> local launch_preparing
+  -> local launch_spawned (PID durable)
+  -> local launch_ready (runner ready evidence durable)
+  -> server execution_started (one launch grant)
+  -> local start_granted (grant reference durable)
+  -> atomic gate_open
+  -> local executing
+  -> completed | recovery_required | exhausted failed
+```
+
+The target command is held inside a private gated shim. The shim writes its PID
+and ready evidence before Mission Control receives `execution-start`; it cannot
+invoke the target argv until the exact launch has a server grant and an atomic
+gate file. The server validates the lease, wake intent, execution claim,
+canonical Task authority, delegation version/window/scope, and owned-work
+priority in the same transaction that changes `received` to
+`execution_started`. The same launch id replays the same grant; a different
+launch id is fenced out.
+
+Revocation before that compare-and-swap suppresses the unstarted delivery and
+the host cancels the still-closed shim. Revocation after the compare-and-swap
+does not erase the start record. The host either observes a verified result or
+uses the idempotent execution-checkpoint path to suppress and hand the task
+back. A delegated acknowledgement cannot advance from `received` to active,
+blocked, or completed until the server start record exists.
+
+For a claim file named `<name>.json`, the host keeps the private inbox in
+`<name>.wake-inbox.sqlite3` and launch directories under
+`<name>.wake-inbox.launches/`. The inbox file and every request, lock, ready,
+gate, cancel, and result file are private. `wake_launches` is append-preserving
+evidence for preparing, spawned, ready, grant received, gate open, completion,
+pre-launch failure, and ambiguity. It stores only bounded state, PID, grant
+reference, and privacy-safe detail—not bearer tokens, raw capabilities, fixed
+session ids, prompts, stdout, or stderr.
+
+The legacy in-process `LocalAgentDispatcher` is not a delegated execution
+mechanism. It terminally rejects delegated claims before route or wake callback
+invocation because it cannot provide the gated child handshake. Owned legacy
+delivery remains available through that compatibility path.
+
 ## Canonical Agent registration projections
 
 Before credentials, runtime restart, Serve, or host installation, update the
@@ -229,10 +277,21 @@ logs.
 
 - A retryable delivery failure moves the same handoff to `retrying`; a later
   identity-scoped claim increments its attempt and lease generation.
-- A local timeout or nonzero Codex exit waits for the configured retry delay
-  after recording the verified retry, preventing a tight claim/failure loop.
-- A terminal delivery failure moves it to `dead_letter`. It remains visible
-  in the same audit chain and is never silently requeued.
+- Only a proven pre-gate shim failure may create another local launch attempt.
+  The new attempt has a new deterministic launch id and still requires a fresh
+  server start decision. Exhaustion persists a pending terminal server action
+  before sending it.
+- Loss of an `execution-start` response is not a new attempt. The host replays
+  the same launch id while the gate remains closed and verifies the same grant.
+- Timeout, nonzero exit, a dead runner after gate open, or malformed/missing
+  post-gate result evidence is ambiguous. The local state becomes
+  `recovery_required`; only the idempotent execution-checkpoint request is
+  retried. The target command is never automatically reissued.
+- A target executable that is proven not to have started after the server grant
+  is a terminal delivery failure, not a second launch. Terminal pre-launch
+  failure and exhausted pre-gate retries move the handoff to `dead_letter`,
+  release the execution claim as `terminal_delivery_failure`, and retain the
+  exhausted local `failed` row and launch history for audit.
 - Guardian requeues only an expired leased delivery or records a terminal
   dead letter according to the bounded retry policy. Guardian is fallback
   reconciliation, not the primary sender or a business-task executor.
@@ -247,6 +306,10 @@ logs.
 
 Never clear local claim state merely because a request was sent. Clear or
 replace it only after a verified retry, terminal, or rotated recovery response.
+Never delete a gate, result, `wake_launches` row, or `execution_starts` row to
+manufacture a retry. An operator investigating `recovery_required` must
+reconcile the fixed target session and canonical Task first, then use the
+recorded checkpoint/hand-back evidence rather than launching the target again.
 
 ## Rollback
 

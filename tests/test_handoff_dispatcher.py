@@ -16,6 +16,7 @@ from gtasks.handoff_dispatcher import (
     AgentRegistration,
     DurableHandoffStore,
     ExecutionClaim,
+    ExecutionStartGrant,
     HandoffClassifier,
     HandoffDispatcher,
     HandoffGuardian,
@@ -515,7 +516,7 @@ class HandoffDispatcherTests(unittest.TestCase):
                     store.close()
                     os.unlink(path)
 
-    def test_revocation_or_owned_priority_change_before_wake_suppresses_callback(self) -> None:
+    def test_legacy_delegated_path_fails_closed_before_authority_callback(self) -> None:
         for index, case in enumerate(("revoked", "owned-ready"), start=80):
             with self.subTest(case=case):
                 path = f"{self.path}.wake-{case}"
@@ -566,15 +567,15 @@ class HandoffDispatcherTests(unittest.TestCase):
 
                     result = local.run_once(now=NOW + timedelta(seconds=2))
 
-                    self.assertEqual(result.status, "suppressed")
-                    self.assertEqual(store.get(record.handoff_id).status, "suppressed")
+                    self.assertEqual(result.status, "dead_letter")
+                    self.assertEqual(store.get(record.handoff_id).status, "dead_letter")
                     self.assertEqual(wake_tokens, [])
                     self.assertIsNone(store.get_execution_claim(self.task(index)))
                 finally:
                     store.close()
                     os.unlink(path)
 
-    def test_restart_replay_reuses_claim_and_never_wakes_twice(self) -> None:
+    def test_restart_replay_preserves_terminal_legacy_delegated_rejection(self) -> None:
         active = delegation()
         dispatcher = self.dispatcher(leases=(active,))
         actionable = change(canonical_event_id="events/restart-replay")
@@ -593,7 +594,7 @@ class HandoffDispatcherTests(unittest.TestCase):
             verify_route=lambda record: record.executor_agent == OC_AGENT,
             wake=wake,
         )
-        self.assertEqual(local.run_once(now=NOW).status, "received")
+        self.assertEqual(local.run_once(now=NOW).status, "dead_letter")
 
         self.store.close()
         self.store = DurableHandoffStore(self.path, retention_days=30)
@@ -607,10 +608,11 @@ class HandoffDispatcherTests(unittest.TestCase):
             wake=wake,
         )
 
-        self.assertEqual(replay.status, "received")
-        self.assertEqual(before, after)
+        self.assertEqual(replay.status, "dead_letter")
+        self.assertIsNotNone(before)
+        self.assertIsNone(after)
         self.assertIsNone(recovered_local.run_once(now=NOW + timedelta(seconds=1)))
-        self.assertEqual(wake_count, 1)
+        self.assertEqual(wake_count, 0)
         self.assertEqual(
             self.store.query_events(
                 limit=50,
@@ -618,6 +620,35 @@ class HandoffDispatcherTests(unittest.TestCase):
                 event_type="execution_claimed",
             ).total,
             1,
+        )
+
+    def test_legacy_in_process_dispatcher_rejects_delegated_wake_before_callback(self) -> None:
+        dispatcher = self.dispatcher(leases=(delegation(),))
+        record = dispatcher.record(
+            change(canonical_event_id="events/in-process-delegated-rejected"),
+            now=NOW,
+        )
+        callbacks: list[str] = []
+        local = LocalAgentDispatcher(
+            self.store,
+            registration_id=OC_REGISTRATION_ID,
+            verify_route=lambda _record: callbacks.append("verify") or True,
+            wake=lambda _record, _wake_token: callbacks.append("wake") or True,
+        )
+
+        result = local.run_once(now=NOW)
+
+        self.assertEqual(result.status, "dead_letter")
+        self.assertEqual(callbacks, [])
+        self.assertIsNone(self.store.get_execution_claim(record.task_slug))
+        releases = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="delegated_execution_handed_back",
+        ).events
+        self.assertEqual(len(releases), 1)
+        self.assertEqual(
+            releases[0].execution_state, "terminal_delivery_failure"
         )
 
     def test_expiry_stops_new_delegated_claims_but_inflight_can_checkpoint(self) -> None:
@@ -994,7 +1025,7 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(result.reason, "delegation_authority_changed")
         self.assertIsNone(self.store.get_execution_claim(TASK))
 
-    def test_execution_authority_rechecks_exact_wake_and_task_ownership(self) -> None:
+    def test_execution_start_rechecks_exact_wake_and_task_ownership(self) -> None:
         self.dispatcher(leases=(delegation(),)).record(
             change(canonical_event_id="events/task-authority-before-execution"),
             now=NOW,
@@ -1020,13 +1051,14 @@ class HandoffDispatcherTests(unittest.TestCase):
             mutation_id="mutation-received-before-task-owner-change",
             now=NOW + timedelta(seconds=1),
         )
-        with self.assertRaisesRegex(ValueError, "wake intent"):
-            self.store.authorize_execution(
+        with self.assertRaisesRegex(ValueError, "wake.*intent"):
+            self.store.start_execution(
                 delivery.handoff_id,
                 registration_id=OC_REGISTRATION_ID,
                 lease_token=delivery.lease_token,
                 lease_generation=delivery.lease_generation,
                 wake_token="wake/wrong-token",
+                launch_id="launch/wrong-wake",
                 now=NOW + timedelta(seconds=2),
             )
 
@@ -1037,18 +1069,320 @@ class HandoffDispatcherTests(unittest.TestCase):
             version="43",
             observed_at=NOW + timedelta(seconds=2),
         )
-        result = self.store.authorize_execution(
+        result = self.store.start_execution(
             delivery.handoff_id,
             registration_id=OC_REGISTRATION_ID,
             lease_token=delivery.lease_token,
             lease_generation=delivery.lease_generation,
             wake_token=wake_token,
+            launch_id="launch/task-owner-changed",
             now=NOW + timedelta(seconds=3),
         )
 
         self.assertEqual(result.status, "suppressed")
-        self.assertEqual(result.reason, "task_authority_changed")
+        self.assertFalse(result.execution_started)
+        self.assertIsNone(result.launch_grant)
+        self.assertEqual(
+            self.store.get(delivery.handoff_id).reason, "task_authority_changed"
+        )
         self.assertIsNone(self.store.get_execution_claim(TASK))
+
+    def _received_delegated_delivery(self, *, event_id: str):
+        self.dispatcher(leases=(delegation(),)).record(
+            change(canonical_event_id=event_id),
+            now=NOW,
+        )
+        delivery = self.store.claim(
+            OC_REGISTRATION_ID, now=NOW, lease_seconds=30
+        )
+        wake_token = f"wake/{delivery.record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW,
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id=f"mutation-received-{event_id.rsplit('/', 1)[-1]}",
+            now=NOW + timedelta(seconds=1),
+        )
+        return delivery, wake_token
+
+    def test_atomic_execution_start_replays_one_grant_and_fences_second_launch(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/atomic-execution-start"
+        )
+
+        started = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/atomic-execution-start",
+            now=NOW + timedelta(seconds=2),
+        )
+        replay = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/atomic-execution-start",
+            now=NOW + timedelta(seconds=3),
+        )
+
+        self.assertIsInstance(started, ExecutionStartGrant)
+        self.assertTrue(started.execution_started)
+        self.assertEqual(started.status, "execution_started")
+        self.assertEqual(started.launch_grant, replay.launch_grant)
+        self.assertEqual(
+            self.store.get(delivery.handoff_id).status, "execution_started"
+        )
+        events = self.store.query_events(
+            limit=20,
+            after_sequence=0,
+            event_type="execution_started",
+        )
+        self.assertEqual(events.total, 1)
+        with self.assertRaisesRegex(ValueError, "launch"):
+            self.store.start_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                wake_token=wake_token,
+                launch_id="launch/different",
+                now=NOW + timedelta(seconds=4),
+            )
+
+    def test_concurrent_execution_start_cas_grants_exactly_one_launch(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/concurrent-execution-start"
+        )
+        other = DurableHandoffStore(self.path, retention_days=30)
+        self.addCleanup(other.close)
+        barrier = threading.Barrier(2)
+
+        def start(candidate: tuple[DurableHandoffStore, str]):
+            store, launch_id = candidate
+            barrier.wait()
+            try:
+                return store.start_execution(
+                    delivery.handoff_id,
+                    registration_id=OC_REGISTRATION_ID,
+                    lease_token=delivery.lease_token,
+                    lease_generation=delivery.lease_generation,
+                    wake_token=wake_token,
+                    launch_id=launch_id,
+                    now=NOW + timedelta(seconds=2),
+                )
+            except ValueError as exc:
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    start,
+                    (
+                        (self.store, "launch/concurrent-one"),
+                        (other, "launch/concurrent-two"),
+                    ),
+                )
+            )
+
+        granted = [result for result in results if isinstance(result, ExecutionStartGrant)]
+        rejected = [result for result in results if isinstance(result, ValueError)]
+        self.assertEqual((len(granted), len(rejected)), (1, 1))
+        self.assertTrue(granted[0].execution_started)
+        self.assertRegex(str(rejected[0]), "launch|received")
+        self.assertEqual(
+            self.store.query_events(
+                limit=20,
+                after_sequence=0,
+                event_type="execution_started",
+            ).total,
+            1,
+        )
+        with sqlite3.connect(self.path) as inspection:
+            self.assertEqual(
+                inspection.execute("SELECT COUNT(*) FROM execution_starts").fetchone()[0],
+                1,
+            )
+
+    def test_revocation_before_start_suppresses_without_launch_grant(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/revocation-before-start"
+        )
+        self.store.observe_delegation_authority(
+            delegation(
+                state=DelegationState.REVOKED,
+                updated_at=NOW + timedelta(seconds=2),
+            ),
+            observed_at=NOW + timedelta(seconds=2),
+        )
+
+        result = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/revoked-before-start",
+            now=NOW + timedelta(seconds=3),
+        )
+
+        self.assertFalse(result.execution_started)
+        self.assertIsNone(result.launch_grant)
+        self.assertEqual(result.status, "suppressed")
+        self.assertEqual(
+            self.store.query_events(
+                limit=20,
+                after_sequence=0,
+                event_type="execution_started",
+            ).total,
+            0,
+        )
+
+    def test_received_delegated_delivery_requires_start_before_active_ack(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/active-requires-start"
+        )
+        with self.assertRaisesRegex(ValueError, "execution start"):
+            self.store.acknowledge(
+                delivery.handoff_id,
+                "actively_executing",
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                mutation_id="mutation-active-before-start",
+                now=NOW + timedelta(seconds=2),
+            )
+
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/active-after-start",
+            now=NOW + timedelta(seconds=2),
+        )
+        active = self.store.acknowledge(
+            delivery.handoff_id,
+            "actively_executing",
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-active-after-start",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.assertEqual(active.status, "actively_executing")
+
+    def test_started_ambiguous_launch_checkpoints_and_replays_handback(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/started-checkpoint"
+        )
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/started-checkpoint",
+            now=NOW + timedelta(seconds=2),
+        )
+
+        checkpointed = self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id="launch/started-checkpoint",
+            mutation_id="mutation-started-checkpoint",
+            reason="Launch outcome requires recovery.",
+            now=NOW + timedelta(seconds=3),
+        )
+        replay = self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id="launch/started-checkpoint",
+            mutation_id="mutation-started-checkpoint",
+            reason="Launch outcome requires recovery.",
+            now=NOW + timedelta(seconds=4),
+        )
+
+        self.assertEqual(checkpointed.status, "suppressed")
+        self.assertEqual(replay.status, "suppressed")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+        handbacks = self.store.query_events(
+            limit=20,
+            after_sequence=0,
+            event_type="delegated_execution_handed_back",
+        )
+        self.assertEqual(handbacks.total, 1)
+        self.assertEqual(handbacks.events[0].execution_state, "checkpointed")
+
+    def test_revocation_after_start_preserves_start_evidence_and_hands_back(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/revocation-after-start"
+        )
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/revocation-after-start",
+            now=NOW + timedelta(seconds=2),
+        )
+        claim = self.store.get_execution_claim(TASK)
+
+        self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-revocation-after-start",
+            now=NOW + timedelta(seconds=3),
+        )
+        replay = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/revocation-after-start",
+            now=NOW + timedelta(seconds=4),
+        )
+
+        self.assertEqual(self.store.get(delivery.handoff_id).status, "suppressed")
+        self.assertFalse(replay.execution_started)
+        self.assertIsNone(replay.launch_grant)
+        self.assertEqual(
+            self.store.query_events(
+                limit=20,
+                after_sequence=0,
+                event_type="execution_started",
+            ).total,
+            1,
+        )
+        handbacks = self.store.query_events(
+            limit=20,
+            after_sequence=0,
+            event_type="delegated_execution_handed_back",
+        )
+        self.assertEqual(handbacks.total, 1)
+        self.assertEqual(handbacks.events[0].execution_state, "revoked")
 
     def test_verified_nonactionable_owner_change_updates_durable_task_control(self) -> None:
         dispatcher = self.dispatcher(leases=(delegation(),))
@@ -2116,6 +2450,19 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(terminal.status, "dead_letter")
         self.assertIsNone(
             self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        )
+        self.assertIsNone(self.store.get_execution_claim(record.task_slug))
+        self.assertIsNotNone(
+            self.store.get_execution_claim(record.task_slug, include_terminal=True)
+        )
+        release_events = self.store.query_events(
+            limit=50,
+            after_sequence=0,
+            event_type="execution_claim_released",
+        ).events
+        self.assertEqual(len(release_events), 1)
+        self.assertEqual(
+            release_events[0].execution_state, "terminal_delivery_failure"
         )
 
     def test_concurrent_connections_return_one_record_and_one_claim(self) -> None:

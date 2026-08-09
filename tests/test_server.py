@@ -2295,7 +2295,7 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             0,
         )
 
-    def test_execution_authority_catches_revocation_between_server_checks(self) -> None:
+    def test_execution_start_catches_revocation_between_server_checks(self) -> None:
         lease = AgentDelegationLease(
             slug="agent-delegations/33333333-3333-4333-8333-333333333333",
             source_agent="agents/tammy",
@@ -2434,23 +2434,170 @@ class HandoffDispatcherApiTests(unittest.TestCase):
 
         adapter.race = True
         adapter.delegation_reads = 0
-        authority_status, authority, _ = harness.request(
+        start_status, start, _ = harness.request(
             "POST",
-            f"/api/handoffs/{record.handoff_id}/execution-authority",
-            {"wake_token": wake_token},
-            {**headers, "Idempotency-Key": "mutation-authority-race"},
+            f"/api/handoffs/{record.handoff_id}/execution-start",
+            {"wake_token": wake_token, "launch_id": "launch/api-race"},
+            {**headers, "Idempotency-Key": "mutation-start-race"},
         )
 
-        self.assertEqual(authority_status, 200)
+        self.assertEqual(start_status, 200)
         self.assertEqual(
-            authority,
+            start,
             {
                 "handoff_id": record.handoff_id,
                 "status": "suppressed",
-                "execution_authorized": False,
+                "launch_id": "launch/api-race",
+                "launch_grant": None,
+                "execution_started": False,
             },
         )
         self.assertGreaterEqual(adapter.delegation_reads, 2)
+        self.assertIsNone(store.get_execution_claim(task_slug))
+
+    def test_legacy_execution_authority_endpoint_is_removed(self) -> None:
+        status, _payload, _headers = self.harness.request(
+            "POST",
+            "/api/handoffs/handoff-legacy/execution-authority",
+            {"wake_token": "wake/legacy"},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 404)
+
+    def test_execution_start_replays_one_grant_and_checkpoint_hands_back(self) -> None:
+        task_slug = "tasks/execution-start-api"
+        task = replace(
+            new_task(
+                title="Execution start API",
+                now=self.NOW,
+                identity="executionstartapi",
+            ),
+            slug=task_slug,
+            owner_agent="agents/tammy",
+            status="active",
+        )
+        adapter = FakeAdapter(active=(task,))
+        path = Path(self.harness.runtime_directory.name) / "execution-start.sqlite3"
+        store = DurableHandoffStore(str(path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(store, registrations=(self.registration,))
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=task_slug,
+                canonical_event_id="events/execution-start-api",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-execution-start-api",
+                task_status="active",
+                requested_operation="todo",
+            ),
+            now=self.NOW,
+        )
+        harness = ServerHarness(
+            self,
+            adapter,
+            clock=lambda: self.NOW + timedelta(seconds=3),
+            handoff_store=store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                self.registration
+                if agent == self.registration.agent_slug
+                and registration == self.registration.registration_id
+                else None
+            ),
+        )
+        status, claim, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {
+                "registration_id": self.REGISTRATION,
+                "wait_seconds": 0,
+                "lease_seconds": 30,
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        wake_token = f"wake/{record.idempotency_key}"
+        headers = self._lease_headers(claim)
+        self.assertEqual(
+            harness.request(
+                "POST",
+                f"/api/handoffs/{record.handoff_id}/wake",
+                {"wake_token": wake_token},
+                {**headers, "Idempotency-Key": "mutation-wake-start-api"},
+            )[0],
+            200,
+        )
+        self.assertEqual(
+            harness.request(
+                "POST",
+                f"/api/handoffs/{record.handoff_id}/ack",
+                {"status": "received", "detail": None},
+                {**headers, "Idempotency-Key": "mutation-received-start-api"},
+            )[0],
+            200,
+        )
+
+        start_headers = {**headers, "Idempotency-Key": "mutation-start-api"}
+        first_status, first, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-start",
+            {"wake_token": wake_token, "launch_id": "launch/api-success"},
+            start_headers,
+        )
+        replay_status, replay, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-start",
+            {"wake_token": wake_token, "launch_id": "launch/api-success"},
+            start_headers,
+        )
+
+        self.assertEqual((first_status, replay_status), (200, 200))
+        self.assertEqual(first, replay)
+        self.assertEqual(first["status"], "execution_started")
+        self.assertEqual(first["launch_id"], "launch/api-success")
+        self.assertTrue(first["execution_started"])
+        self.assertTrue(first["launch_grant"].startswith("grant/"))
+
+        checkpoint_headers = {
+            **headers,
+            "Idempotency-Key": "mutation-checkpoint-api",
+        }
+        checkpoint_status, checkpoint, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-checkpoint",
+            {
+                "launch_id": "launch/api-success",
+                "reason": "Launch outcome requires operator reconciliation.",
+            },
+            checkpoint_headers,
+        )
+        checkpoint_replay_status, checkpoint_replay, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-checkpoint",
+            {
+                "launch_id": "launch/api-success",
+                "reason": "Launch outcome requires operator reconciliation.",
+            },
+            checkpoint_headers,
+        )
+
+        self.assertEqual((checkpoint_status, checkpoint_replay_status), (200, 200))
+        self.assertEqual(checkpoint, checkpoint_replay)
+        self.assertEqual(
+            checkpoint,
+            {
+                "handoff_id": record.handoff_id,
+                "status": "suppressed",
+                "launch_id": "launch/api-success",
+                "checkpointed": True,
+            },
+        )
         self.assertIsNone(store.get_execution_claim(task_slug))
 
     def test_acknowledgements_enforce_owner_state_and_blocked_detail(self) -> None:
