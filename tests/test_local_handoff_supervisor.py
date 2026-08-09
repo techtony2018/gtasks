@@ -614,6 +614,13 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.ignore_supervisor_disable = False
         self.concurrent_active_seen = False
         self.last_calls: list[tuple[list[str], dict[str, object]]] = []
+        boundary_patch = patch.object(
+            self.installer,
+            "_preflight_worker_boundary",
+            return_value=None,
+        )
+        self.boundary_probe = boundary_patch.start()
+        self.addCleanup(boundary_patch.stop)
 
     def _executable(self, name: str) -> Path:
         path = self.root / "bin" / name
@@ -905,6 +912,44 @@ class SupervisorInstallerTests(SupervisorFixture):
         )
         self.assertNotIn(legacy_config, self.paths)
         self.assertNotIn(legacy_plist, self.paths)
+
+    def test_preflights_both_authenticated_workers_before_any_launchd_mutation(self) -> None:
+        self.write_legacy_install(loaded=True)
+        observed: list[str] = []
+
+        def verify_before_launchctl(worker) -> None:
+            self.assertFalse(
+                any(arguments[0] == "/bin/launchctl" for arguments, _ in self.last_calls)
+            )
+            observed.append(worker.agent_slug)
+
+        self.boundary_probe.side_effect = verify_before_launchctl
+
+        self.install(dry_run=False, replace_legacy=True)
+
+        self.assertEqual(self.boundary_probe.call_count, 2)
+        self.assertEqual(observed, ["agents/tammy", "agents/tammy-oc"])
+        seen = [call.args[0] for call in self.boundary_probe.call_args_list]
+        self.assertEqual(len({worker.mission_control_url for worker in seen}), 1)
+
+    def test_failed_authenticated_preflight_preserves_legacy_and_writes_nothing(self) -> None:
+        self.write_legacy_install(loaded=True)
+        self.boundary_probe.side_effect = TimeoutError("private endpoint timeout")
+        legacy_bytes = self.legacy_plist.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "authenticated.*preflight"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        self.assertTrue(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertEqual(self.legacy_plist.read_bytes(), legacy_bytes)
+        self.assertFalse(self.paths.supervisor_config.exists())
+        self.assertFalse(self.paths.codex_worker_config.exists())
+        self.assertFalse(self.paths.openclaw_worker_config.exists())
+        self.assertFalse(self.paths.plist.exists())
+        self.assertFalse(
+            any(arguments[0] == "/bin/launchctl" for arguments, _ in self.last_calls)
+        )
 
     def test_both_installers_share_one_private_regular_install_lock(self) -> None:
         legacy_installer = load_legacy_installer()
@@ -2076,6 +2121,68 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
         self.assertTrue(self.legacy_disabled)
+
+    def test_failed_preflight_does_not_touch_pending_recovery_or_launchd(self) -> None:
+        self.fail_supervisor_bootstrap = True
+        with self.assertRaisesRegex(RuntimeError, "safe_disabled_fallback"):
+            self.install(dry_run=False)
+
+        marker = self.installer.recovery_marker_path(self.paths)
+        marker_before = marker.read_bytes()
+        files_before = {
+            path: (path.read_bytes(), path.stat().st_mode & 0o777)
+            for path in (
+                self.paths.codex_worker_config,
+                self.paths.openclaw_worker_config,
+                self.paths.supervisor_config,
+                self.paths.plist,
+            )
+            if path.exists()
+        }
+        state_before = (
+            self.supervisor_loaded,
+            self.supervisor_disabled,
+            self.legacy_loaded,
+            self.legacy_disabled,
+        )
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        self.boundary_probe.side_effect = TimeoutError("simulated boundary timeout")
+
+        with self.assertRaisesRegex(ValueError, "authenticated worker preflight"):
+            self.installer.install(
+                source_worker_configs=(self.codex_config, self.openclaw_config),
+                plist_template=TEMPLATE_PATH,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                codex_path=str(self.codex),
+                openclaw_path=str(self.openclaw),
+                working_directory=ROOT,
+                home_directory=self.home,
+                run=self.fake_run(calls),
+                dry_run=False,
+            )
+
+        self.assertEqual(marker.read_bytes(), marker_before)
+        self.assertEqual(
+            {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in files_before
+            },
+            files_before,
+        )
+        self.assertEqual(
+            (
+                self.supervisor_loaded,
+                self.supervisor_disabled,
+                self.legacy_loaded,
+                self.legacy_disabled,
+            ),
+            state_before,
+        )
+        self.assertFalse(
+            any(arguments[0] == "/bin/launchctl" for arguments, _kwargs in calls)
+        )
 
     def test_timeout_at_every_exact_rollback_stage_leaves_resumable_safe_fence(self) -> None:
         baseline_calls: list[tuple[list[str], dict[str, object]]] = []

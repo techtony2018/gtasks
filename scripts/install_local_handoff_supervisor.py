@@ -33,11 +33,13 @@ from gtasks.handoff_install_lock import (  # noqa: E402
 from gtasks.local_handoff_dispatcher import (  # noqa: E402
     CodexResumeAdapter,
     DispatcherConfig,
+    LocalDispatcherClient,
 )
 from gtasks.local_handoff_supervisor import (  # noqa: E402
     SupervisorConfig,
     claim_store_path_for,
     load_isolated_workers,
+    worker_route,
     worker_runtime,
 )
 from gtasks.openclaw_adapter import OpenClawSessionAdapter  # noqa: E402
@@ -1319,6 +1321,18 @@ def _validate_existing_worker(
         raise ValueError("existing worker fixed runtime binding must be preserved")
 
 
+def _preflight_worker_boundary(worker: DispatcherConfig) -> None:
+    client = LocalDispatcherClient(
+        worker.mission_control_url,
+        registration_id=worker.registration_id,
+        bearer_token=worker.read_token(),
+        agent_slug=worker.agent_slug,
+    )
+    result = client.preflight()
+    if result.get("route") != worker_route(worker):
+        raise ValueError("authenticated worker preflight route does not match")
+
+
 @locked_handoff_install
 def install(
     *,
@@ -1350,6 +1364,87 @@ def install(
     legacy_config, legacy_plist = canonical_single_worker_install_paths(
         home_directory if home_directory is not None else Path.home()
     )
+    source_supervisor = SupervisorConfig(
+        schema_version=1,
+        worker_config_paths=(
+            Path(source_worker_configs[0]).expanduser(),
+            Path(source_worker_configs[1]).expanduser(),
+        ),
+    )
+    source_workers = load_isolated_workers(source_supervisor)
+    source_by_runtime = {worker_runtime(worker): worker for worker in source_workers}
+    ordered_workers = (source_by_runtime["codex"], source_by_runtime["openclaw"])
+    destination_by_runtime = {
+        "codex": paths.codex_worker_config,
+        "openclaw": paths.openclaw_worker_config,
+    }
+
+    resolved_python = _resolve_executable(python_path)
+    if Path(resolved_python) == Path("/usr/bin/python3"):
+        raise ValueError("installer must not use /usr/bin/python3")
+    resolved_codex = _resolve_executable(codex_path)
+    resolved_openclaw = _resolve_executable(openclaw_path)
+    resolved_module_root = Path(module_root).resolve()
+    resolved_runner = Path(runner_path).resolve()
+    expected_runner = resolved_module_root / "gtasks" / "local_handoff_supervisor.py"
+    if not resolved_module_root.is_dir():
+        raise ValueError("module root must be an existing directory")
+    if not (resolved_module_root / "gtasks" / "__init__.py").is_file():
+        raise ValueError("module root must contain the GTasks package")
+    if resolved_runner != expected_runner.resolve() or not resolved_runner.is_file():
+        raise ValueError("runner must be the local supervisor module under module root")
+    resolved_working_directory = Path(working_directory).resolve()
+    if not resolved_working_directory.is_dir():
+        raise ValueError("Agent working directory must be an existing directory")
+
+    import_probe = run(
+        [
+            resolved_python,
+            "-B",
+            "-c",
+            (
+                "from pathlib import Path; "
+                "import gtasks.local_handoff_supervisor as module; "
+                "print(Path(module.__file__).resolve())"
+            ),
+        ],
+        cwd=str(resolved_working_directory),
+        env={
+            "PYTHONPATH": str(resolved_module_root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if import_probe.returncode != 0 or import_probe.stdout.strip() != str(
+        resolved_runner
+    ):
+        raise ValueError("configured Python does not resolve the verified supervisor module")
+
+    codex_version = CodexResumeAdapter(
+        resolved_codex,
+        fixed_thread_id=source_by_runtime["codex"].fixed_thread_id,
+        working_directory=resolved_working_directory,
+        run=run,
+    ).verify_contract()
+    openclaw_version = OpenClawSessionAdapter(
+        executable=resolved_openclaw,
+        session_key=source_by_runtime["openclaw"].fixed_thread_id,
+        timeout_seconds=10,
+        working_directory=resolved_working_directory,
+        run=run,
+    ).verify_contract()
+
+    try:
+        for worker in ordered_workers:
+            _preflight_worker_boundary(worker)
+    except Exception as exc:
+        raise ValueError(
+            "authenticated worker preflight failed before installation mutation"
+        ) from exc
+
     marker_path = recovery_marker_path(paths)
     if marker_path.exists() or marker_path.is_symlink():
         if dry_run:
@@ -1428,79 +1523,6 @@ def install(
                 "supervisor exact pre-state was restored but recovery marker "
                 "cleanup failed; recovery_required"
             ) from exc
-    source_supervisor = SupervisorConfig(
-        schema_version=1,
-        worker_config_paths=(
-            Path(source_worker_configs[0]).expanduser(),
-            Path(source_worker_configs[1]).expanduser(),
-        ),
-    )
-    source_workers = load_isolated_workers(source_supervisor)
-    source_by_runtime = {worker_runtime(worker): worker for worker in source_workers}
-    ordered_workers = (source_by_runtime["codex"], source_by_runtime["openclaw"])
-    destination_by_runtime = {
-        "codex": paths.codex_worker_config,
-        "openclaw": paths.openclaw_worker_config,
-    }
-
-    resolved_python = _resolve_executable(python_path)
-    if Path(resolved_python) == Path("/usr/bin/python3"):
-        raise ValueError("installer must not use /usr/bin/python3")
-    resolved_codex = _resolve_executable(codex_path)
-    resolved_openclaw = _resolve_executable(openclaw_path)
-    resolved_module_root = Path(module_root).resolve()
-    resolved_runner = Path(runner_path).resolve()
-    expected_runner = resolved_module_root / "gtasks" / "local_handoff_supervisor.py"
-    if not resolved_module_root.is_dir():
-        raise ValueError("module root must be an existing directory")
-    if not (resolved_module_root / "gtasks" / "__init__.py").is_file():
-        raise ValueError("module root must contain the GTasks package")
-    if resolved_runner != expected_runner.resolve() or not resolved_runner.is_file():
-        raise ValueError("runner must be the local supervisor module under module root")
-    resolved_working_directory = Path(working_directory).resolve()
-    if not resolved_working_directory.is_dir():
-        raise ValueError("Agent working directory must be an existing directory")
-
-    import_probe = run(
-        [
-            resolved_python,
-            "-B",
-            "-c",
-            (
-                "from pathlib import Path; "
-                "import gtasks.local_handoff_supervisor as module; "
-                "print(Path(module.__file__).resolve())"
-            ),
-        ],
-        cwd=str(resolved_working_directory),
-        env={
-            "PYTHONPATH": str(resolved_module_root),
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if import_probe.returncode != 0 or import_probe.stdout.strip() != str(
-        resolved_runner
-    ):
-        raise ValueError("configured Python does not resolve the verified supervisor module")
-
-    codex_version = CodexResumeAdapter(
-        resolved_codex,
-        fixed_thread_id=source_by_runtime["codex"].fixed_thread_id,
-        working_directory=resolved_working_directory,
-        run=run,
-    ).verify_contract()
-    openclaw_version = OpenClawSessionAdapter(
-        executable=resolved_openclaw,
-        session_key=source_by_runtime["openclaw"].fixed_thread_id,
-        timeout_seconds=10,
-        working_directory=resolved_working_directory,
-        run=run,
-    ).verify_contract()
-
     worker_bytes = tuple(_serialized_config(worker) for worker in ordered_workers)
     installed_supervisor = SupervisorConfig(
         schema_version=1,

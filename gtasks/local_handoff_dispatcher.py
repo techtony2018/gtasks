@@ -2422,6 +2422,29 @@ class LocalDispatcherClient:
             return payload
         return self._validate_claim(payload, agent_slug=agent_slug)
 
+    def preflight(self) -> dict[str, object]:
+        """Verify the authenticated canonical route without claiming work."""
+        _, payload = self._post(
+            "/api/handoffs/preflight",
+            {"registration_id": self._registration_id},
+        )
+        expected = {"verified", "agent_slug", "registration_ref", "route"}
+        if not isinstance(payload, dict) or set(payload) != expected:
+            raise ValueError("handoff preflight response is invalid")
+        if payload.get("verified") is not True:
+            raise ValueError("handoff preflight was not verified")
+        if payload.get("agent_slug") != self._agent_slug:
+            raise ValueError("handoff preflight identity does not match")
+        expected_registration_ref = hashlib.sha256(
+            self._registration_id.encode("utf-8")
+        ).hexdigest()
+        if payload.get("registration_ref") != expected_registration_ref:
+            raise ValueError("handoff preflight registration does not match")
+        route = payload.get("route")
+        if not isinstance(route, str) or not route:
+            raise ValueError("handoff preflight route is invalid")
+        return payload
+
     def authorize_wake(
         self,
         claim: Mapping[str, object],

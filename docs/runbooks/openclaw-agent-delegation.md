@@ -34,6 +34,12 @@ have separate identity-scoped config, credentials, inbox, claim files, runtime
 adapter, and failure counters. The supervisor must fail closed on route,
 identity, session, credential, lease, or permanent-owner mismatch.
 
+Before disabling the legacy worker, the installer verifies both workers
+against one reachable Mission Control origin through authenticated,
+no-side-effect `POST /api/handoffs/preflight` requests. For a pair running on
+the Mission Control host, use `http://127.0.0.1:4179`; a successful health
+`GET` alone is insufficient.
+
 Private state belongs under:
 
 ```text

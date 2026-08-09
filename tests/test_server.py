@@ -1672,6 +1672,49 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             "POST", "/api/handoffs/claim", body, self._auth()
         )
 
+    def test_preflight_verifies_authenticated_canonical_identity_without_mutation(self) -> None:
+        baseline = self._event_count()
+
+        status, payload, _ = self.harness.request(
+            "POST",
+            "/api/handoffs/preflight",
+            {"registration_id": self.REGISTRATION},
+            self._auth(),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload,
+            {
+                "verified": True,
+                "agent_slug": "agents/tammy",
+                "registration_ref": self.registration.reference,
+                "route": "hosts/tammy",
+            },
+        )
+        self.assertEqual(self._event_count(), baseline)
+
+    def test_preflight_rejects_missing_auth_and_wrong_registration_without_mutation(self) -> None:
+        baseline = self._event_count()
+
+        missing_status, missing, _ = self.harness.request(
+            "POST",
+            "/api/handoffs/preflight",
+            {"registration_id": self.REGISTRATION},
+        )
+        mismatch_status, mismatch, _ = self.harness.request(
+            "POST",
+            "/api/handoffs/preflight",
+            {"registration_id": "private-registration-timmy"},
+            self._auth(),
+        )
+
+        self.assertEqual(missing_status, 401)
+        self.assertEqual(missing["code"], "handoff_auth_required")
+        self.assertEqual(mismatch_status, 403)
+        self.assertEqual(mismatch["code"], "handoff_identity_mismatch")
+        self.assertEqual(self._event_count(), baseline)
+
     def _lease_headers(self, claim: dict, *, token: str = "tammy-handoff-api-token"):
         return {
             **self._auth(token),
@@ -3726,7 +3769,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.85")
+        self.assertEqual(payload["version"], "V0.0.86")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3734,11 +3777,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.85")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.85")
+        self.assertEqual(payload["current_version"], "V0.0.86")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.86")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.86",
                 "V0.0.85",
                 "V0.0.84",
                 "V0.0.83",

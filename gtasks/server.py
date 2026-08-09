@@ -2437,6 +2437,69 @@ def _handler_class(
                     return
                 self._json(response_status, response)
                 return
+            if path == "/api/handoffs/preflight":
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                registration_id = payload.get("registration_id")
+                if set(payload) != {"registration_id"} or not isinstance(
+                    registration_id, str
+                ) or not registration_id:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Dispatcher preflight requires one registration identity.",
+                            "code": "invalid_handoff_preflight",
+                        },
+                    )
+                    return
+                registration_ref = hashlib.sha256(
+                    registration_id.encode("utf-8")
+                ).hexdigest()
+                if not hmac.compare_digest(identity.registration_id, registration_ref):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher registration does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                try:
+                    canonical = self._canonical_handoff_registration(
+                        identity, registration_id
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except Exception:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff route readback is unavailable.",
+                            "code": "handoff_route_unavailable",
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "verified": True,
+                        "agent_slug": canonical.agent_slug,
+                        "registration_ref": canonical.reference,
+                        "route": canonical.route,
+                    },
+                )
+                return
             if path == "/api/handoffs/claim":
                 identity = self._handoff_identity()
                 if identity is None:

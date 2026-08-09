@@ -231,6 +231,37 @@ class LocalDispatcherClientTests(unittest.TestCase):
         self.assertEqual(first[3]["authorization"], "Bearer local-bearer-token")
         self.assertEqual(first[4], 32)
 
+    def test_preflight_rejects_malformed_or_mismatched_identity_responses(self) -> None:
+        registration_ref = hashlib.sha256(
+            b"private-registration-tammy"
+        ).hexdigest()
+        cases = (
+            ({"verified": True}, "response is invalid"),
+            (
+                {
+                    "verified": True,
+                    "agent_slug": "agents/timmy",
+                    "registration_ref": registration_ref,
+                    "route": "hosts/tammy",
+                },
+                "identity does not match",
+            ),
+            (
+                {
+                    "verified": True,
+                    "agent_slug": None,
+                    "registration_ref": "wrong-registration",
+                    "route": "hosts/tammy",
+                },
+                "registration does not match",
+            ),
+        )
+        for payload, message in cases:
+            with self.subTest(message=message):
+                self.responses.append(FakeResponse(200, payload))
+                with self.assertRaisesRegex(ValueError, message):
+                    self.client.preflight()
+
     def test_legacy_owned_codex_claim_is_upgraded_without_changing_identity(self) -> None:
         payload = claim_payload()
         for key in (

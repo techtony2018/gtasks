@@ -299,6 +299,15 @@ id on the command line.
 
 ### Paired supervisor transition and install recovery
 
+Before reading or changing launchd state, the paired installer sends one
+authenticated, no-side-effect `POST /api/handoffs/preflight` for each worker.
+The response must match that worker's canonical Agent, registration hash, and
+host route. Both private worker configs must use the same reachable Mission
+Control origin; a local-host pair uses `http://127.0.0.1:4179`. Timeout,
+authentication failure, identity mismatch, route mismatch, or an unexpected
+response aborts before files, recovery markers, legacy fences, or launchd state
+are changed. A health `GET` is not an activation substitute.
+
 The paired Codex/OpenClaw installer owns
 `com.tony.gtasks-handoff-dispatcher-supervisor`. Run its state-read-only dry
 run first, then use `--replace-legacy` only for the reviewed transition from
