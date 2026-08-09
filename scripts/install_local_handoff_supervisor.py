@@ -48,6 +48,9 @@ LEGACY_LABEL = "com.tony.gtasks-handoff-dispatcher"
 OVERRIDE_ABSENT = "absent"
 OVERRIDE_EXPLICITLY_ENABLED = "explicitly_enabled"
 OVERRIDE_EXPLICITLY_DISABLED = "explicitly_disabled"
+LAUNCHCTL_UNLOAD_TIMEOUT_SECONDS = 2.0
+LAUNCHCTL_POLL_INTERVAL_SECONDS = 0.05
+LAUNCHCTL_STABLE_READBACK_SECONDS = 0.25
 PLIST_KEYS = frozenset(
     {
         "Label",
@@ -825,19 +828,45 @@ def _force_unloaded(
         ["/bin/launchctl", "bootout", reference],
         stage=f"{stage}_bootout",
     )
-    for attempt in range(3):
-        if (
-            _loaded_readback(
-                run,
-                reference,
-                stage=f"{stage}_unloaded_readback_{attempt + 1}",
-            ).returncode
-            != 0
-        ):
+    deadline = time.monotonic() + LAUNCHCTL_UNLOAD_TIMEOUT_SECONDS
+    attempt = 0
+    while True:
+        attempt += 1
+        if _loaded_readback(
+            run,
+            reference,
+            stage=f"{stage}_unloaded_readback_{attempt}",
+        ).returncode != 0:
             return True
-        if attempt < 2:
-            time.sleep(0.05)
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(LAUNCHCTL_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _stable_loaded_contract_readback(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    reference: str,
+    snapshot: LaunchLabelSnapshot,
+    *,
+    stage: str,
+) -> subprocess.CompletedProcess[str] | None:
+    deadline = time.monotonic() + LAUNCHCTL_STABLE_READBACK_SECONDS
+    attempt = 0
+    current: subprocess.CompletedProcess[str] | None = None
+    while True:
+        attempt += 1
+        current = _loaded_readback(
+            run,
+            reference,
+            stage=f"{stage}_stable_contract_readback_{attempt}",
+        )
+        if not _snapshot_loaded_contract_matches(snapshot, current):
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return current
+        time.sleep(min(LAUNCHCTL_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _disable_and_unload_label(
@@ -933,11 +962,8 @@ def _restore_label_snapshot(
             snapshot.disabled,
             stage=stage,
         )
-    current = _loaded_readback(
-        run,
-        reference,
-        stage=f"{stage}_initial_readback",
-    )
+    if not _force_unloaded(run, reference, stage=stage):
+        return False
     if not _set_label_disabled(
         run,
         launch_domain,
@@ -947,30 +973,19 @@ def _restore_label_snapshot(
         stage=stage,
     ):
         return False
-    if current.returncode == 0 and not _snapshot_loaded_contract_matches(
-        snapshot, current
-    ):
-        if not _force_unloaded(run, reference, stage=stage):
-            return False
-        current = _loaded_readback(
-            run,
-            reference,
-            stage=f"{stage}_post_bootout_readback",
-        )
-    if current.returncode != 0:
-        bootstrap = _run_launchctl(
-            run,
-            ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)],
-            stage=f"{stage}_bootstrap",
-        )
-        if bootstrap.returncode != 0:
-            return False
-        current = _loaded_readback(
-            run,
-            reference,
-            stage=f"{stage}_contract_readback",
-        )
-    if not _snapshot_loaded_contract_matches(snapshot, current):
+    bootstrap = _run_launchctl(
+        run,
+        ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)],
+        stage=f"{stage}_bootstrap",
+    )
+    if bootstrap.returncode != 0:
+        return False
+    if _stable_loaded_contract_readback(
+        run,
+        reference,
+        snapshot,
+        stage=stage,
+    ) is None:
         return False
     return _set_label_disabled(
         run,

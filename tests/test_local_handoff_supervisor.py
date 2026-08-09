@@ -1691,12 +1691,24 @@ class SupervisorInstallerTests(SupervisorFixture):
                 self.write_legacy_install(loaded=True)
                 setattr(self, failure_attribute, True)
 
-                with self.assertRaisesRegex(RuntimeError, "rolled back"):
+                expected_error = (
+                    "recovery_required"
+                    if failure_attribute == "ignore_legacy_bootout"
+                    else "rolled back"
+                )
+                with self.assertRaisesRegex(RuntimeError, expected_error):
                     self.install(dry_run=False, replace_legacy=True)
 
                 self.assertTrue(self.legacy_loaded)
-                self.assertFalse(self.legacy_disabled)
+                self.assertEqual(
+                    self.legacy_disabled,
+                    failure_attribute == "ignore_legacy_bootout",
+                )
                 self.assertFalse(self.supervisor_loaded)
+                self.assertEqual(
+                    self.installer.recovery_marker_path(self.paths).exists(),
+                    failure_attribute == "ignore_legacy_bootout",
+                )
                 self.assertFalse(
                     any(
                         arguments[:2] == ["/bin/launchctl", "bootstrap"]
@@ -2346,6 +2358,58 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.legacy_loaded)
         self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+
+    def test_rollback_restarts_loaded_legacy_after_bootout_cleanup_is_delayed(self) -> None:
+        self.supervisor_disabled = True
+        self.write_legacy_install(loaded=True)
+        original_fake_run = self.fake_run
+
+        def delayed_cleanup_run(calls):
+            run = original_fake_run(calls)
+            legacy_bootouts = 0
+            cleanup_finished = False
+
+            def wrapped(arguments, **kwargs):
+                nonlocal cleanup_finished, legacy_bootouts
+                if (
+                    arguments[:2] == ["/bin/launchctl", "bootout"]
+                    and arguments[2] == self.legacy_ref
+                ):
+                    legacy_bootouts += 1
+                    result = run(arguments, **kwargs)
+                    self.legacy_loaded = True
+                    return result
+                if (
+                    arguments[:2] == ["/bin/launchctl", "print"]
+                    and arguments[2] == self.legacy_ref
+                    and legacy_bootouts
+                ):
+                    result = run(arguments, **kwargs)
+                    if legacy_bootouts > 1 and not cleanup_finished:
+                        self.legacy_loaded = False
+                        cleanup_finished = True
+                    return result
+                return run(arguments, **kwargs)
+
+            return wrapped
+
+        self.fake_run = delayed_cleanup_run
+
+        with self.assertRaisesRegex(RuntimeError, "exact pre-state rolled back"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        legacy_bootstrap_count = sum(
+            arguments[:2] == ["/bin/launchctl", "bootstrap"]
+            and arguments[-1] == str(self.legacy_plist)
+            for arguments, _kwargs in self.last_calls
+        )
+        if legacy_bootstrap_count == 0:
+            self.legacy_loaded = False
+        self.assertTrue(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+        self.assertEqual(legacy_bootstrap_count, 1)
 
     def test_bootstrap_toctou_legacy_activation_fails_and_restores_clean_state(self) -> None:
         self.supervisor_disabled = False
