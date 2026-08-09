@@ -2261,12 +2261,18 @@ def _agent_delegation_from_page(
         "receipts",
         "links",
     }
-    if (
-        set(frontmatter) != expected_fields
-        or frontmatter.get("type") != "agent_delegation_lease"
-        or page.get("type") != "agent_delegation_lease"
-    ):
+    stored_fields = frozenset(frontmatter)
+    projected_fields = frozenset(expected_fields - {"type", "title"})
+    if page.get("type") != "agent_delegation_lease" or stored_fields not in {
+        frozenset(expected_fields),
+        projected_fields,
+    }:
         raise GBrainProtocolError("agent delegation has an invalid canonical schema")
+    if stored_fields == expected_fields and (
+        frontmatter.get("type") != page.get("type")
+        or frontmatter.get("title") != page.get("title")
+    ):
+        raise GBrainProtocolError("agent delegation has conflicting canonical metadata")
     if len(links) != 1 or not isinstance(links[0], Mapping) or not (
         links[0].get("from_slug") == slug
         and links[0].get("to_slug") == AGENT_DELEGATIONS_ROOT
@@ -2305,7 +2311,9 @@ def _agent_delegation_from_page(
     except (KeyError, TypeError, ValueError) as exc:
         raise GBrainProtocolError(f"agent delegation fields were invalid: {exc}") from exc
     expected_title = f"{lease.source_agent.rsplit('/', 1)[-1].title()} temporary delegation"
-    if frontmatter.get("title") != expected_title or page.get("title") != expected_title:
+    if page.get("title") != expected_title or (
+        "title" in frontmatter and frontmatter.get("title") != expected_title
+    ):
         raise GBrainProtocolError("agent delegation title was not canonical")
     receipt_fields = {
         "action",

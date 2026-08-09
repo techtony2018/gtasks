@@ -975,6 +975,56 @@ class AgentDelegationAdapterTests(unittest.TestCase):
             ),
         )
 
+    def _live_readback_runner(self) -> StatefulIdentityMigrationRunner:
+        class LiveReadbackRunner(StatefulIdentityMigrationRunner):
+            def run(self, tool: str, params: dict) -> object:
+                value = super().run(tool, params)
+                if (
+                    tool == "get_page"
+                    and params.get("slug", "").startswith("agent-delegations/")
+                    and isinstance(value, dict)
+                ):
+                    value = deepcopy(value)
+                    value["frontmatter"].pop("type", None)
+                    value["frontmatter"].pop("title", None)
+                return value
+
+        base = self._runner()
+        return LiveReadbackRunner(base.pages, base.links)
+
+    def test_live_gbrain_readback_accepts_top_level_type_and_title(self) -> None:
+        runner = self._live_readback_runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+
+        receipt = adapter.create_agent_delegation(lease)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(adapter.list_agent_delegations(), (lease,))
+
+    def test_delegation_readback_rejects_conflicting_top_level_metadata(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        adapter.create_agent_delegation(self._lease())
+        runner.pages[self.SLUG]["title"] = "Conflicting delegation"
+
+        with self.assertRaisesRegex(GBrainProtocolError, "metadata|title"):
+            adapter.list_agent_delegations()
+
+    def test_delegation_readback_rejects_partial_or_conflicting_frontmatter_metadata(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        adapter.create_agent_delegation(self._lease())
+
+        runner.pages[self.SLUG]["frontmatter"].pop("title")
+        with self.assertRaisesRegex(GBrainProtocolError, "schema|metadata"):
+            adapter.list_agent_delegations()
+
+        runner.pages[self.SLUG]["frontmatter"]["title"] = "Tammy temporary delegation"
+        runner.pages[self.SLUG]["frontmatter"]["type"] = "task"
+        with self.assertRaisesRegex(GBrainProtocolError, "schema|metadata"):
+            adapter.list_agent_delegations()
+
     def test_create_is_canonical_idempotent_and_reads_back_exact_lease(self) -> None:
         runner = self._runner()
         adapter = self._adapter(runner)
