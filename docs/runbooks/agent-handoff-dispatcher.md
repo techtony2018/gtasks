@@ -43,6 +43,12 @@ received
   -> completed | recovery_required | exhausted failed
 ```
 
+A start that is later proven unused branches through
+`execution_start_abandoned -> received` and must build a new runner with a new
+launch id and grant before it can approach the gate again. This branch is
+legal only for `command_not_started` result evidence or a dead runner observed
+while the gate is still absent.
+
 The target command is held inside a private gated shim. The shim writes its PID
 and ready evidence before Mission Control receives `execution-start`; it cannot
 invoke the target argv until the exact launch has a server grant and an atomic
@@ -52,11 +58,23 @@ priority in the same transaction that changes `received` to
 `execution_started`. The same launch id replays the same grant; a different
 launch id is fenced out.
 
+The start row is immutable fence evidence: its launch id, original lease
+generation/reference, grant reference, and start instant never change during
+recovery. The lease row is separate mutable authorization. Recovery rotates
+that current capability and generation, and the host atomically refreshes the
+claim JSON in every nonterminal inbox state before its next start, abandon,
+checkpoint, or failure request. Launch id, PID, grant reference, and
+`wake_launches` history are not rewritten by credential rotation.
+
 Revocation before that compare-and-swap suppresses the unstarted delivery and
 the host cancels the still-closed shim. Revocation after the compare-and-swap
 does not erase the start record. The host either observes a verified result or
 uses the idempotent execution-checkpoint path to suppress and hand the task
-back. A delegated acknowledgement cannot advance from `received` to active,
+back. A checkpoint proves the immutable launch fence and, while authority is
+live, must also present the current rotated lease credential. If revocation
+already terminalized the same execution claim and cleared that credential,
+the exact launch checkpoint is a read-only terminal reconciliation; it does
+not create a second hand-back. A delegated acknowledgement cannot advance from `received` to active,
 blocked, or completed until the server start record exists.
 
 For a claim file named `<name>.json`, the host keeps the private inbox in
@@ -64,7 +82,7 @@ For a claim file named `<name>.json`, the host keeps the private inbox in
 `<name>.wake-inbox.launches/`. The inbox file and every request, lock, ready,
 gate, cancel, and result file are private. `wake_launches` is append-preserving
 evidence for preparing, spawned, ready, grant received, gate open, completion,
-pre-launch failure, and ambiguity. It stores only bounded state, PID, grant
+pre-launch failure, abandon required, verified start abandonment, and ambiguity. It stores only bounded state, PID, grant
 reference, and privacy-safe detail—not bearer tokens, raw capabilities, fixed
 session ids, prompts, stdout, or stderr.
 
@@ -277,27 +295,42 @@ logs.
 
 - A retryable delivery failure moves the same handoff to `retrying`; a later
   identity-scoped claim increments its attempt and lease generation.
-- Only a proven pre-gate shim failure may create another local launch attempt.
-  The new attempt has a new deterministic launch id and still requires a fresh
-  server start decision. Exhaustion persists a pending terminal server action
-  before sending it.
+- A dead runner with durable ready evidence is checked before, immediately
+  before, and immediately after the execution-start CAS while the gate remains
+  absent. Before a grant, this is a proven pre-gate failure. After a grant, the
+  host first persists `abandon_start` and must verify the server reset before
+  allocating another launch.
+- Only a proven pre-gate shim failure or a verified unused-start reset may
+  create another local launch attempt. The new attempt has a new deterministic
+  launch id and a different server grant. Exhaustion persists a pending
+  terminal server action before sending it.
 - Loss of an `execution-start` response is not a new attempt. The host replays
   the same launch id while the gate remains closed and verifies the same grant.
+  If that start was already abandoned, replay returns `received` with no grant
+  and the host reconciles its local item to retryable failure instead of trying
+  to cancel or reopen the old gate.
+- `command_not_started` is the only post-gate result that proves the target
+  executable was never invoked. The host durably records `abandon_start`
+  before calling the execution-abandon endpoint. That transactional CAS
+  archives the immutable start row, changes `execution_started` back to
+  `received`, and appends one audit event. A lost response retries only this
+  idempotent CAS. Only after verified reset may a fresh runner be created.
 - Timeout, nonzero exit, a dead runner after gate open, or malformed/missing
   post-gate result evidence is ambiguous. The local state becomes
   `recovery_required`; only the idempotent execution-checkpoint request is
   retried. The target command is never automatically reissued.
-- A target executable that is proven not to have started after the server grant
-  is a terminal delivery failure, not a second launch. Terminal pre-launch
-  failure and exhausted pre-gate retries move the handoff to `dead_letter`,
-  release the execution claim as `terminal_delivery_failure`, and retain the
+- An exhausted proven-prelaunch or verified-unused-start retry moves the
+  handoff to `dead_letter`, releases the execution claim as
+  `terminal_delivery_failure`, and retains the
   exhausted local `failed` row and launch history for audit.
 - Guardian requeues only an expired leased delivery or records a terminal
   dead letter according to the bounded retry policy. Guardian is fallback
   reconciliation, not the primary sender or a business-task executor.
 - After a local restart, the Dispatcher persists recovery intent before the
   request, reconciles an authoritative stale generation, rotates capability,
-  and resumes only after the rotated claim is durably saved.
+  and resumes only after the rotated claim is durably saved in both the claim
+  store and every matching nonterminal inbox state. An exact same-generation
+  reconciliation is an idempotent deferred replay, not a fabricated advance.
 - `queued` or `retrying` reconciliation clears stale host state before a new
   claim. `completed` or `dead_letter` reconciliation clears host state and
   stops without claiming replacement work.
@@ -306,8 +339,10 @@ logs.
 
 Never clear local claim state merely because a request was sent. Clear or
 replace it only after a verified retry, terminal, or rotated recovery response.
-Never delete a gate, result, `wake_launches` row, or `execution_starts` row to
-manufacture a retry. An operator investigating `recovery_required` must
+Never manually delete a gate, result, `wake_launches` row, active
+`execution_starts` row, or `abandoned_execution_starts` row to manufacture a
+retry. Only the transactional unused-start CAS may archive and remove the
+active row. An operator investigating `recovery_required` must
 reconcile the fixed target session and canonical Task first, then use the
 recorded checkpoint/hand-back evidence rather than launching the target again.
 

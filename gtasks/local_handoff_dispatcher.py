@@ -88,6 +88,9 @@ EXECUTION_START_KEYS = frozenset(
 EXECUTION_CHECKPOINT_KEYS = frozenset(
     {"handoff_id", "status", "launch_id", "checkpointed"}
 )
+EXECUTION_ABANDON_KEYS = frozenset(
+    {"handoff_id", "status", "launch_id", "abandoned"}
+)
 LEGACY_CODEX_AGENTS = frozenset(
     {"agents/tammy", "agents/timmy", "agents/toddy"}
 )
@@ -107,6 +110,19 @@ INBOX_LAUNCH_STATES = frozenset(
         "launch_ready",
         "start_granted",
         "executing",
+    }
+)
+INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
+    {
+        "accepted",
+        "pending",
+        "failed",
+        "launch_preparing",
+        "launch_spawned",
+        "launch_ready",
+        "start_granted",
+        "executing",
+        "recovery_required",
     }
 )
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
@@ -464,11 +480,10 @@ class PrivateClaimStore:
         if reconciliation.get("status") not in RECOVERABLE_STATES:
             raise ValueError("only a recoverable state can advance recovery")
         generation = reconciliation.get("lease_generation")
-        if (
-            not isinstance(generation, int)
-            or generation <= pending["expected_generation"]
-        ):
+        if not isinstance(generation, int) or generation < pending["expected_generation"]:
             raise ValueError("recovery reconciliation did not advance the generation")
+        if generation == pending["expected_generation"]:
+            return generation, pending["reconciliations"]
         reconciliations = pending["reconciliations"] + 1
         pending["expected_generation"] = generation
         pending["reconciliations"] = reconciliations
@@ -486,11 +501,16 @@ class PrivateClaimStore:
         if claim.get("handoff_id") != state["claim"]["handoff_id"]:
             raise ValueError("recovered claim does not match the pending handoff")
         generation = claim.get("lease_generation")
-        if (
-            not isinstance(generation, int)
-            or generation <= pending["expected_generation"]
-        ):
+        if not isinstance(generation, int) or generation < pending["expected_generation"]:
             raise ValueError("recovered claim did not rotate the lease generation")
+        if generation == pending["expected_generation"]:
+            if claim != state["claim"]:
+                raise ValueError(
+                    "same-generation recovery must exactly replay the current claim"
+                )
+            state["pending_recovery"] = None
+            self._write(state)
+            return
         state["claim"] = dict(claim)
         state["pending_recovery"] = None
         self._write(state)
@@ -781,7 +801,36 @@ class PrivateWakeInbox:
                     or existing["execution_idempotency_key"] != execution_key
                 ):
                     raise ValueError("wake token is bound to a different handoff")
-                if existing["state"] in {"accepted", "pending", "failed"}:
+                existing_claim = json.loads(existing["claim_json"])
+                if not isinstance(existing_claim, dict):
+                    raise ValueError("wake inbox claim is invalid")
+                for field in (
+                    "handoff_id",
+                    "task_slug",
+                    "idempotency_key",
+                    "agent_slug",
+                    "registration_ref",
+                    "executor_agent",
+                    "permanent_owner",
+                    "delegation_slug",
+                ):
+                    if existing_claim.get(field) != stored_claim.get(field):
+                        raise ValueError("recovered claim changed its inbox fence")
+                current_generation = existing_claim.get("lease_generation")
+                recovered_generation = stored_claim.get("lease_generation")
+                if (
+                    not isinstance(current_generation, int)
+                    or not isinstance(recovered_generation, int)
+                    or recovered_generation < current_generation
+                ):
+                    raise ValueError("recovered claim regressed its lease generation")
+                if (
+                    recovered_generation == current_generation
+                    and existing_claim.get("lease_capability")
+                    != stored_claim.get("lease_capability")
+                ):
+                    raise ValueError("same-generation claim changed its lease capability")
+                if existing["state"] in INBOX_AUTHORIZATION_REFRESH_STATES:
                     self._connection.execute(
                         """
                         UPDATE wake_inbox SET claim_json = ?, updated_at = ?
@@ -1317,6 +1366,114 @@ class PrivateWakeInbox:
             self._connection.rollback()
             raise
 
+    def record_start_abandon_required(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        reason: str,
+        retry_at: datetime,
+        now: datetime,
+    ) -> WakeInboxItem:
+        """Persist proof that one granted start did not invoke its command."""
+        reason = " ".join(str(reason).split())[:160] or "command_not_started"
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if (
+                row["worker_claim_ref"] != self._worker_ref(claim)
+                or row["state"] not in {"start_granted", "executing"}
+                or row["current_launch_id"] is None
+                or row["launch_grant_ref"] is None
+            ):
+                raise ValueError(
+                    "start abandon requires one granted command-not-started launch"
+                )
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = 'failed', last_error = ?, retry_at = ?,
+                    pending_server_action = 'abandon_start',
+                    pending_action_reason = ?, updated_at = ?,
+                    worker_claim_ref = NULL, worker_claim_until = NULL
+                WHERE handoff_id = ?
+                """,
+                (
+                    reason,
+                    self._timestamp(retry_at),
+                    reason,
+                    self._timestamp(now),
+                    claim.item.handoff_id,
+                ),
+            )
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=row["current_launch_id"],
+                attempt=row["attempt"],
+                state="abandon_required",
+                now=now,
+                pid=row["launch_pid"],
+                grant_ref=row["launch_grant_ref"],
+                detail=reason,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def reconcile_abandoned_start(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        reason: str,
+        retry_at: datetime,
+        now: datetime,
+    ) -> WakeInboxItem:
+        """Apply a replay proving the server already reset this exact launch."""
+        reason = " ".join(str(reason).split())[:160] or "command_not_started"
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if (
+                row["worker_claim_ref"] != self._worker_ref(claim)
+                or row["state"] not in {"launch_ready", "start_granted"}
+                or row["current_launch_id"] is None
+            ):
+                raise ValueError(
+                    "abandoned start reconciliation requires its current launch"
+                )
+            exhausted = row["attempt"] >= row["max_attempts"]
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = 'failed', last_error = ?, retry_at = ?,
+                    pending_server_action = ?, pending_action_reason = ?,
+                    updated_at = ?, worker_claim_ref = NULL,
+                    worker_claim_until = NULL WHERE handoff_id = ?
+                """,
+                (
+                    reason,
+                    None if exhausted else self._timestamp(retry_at),
+                    "terminal_failure" if exhausted else None,
+                    reason if exhausted else None,
+                    self._timestamp(now),
+                    claim.item.handoff_id,
+                ),
+            )
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=row["current_launch_id"],
+                attempt=row["attempt"],
+                state="start_abandoned",
+                now=now,
+                pid=row["launch_pid"],
+                grant_ref=row["launch_grant_ref"],
+                detail=reason,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
     def complete_server_action(
         self,
         claim: WakeInboxClaim,
@@ -1325,22 +1482,67 @@ class PrivateWakeInbox:
         response: Mapping[str, object],
         now: datetime,
     ) -> WakeInboxItem:
-        row = self._row(claim.item.handoff_id)
-        if row["pending_server_action"] != action:
-            raise ValueError("server action does not match the pending inbox action")
-        expected = "suppressed" if action == "checkpoint" else "dead_letter"
-        if response.get("status") != expected:
-            raise ValueError("server action response did not terminalize the handoff")
-        self._connection.execute(
-            """
-            UPDATE wake_inbox SET pending_server_action = NULL,
-                pending_action_reason = NULL, updated_at = ?,
-                worker_claim_ref = NULL, worker_claim_until = NULL
-            WHERE handoff_id = ?
-            """,
-            (self._timestamp(now), claim.item.handoff_id),
-        )
-        return self.get(claim.item.handoff_id)
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            if row["pending_server_action"] != action:
+                raise ValueError("server action does not match the pending inbox action")
+            if action == "abandon_start":
+                if (
+                    response.get("handoff_id") != row["handoff_id"]
+                    or response.get("launch_id") != row["current_launch_id"]
+                    or response.get("status") != "received"
+                    or response.get("abandoned") is not True
+                ):
+                    raise ValueError(
+                        "server action did not verify the unused start reset"
+                    )
+                exhausted = row["attempt"] >= row["max_attempts"]
+                self._connection.execute(
+                    """
+                    UPDATE wake_inbox SET pending_server_action = ?,
+                        pending_action_reason = ?, retry_at = ?, updated_at = ?,
+                        worker_claim_ref = NULL, worker_claim_until = NULL
+                    WHERE handoff_id = ?
+                    """,
+                    (
+                        "terminal_failure" if exhausted else None,
+                        row["last_error"] if exhausted else None,
+                        None if exhausted else row["retry_at"],
+                        self._timestamp(now),
+                        claim.item.handoff_id,
+                    ),
+                )
+                self._append_launch_event(
+                    handoff_id=claim.item.handoff_id,
+                    launch_id=row["current_launch_id"],
+                    attempt=row["attempt"],
+                    state="start_abandoned",
+                    now=now,
+                    pid=row["launch_pid"],
+                    grant_ref=row["launch_grant_ref"],
+                    detail=row["last_error"],
+                )
+            else:
+                expected = "suppressed" if action == "checkpoint" else "dead_letter"
+                if response.get("status") != expected:
+                    raise ValueError(
+                        "server action response did not terminalize the handoff"
+                    )
+                self._connection.execute(
+                    """
+                    UPDATE wake_inbox SET pending_server_action = NULL,
+                        pending_action_reason = NULL, updated_at = ?,
+                        worker_claim_ref = NULL, worker_claim_until = NULL
+                    WHERE handoff_id = ?
+                    """,
+                    (self._timestamp(now), claim.item.handoff_id),
+                )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
 
     def mark_suppressed(
         self, claim: WakeInboxClaim, *, reason: str, now: datetime
@@ -1411,6 +1613,12 @@ class WakeInboxWorker:
                     launch_id=launch_id,
                     reason=reason,
                 )
+            elif action == "abandon_start":
+                response = self.client.execution_abandon(
+                    item.claim,
+                    launch_id=launch_id,
+                    reason=reason,
+                )
             elif action == "terminal_failure":
                 response = self.client.fail(item.claim, failure_class="terminal")
             else:
@@ -1454,6 +1662,18 @@ class WakeInboxWorker:
     ) -> WakeInboxItem | None:
         self.inbox.record_recovery_required(claimed, reason=reason, now=now)
         self.phase_hook("recovery_required_recorded")
+        return self._deliver_pending_action(claimed, now=now)
+
+    def _record_unstarted(
+        self, claimed: WakeInboxClaim, *, reason: str, now: datetime
+    ) -> WakeInboxItem | None:
+        self.inbox.record_start_abandon_required(
+            claimed,
+            reason=reason,
+            retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+            now=now,
+        )
+        self.phase_hook("start_abandon_required")
         return self._deliver_pending_action(claimed, now=now)
 
     def run_once(self, *, now: datetime) -> WakeInboxItem | None:
@@ -1522,6 +1742,14 @@ class WakeInboxWorker:
             return self._record_prelaunch_failure(
                 claimed, error="shim_lost_before_ready", now=now
             )
+        if observation.state == "ready" and not observation.runner_alive:
+            if item.state == "start_granted":
+                return self._record_unstarted(
+                    claimed, reason="runner_lost_before_gate", now=now
+                )
+            return self._record_prelaunch_failure(
+                claimed, error="runner_lost_before_gate", now=now
+            )
         if observation.state == "cancelled":
             return self.inbox.mark_suppressed(
                 claimed, reason="launch_cancelled_before_gate", now=now
@@ -1547,6 +1775,19 @@ class WakeInboxWorker:
             self.phase_hook("runner_ready_persisted")
 
         if item.state in {"launch_ready", "start_granted"}:
+            pre_start_observation = self.launch_controller.observe(launch_id)
+            if (
+                pre_start_observation.state == "ready"
+                and not pre_start_observation.runner_alive
+            ):
+                if item.state == "start_granted":
+                    return self._record_unstarted(
+                        claimed, reason="runner_lost_before_gate", now=now
+                    )
+                return self._record_prelaunch_failure(
+                    claimed, error="runner_lost_before_gate", now=now
+                )
+            observation = pre_start_observation
             wake_token = _require_identifier(item.claim.get("wake_token"), "wake_token")
             try:
                 start = self.client.execution_start(
@@ -1557,12 +1798,33 @@ class WakeInboxWorker:
             except (OSError, TimeoutError):
                 self.inbox.release_worker_claim(claimed, now=now)
                 return None
-            if (
-                not isinstance(start, Mapping)
-                or start.get("handoff_id") != item.handoff_id
+            if not isinstance(start, Mapping) or (
+                start.get("handoff_id") != item.handoff_id
                 or start.get("launch_id") != launch_id
-                or start.get("execution_started") is not True
             ):
+                raise ValueError("execution start response does not match its launch")
+            if (
+                start.get("execution_started") is False
+                and start.get("status") == "received"
+                and start.get("launch_grant") is None
+            ):
+                return self.inbox.reconcile_abandoned_start(
+                    claimed,
+                    reason="command_not_started",
+                    retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+                    now=now,
+                )
+            if start.get("execution_started") is not True:
+                if observation.state in {
+                    "executing",
+                    "prelaunch_failure",
+                    "ambiguous",
+                }:
+                    return self._record_ambiguous(
+                        claimed,
+                        reason=f"execution_start_{start.get('status', 'invalid')}",
+                        now=now,
+                    )
                 self.launch_controller.cancel(launch_id)
                 return self.inbox.mark_suppressed(
                     claimed,
@@ -1584,10 +1846,17 @@ class WakeInboxWorker:
                     claimed, launch_grant=launch_grant, now=now
                 )
                 self.phase_hook("launch_grant_persisted")
-            observation = self.launch_controller.open_gate(
-                launch_id, launch_grant
-            )
-            self.phase_hook("gate_opened")
+            if observation.state == "ready":
+                observation = self.launch_controller.observe(launch_id)
+                if not observation.runner_alive:
+                    return self._record_unstarted(
+                        claimed, reason="runner_lost_before_gate", now=now
+                    )
+            if observation.state != "prelaunch_failure":
+                observation = self.launch_controller.open_gate(
+                    launch_id, launch_grant
+                )
+                self.phase_hook("gate_opened")
             item = self.inbox.record_gate_open(claimed, now=now)
             self.phase_hook("executing_persisted")
 
@@ -1613,11 +1882,14 @@ class WakeInboxWorker:
             self.phase_hook("launch_completed")
             return completed
         if observation.state == "prelaunch_failure":
-            return self._record_prelaunch_failure(
+            if observation.reason == "command_not_started":
+                return self._record_unstarted(
+                    claimed, reason="command_not_started", now=now
+                )
+            return self._record_ambiguous(
                 claimed,
-                error=observation.reason or "command_not_started",
+                reason=observation.reason or "unexpected_prelaunch_result",
                 now=now,
-                terminal=True,
             )
         if observation.state == "ambiguous":
             return self._record_ambiguous(
@@ -1851,6 +2123,7 @@ class LocalDispatcherClient:
                 raise ValueError("execution start response is inconsistent")
             _require_identifier(response.get("launch_grant"), "launch_grant")
         elif response.get("launch_grant") is not None or response.get("status") not in {
+            "received",
             "suppressed",
             "completed",
             "dead_letter",
@@ -1890,6 +2163,47 @@ class LocalDispatcherClient:
             or response.get("checkpointed") is not True
         ):
             raise ValueError("execution checkpoint response is inconsistent")
+        return response
+
+    def execution_abandon(
+        self,
+        claim: Mapping[str, object],
+        *,
+        launch_id: str,
+        reason: str,
+    ) -> dict[str, object]:
+        """Idempotently reset one execution start proven not to have launched."""
+        handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
+        launch_id = _require_identifier(launch_id, "launch_id")
+        reason = " ".join(str(reason).split())[:160]
+        if not reason:
+            raise ValueError("execution abandon reason is required")
+        headers = self._claim_headers(claim)
+        headers["Idempotency-Key"] = _mutation_id(
+            handoff_id, f"execution-abandon/{launch_id}/{reason}"
+        )
+        _, response = self._post(
+            f"/api/handoffs/{quote(handoff_id, safe='')}/execution-abandon",
+            {"launch_id": launch_id, "reason": reason},
+            headers=headers,
+        )
+        if not isinstance(response, dict) or set(response) != EXECUTION_ABANDON_KEYS:
+            raise ValueError("execution abandon response shape is invalid")
+        if (
+            response.get("handoff_id") != handoff_id
+            or response.get("launch_id") != launch_id
+            or not isinstance(response.get("abandoned"), bool)
+        ):
+            raise ValueError("execution abandon response is inconsistent")
+        if response["abandoned"] is True:
+            if response.get("status") != "received":
+                raise ValueError("execution abandon response is inconsistent")
+        elif response.get("status") not in {
+            "suppressed",
+            "completed",
+            "dead_letter",
+        }:
+            raise ValueError("execution abandon response is inconsistent")
         return response
 
     def _claim_headers(self, claim: Mapping[str, object]) -> dict[str, str]:
@@ -2146,6 +2460,26 @@ def run_forever(
     while not stop_requested() and (max_iterations is None or iterations < max_iterations):
         iterations += 1
         try:
+            current_claim = (
+                claim_store.load_current() if claim_store is not None else None
+            )
+            if (
+                current_claim is not None
+                and wake_inbox is not None
+                and claim_store is not None
+            ):
+                wake_token = claim_store.pending_wake()
+                if wake_token is not None:
+                    try:
+                        wake_inbox.get(str(current_claim["handoff_id"]))
+                    except KeyError:
+                        pass
+                    else:
+                        wake_inbox.enqueue(
+                            current_claim,
+                            wake_token=wake_token,
+                            now=datetime.now(timezone.utc),
+                        )
             if inbox_worker is not None:
                 executed = inbox_worker.run_once(now=datetime.now(timezone.utc))
                 if executed is not None:
@@ -2211,6 +2545,7 @@ def run_forever(
                 recovery_claim = dict(claim)
                 recovery_claim["lease_generation"] = expected_generation
                 recovery_cleared = False
+                recovery_deferred = False
                 while True:
                     recovered = client.recover(recovery_claim)
                     if recovered.get("code") == "handoff_recovery_reconcile":
@@ -2222,10 +2557,14 @@ def run_forever(
                                 return
                             recovery_cleared = True
                             break
+                        prior_generation = expected_generation
                         expected_generation, _ = claim_store.reconcile_recovery(
                             recovered,
                             max_reconciliations=max_recovery_reconciliations,
                         )
+                        if expected_generation == prior_generation:
+                            recovery_deferred = True
+                            break
                         recovery_claim["lease_generation"] = expected_generation
                         continue
                     claim_store.complete_recovery(recovered)
@@ -2250,6 +2589,10 @@ def run_forever(
                     recovered_handoffs.add(str(claim["handoff_id"]))
                     break
                 if recovery_cleared:
+                    continue
+                if recovery_deferred:
+                    if retry_delay > 0:
+                        sleep(retry_delay)
                     continue
                 if claim.get("status") != "leased":
                     if retry_delay > 0:

@@ -1332,6 +1332,352 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(handbacks.total, 1)
         self.assertEqual(handbacks.events[0].execution_state, "checkpointed")
 
+    def test_rotated_checkpoint_uses_current_lease_without_mutating_start_fence(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/rotated-start-checkpoint"
+        )
+        launch_id = "launch/rotated-start-checkpoint"
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        with sqlite3.connect(self.path) as inspection:
+            original_fence = inspection.execute(
+                """
+                SELECT lease_generation, lease_capability_ref, launch_grant_ref
+                FROM execution_starts WHERE handoff_id = ?
+                """,
+                (delivery.handoff_id,),
+            ).fetchone()
+        recovered = self.store.recover_in_progress(
+            delivery.handoff_id,
+            registration=oc_registration(),
+            expected_generation=delivery.lease_generation,
+            now=NOW + timedelta(seconds=3),
+        )
+
+        replay = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=recovered.lease_token,
+            lease_generation=recovered.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=4),
+        )
+        with sqlite3.connect(self.path) as inspection:
+            replayed_fence = inspection.execute(
+                """
+                SELECT lease_generation, lease_capability_ref, launch_grant_ref
+                FROM execution_starts WHERE handoff_id = ?
+                """,
+                (delivery.handoff_id,),
+            ).fetchone()
+        self.assertEqual(replayed_fence, original_fence)
+        self.assertTrue(replay.execution_started)
+        with self.assertRaisesRegex(ValueError, "current.*lease|started launch"):
+            self.store.checkpoint_started_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                launch_id=launch_id,
+                mutation_id="mutation-stale-rotated-checkpoint",
+                reason="Stale credential must not checkpoint current authority.",
+                now=NOW + timedelta(seconds=5),
+            )
+
+        checkpointed = self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=recovered.lease_token,
+            lease_generation=recovered.lease_generation,
+            launch_id=launch_id,
+            mutation_id="mutation-current-rotated-checkpoint",
+            reason="Rotated current authority recorded an ambiguous outcome.",
+            now=NOW + timedelta(seconds=5),
+        )
+
+        self.assertEqual(checkpointed.status, "suppressed")
+
+    def test_checkpoint_after_concurrent_revocation_reconciles_same_start_fence(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/revoked-start-checkpoint"
+        )
+        launch_id = "launch/revoked-start-checkpoint"
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        claim = self.store.get_execution_claim(TASK)
+        released = self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-concurrent-revocation-before-checkpoint",
+            now=NOW + timedelta(seconds=3),
+        )
+
+        reconciled = self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id=launch_id,
+            mutation_id="mutation-ambiguous-after-concurrent-revocation",
+            reason="Ambiguous result observed after revocation won the race.",
+            now=NOW + timedelta(seconds=4),
+        )
+        replay = self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id=launch_id,
+            mutation_id="mutation-ambiguous-after-concurrent-revocation",
+            reason="Ambiguous result observed after revocation won the race.",
+            now=NOW + timedelta(seconds=5),
+        )
+
+        self.assertEqual(reconciled.status, "suppressed")
+        self.assertEqual(replay.status, "suppressed")
+        handbacks = self.store.query_events(
+            limit=20,
+            after_sequence=0,
+            event_type="delegated_execution_handed_back",
+        )
+        self.assertEqual(handbacks.total, 1)
+        self.assertEqual(handbacks.events[0].event_id, released.event_id)
+        self.assertEqual(handbacks.events[0].execution_state, "revoked")
+
+    def test_command_not_started_abandons_start_and_rotates_next_launch_grant(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/abandon-unused-start"
+        )
+        first_launch = "launch/abandon-unused-start-one"
+        first = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=first_launch,
+            now=NOW + timedelta(seconds=2),
+        )
+
+        abandoned = self.store.abandon_unstarted_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id=first_launch,
+            mutation_id="mutation-abandon-unused-start",
+            reason="command_not_started",
+            now=NOW + timedelta(seconds=3),
+        )
+        replay = self.store.abandon_unstarted_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id=first_launch,
+            mutation_id="mutation-abandon-unused-start",
+            reason="command_not_started",
+            now=NOW + timedelta(seconds=4),
+        )
+        abandoned_start_replay = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=first_launch,
+            now=NOW + timedelta(seconds=4),
+        )
+
+        self.assertEqual(abandoned.status, "received")
+        self.assertEqual(replay.status, "received")
+        self.assertFalse(abandoned_start_replay.execution_started)
+        self.assertEqual(abandoned_start_replay.status, "received")
+        self.assertIsNone(abandoned_start_replay.launch_grant)
+        with sqlite3.connect(self.path) as inspection:
+            self.assertEqual(
+                inspection.execute(
+                    "SELECT COUNT(*) FROM execution_starts WHERE handoff_id = ?",
+                    (delivery.handoff_id,),
+                ).fetchone()[0],
+                0,
+            )
+            archived = inspection.execute(
+                """
+                SELECT launch_id, launch_grant_ref, abandon_reason
+                FROM abandoned_execution_starts WHERE handoff_id = ?
+                """,
+                (delivery.handoff_id,),
+            ).fetchall()
+        self.assertEqual(
+            archived,
+            [(first_launch, hashlib.sha256(first.launch_grant.encode()).hexdigest(), "command_not_started")],
+        )
+        self.assertEqual(
+            self.store.query_events(
+                limit=20,
+                after_sequence=0,
+                event_type="execution_start_abandoned",
+            ).total,
+            1,
+        )
+
+        second = self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/abandon-unused-start-two",
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertTrue(second.execution_started)
+        self.assertNotEqual(second.launch_grant, first.launch_grant)
+
+    def test_abandon_unused_start_requires_current_rotated_lease(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/abandon-rotated-current-lease"
+        )
+        launch_id = "launch/abandon-rotated-current-lease"
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        recovered = self.store.recover_in_progress(
+            delivery.handoff_id,
+            registration=oc_registration(),
+            expected_generation=delivery.lease_generation,
+            now=NOW + timedelta(seconds=3),
+        )
+
+        with self.assertRaisesRegex(ValueError, "current lease"):
+            self.store.abandon_unstarted_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                launch_id=launch_id,
+                mutation_id="mutation-stale-abandon-start",
+                reason="command_not_started",
+                now=NOW + timedelta(seconds=4),
+            )
+        reset = self.store.abandon_unstarted_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=recovered.lease_token,
+            lease_generation=recovered.lease_generation,
+            launch_id=launch_id,
+            mutation_id="mutation-current-abandon-start",
+            reason="command_not_started",
+            now=NOW + timedelta(seconds=4),
+        )
+        self.assertEqual(reset.status, "received")
+
+    def test_abandon_rejects_outcome_that_does_not_prove_command_unstarted(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/reject-ambiguous-abandon"
+        )
+        launch_id = "launch/reject-ambiguous-abandon"
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=2),
+        )
+
+        with self.assertRaisesRegex(ValueError, "command.*started|unused start"):
+            self.store.abandon_unstarted_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                launch_id=launch_id,
+                mutation_id="mutation-reject-ambiguous-abandon",
+                reason="timeout",
+                now=NOW + timedelta(seconds=3),
+            )
+
+        self.assertEqual(
+            self.store.get(delivery.handoff_id).status, "execution_started"
+        )
+
+    def test_concurrent_unused_start_abandon_is_one_audited_cas(self) -> None:
+        delivery, wake_token = self._received_delegated_delivery(
+            event_id="events/concurrent-abandon-unused-start"
+        )
+        launch_id = "launch/concurrent-abandon-unused-start"
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=OC_REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=NOW + timedelta(seconds=2),
+        )
+        other = DurableHandoffStore(self.path, retention_days=30)
+        self.addCleanup(other.close)
+        barrier = threading.Barrier(2)
+
+        def abandon(store: DurableHandoffStore):
+            barrier.wait()
+            return store.abandon_unstarted_execution(
+                delivery.handoff_id,
+                registration_id=OC_REGISTRATION_ID,
+                lease_token=delivery.lease_token,
+                lease_generation=delivery.lease_generation,
+                launch_id=launch_id,
+                mutation_id="mutation-concurrent-abandon-unused-start",
+                reason="command_not_started",
+                now=NOW + timedelta(seconds=3),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(abandon, (self.store, other)))
+
+        self.assertEqual([result.status for result in results], ["received"] * 2)
+        self.assertTrue(all(result.abandoned for result in results))
+        self.assertEqual(
+            self.store.query_events(
+                limit=20,
+                after_sequence=0,
+                event_type="execution_start_abandoned",
+            ).total,
+            1,
+        )
+        with sqlite3.connect(self.path) as inspection:
+            self.assertEqual(
+                inspection.execute(
+                    "SELECT COUNT(*) FROM abandoned_execution_starts"
+                ).fetchone()[0],
+                1,
+            )
+
     def test_revocation_after_start_preserves_start_evidence_and_hands_back(self) -> None:
         delivery, wake_token = self._received_delegated_delivery(
             event_id="events/revocation-after-start"

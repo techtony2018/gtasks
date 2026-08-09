@@ -2564,8 +2564,20 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertTrue(first["execution_started"])
         self.assertTrue(first["launch_grant"].startswith("grant/"))
 
+        recovery_status, recovered, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim["lease_generation"],
+            },
+            self._auth(),
+        )
+        self.assertEqual(recovery_status, 200)
+        self.assertEqual(recovered["status"], "execution_started")
+
         checkpoint_headers = {
-            **headers,
+            **self._lease_headers(recovered),
             "Idempotency-Key": "mutation-checkpoint-api",
         }
         checkpoint_status, checkpoint, _ = harness.request(
@@ -2599,6 +2611,149 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             },
         )
         self.assertIsNone(store.get_execution_claim(task_slug))
+
+    def test_execution_abandon_resets_only_the_exact_unused_start(self) -> None:
+        record = self._record(event="events/execution-abandon-api")
+        claim = self.store.claim(
+            self.REGISTRATION,
+            now=self.NOW,
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(claim)
+        wake_token = f"wake/{record.idempotency_key}"
+        self.store.authorize_wake(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            now=self.NOW,
+        )
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-abandon-api-received",
+            now=self.NOW + timedelta(seconds=1),
+        )
+        launch_id = "launch/execution-abandon-api"
+        self.store.start_execution(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=self.NOW + timedelta(seconds=2),
+        )
+        headers = {
+            **self._auth(),
+            "X-Handoff-Registration-ID": self.REGISTRATION,
+            "X-Handoff-Lease-Capability": claim.lease_token,
+            "X-Handoff-Lease-Generation": str(claim.lease_generation),
+            "Idempotency-Key": "mutation-execution-abandon-api",
+        }
+
+        first_status, first, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-abandon",
+            {"launch_id": launch_id, "reason": "command_not_started"},
+            headers,
+        )
+        replay_status, replay, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-abandon",
+            {"launch_id": launch_id, "reason": "command_not_started"},
+            headers,
+        )
+
+        self.assertEqual((first_status, replay_status), (200, 200))
+        self.assertEqual(first, replay)
+        self.assertEqual(
+            first,
+            {
+                "handoff_id": record.handoff_id,
+                "status": "received",
+                "launch_id": launch_id,
+                "abandoned": True,
+            },
+        )
+
+    def test_checkpoint_reconciles_after_concurrent_revocation_clears_lease(self) -> None:
+        record = self._record(event="events/checkpoint-after-api-revocation")
+        claim = self.store.claim(
+            self.REGISTRATION,
+            now=self.NOW,
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(claim)
+        wake_token = f"wake/{record.idempotency_key}"
+        self.store.authorize_wake(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            now=self.NOW,
+        )
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-api-revocation-received",
+            now=self.NOW + timedelta(seconds=1),
+        )
+        launch_id = "launch/checkpoint-after-api-revocation"
+        self.store.start_execution(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            launch_id=launch_id,
+            now=self.NOW + timedelta(seconds=2),
+        )
+        execution_claim = self.store.get_execution_claim(record.task_slug)
+        released = self.store.release_execution_claim(
+            record.task_slug,
+            executor_agent="agents/tammy",
+            idempotency_key=execution_claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-api-concurrent-revocation",
+            now=self.NOW + timedelta(seconds=3),
+        )
+        headers = {
+            **self._auth(),
+            "X-Handoff-Registration-ID": self.REGISTRATION,
+            "X-Handoff-Lease-Capability": claim.lease_token,
+            "X-Handoff-Lease-Generation": str(claim.lease_generation),
+            "Idempotency-Key": "mutation-api-post-revocation-checkpoint",
+        }
+
+        status, checkpoint, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-checkpoint",
+            {
+                "launch_id": launch_id,
+                "reason": "Ambiguous result observed after revocation.",
+            },
+            headers,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(checkpoint["status"], "suppressed")
+        self.assertTrue(checkpoint["checkpointed"])
+        handbacks = self.store.query_events(
+            limit=20,
+            after_sequence=0,
+            event_type="execution_claim_released",
+        )
+        self.assertEqual(handbacks.total, 1)
+        self.assertEqual(handbacks.events[0].event_id, released.event_id)
 
     def test_acknowledgements_enforce_owner_state_and_blocked_detail(self) -> None:
         allowed = ("received", "actively_executing", "still_blocked", "completed")
@@ -2862,6 +3017,59 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             second_recovery["lease_generation"],
             authoritative["lease_generation"] + 1,
         )
+
+    def test_recover_rotates_execution_started_claim(self) -> None:
+        record = self._record(event="events/recover-execution-started")
+        claim = self.store.claim(
+            self.REGISTRATION,
+            now=self.NOW,
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(claim)
+        wake_token = f"wake/{record.idempotency_key}"
+        self.store.authorize_wake(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            now=self.NOW + timedelta(seconds=1),
+        )
+        self.store.acknowledge(
+            record.handoff_id,
+            "received",
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            mutation_id="mutation-recover-started-received",
+            now=self.NOW + timedelta(seconds=2),
+        )
+        self.store.start_execution(
+            record.handoff_id,
+            registration_id=self.REGISTRATION,
+            lease_token=claim.lease_token,
+            lease_generation=claim.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/recover-execution-started",
+            now=self.NOW + timedelta(seconds=3),
+        )
+
+        status, recovered, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/recover",
+            {
+                "registration_id": self.REGISTRATION,
+                "expected_generation": claim.lease_generation,
+            },
+            self._auth(),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(recovered["status"], "execution_started")
+        self.assertEqual(
+            recovered["lease_generation"], claim.lease_generation + 1
+        )
+        self.assertNotEqual(recovered["lease_capability"], claim.lease_token)
 
     def test_recover_reconciles_retrying_and_terminal_without_mutation(self) -> None:
         cases = (("retryable", "retrying"), ("terminal", "dead_letter"))

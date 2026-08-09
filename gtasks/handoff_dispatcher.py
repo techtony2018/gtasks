@@ -73,6 +73,9 @@ EXECUTION_TERMINAL_STATES = frozenset(
         "terminal_delivery_failure",
     }
 )
+PROVEN_COMMAND_NOT_STARTED_REASONS = frozenset(
+    {"command_not_started", "runner_lost_before_gate"}
+)
 _STRUCTURED_ID = re.compile(r"[a-z0-9][a-z0-9._/-]{0,127}")
 _CORRELATION_ID = re.compile(r"(?:corr|correlation)-[a-z0-9][a-z0-9._-]{0,47}")
 _SAFE_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:!?()'/_-]{0,159}")
@@ -286,6 +289,22 @@ class ExecutionStartGrant:
             "launch_id": self.launch_id,
             "launch_grant": self.launch_grant,
             "execution_started": self.execution_started,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAbandonResult:
+    handoff_id: str
+    status: str
+    launch_id: str
+    abandoned: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "handoff_id": self.handoff_id,
+            "status": self.status,
+            "launch_id": self.launch_id,
+            "abandoned": self.abandoned,
         }
 
 
@@ -654,6 +673,22 @@ class DurableHandoffStore:
                     lease_capability_ref TEXT NOT NULL,
                     launch_grant_ref TEXT NOT NULL,
                     started_at TEXT NOT NULL
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS abandoned_execution_starts (
+                    launch_id TEXT PRIMARY KEY,
+                    handoff_id TEXT NOT NULL REFERENCES handoffs(handoff_id),
+                    wake_token_ref TEXT NOT NULL,
+                    execution_idempotency_key TEXT NOT NULL,
+                    registration_ref TEXT NOT NULL,
+                    lease_generation INTEGER NOT NULL,
+                    lease_capability_ref TEXT NOT NULL,
+                    launch_grant_ref TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    abandon_mutation_ref TEXT NOT NULL UNIQUE,
+                    abandon_reason TEXT NOT NULL,
+                    abandoned_at TEXT NOT NULL
                 )
                 """,
             )
@@ -2048,6 +2083,33 @@ class DurableHandoffStore:
                 "SELECT * FROM execution_starts WHERE handoff_id = ?",
                 (handoff_id,),
             ).fetchone()
+            abandoned = self._connection.execute(
+                """
+                SELECT * FROM abandoned_execution_starts
+                WHERE handoff_id = ? AND launch_id = ?
+                """,
+                (handoff_id, launch_id),
+            ).fetchone()
+            if abandoned is not None:
+                if (
+                    abandoned["wake_token_ref"] != wake_token_ref
+                    or abandoned["execution_idempotency_key"]
+                    != current["idempotency_key"]
+                    or abandoned["registration_ref"] != registration_ref
+                    or not hmac.compare_digest(
+                        abandoned["launch_grant_ref"], _reference(grant)
+                    )
+                ):
+                    raise ValueError(
+                        "abandoned execution start replay does not match its launch"
+                    )
+                return ExecutionStartGrant(
+                    handoff_id=handoff_id,
+                    status="received",
+                    launch_id=launch_id,
+                    launch_grant=None,
+                    execution_started=False,
+                )
             if existing is not None:
                 if existing["launch_id"] != launch_id:
                     raise ValueError("execution start is already bound to another launch")
@@ -2075,25 +2137,13 @@ class DurableHandoffStore:
                         existing["lease_capability_ref"], lease_capability_ref
                     )
                 )
-                if not current_capability_matches and not original_capability_matches:
+                if current["terminal_state"] is None:
+                    if not current_capability_matches:
+                        raise ValueError(
+                            "execution start replay requires the current lease"
+                        )
+                elif not current_capability_matches and not original_capability_matches:
                     raise ValueError("execution start replay requires its exact lease")
-                if current_capability_matches and (
-                    existing["lease_generation"] != lease_generation
-                    or existing["lease_capability_ref"] != lease_capability_ref
-                ):
-                    self._connection.execute(
-                        """
-                        UPDATE execution_starts
-                        SET lease_generation = ?, lease_capability_ref = ?
-                        WHERE handoff_id = ? AND launch_id = ?
-                        """,
-                        (
-                            lease_generation,
-                            lease_capability_ref,
-                            handoff_id,
-                            launch_id,
-                        ),
-                    )
                 replay_started = (
                     current["terminal_state"] is None
                     and current["status"]
@@ -2191,6 +2241,168 @@ class DurableHandoffStore:
                 execution_started=True,
             )
 
+    def abandon_unstarted_execution(
+        self,
+        handoff_id: str,
+        *,
+        registration_id: str,
+        lease_token: str,
+        lease_generation: int,
+        launch_id: str,
+        mutation_id: str,
+        reason: str,
+        now: datetime,
+    ) -> ExecutionAbandonResult:
+        """Reset one start only after durable evidence proves no command began."""
+        _require_structured_id(handoff_id, "handoff_id")
+        _require_structured_id(launch_id, "launch_id")
+        _require_structured_id(mutation_id, "mutation_id")
+        reason = _require_safe_text(reason, "abandon reason")
+        if reason not in PROVEN_COMMAND_NOT_STARTED_REASONS:
+            raise ValueError(
+                "unused start reset requires proof that the command was not started"
+            )
+        if not isinstance(lease_generation, int) or lease_generation < 1:
+            raise ValueError("lease_generation must be a positive integer")
+        now = _require_utc(now, "now")
+        registration_ref = _registration_reference(registration_id)
+        capability_ref = _reference(lease_token)
+        mutation_ref = _reference(mutation_id)
+        with self._write_transaction():
+            archived = self._connection.execute(
+                """
+                SELECT * FROM abandoned_execution_starts
+                WHERE handoff_id = ? AND launch_id = ?
+                """,
+                (handoff_id, launch_id),
+            ).fetchone()
+            if archived is not None:
+                if (
+                    archived["registration_ref"] != registration_ref
+                    or archived["abandon_mutation_ref"] != mutation_ref
+                    or archived["abandon_reason"] != reason
+                ):
+                    raise ValueError("abandoned start replay does not match its fence")
+                return ExecutionAbandonResult(
+                    handoff_id=handoff_id,
+                    status="received",
+                    launch_id=launch_id,
+                    abandoned=True,
+                )
+            current = self._connection.execute(
+                """
+                SELECT h.status, l.registration_id, l.lease_generation,
+                    l.lease_capability_ref, e.*,
+                    s.launch_id AS start_launch_id,
+                    s.wake_token_ref AS start_wake_token_ref,
+                    s.execution_idempotency_key AS start_execution_key,
+                    s.registration_ref AS start_registration_ref,
+                    s.lease_generation AS start_lease_generation,
+                    s.lease_capability_ref AS start_capability_ref,
+                    s.launch_grant_ref AS start_grant_ref,
+                    s.started_at AS start_started_at
+                FROM handoffs h
+                JOIN leases l ON l.handoff_id = h.handoff_id
+                JOIN execution_claims e ON e.handoff_id = h.handoff_id
+                JOIN execution_starts s ON s.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(handoff_id)
+            if current["start_launch_id"] != launch_id:
+                raise ValueError("abandon requires the exact active start launch")
+            if (
+                current["terminal_state"] is not None
+                or current["status"] != "execution_started"
+                or current["registration_id"] != registration_id
+                or current["lease_generation"] != lease_generation
+                or current["lease_capability_ref"] is None
+                or not hmac.compare_digest(
+                    current["lease_capability_ref"], capability_ref
+                )
+            ):
+                raise ValueError(
+                    "abandon requires the current lease for its unused start"
+                )
+            authority_failure = self._execution_authority_failure_in_transaction(
+                current, now=now
+            )
+            if authority_failure is not None:
+                terminal_state, authority_reason, detail = authority_failure
+                self._suppress_execution_authority_in_transaction(
+                    current,
+                    terminal_state=terminal_state,
+                    reason=authority_reason,
+                    detail=detail,
+                    now=now,
+                )
+                record = self.get(handoff_id)
+                return ExecutionAbandonResult(
+                    handoff_id=handoff_id,
+                    status=record.status,
+                    launch_id=launch_id,
+                    abandoned=False,
+                )
+            self._connection.execute(
+                """
+                INSERT INTO abandoned_execution_starts (
+                    launch_id, handoff_id, wake_token_ref,
+                    execution_idempotency_key, registration_ref,
+                    lease_generation, lease_capability_ref, launch_grant_ref,
+                    started_at, abandon_mutation_ref, abandon_reason, abandoned_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    launch_id,
+                    handoff_id,
+                    current["start_wake_token_ref"],
+                    current["start_execution_key"],
+                    current["start_registration_ref"],
+                    current["start_lease_generation"],
+                    current["start_capability_ref"],
+                    current["start_grant_ref"],
+                    current["start_started_at"],
+                    mutation_ref,
+                    reason,
+                    _timestamp(now),
+                ),
+            )
+            deleted = self._connection.execute(
+                """
+                DELETE FROM execution_starts
+                WHERE handoff_id = ? AND launch_id = ?
+                """,
+                (handoff_id, launch_id),
+            ).rowcount
+            changed = self._connection.execute(
+                """
+                UPDATE handoffs SET status = 'received', detail = NULL
+                WHERE handoff_id = ? AND status = 'execution_started'
+                """,
+                (handoff_id,),
+            ).rowcount
+            if deleted != 1 or changed != 1:
+                raise ValueError("unused start reset lost its execution-start CAS")
+            record = self.get(handoff_id)
+            self._append_event_from_record(
+                record,
+                event_type="execution_start_abandoned",
+                summary="A proven unused execution start was reset for a new launch.",
+                detail=reason,
+                mutation_ref=mutation_ref,
+                occurred_at=now,
+                recorded_at=now,
+                execution_state="received",
+            )
+            return ExecutionAbandonResult(
+                handoff_id=handoff_id,
+                status=record.status,
+                launch_id=launch_id,
+                abandoned=True,
+            )
+
     def checkpoint_started_execution(
         self,
         handoff_id: str,
@@ -2232,23 +2444,16 @@ class DurableHandoffStore:
             ).fetchone()
             if current is None:
                 raise KeyError(handoff_id)
-            start_matches = (
+            start_fence_matches = (
                 current["launch_id"] == launch_id
                 and current["start_registration_ref"] == registration_ref
-                and current["start_lease_generation"] == lease_generation
-                and hmac.compare_digest(
-                    current["start_capability_ref"], capability_ref
-                )
             )
-            if (
-                current["terminal_state"] == "checkpointed"
-                and current["release_mutation_ref"] == mutation_ref
-                and start_matches
-            ):
+            if not start_fence_matches:
+                raise ValueError("checkpoint requires the exact started launch fence")
+            if current["terminal_state"] is not None:
                 return self.get(handoff_id)
             if (
-                not start_matches
-                or current["registration_id"] != registration_id
+                current["registration_id"] != registration_id
                 or current["lease_generation"] != lease_generation
                 or current["lease_capability_ref"] is None
                 or not hmac.compare_digest(
@@ -2261,7 +2466,9 @@ class DurableHandoffStore:
                     "still_blocked",
                 }
             ):
-                raise ValueError("checkpoint requires the exact started launch lease")
+                raise ValueError(
+                    "checkpoint requires the current lease for its started launch"
+                )
             self._connection.execute(
                 """
                 UPDATE handoffs SET status = 'suppressed',

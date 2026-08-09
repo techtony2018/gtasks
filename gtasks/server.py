@@ -2570,6 +2570,111 @@ def _handler_class(
                     result.to_dict(),
                 )
                 return
+            execution_abandon_match = re.fullmatch(
+                r"/api/handoffs/([^/]+)/execution-abandon", path
+            )
+            if execution_abandon_match:
+                identity = self._handoff_identity()
+                if identity is None:
+                    return
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if (
+                    set(payload) != {"launch_id", "reason"}
+                    or not isinstance(payload.get("launch_id"), str)
+                    or not isinstance(payload.get("reason"), str)
+                ):
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": (
+                                "Execution abandon requires exactly one launch id "
+                                "and command-not-started reason."
+                            ),
+                            "code": "invalid_handoff_execution_abandon",
+                        },
+                    )
+                    return
+                if handoff_store is None:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff storage is unavailable.",
+                            "code": "handoff_store_unavailable",
+                        },
+                    )
+                    return
+                handoff_id = unquote(execution_abandon_match.group(1))
+                try:
+                    current = handoff_store.get(handoff_id)
+                except KeyError:
+                    self._json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "Handoff was not found.", "code": "handoff_not_found"},
+                    )
+                    return
+                if (
+                    current.agent_slug != identity.agent_slug
+                    or current.registration_ref is None
+                    or not hmac.compare_digest(
+                        current.registration_ref, identity.registration_id
+                    )
+                ):
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Handoff identity does not match its credential.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                lease = self._handoff_mutation_headers(identity)
+                if lease is None:
+                    return
+                registration_id, capability, generation, mutation_id = lease
+                observed_at = clock().astimezone(timezone.utc)
+                try:
+                    self._canonical_handoff_registration(identity, registration_id)
+                    result = handoff_store.abandon_unstarted_execution(
+                        handoff_id,
+                        registration_id=registration_id,
+                        lease_token=capability,
+                        lease_generation=generation,
+                        launch_id=payload["launch_id"],
+                        mutation_id=mutation_id,
+                        reason=payload["reason"],
+                        now=observed_at,
+                    )
+                except _HandoffIdentityMismatch:
+                    self._json(
+                        HTTPStatus.FORBIDDEN,
+                        {
+                            "error": "Dispatcher route no longer matches its registration.",
+                            "code": "handoff_identity_mismatch",
+                        },
+                    )
+                    return
+                except (GBrainError, RuntimeError):
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {
+                            "error": "Handoff execution-abandon readback is unavailable.",
+                            "code": "handoff_authority_unavailable",
+                        },
+                    )
+                    return
+                except (TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": str(exc),
+                            "code": "invalid_handoff_execution_abandon",
+                        },
+                    )
+                    return
+                self._json(HTTPStatus.OK, result.to_dict())
+                return
             execution_checkpoint_match = re.fullmatch(
                 r"/api/handoffs/([^/]+)/execution-checkpoint", path
             )
@@ -2827,6 +2932,7 @@ def _handler_class(
                     not in {
                         "leased",
                         "received",
+                        "execution_started",
                         "actively_executing",
                         "still_blocked",
                     }
