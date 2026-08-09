@@ -5936,10 +5936,10 @@ class ArtifactApiTests(unittest.TestCase):
         )
 
         self.assertEqual(status, 422)
-        self.assertEqual(payload["code"], "unsupported_delegation_claim")
+        self.assertEqual(payload["code"], "invalid_delegation_claim")
         self.assertRegex(
             payload["error"],
-            "delegation_ref.*unsupported.*verified delegation claim",
+            "delegation claim.*unavailable",
         )
         self.assertEqual(adapter.created_artifacts, [])
 

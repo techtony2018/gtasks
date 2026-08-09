@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,7 @@ from .domain import (
     EXISTING_CODEX_AGENT_SCOPES,
     ARTIFACT_BY_AGENT,
     ARTIFACT_KINDS,
+    ArtifactExecutionClaim,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -862,6 +864,148 @@ def _handler_class(
             "version": readback.updated_at.isoformat(),
             "receipt": receipt_value,
         }
+
+    def verified_artifact_execution_claim(
+        *,
+        task_slug: str,
+        executor_agent: str,
+        delegation_ref: str,
+    ) -> ArtifactExecutionClaim:
+        if handoff_store is None:
+            raise DomainValidationError(
+                "Artifact delegation claim storage is unavailable"
+            )
+        claim_reader = getattr(handoff_store, "get_execution_claim", None)
+        if not callable(claim_reader):
+            raise DomainValidationError(
+                "Artifact delegation claim storage is unavailable"
+            )
+        now = clock().astimezone(timezone.utc)
+        claim = claim_reader(task_slug, include_terminal=False)
+        completed_at = None
+        if claim is None:
+            claim = claim_reader(task_slug, include_terminal=True)
+            terminal_state = getattr(claim, "terminal_state", None)
+            terminal_at = getattr(claim, "terminal_at", None)
+            if (
+                claim is None
+                or terminal_state != "completed"
+                or not isinstance(terminal_at, datetime)
+                or terminal_at.tzinfo is None
+                or terminal_at.astimezone(timezone.utc) < now - timedelta(minutes=5)
+                or terminal_at.astimezone(timezone.utc) > now
+            ):
+                raise DomainValidationError(
+                    "Artifact delegation claim is not active or narrowly just completed"
+                )
+            completed_at = terminal_at
+        elif (
+            getattr(claim, "terminal_state", None) is not None
+            or claim.expires_at <= now
+        ):
+            raise DomainValidationError("Artifact delegation claim is expired or terminal")
+        try:
+            leases = {
+                lease.slug: lease
+                for lease in adapter.list_agent_delegations()
+            }
+        except (GBrainError, ValueError) as exc:
+            raise DomainValidationError(
+                "Artifact delegation lease could not be verified"
+            ) from exc
+        lease = leases.get(delegation_ref)
+        if (
+            claim.task_slug != task_slug
+            or claim.executor_agent != executor_agent
+            or claim.delegation_slug != delegation_ref
+            or lease is None
+            or lease.executor_agent != executor_agent
+            or lease.source_agent != claim.permanent_owner
+            or "artifact" not in lease.allowed_operations
+            or lease_state_at(lease, completed_at or now)
+            not in {DelegationState.ACTIVE, DelegationState.COMPLETED}
+        ):
+            raise DomainValidationError(
+                "Artifact delegation claim does not match task, executor, owner, and lease"
+            )
+        return ArtifactExecutionClaim(
+            task_slug=claim.task_slug,
+            executor_agent=claim.executor_agent,
+            permanent_owner=claim.permanent_owner,
+            delegation_ref=delegation_ref,
+            requested_operation=claim.requested_operation,
+            claimed_at=claim.claimed_at,
+            expires_at=claim.expires_at,
+            completed_at=completed_at,
+        )
+
+    @contextmanager
+    def reserve_verified_artifact_execution(
+        initial: ArtifactExecutionClaim,
+        *,
+        publication_key: str,
+    ):
+        if handoff_store is None:
+            raise DomainValidationError(
+                "Artifact delegation claim storage is unavailable"
+            )
+        reserve = getattr(handoff_store, "reserve_artifact_publication", None)
+        observe = getattr(handoff_store, "observe_delegation_authority", None)
+        if not callable(reserve) or not callable(observe):
+            raise DomainValidationError(
+                "Artifact delegation claim reservation is unavailable"
+            )
+        with active_delegation_lock.hold(initial.delegation_ref):
+            now = clock().astimezone(timezone.utc)
+            matches = tuple(
+                lease
+                for lease in adapter.list_agent_delegations()
+                if lease.slug == initial.delegation_ref
+            )
+            if len(matches) != 1 or not isinstance(matches[0], AgentDelegationLease):
+                raise DomainValidationError(
+                    "Artifact delegation claim lease could not be re-read at the write boundary"
+                )
+            lease = matches[0]
+            authority_at = initial.completed_at or now
+            if (
+                lease.source_agent != initial.permanent_owner
+                or lease.executor_agent != initial.executor_agent
+                or "artifact" not in lease.allowed_operations
+                or lease_state_at(lease, authority_at)
+                not in {DelegationState.ACTIVE, DelegationState.COMPLETED}
+            ):
+                raise DomainValidationError(
+                    "Artifact delegation claim lease changed before the write boundary"
+                )
+            observe(lease, observed_at=now)
+            try:
+                with reserve(
+                    initial.task_slug,
+                    executor_agent=initial.executor_agent,
+                    permanent_owner=initial.permanent_owner,
+                    delegation_slug=initial.delegation_ref,
+                    publication_key=publication_key,
+                    now=now,
+                ) as claim:
+                    yield ArtifactExecutionClaim(
+                        task_slug=claim.task_slug,
+                        executor_agent=claim.executor_agent,
+                        permanent_owner=claim.permanent_owner,
+                        delegation_ref=claim.delegation_slug,
+                        requested_operation=claim.requested_operation,
+                        claimed_at=claim.claimed_at,
+                        expires_at=claim.expires_at,
+                        completed_at=(
+                            claim.terminal_at
+                            if claim.terminal_state == "completed"
+                            else None
+                        ),
+                    )
+            except (RuntimeError, sqlite3.Error, ValueError) as exc:
+                raise DomainValidationError(
+                    "Artifact delegation claim reservation was lost or invalid"
+                ) from exc
 
     def decorate_agent_work_execution(payload: dict[str, Any]) -> dict[str, Any]:
         """Project only currently verified, non-terminal per-task claims."""
@@ -3275,18 +3419,13 @@ def _handler_class(
                             },
                         )
                         return
+                    execution_claim = None
                     if payload.get("delegation_ref") is not None:
-                        self._json(
-                            HTTPStatus.UNPROCESSABLE_ENTITY,
-                            {
-                                "error": (
-                                    "delegation_ref is unsupported until a verified "
-                                    "delegation claim model is available"
-                                ),
-                                "code": "unsupported_delegation_claim",
-                            },
+                        execution_claim = verified_artifact_execution_claim(
+                            task_slug=payload["produced_for"],
+                            executor_agent=executing_agent,
+                            delegation_ref=payload["delegation_ref"],
                         )
-                        return
                     artifact = new_agent_artifact(
                         title=payload["title"],
                         artifact_kind=payload["artifact_kind"],
@@ -3302,11 +3441,23 @@ def _handler_class(
                         now=clock(),
                     )
                     with foreground_operation():
-                        receipt = adapter.create_agent_artifact(
-                            artifact,
-                            executing_agent=executing_agent,
-                            idempotency_key=payload["idempotency_key"],
-                        )
+                        artifact_arguments = {
+                            "executing_agent": executing_agent,
+                            "idempotency_key": payload["idempotency_key"],
+                        }
+                        if execution_claim is None:
+                            receipt = adapter.create_agent_artifact(
+                                artifact, **artifact_arguments
+                            )
+                        else:
+                            with reserve_verified_artifact_execution(
+                                execution_claim,
+                                publication_key=payload["idempotency_key"],
+                            ) as reserved_claim:
+                                artifact_arguments["execution_claim"] = reserved_claim
+                                receipt = adapter.create_agent_artifact(
+                                    artifact, **artifact_arguments
+                                )
                 except ArtifactIdempotencyConflict as exc:
                     self._json(
                         HTTPStatus.CONFLICT,
@@ -3316,7 +3467,14 @@ def _handler_class(
                 except (DomainValidationError, TypeError, ValueError) as exc:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": str(exc), "code": "invalid_artifact"},
+                        {
+                            "error": str(exc),
+                            "code": (
+                                "invalid_delegation_claim"
+                                if "delegation claim" in str(exc).lower()
+                                else "invalid_artifact"
+                            ),
+                        },
                     )
                     return
                 except PartialMutationError as exc:

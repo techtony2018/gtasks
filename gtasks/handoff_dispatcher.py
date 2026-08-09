@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -318,6 +318,9 @@ class ExecutionClaim:
     idempotency_key: str
     claimed_at: datetime
     expires_at: datetime
+    requested_operation: str = ""
+    terminal_state: str | None = field(default=None, compare=False)
+    terminal_at: datetime | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -575,6 +578,22 @@ class DurableHandoffStore:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS execution_claims_active_task
                     ON execution_claims(task_slug) WHERE terminal_state IS NULL
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS artifact_publication_reservations (
+                    reservation_id TEXT PRIMARY KEY,
+                    claim_sequence INTEGER NOT NULL REFERENCES execution_claims(claim_sequence),
+                    publication_ref TEXT NOT NULL UNIQUE,
+                    task_slug TEXT NOT NULL,
+                    executor_agent TEXT NOT NULL,
+                    permanent_owner TEXT NOT NULL,
+                    delegation_slug TEXT NOT NULL,
+                    requested_operation TEXT NOT NULL,
+                    delegation_version TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    reserved_at TEXT NOT NULL,
+                    committed_at TEXT
+                )
                 """,
                 """
                 CREATE TABLE IF NOT EXISTS handoff_events (
@@ -1322,6 +1341,160 @@ class DurableHandoffStore:
                 (task_slug,),
             ).fetchone()
         return self._execution_claim_from_row(row) if row is not None else None
+
+    @contextmanager
+    def reserve_artifact_publication(
+        self,
+        task_slug: str,
+        *,
+        executor_agent: str,
+        permanent_owner: str,
+        delegation_slug: str,
+        publication_key: str,
+        now: datetime,
+    ) -> Iterator[ExecutionClaim]:
+        """Fence one delegated Artifact write against claim/lease terminalization."""
+        for value, field_name in (
+            (task_slug, "task_slug"),
+            (executor_agent, "executor_agent"),
+            (permanent_owner, "permanent_owner"),
+            (delegation_slug, "delegation_slug"),
+        ):
+            _require_structured_id(value, field_name)
+        if (
+            not isinstance(publication_key, str)
+            or not publication_key.strip()
+            or len(publication_key) > 200
+            or "\n" in publication_key
+            or "\r" in publication_key
+        ):
+            raise ValueError("publication_key must be 1 to 200 characters on one line")
+        now = _require_utc(now, "now")
+        publication_ref = hashlib.sha256(
+            f"{task_slug}\0{publication_key.strip()}".encode("utf-8")
+        ).hexdigest()
+        with self._write_transaction():
+            row = self._connection.execute(
+                """
+                SELECT * FROM execution_claims
+                WHERE task_slug = ?
+                ORDER BY claim_sequence DESC LIMIT 1
+                """,
+                (task_slug,),
+            ).fetchone()
+            authority = self._connection.execute(
+                "SELECT * FROM delegation_authority WHERE delegation_slug = ?",
+                (delegation_slug,),
+            ).fetchone()
+            try:
+                allowed_operations = (
+                    json.loads(authority["allowed_operations"])
+                    if authority is not None
+                    else None
+                )
+            except (TypeError, json.JSONDecodeError):
+                allowed_operations = None
+            terminal_at = (
+                _parse_timestamp(row["terminal_at"])
+                if row is not None and row["terminal_at"] is not None
+                else None
+            )
+            terminal_is_narrow_completion = (
+                row is not None
+                and row["terminal_state"] == "completed"
+                and terminal_at is not None
+                and now - timedelta(minutes=5) <= terminal_at <= now
+            )
+            active = (
+                row is not None
+                and row["terminal_state"] is None
+                and now < _parse_timestamp(row["expires_at"])
+            )
+            authority_at = terminal_at if terminal_is_narrow_completion else now
+            authority_is_current = (
+                authority is not None
+                and authority["verified"] == 1
+                and authority["version"] == row["delegation_version"]
+                and authority["source_agent"] == permanent_owner
+                and authority["executor_agent"] == executor_agent
+                and authority["state"]
+                not in {
+                    DelegationState.EXPIRED.value,
+                    DelegationState.REVOKED.value,
+                }
+                and _parse_timestamp(authority["starts_at"]) <= authority_at
+                and authority_at <= _parse_timestamp(authority["ends_at"])
+                and isinstance(allowed_operations, list)
+                and "artifact" in allowed_operations
+            ) if row is not None else False
+            if (
+                row is None
+                or row["task_slug"] != task_slug
+                or row["executor_agent"] != executor_agent
+                or row["permanent_owner"] != permanent_owner
+                or row["delegation_slug"] != delegation_slug
+                or row["requested_operation"] != "artifact"
+                or not (active or terminal_is_narrow_completion)
+                or not authority_is_current
+            ):
+                raise ValueError(
+                    "artifact publication requires the exact current artifact execution claim"
+                )
+            existing = self._connection.execute(
+                """
+                SELECT * FROM artifact_publication_reservations
+                WHERE publication_ref = ?
+                """,
+                (publication_ref,),
+            ).fetchone()
+            if existing is not None and (
+                existing["claim_sequence"] != row["claim_sequence"]
+                or existing["task_slug"] != task_slug
+                or existing["executor_agent"] != executor_agent
+                or existing["permanent_owner"] != permanent_owner
+                or existing["delegation_slug"] != delegation_slug
+                or existing["requested_operation"] != "artifact"
+                or existing["delegation_version"] != row["delegation_version"]
+                or existing["state"] != "committed"
+            ):
+                raise ValueError("artifact publication reservation is unavailable")
+            if existing is None:
+                reservation_id = f"artifact-reservation-{uuid4()}"
+                self._connection.execute(
+                    """
+                    INSERT INTO artifact_publication_reservations (
+                        reservation_id, claim_sequence, publication_ref,
+                        task_slug, executor_agent, permanent_owner,
+                        delegation_slug, requested_operation, delegation_version,
+                        state, reserved_at, committed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'artifact', ?, 'reserved', ?, NULL)
+                    """,
+                    (
+                        reservation_id,
+                        row["claim_sequence"],
+                        publication_ref,
+                        task_slug,
+                        executor_agent,
+                        permanent_owner,
+                        delegation_slug,
+                        row["delegation_version"],
+                        _timestamp(now),
+                    ),
+                )
+            claim = self._execution_claim_from_row(row)
+            yield claim
+            if existing is None:
+                changed = self._connection.execute(
+                    """
+                    UPDATE artifact_publication_reservations
+                    SET state = 'committed', committed_at = ?
+                    WHERE publication_ref = ? AND state = 'reserved'
+                        AND claim_sequence = ?
+                    """,
+                    (_timestamp(now), publication_ref, row["claim_sequence"]),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("artifact publication reservation was lost")
 
     def claim_execution(
         self,
@@ -3301,6 +3474,13 @@ class DurableHandoffStore:
             idempotency_key=row["idempotency_key"],
             claimed_at=_parse_timestamp(row["claimed_at"]),
             expires_at=_parse_timestamp(row["expires_at"]),
+            requested_operation=row["requested_operation"],
+            terminal_state=row["terminal_state"],
+            terminal_at=(
+                _parse_timestamp(row["terminal_at"])
+                if row["terminal_at"] is not None
+                else None
+            ),
         )
 
 

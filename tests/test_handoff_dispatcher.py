@@ -296,6 +296,7 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(record.delegation_slug, active.slug)
         self.assertEqual(claim.delegation_slug, active.slug)
         self.assertEqual(claim.expires_at, active.ends_at)
+        self.assertEqual(claim.requested_operation, "todo")
         self.assertIsNone(
             self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
         )
@@ -303,6 +304,92 @@ class HandoffDispatcherTests(unittest.TestCase):
             self.store.claim(OC_REGISTRATION_ID, now=NOW, lease_seconds=30).task_slug,
             TASK,
         )
+
+    def test_artifact_reservation_orders_terminalization_after_publication(self) -> None:
+        active = delegation()
+        self.dispatcher(leases=(active,)).record(
+            change(
+                canonical_event_id="events/artifact-reservation",
+                requested_operation="artifact",
+            ),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+        competing_store = DurableHandoffStore(self.path, retention_days=30)
+        self.addCleanup(competing_store.close)
+        started = threading.Event()
+        finished = threading.Event()
+
+        def terminalize():
+            started.set()
+            event = competing_store.release_execution_claim(
+                TASK,
+                executor_agent=OC_AGENT,
+                idempotency_key=claim.idempotency_key,
+                terminal_state="completed",
+                mutation_id="mutation-after-artifact-reservation",
+                now=NOW + timedelta(seconds=2),
+            )
+            finished.set()
+            return event
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.store.reserve_artifact_publication(
+                TASK,
+                executor_agent=OC_AGENT,
+                permanent_owner=AGENT,
+                delegation_slug=active.slug,
+                publication_key="artifact-publication:v1",
+                now=NOW + timedelta(seconds=1),
+            ) as reserved:
+                future = pool.submit(terminalize)
+                self.assertTrue(started.wait(timeout=1))
+                self.assertFalse(finished.wait(timeout=0.1))
+                self.assertEqual(reserved.requested_operation, "artifact")
+            event = future.result(timeout=1)
+        self.assertEqual(event.event_type, "delegated_execution_handed_back")
+        self.assertTrue(finished.is_set())
+
+    def test_failed_reservation_rollback_never_restores_revoked_authority(self) -> None:
+        active = delegation()
+        self.dispatcher(leases=(active,)).record(
+            change(
+                canonical_event_id="events/artifact-reservation-crash",
+                requested_operation="artifact",
+            ),
+            now=NOW,
+        )
+        claim = self.store.get_execution_claim(TASK)
+
+        with self.assertRaisesRegex(RuntimeError, "simulated writer crash"):
+            with self.store.reserve_artifact_publication(
+                TASK,
+                executor_agent=OC_AGENT,
+                permanent_owner=AGENT,
+                delegation_slug=active.slug,
+                publication_key="artifact-publication:crash",
+                now=NOW + timedelta(seconds=1),
+            ):
+                raise RuntimeError("simulated writer crash")
+
+        self.store.release_execution_claim(
+            TASK,
+            executor_agent=OC_AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="revoked",
+            mutation_id="mutation-after-artifact-crash",
+            now=NOW + timedelta(seconds=2),
+        )
+        with self.assertRaisesRegex(ValueError, "exact current artifact execution claim"):
+            with self.store.reserve_artifact_publication(
+                TASK,
+                executor_agent=OC_AGENT,
+                permanent_owner=AGENT,
+                delegation_slug=active.slug,
+                publication_key="artifact-publication:crash",
+                now=NOW + timedelta(seconds=3),
+            ):
+                self.fail("revoked authority must not be recovered")
 
     def test_nonactive_lease_routes_to_the_permanent_owner(self) -> None:
         scheduled = delegation(

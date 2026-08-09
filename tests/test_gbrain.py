@@ -3103,6 +3103,106 @@ class AgentArtifactAdapterTests(unittest.TestCase):
         self.assertNotIn("verified", readback.to_dict())
         self.assertNotIn("publisher-asserted", rendered)
 
+    def test_delegated_openclaw_provenance_is_verified_before_canonical_write(self) -> None:
+        delegation_ref = "agent-delegations/22222222-2222-4222-8222-222222222222"
+        artifact = new_agent_artifact(
+            title="Delegated OC evidence",
+            artifact_kind="markdown",
+            created_by="agents/tammy-oc",
+            produced_for="tasks/11111111-1111-4111-8111-111111111111",
+            markdown="# Evidence\n\nVerified delegated work.",
+            delegation_ref=delegation_ref,
+            now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
+        )
+        task_page, task_links = authorized_artifact_task(artifact)
+        task_page["frontmatter"]["owner_agent"] = "agents/tammy"
+        task_page["frontmatter"]["links"] = [
+            {"to": "collections/tammys-tasks", "type": "member_of"},
+            {"to": "agents/tammy", "type": "assigned_to"},
+        ]
+        task_links = [
+            {
+                **edge,
+                "to_slug": (
+                    "collections/tammys-tasks"
+                    if edge["link_type"] == "member_of"
+                    else "agents/tammy"
+                ),
+            }
+            for edge in task_links
+        ]
+        pages, links = openclaw_anchor_fixture(
+            extra_pages={artifact.produced_for: task_page}, extra_links=task_links
+        )
+        runner = ActivatedOpenClawRunner(pages, links)
+        proof = domain.ArtifactExecutionClaim(
+            task_slug=artifact.produced_for,
+            executor_agent="agents/tammy-oc",
+            permanent_owner="agents/tammy",
+            delegation_ref=delegation_ref,
+            requested_operation="artifact",
+            claimed_at=datetime.fromisoformat("2026-08-08T10:00:00-07:00"),
+            expires_at=datetime.fromisoformat("2026-08-08T10:20:00-07:00"),
+            completed_at=None,
+        )
+
+        receipt = GBrainAdapter(
+            runner,
+            openclaw_profiles=StaticOpenClawProfiles(
+                activated_openclaw_projection()
+            ),
+        ).create_agent_artifact(
+            artifact,
+            executing_agent="agents/tammy-oc",
+            idempotency_key="oc-delegated-artifact",
+            execution_claim=proof,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.artifact.agent_collection, "collections/tammy-oc-artifacts")
+        self.assertEqual(
+            runner.pages[artifact.slug]["frontmatter"]["delegation_ref"],
+            delegation_ref,
+        )
+
+    def test_delegated_openclaw_claim_mismatch_precedes_every_runner_call(self) -> None:
+        delegation_ref = "agent-delegations/22222222-2222-4222-8222-222222222222"
+        artifact = new_agent_artifact(
+            title="Delegated OC evidence",
+            artifact_kind="markdown",
+            created_by="agents/tammy-oc",
+            produced_for="tasks/11111111-1111-4111-8111-111111111111",
+            markdown="Must not publish.",
+            delegation_ref=delegation_ref,
+            now=datetime.fromisoformat("2026-08-08T10:10:00-07:00"),
+        )
+        proof = domain.ArtifactExecutionClaim(
+            task_slug=artifact.produced_for,
+            executor_agent="agents/timmy-oc",
+            permanent_owner="agents/tammy",
+            delegation_ref=delegation_ref,
+            requested_operation="artifact",
+            claimed_at=datetime.fromisoformat("2026-08-08T10:00:00-07:00"),
+            expires_at=datetime.fromisoformat("2026-08-08T10:20:00-07:00"),
+            completed_at=None,
+        )
+        runner = ActivatedOpenClawRunner(*openclaw_anchor_fixture())
+
+        with self.assertRaisesRegex(domain.DomainValidationError, "delegation claim"):
+            GBrainAdapter(
+                runner,
+                openclaw_profiles=StaticOpenClawProfiles(
+                    activated_openclaw_projection()
+                ),
+            ).create_agent_artifact(
+                artifact,
+                executing_agent="agents/tammy-oc",
+                idempotency_key="oc-delegated-mismatch",
+                execution_claim=proof,
+            )
+
+        self.assertEqual(runner.calls, [])
+
 
 class ProjectPersistenceContinuationTests(unittest.TestCase):
     def test_reports_invalid_linked_pages_without_hiding_valid_tasks(self) -> None:
@@ -5345,7 +5445,7 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             domain.DomainValidationError,
-            "delegation_ref.*unsupported.*verified delegation claim",
+            "delegation claim.*delegation_ref",
         ):
             adapter.create_agent_artifact(
                 artifact,

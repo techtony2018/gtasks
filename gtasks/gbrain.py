@@ -35,6 +35,7 @@ from .domain import (
     AGENT_BY_WORK_ROOT,
     AgentProfile,
     AgentArtifact,
+    ArtifactExecutionClaim,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -3107,7 +3108,12 @@ class GBrainAdapter:
             raise ValueError(f"Artifact {label} filter must be a canonical UUID slug")
         return value
 
-    def _preflight_artifact_task(self, artifact: AgentArtifact) -> Task:
+    def _preflight_artifact_task(
+        self,
+        artifact: AgentArtifact,
+        *,
+        expected_owner: str | None = None,
+    ) -> Task:
         self._require_canonical_uuid_slug(artifact.produced_for, "tasks", "produced_for")
         page = self.runner.run("get_page", {"slug": artifact.produced_for})
         links = self.runner.run("get_links", {"slug": artifact.produced_for})
@@ -3116,7 +3122,8 @@ class GBrainAdapter:
                 "Artifact produced_for task readback was not structured"
             )
         task = Task.from_page(page, edges=links)
-        expected_work_root = dict(AGENT_SCOPES)[artifact.created_by]
+        owner = expected_owner or artifact.created_by
+        expected_work_root = dict(AGENT_SCOPES)[owner]
         scope_memberships = [
             edge.get("to_slug")
             for edge in links
@@ -3138,9 +3145,9 @@ class GBrainAdapter:
             task.slug != artifact.produced_for
             or task.status not in {"planned", "active", "blocked", "completed"}
             or task.lifecycle_root != expected_work_root
-            or task.owner_agent != artifact.created_by
+            or task.owner_agent != owner
             or scope_memberships != [expected_work_root]
-            or assignments != [artifact.created_by]
+            or assignments != [owner]
         )
         is_completed_agent_qa_fixture = (
             task.slug == artifact.produced_for
@@ -3149,14 +3156,14 @@ class GBrainAdapter:
             and task.lifecycle_root == QA_FIXTURES_ROOT
             and task.qa_fixture
             and bool(task.qa_owner)
-            and task.owner_agent == artifact.created_by
+            and task.owner_agent == owner
             and scope_memberships == [QA_FIXTURES_ROOT]
-            and assignments == [artifact.created_by]
+            and assignments == [owner]
         )
         if not is_agent_work and not is_completed_agent_qa_fixture:
             raise DomainValidationError(
                 "Artifact produced_for must be an approved canonical Agent task "
-                "or completed Agent QA fixture owned by created_by with exact "
+                "or completed Agent QA fixture owned by the verified execution owner with exact "
                 "collection membership"
             )
         return task
@@ -3385,12 +3392,14 @@ class GBrainAdapter:
         *,
         executing_agent: str,
         idempotency_key: str | None = None,
+        execution_claim: ArtifactExecutionClaim | None = None,
     ) -> ArtifactMutationReceipt:
         with self._artifact_create_lock:
             return self._create_agent_artifact_locked(
                 artifact,
                 executing_agent=executing_agent,
                 idempotency_key=idempotency_key,
+                execution_claim=execution_claim,
             )
 
     def _create_agent_artifact_locked(
@@ -3399,6 +3408,7 @@ class GBrainAdapter:
         *,
         executing_agent: str,
         idempotency_key: str | None = None,
+        execution_claim: ArtifactExecutionClaim | None = None,
     ) -> ArtifactMutationReceipt:
         if (
             executing_agent != artifact.created_by
@@ -3407,9 +3417,19 @@ class GBrainAdapter:
             raise DomainValidationError(
                 "Artifact publisher identity does not match its installed execution contract"
             )
-        if artifact.delegation_ref is not None:
+        if artifact.delegation_ref is None:
+            if execution_claim is not None:
+                raise DomainValidationError(
+                    "delegation claim is forbidden when delegation_ref is absent"
+                )
+        elif (
+            not isinstance(execution_claim, ArtifactExecutionClaim)
+            or not execution_claim.matches(
+                artifact, executing_agent=executing_agent
+            )
+        ):
             raise DomainValidationError(
-                "delegation_ref is unsupported until a verified delegation claim model is available"
+                "Artifact delegation claim does not match task, executor, owner, and delegation_ref"
             )
         if idempotency_key is not None and (
             not isinstance(idempotency_key, str)
@@ -3435,7 +3455,14 @@ class GBrainAdapter:
             self._openclaw_profile_from_activation(activation)
             self._verify_openclaw_task_anchor(activation)
             self._verify_openclaw_artifact_anchor(activation)
-            self._preflight_artifact_task(artifact)
+            self._preflight_artifact_task(
+                artifact,
+                expected_owner=(
+                    execution_claim.permanent_owner
+                    if execution_claim is not None
+                    else None
+                ),
+            )
         else:
             self._preflight_artifact_task(artifact)
             self.ensure_artifact_collections()

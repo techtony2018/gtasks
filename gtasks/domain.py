@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
+from .delegation import paired_openclaw_agent
 from .handoff import DomainValidationError, TaskHandoff, validate_task_handoff
 
 
@@ -920,6 +921,67 @@ class AgentArtifact:
             "delegation_ref": self.delegation_ref,
         }
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactExecutionClaim:
+    """Privacy-safe proof that an Artifact belongs to one delegated execution."""
+
+    task_slug: str
+    executor_agent: str
+    permanent_owner: str
+    delegation_ref: str
+    requested_operation: str
+    claimed_at: datetime
+    expires_at: datetime
+    completed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _artifact_uuid_slug(self.task_slug, "produced_for")
+        _optional_delegation_ref(self.delegation_ref)
+        if self.requested_operation != "artifact":
+            raise DomainValidationError(
+                "delegation claim requested_operation must be artifact"
+            )
+        if self.executor_agent not in ARTIFACT_BY_AGENT:
+            raise DomainValidationError("delegation claim executor is not approved")
+        if self.permanent_owner not in EXISTING_CODEX_AGENT_SLUGS:
+            raise DomainValidationError(
+                "delegation claim permanent owner must be a paired Codex Agent"
+            )
+        for value, field in (
+            (self.claimed_at, "claimed_at"),
+            (self.expires_at, "expires_at"),
+        ):
+            if not isinstance(value, datetime) or value.tzinfo is None:
+                raise DomainValidationError(
+                    f"delegation claim {field} must include a timezone"
+                )
+        if self.completed_at is not None and self.completed_at.tzinfo is None:
+            raise DomainValidationError(
+                "delegation claim completed_at must include a timezone"
+            )
+        if self.claimed_at >= self.expires_at:
+            raise DomainValidationError(
+                "delegation claim expiry must be after its claim time"
+            )
+        if self.completed_at is not None and not (
+            self.claimed_at <= self.completed_at <= self.expires_at
+        ):
+            raise DomainValidationError(
+                "delegation claim completion must be inside its execution window"
+            )
+
+    def matches(self, artifact: AgentArtifact, *, executing_agent: str) -> bool:
+        return (
+            artifact.delegation_ref is not None
+            and self.task_slug == artifact.produced_for
+            and self.executor_agent == executing_agent == artifact.created_by
+            and self.delegation_ref == artifact.delegation_ref
+            and self.requested_operation == "artifact"
+            and self.permanent_owner != self.executor_agent
+            and paired_openclaw_agent(self.permanent_owner) == self.executor_agent
+        )
 
 
 def new_agent_artifact(
