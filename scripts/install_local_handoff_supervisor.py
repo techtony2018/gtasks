@@ -35,6 +35,18 @@ from gtasks.openclaw_adapter import OpenClawSessionAdapter  # noqa: E402
 
 
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher-supervisor"
+LEGACY_LABEL = "com.tony.gtasks-handoff-dispatcher"
+PLIST_KEYS = frozenset(
+    {
+        "Label",
+        "ProgramArguments",
+        "WorkingDirectory",
+        "EnvironmentVariables",
+        "RunAtLoad",
+        "KeepAlive",
+        "ProcessType",
+    }
+)
 
 
 class CanonicalInstallPaths(NamedTuple):
@@ -63,7 +75,17 @@ class InstallReceipt:
     plist_path: str
     plist_sha256: str
     workers: tuple[WorkerInstallReceipt, WorkerInstallReceipt]
+    legacy_state: str
+    transition_state: str
     activated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyLaunchState:
+    state: str
+    loaded: bool
+    disabled: bool
+    plist: dict[str, object] | None
 
 
 def canonical_install_paths(home_directory: str | Path) -> CanonicalInstallPaths:
@@ -93,7 +115,7 @@ def canonical_single_worker_install_paths(
         home
         / "Library"
         / "LaunchAgents"
-        / "com.tony.gtasks-handoff-dispatcher.plist",
+        / f"{LEGACY_LABEL}.plist",
     )
 
 
@@ -180,6 +202,181 @@ def _loaded_contract_matches(
     )
 
 
+def _expected_supervisor_plist(
+    *,
+    label: str,
+    arguments: list[str],
+    working_directory: str,
+    module_root: str,
+) -> dict[str, object]:
+    return {
+        "Label": label,
+        "ProgramArguments": arguments,
+        "WorkingDirectory": working_directory,
+        "EnvironmentVariables": {"PYTHONPATH": module_root},
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ProcessType": "Background",
+    }
+
+
+def _parse_exact_plist(
+    content: bytes,
+    *,
+    expected: dict[str, object],
+    description: str,
+) -> dict[str, object]:
+    try:
+        value = plistlib.loads(content)
+    except plistlib.InvalidFileException as exc:
+        raise ValueError(f"{description} is invalid") from exc
+    if not isinstance(value, dict) or not _plist_value_matches_exactly(value, expected):
+        raise ValueError(f"{description} does not match the exact canonical contract")
+    return value
+
+
+def _plist_value_matches_exactly(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or set(actual) != set(expected):
+            return False
+        return all(
+            _plist_value_matches_exactly(actual[key], expected_value)
+            for key, expected_value in expected.items()
+        )
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        return all(
+            _plist_value_matches_exactly(actual_item, expected_item)
+            for actual_item, expected_item in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def _parse_disabled_state(output: str, label: str) -> bool:
+    for raw_line in output.splitlines():
+        if "=>" not in raw_line:
+            continue
+        raw_key, raw_value = raw_line.rsplit("=>", 1)
+        if raw_key.strip().strip('"') != label:
+            continue
+        value = raw_value.strip().lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError("launchctl returned an invalid legacy disabled state")
+    return False
+
+
+def _read_legacy_disabled_state(
+    run: Callable[..., subprocess.CompletedProcess[str]], launch_domain: str
+) -> bool:
+    disabled_readback = run(
+        ["/bin/launchctl", "print-disabled", launch_domain],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if disabled_readback.returncode != 0:
+        raise ValueError("legacy LaunchAgent disabled state could not be verified")
+    return _parse_disabled_state(disabled_readback.stdout, LEGACY_LABEL)
+
+
+def _validated_legacy_plist(
+    plist_path: Path,
+    config_path: Path,
+) -> dict[str, object]:
+    if plist_path.is_symlink():
+        raise ValueError("legacy LaunchAgent plist must not be a symbolic link")
+    try:
+        value = plistlib.loads(plist_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException) as exc:
+        raise ValueError("legacy LaunchAgent plist is invalid") from exc
+    if not isinstance(value, dict) or set(value) != PLIST_KEYS:
+        raise ValueError("legacy LaunchAgent plist does not have the exact contract")
+    arguments = value.get("ProgramArguments")
+    environment = value.get("EnvironmentVariables")
+    working_directory = value.get("WorkingDirectory")
+    if (
+        value.get("Label") != LEGACY_LABEL
+        or value.get("RunAtLoad") is not True
+        or value.get("KeepAlive") is not True
+        or value.get("ProcessType") != "Background"
+        or not isinstance(arguments, list)
+        or len(arguments) != 9
+        or any(not isinstance(item, str) or not item for item in arguments)
+        or arguments[1:4]
+        != ["-m", "gtasks.local_handoff_dispatcher", "--config"]
+        or Path(arguments[4]).resolve() != config_path.resolve()
+        or arguments[5] != "--codex-path"
+        or arguments[7] != "--working-directory"
+        or not Path(arguments[0]).is_absolute()
+        or not Path(arguments[6]).is_absolute()
+        or not isinstance(working_directory, str)
+        or arguments[8] != working_directory
+        or not isinstance(environment, dict)
+        or set(environment) != {"PYTHONPATH"}
+        or not isinstance(environment.get("PYTHONPATH"), str)
+    ):
+        raise ValueError("legacy LaunchAgent plist does not have the exact contract")
+    DispatcherConfig.from_file(config_path).read_token()
+    return value
+
+
+def _inspect_legacy_state(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    legacy_ref: str,
+    legacy_config: Path,
+    legacy_plist: Path,
+) -> LegacyLaunchState:
+    disabled = _read_legacy_disabled_state(run, launch_domain)
+    loaded_readback = run(
+        ["/bin/launchctl", "print", legacy_ref],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    loaded = loaded_readback.returncode == 0
+    plist_present = legacy_plist.exists() or legacy_plist.is_symlink()
+    parsed_plist: dict[str, object] | None = None
+    if loaded or (plist_present and not disabled):
+        if not plist_present:
+            raise ValueError(
+                "loaded legacy LaunchAgent cannot be verified without its canonical plist"
+            )
+        parsed_plist = _validated_legacy_plist(legacy_plist, legacy_config)
+        if loaded and not _loaded_contract_matches(
+            loaded_readback.stdout,
+            expected_arguments=list(parsed_plist["ProgramArguments"]),
+            expected_working_directory=str(parsed_plist["WorkingDirectory"]),
+            expected_module_root=str(
+                dict(parsed_plist["EnvironmentVariables"])["PYTHONPATH"]
+            ),
+        ):
+            raise ValueError("loaded legacy LaunchAgent contract could not be verified")
+    if loaded:
+        state = "loaded"
+    elif plist_present and disabled:
+        state = "disabled"
+    elif plist_present:
+        state = "enabled"
+    else:
+        state = "absent"
+    return LegacyLaunchState(
+        state=state,
+        loaded=loaded,
+        disabled=disabled,
+        plist=parsed_plist,
+    )
+
+
 def _serialized_config(config: DispatcherConfig) -> bytes:
     return (json.dumps(config.to_json_dict(), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
@@ -215,6 +412,7 @@ def install(
     label: str = DEFAULT_LABEL,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     dry_run: bool = False,
+    replace_legacy: bool = False,
 ) -> InstallReceipt:
     if not isinstance(source_worker_configs, tuple) or len(source_worker_configs) != 2:
         raise ValueError("exactly two source worker configs are required")
@@ -259,6 +457,7 @@ def install(
     import_probe = run(
         [
             resolved_python,
+            "-B",
             "-c",
             (
                 "from pathlib import Path; "
@@ -267,7 +466,10 @@ def install(
             ),
         ],
         cwd=str(resolved_working_directory),
-        env={"PYTHONPATH": str(resolved_module_root)},
+        env={
+            "PYTHONPATH": str(resolved_module_root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        },
         check=False,
         capture_output=True,
         text=True,
@@ -330,6 +532,17 @@ def install(
         },
     )
     plist_bytes = plist_text.encode("utf-8")
+    expected_plist = _expected_supervisor_plist(
+        label=label,
+        arguments=expected_arguments,
+        working_directory=str(resolved_working_directory),
+        module_root=str(resolved_module_root),
+    )
+    _parse_exact_plist(
+        plist_bytes,
+        expected=expected_plist,
+        description="rendered supervisor plist",
+    )
     worker_receipts = tuple(
         WorkerInstallReceipt(
             agent_slug=worker.agent_slug,
@@ -344,40 +557,31 @@ def install(
             ordered_workers, worker_bytes, ("codex", "openclaw")
         )
     )
-    receipt = InstallReceipt(
-        label=label,
-        supervisor_config_path=str(paths.supervisor_config),
-        supervisor_config_sha256=sha256(supervisor_bytes).hexdigest(),
-        plist_path=str(paths.plist),
-        plist_sha256=sha256(plist_bytes).hexdigest(),
-        workers=(worker_receipts[0], worker_receipts[1]),
-        activated=not dry_run,
-    )
     _validate_existing_worker(paths.codex_worker_config, ordered_workers[0])
     _validate_existing_worker(paths.openclaw_worker_config, ordered_workers[1])
     if paths.supervisor_config.exists():
         existing_supervisor = SupervisorConfig.from_file(paths.supervisor_config)
         if existing_supervisor != installed_supervisor:
             raise ValueError("existing supervisor config does not match canonical workers")
+    if paths.plist.is_symlink():
+        raise ValueError("existing canonical supervisor plist must not be a symbolic link")
     if paths.plist.exists():
         try:
-            existing_plist = plistlib.loads(paths.plist.read_bytes())
-        except (OSError, plistlib.InvalidFileException) as exc:
+            existing_plist_bytes = paths.plist.read_bytes()
+        except OSError as exc:
             raise ValueError("existing canonical supervisor plist is invalid") from exc
-        if (
-            existing_plist.get("Label") != label
-            or existing_plist.get("ProgramArguments") != expected_arguments
-            or existing_plist.get("WorkingDirectory")
-            != str(resolved_working_directory)
-            or existing_plist.get("EnvironmentVariables")
-            != {"PYTHONPATH": str(resolved_module_root)}
-        ):
-            raise ValueError("existing supervisor plist does not match canonical contract")
-    if dry_run:
-        return receipt
+        _parse_exact_plist(
+            existing_plist_bytes,
+            expected=expected_plist,
+            description="existing canonical supervisor plist",
+        )
 
     launch_domain = f"gui/{os.getuid()}"
     launch_ref = f"{launch_domain}/{label}"
+    legacy_ref = f"{launch_domain}/{LEGACY_LABEL}"
+    legacy_config, legacy_plist = canonical_single_worker_install_paths(
+        home_directory if home_directory is not None else Path.home()
+    )
     loaded = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,
@@ -405,12 +609,53 @@ def install(
         expected_module_root=str(resolved_module_root),
     ):
         raise ValueError("loaded supervisor does not match the exact canonical contract")
+    supervisor_loaded = loaded.returncode == 0
+    legacy = _inspect_legacy_state(
+        run=run,
+        launch_domain=launch_domain,
+        legacy_ref=legacy_ref,
+        legacy_config=legacy_config,
+        legacy_plist=legacy_plist,
+    )
+    legacy_active = legacy.state in {"loaded", "enabled"}
+    if supervisor_loaded and legacy_active:
+        raise ValueError(
+            "concurrent legacy and supervisor state is unsafe; both are loaded or enabled"
+        )
+    if legacy_active and replace_legacy:
+        transition_state = "would_replace_legacy" if dry_run else "legacy_replaced"
+    elif legacy_active:
+        transition_state = f"blocked_legacy_{legacy.state}"
+    elif legacy.state == "disabled":
+        transition_state = "legacy_already_disabled"
+    else:
+        transition_state = "no_legacy"
+    receipt = InstallReceipt(
+        label=label,
+        supervisor_config_path=str(paths.supervisor_config),
+        supervisor_config_sha256=sha256(supervisor_bytes).hexdigest(),
+        plist_path=str(paths.plist),
+        plist_sha256=sha256(plist_bytes).hexdigest(),
+        workers=(worker_receipts[0], worker_receipts[1]),
+        legacy_state=legacy.state,
+        transition_state=transition_state,
+        activated=not dry_run,
+    )
+    if dry_run:
+        return receipt
+    if legacy_active and not replace_legacy:
+        raise ValueError(
+            "legacy LaunchAgent is active; pass --replace-legacy for a verified transition"
+        )
 
     _atomic_write(paths.codex_worker_config, worker_bytes[0], 0o600)
     _atomic_write(paths.openclaw_worker_config, worker_bytes[1], 0o600)
     _atomic_write(paths.supervisor_config, supervisor_bytes, 0o600)
     _atomic_write(paths.plist, plist_bytes, 0o644)
-    if loaded.returncode == 0:
+
+    replacement_started = False
+
+    def restore_legacy() -> bool:
         run(
             ["/bin/launchctl", "bootout", launch_ref],
             check=False,
@@ -418,6 +663,137 @@ def install(
             text=True,
             timeout=10,
         )
+        supervisor_readback = run(
+            ["/bin/launchctl", "print", launch_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if supervisor_readback.returncode == 0:
+            return False
+        enable = run(
+            ["/bin/launchctl", "enable", legacy_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if enable.returncode != 0:
+            return False
+        try:
+            if _read_legacy_disabled_state(run, launch_domain):
+                return False
+        except ValueError:
+            return False
+        if not legacy.loaded:
+            return True
+        legacy_readback = run(
+            ["/bin/launchctl", "print", legacy_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if legacy_readback.returncode != 0:
+            restored = run(
+                ["/bin/launchctl", "bootstrap", launch_domain, str(legacy_plist)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if restored.returncode != 0:
+                return False
+            legacy_readback = run(
+                ["/bin/launchctl", "print", legacy_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        if legacy_readback.returncode != 0 or legacy.plist is None:
+            return False
+        contract_restored = _loaded_contract_matches(
+            legacy_readback.stdout,
+            expected_arguments=list(legacy.plist["ProgramArguments"]),
+            expected_working_directory=str(legacy.plist["WorkingDirectory"]),
+            expected_module_root=str(
+                dict(legacy.plist["EnvironmentVariables"])["PYTHONPATH"]
+            ),
+        )
+        if not contract_restored:
+            return False
+        if legacy.disabled:
+            redisabled = run(
+                ["/bin/launchctl", "disable", legacy_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if redisabled.returncode != 0:
+                return False
+            try:
+                return _read_legacy_disabled_state(run, launch_domain)
+            except ValueError:
+                return False
+        return True
+
+    def activation_failed(message: str) -> None:
+        if replacement_started:
+            if restore_legacy():
+                raise RuntimeError(f"{message}; legacy worker rolled back")
+            raise RuntimeError(f"{message}; legacy rollback failed")
+        raise RuntimeError(message)
+
+    if legacy_active:
+        replacement_started = True
+        disabled = run(
+            ["/bin/launchctl", "disable", legacy_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if disabled.returncode != 0:
+            activation_failed("legacy LaunchAgent could not be disabled")
+        try:
+            legacy_is_disabled = _read_legacy_disabled_state(run, launch_domain)
+        except ValueError:
+            legacy_is_disabled = False
+        if not legacy_is_disabled:
+            activation_failed("legacy LaunchAgent disable readback failed")
+        if legacy.loaded:
+            bootout_legacy = run(
+                ["/bin/launchctl", "bootout", legacy_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if bootout_legacy.returncode != 0:
+                activation_failed("legacy LaunchAgent could not be stopped")
+            legacy_stop_readback = run(
+                ["/bin/launchctl", "print", legacy_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if legacy_stop_readback.returncode == 0:
+                activation_failed("legacy LaunchAgent stop readback failed")
+
+    if supervisor_loaded:
+        bootout_supervisor = run(
+            ["/bin/launchctl", "bootout", launch_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if bootout_supervisor.returncode != 0:
+            activation_failed("existing supervisor LaunchAgent could not be stopped")
     bootstrap = run(
         ["/bin/launchctl", "bootstrap", launch_domain, str(paths.plist)],
         check=False,
@@ -426,7 +802,7 @@ def install(
         timeout=10,
     )
     if bootstrap.returncode != 0:
-        raise RuntimeError("supervisor LaunchAgent bootstrap failed")
+        activation_failed("supervisor LaunchAgent bootstrap failed")
     readback = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,
@@ -440,23 +816,36 @@ def install(
         expected_working_directory=str(resolved_working_directory),
         expected_module_root=str(resolved_module_root),
     ):
-        raise RuntimeError("supervisor LaunchAgent readback failed")
+        activation_failed("supervisor LaunchAgent readback failed")
+    if legacy_active:
+        legacy_readback = run(
+            ["/bin/launchctl", "print", legacy_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        try:
+            legacy_is_disabled = _read_legacy_disabled_state(run, launch_domain)
+        except ValueError:
+            legacy_is_disabled = False
+        if legacy_readback.returncode == 0 or not legacy_is_disabled:
+            activation_failed("legacy LaunchAgent isolation readback failed")
 
     installed = SupervisorConfig.from_file(paths.supervisor_config)
     installed_workers = load_isolated_workers(installed)
     if installed != installed_supervisor or tuple(
         worker.to_json_dict() for worker in installed_workers
     ) != tuple(worker.to_json_dict() for worker in ordered_workers):
-        raise RuntimeError("installed worker configuration readback failed")
-    rendered_plist = plistlib.loads(paths.plist.read_bytes())
-    if (
-        rendered_plist.get("Label") != label
-        or rendered_plist.get("ProgramArguments") != expected_arguments
-        or rendered_plist.get("WorkingDirectory") != str(resolved_working_directory)
-        or rendered_plist.get("EnvironmentVariables")
-        != {"PYTHONPATH": str(resolved_module_root)}
-    ):
-        raise RuntimeError("rendered supervisor LaunchAgent failed readback")
+        activation_failed("installed worker configuration readback failed")
+    try:
+        _parse_exact_plist(
+            paths.plist.read_bytes(),
+            expected=expected_plist,
+            description="rendered supervisor plist",
+        )
+    except (OSError, ValueError):
+        activation_failed("rendered supervisor LaunchAgent failed readback")
     return receipt
 
 
@@ -486,6 +875,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--working-directory", type=Path, default=root)
     parser.add_argument("--home-directory", type=Path, default=Path.home())
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--replace-legacy", action="store_true")
     return parser
 
 
@@ -505,8 +895,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             working_directory=args.working_directory,
             home_directory=args.home_directory,
             dry_run=args.dry_run,
+            replace_legacy=args.replace_legacy,
         )
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         _parser().error(str(exc))
     print(json.dumps(asdict(receipt), sort_keys=True))
     return 0

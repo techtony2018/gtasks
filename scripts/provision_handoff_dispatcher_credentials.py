@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 
 
@@ -30,9 +31,18 @@ REVIEWED_AGENT_SLUGS = (
 )
 
 
+def _require_private_regular_file(path: Path, description: str) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"Every {description} must not be a symbolic link")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Every {description} must be a regular file")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise ValueError(f"Every {description} must use mode 0600")
+
+
 def _read_private_json(path: Path) -> dict[str, object]:
-    if path.stat().st_mode & 0o777 != 0o600:
-        raise ValueError("Every identity config must use mode 0600")
+    _require_private_regular_file(path, "identity config")
     value = json.loads(path.read_text(encoding="utf-8"))
     if (
         not isinstance(value, dict)
@@ -44,8 +54,7 @@ def _read_private_json(path: Path) -> dict[str, object]:
 
 
 def _read_private_token(path: Path) -> str:
-    if path.stat().st_mode & 0o777 != 0o600:
-        raise ValueError("Every dispatcher token file must use mode 0600")
+    _require_private_regular_file(path, "dispatcher token file")
     token = path.read_text(encoding="utf-8").strip()
     if not token or len(token) > 512 or "\n" in token or "\r" in token:
         raise ValueError("Every dispatcher token file must contain one bounded token")

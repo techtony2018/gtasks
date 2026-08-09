@@ -66,6 +66,38 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
             ],
         }
 
+    def _write_six_identity_configs(
+        self, directory: Path
+    ) -> tuple[list[Path], list[Path]]:
+        config_paths: list[Path] = []
+        token_paths: list[Path] = []
+        for agent in (
+            "tammy",
+            "timmy",
+            "toddy",
+            "tammy-oc",
+            "timmy-oc",
+            "toddy-oc",
+        ):
+            token_path = directory / f"{agent}.token"
+            token_path.write_text(f"{agent}-private-token\n", encoding="utf-8")
+            token_path.chmod(0o600)
+            config_path = directory / f"{agent}.json"
+            self._write_json(
+                config_path,
+                {
+                    "schema_version": 1,
+                    "agent_slug": f"agents/{agent}",
+                    "registration_id": f"private-registration-{agent}",
+                    "fixed_thread_id": f"private-thread-{agent}",
+                    "mission_control_url": "http://127.0.0.1:4179",
+                    "token_file": str(token_path),
+                },
+            )
+            config_paths.append(config_path)
+            token_paths.append(token_path)
+        return config_paths, token_paths
+
     def test_auth_loader_requires_exact_private_hashed_schema(self) -> None:
         path = self.root / "credentials.json"
         payload = self._credential_payload()
@@ -238,6 +270,42 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(output.exists())
         self.assertNotIn("private-token", result.stdout + result.stderr)
+
+    def test_provisioner_rejects_symlink_and_nonregular_inputs_at_every_position(self) -> None:
+        provisioner = load_provisioner()
+        for kind in (
+            "config_symlink",
+            "config_directory",
+            "token_symlink",
+            "token_directory",
+        ):
+            for index in range(6):
+                with self.subTest(kind=kind, index=index):
+                    case = self.root / f"{kind}-{index}"
+                    case.mkdir()
+                    configs, tokens = self._write_six_identity_configs(case)
+                    if kind == "config_symlink":
+                        target = configs[index].with_suffix(".real.json")
+                        configs[index].rename(target)
+                        configs[index].symlink_to(target)
+                    elif kind == "config_directory":
+                        configs[index].unlink()
+                        configs[index].mkdir()
+                    elif kind == "token_symlink":
+                        target = tokens[index].with_suffix(".real.token")
+                        tokens[index].rename(target)
+                        tokens[index].symlink_to(target)
+                    else:
+                        tokens[index].unlink()
+                        tokens[index].mkdir()
+                    output = case / "credentials.json"
+
+                    with self.assertRaisesRegex(
+                        ValueError, "symbolic link|regular file"
+                    ):
+                        provisioner.provision(configs, output)
+
+                    self.assertFalse(output.exists())
 
     def test_provisioner_refuses_duplicate_hashes_or_unreviewed_identity_set(self) -> None:
         configs: list[Path] = []

@@ -13,9 +13,12 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
+import gtasks.local_handoff_supervisor as supervisor_module
 from gtasks.local_handoff_supervisor import (
     SupervisorConfig,
+    WorkerFailure,
     claim_store_path_for,
     load_isolated_workers,
     run_supervisor,
@@ -258,10 +261,19 @@ class SupervisorLifecycleTests(SupervisorFixture):
             ),
         )
         seen: list[Path] = []
+        terminate = threading.Event()
 
-        run_supervisor(
+        def worker_runner(path, _worker, stop_requested):
+            seen.append(path)
+            if len(seen) == 2:
+                terminate.set()
+            while not stop_requested():
+                time.sleep(0.001)
+
+        events = run_supervisor(
             config,
-            worker_runner=lambda path, _worker, _stop_requested: seen.append(path),
+            worker_runner=worker_runner,
+            stop_requested=terminate.is_set,
             poll_interval=0.001,
         )
 
@@ -269,6 +281,7 @@ class SupervisorLifecycleTests(SupervisorFixture):
             set(seen),
             {self.codex_config.resolve(), self.openclaw_config.resolve()},
         )
+        self.assertEqual(events, ())
 
     def test_starts_both_workers_and_stops_both_on_one_termination_signal(self) -> None:
         config = SupervisorConfig.from_file(self.supervisor_path)
@@ -285,15 +298,19 @@ class SupervisorLifecycleTests(SupervisorFixture):
                 time.sleep(0.001)
             stopped[runtime].set()
 
-        supervisor_thread = threading.Thread(
-            target=run_supervisor,
-            args=(config,),
-            kwargs={
-                "worker_runner": worker_runner,
-                "stop_requested": terminate.is_set,
-                "poll_interval": 0.001,
-            },
-        )
+        result: list[WorkerFailure] = []
+
+        def supervise() -> None:
+            result.extend(
+                run_supervisor(
+                    config,
+                    worker_runner=worker_runner,
+                    stop_requested=terminate.is_set,
+                    poll_interval=0.001,
+                )
+            )
+
+        supervisor_thread = threading.Thread(target=supervise)
         supervisor_thread.start()
         self.assertTrue(started["codex"].wait(1))
         self.assertTrue(started["openclaw"].wait(1))
@@ -310,30 +327,34 @@ class SupervisorLifecycleTests(SupervisorFixture):
             "openclaw-secret-token",
         })
         self.assertEqual(len({entry[0] for entry in seen}), 2)
+        self.assertEqual(result, [])
 
-    def test_reports_one_failure_without_leaking_it_or_stopping_the_sibling(self) -> None:
+    def test_restarts_after_unexpected_normal_return_with_bounded_backoff(self) -> None:
         config = SupervisorConfig.from_file(self.supervisor_path)
-        failure_seen = threading.Event()
+        restarted = threading.Event()
         sibling_started = threading.Event()
         sibling_stopped = threading.Event()
         terminate = threading.Event()
-        reports = []
+        attempts = 0
+        reports: list[WorkerFailure] = []
+        delays: list[float] = []
 
         def worker_runner(_path, worker, stop_requested):
+            nonlocal attempts
             if worker_runtime(worker) == "codex":
-                raise RuntimeError(
-                    "codex-secret-token private-registration-tammy fixed-codex-thread"
-                )
+                attempts += 1
+                if attempts == 1:
+                    return
+                restarted.set()
+                while not stop_requested():
+                    time.sleep(0.001)
+                return
             sibling_started.set()
             while not stop_requested():
                 time.sleep(0.001)
             sibling_stopped.set()
 
-        def report_failure(failure):
-            reports.append(failure)
-            failure_seen.set()
-
-        result: list[object] = []
+        result: list[WorkerFailure] = []
 
         def supervise() -> None:
             result.extend(
@@ -341,14 +362,18 @@ class SupervisorLifecycleTests(SupervisorFixture):
                     config,
                     worker_runner=worker_runner,
                     stop_requested=terminate.is_set,
-                    report_failure=report_failure,
+                    report_failure=reports.append,
                     poll_interval=0.001,
+                    max_consecutive_failures=3,
+                    restart_backoff_initial=2,
+                    restart_backoff_max=5,
+                    restart_wait=lambda delay: delays.append(delay) or False,
                 )
             )
 
         supervisor_thread = threading.Thread(target=supervise)
         supervisor_thread.start()
-        self.assertTrue(failure_seen.wait(1))
+        self.assertTrue(restarted.wait(1))
         self.assertTrue(sibling_started.wait(1))
         self.assertFalse(sibling_stopped.is_set())
 
@@ -359,7 +384,72 @@ class SupervisorLifecycleTests(SupervisorFixture):
         self.assertEqual(len(reports), 1)
         rendered = json.dumps(asdict(reports[0]), sort_keys=True)
         self.assertIn("agents/tammy", rendered)
+        self.assertEqual(reports[0].outcome, "unexpected_return")
+        self.assertEqual(reports[0].error_type, "UnexpectedReturn")
+        self.assertEqual(reports[0].consecutive_failures, 1)
+        self.assertFalse(reports[0].fatal)
+        self.assertEqual(delays, [2])
+        self.assertEqual(attempts, 2)
+        self.assertTrue(sibling_stopped.is_set())
+
+    def test_recovers_a_transient_exception_without_leaking_or_stopping_sibling(self) -> None:
+        config = SupervisorConfig.from_file(self.supervisor_path)
+        restarted = threading.Event()
+        sibling_started = threading.Event()
+        sibling_stopped = threading.Event()
+        terminate = threading.Event()
+        attempts = 0
+        reports: list[WorkerFailure] = []
+
+        def worker_runner(_path, worker, stop_requested):
+            nonlocal attempts
+            if worker_runtime(worker) == "codex":
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError(
+                        "codex-secret-token private-registration-tammy fixed-codex-thread"
+                    )
+                restarted.set()
+                while not stop_requested():
+                    time.sleep(0.001)
+                return
+            sibling_started.set()
+            while not stop_requested():
+                time.sleep(0.001)
+            sibling_stopped.set()
+
+        result: list[WorkerFailure] = []
+
+        def supervise() -> None:
+            result.extend(
+                run_supervisor(
+                    config,
+                    worker_runner=worker_runner,
+                    stop_requested=terminate.is_set,
+                    report_failure=reports.append,
+                    poll_interval=0.001,
+                    max_consecutive_failures=3,
+                    restart_backoff_initial=0,
+                    restart_backoff_max=0,
+                )
+            )
+
+        supervisor_thread = threading.Thread(target=supervise)
+        supervisor_thread.start()
+        self.assertTrue(restarted.wait(1))
+        self.assertTrue(sibling_started.wait(1))
+        self.assertFalse(sibling_stopped.is_set())
+
+        terminate.set()
+        supervisor_thread.join(1)
+
+        self.assertFalse(supervisor_thread.is_alive())
+        self.assertEqual(result, reports)
+        self.assertEqual(len(reports), 1)
+        rendered = json.dumps(asdict(reports[0]), sort_keys=True)
+        self.assertEqual(reports[0].outcome, "exception")
         self.assertIn("RuntimeError", rendered)
+        self.assertFalse(reports[0].fatal)
         for secret in (
             "codex-secret-token",
             "private-registration-tammy",
@@ -368,6 +458,71 @@ class SupervisorLifecycleTests(SupervisorFixture):
             self.assertNotIn(secret, rendered)
             self.assertNotIn(secret, repr(reports[0]))
         self.assertTrue(sibling_stopped.is_set())
+
+    def test_persistent_failure_marks_fatal_and_stops_the_whole_pair(self) -> None:
+        config = SupervisorConfig.from_file(self.supervisor_path)
+        sibling_started = threading.Event()
+        sibling_stopped = threading.Event()
+        attempts = 0
+        reports: list[WorkerFailure] = []
+        delays: list[float] = []
+
+        def worker_runner(_path, worker, stop_requested):
+            nonlocal attempts
+            if worker_runtime(worker) == "codex":
+                attempts += 1
+                if attempts == 1:
+                    self.assertTrue(sibling_started.wait(1))
+                raise RuntimeError("private persistent failure must not leak")
+            sibling_started.set()
+            while not stop_requested():
+                time.sleep(0.001)
+            sibling_stopped.set()
+
+        events = run_supervisor(
+            config,
+            worker_runner=worker_runner,
+            report_failure=reports.append,
+            poll_interval=0.001,
+            max_consecutive_failures=5,
+            restart_backoff_initial=2,
+            restart_backoff_max=3,
+            restart_wait=lambda delay: delays.append(delay) or False,
+        )
+
+        self.assertTrue(sibling_started.is_set())
+        self.assertTrue(sibling_stopped.is_set())
+        self.assertEqual(attempts, 5)
+        self.assertEqual(delays, [2, 3, 3, 3])
+        self.assertEqual(events, tuple(reports))
+        self.assertEqual(
+            [event.consecutive_failures for event in events], [1, 2, 3, 4, 5]
+        )
+        self.assertEqual(
+            [event.fatal for event in events], [False, False, False, False, True]
+        )
+        self.assertNotIn("private persistent failure", repr(events))
+
+        with (
+            patch.object(
+                supervisor_module.SupervisorConfig,
+                "from_file",
+                return_value=config,
+            ),
+            patch.object(supervisor_module, "install_signal_handlers", return_value=lambda: False),
+            patch.object(
+                supervisor_module, "run_supervisor", return_value=events
+            ) as run_mock,
+        ):
+            self.assertEqual(
+                supervisor_module.main(["--config", str(self.supervisor_path)]),
+                1,
+            )
+            run_mock.return_value = events[:-1]
+            self.assertEqual(
+                supervisor_module.main(["--config", str(self.supervisor_path)]),
+                0,
+            )
 
 
 class SupervisorInstallerTests(SupervisorFixture):
@@ -380,6 +535,23 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.python_path = str(Path(sys.executable).resolve())
         self.codex = self._executable("codex")
         self.openclaw = self._executable("openclaw")
+        self.legacy_config, self.legacy_plist = (
+            self.installer.canonical_single_worker_install_paths(self.home)
+        )
+        launch_domain = f"gui/{os.getuid()}"
+        self.supervisor_ref = f"{launch_domain}/{self.installer.DEFAULT_LABEL}"
+        self.legacy_ref = (
+            f"{launch_domain}/{self.installer.LEGACY_LABEL}"
+        )
+        self.supervisor_loaded = False
+        self.legacy_loaded = False
+        self.legacy_disabled = False
+        self.fail_supervisor_bootstrap = False
+        self.bad_supervisor_readback = False
+        self.ignore_legacy_disable = False
+        self.ignore_legacy_bootout = False
+        self.concurrent_active_seen = False
+        self.last_calls: list[tuple[list[str], dict[str, object]]] = []
 
     def _executable(self, name: str) -> Path:
         path = self.root / "bin" / name
@@ -403,25 +575,68 @@ class SupervisorInstallerTests(SupervisorFixture):
             str(ROOT.resolve()),
         ]
 
-    def launchctl_output(self) -> str:
-        arguments = "\n".join(f"\t\t{value}" for value in self.expected_arguments())
+    def launchctl_output(
+        self,
+        *,
+        arguments: list[str] | None = None,
+        label: str | None = None,
+    ) -> str:
+        rendered_arguments = "\n".join(
+            f"\t\t{value}" for value in (arguments or self.expected_arguments())
+        )
         return (
             "service = {\n"
             "\targuments = {\n"
-            f"{arguments}\n"
+            f"{rendered_arguments}\n"
             "\t}\n"
             f"\tworking directory = {ROOT.resolve()}\n"
             "\tenvironment = {\n"
-            "\t\tXPC_SERVICE_NAME => com.tony.gtasks-handoff-dispatcher-supervisor\n"
+            f"\t\tXPC_SERVICE_NAME => {label or self.installer.DEFAULT_LABEL}\n"
             f"\t\tPYTHONPATH => {ROOT.resolve()}\n"
             "\t}\n"
             "}\n"
         )
 
+    def legacy_arguments(self) -> list[str]:
+        return [
+            self.python_path,
+            "-m",
+            "gtasks.local_handoff_dispatcher",
+            "--config",
+            str(self.legacy_config.resolve()),
+            "--codex-path",
+            str(self.codex.resolve()),
+            "--working-directory",
+            str(ROOT.resolve()),
+        ]
+
+    def write_legacy_install(self, *, loaded: bool, disabled: bool = False) -> None:
+        self.legacy_config.parent.mkdir(parents=True, exist_ok=True)
+        self.legacy_config.write_bytes(self.codex_config.read_bytes())
+        self.legacy_config.chmod(0o600)
+        self.legacy_plist.parent.mkdir(parents=True, exist_ok=True)
+        self.legacy_plist.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": self.installer.LEGACY_LABEL,
+                    "ProgramArguments": self.legacy_arguments(),
+                    "WorkingDirectory": str(ROOT.resolve()),
+                    "EnvironmentVariables": {"PYTHONPATH": str(ROOT.resolve())},
+                    "RunAtLoad": True,
+                    "KeepAlive": True,
+                    "ProcessType": "Background",
+                },
+                sort_keys=False,
+            )
+        )
+        self.legacy_plist.chmod(0o644)
+        self.legacy_loaded = loaded
+        self.legacy_disabled = disabled
+
     def fake_run(self, calls):
         def run(arguments, **kwargs):
             calls.append((list(arguments), kwargs))
-            if arguments[:2] == [self.python_path, "-c"]:
+            if arguments[0] == self.python_path and "-c" in arguments:
                 return subprocess.CompletedProcess(
                     arguments,
                     0,
@@ -450,20 +665,72 @@ class SupervisorInstallerTests(SupervisorFixture):
                     stdout="agent --local --json --timeout --session-key --message\n",
                     stderr="",
                 )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                disabled = "true" if self.legacy_disabled else "false"
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        "disabled services = {\n"
+                        f'\t"{self.installer.LEGACY_LABEL}" => {disabled}\n'
+                        "}\n"
+                    ),
+                    stderr="",
+                )
             if arguments[:2] == ["/bin/launchctl", "print"]:
-                if self.paths.plist.exists():
+                if arguments[2] == self.supervisor_ref and self.supervisor_loaded:
+                    output = self.launchctl_output()
+                    if self.bad_supervisor_readback:
+                        output = output.replace(
+                            "gtasks.local_handoff_supervisor",
+                            "gtasks.local_handoff_dispatcher",
+                        )
                     return subprocess.CompletedProcess(
-                        arguments, 0, stdout=self.launchctl_output(), stderr=""
+                        arguments, 0, stdout=output, stderr=""
+                    )
+                if arguments[2] == self.legacy_ref and self.legacy_loaded:
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=self.launchctl_output(
+                            arguments=self.legacy_arguments(),
+                            label=self.installer.LEGACY_LABEL,
+                        ),
+                        stderr="",
                     )
                 return subprocess.CompletedProcess(
                     arguments, 3, stdout="", stderr="not loaded"
                 )
+            if arguments[:2] == ["/bin/launchctl", "disable"]:
+                if not self.ignore_legacy_disable:
+                    self.legacy_disabled = True
+            elif arguments[:2] == ["/bin/launchctl", "enable"]:
+                self.legacy_disabled = False
+            elif arguments[:2] == ["/bin/launchctl", "bootout"]:
+                if arguments[2] == self.supervisor_ref:
+                    self.supervisor_loaded = False
+                elif arguments[2] == self.legacy_ref:
+                    if not self.ignore_legacy_bootout:
+                        self.legacy_loaded = False
+            elif arguments[:2] == ["/bin/launchctl", "bootstrap"]:
+                if arguments[3] == str(self.paths.plist):
+                    if self.fail_supervisor_bootstrap:
+                        return subprocess.CompletedProcess(
+                            arguments, 5, stdout="", stderr="bootstrap failed"
+                        )
+                    self.supervisor_loaded = True
+                elif arguments[3] == str(self.legacy_plist):
+                    self.legacy_loaded = True
+            self.concurrent_active_seen = self.concurrent_active_seen or (
+                self.supervisor_loaded and self.legacy_loaded
+            )
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
 
         return run
 
-    def install(self, *, dry_run: bool):
+    def install(self, *, dry_run: bool, replace_legacy: bool = False):
         calls: list[tuple[list[str], dict[str, object]]] = []
+        self.last_calls = calls
         receipt = self.installer.install(
             source_worker_configs=(self.codex_config, self.openclaw_config),
             plist_template=TEMPLATE_PATH,
@@ -476,6 +743,7 @@ class SupervisorInstallerTests(SupervisorFixture):
             home_directory=self.home,
             run=self.fake_run(calls),
             dry_run=dry_run,
+            replace_legacy=replace_legacy,
         )
         return receipt, calls
 
@@ -537,7 +805,274 @@ class SupervisorInstallerTests(SupervisorFixture):
             self.assertNotIn(secret, rendered)
         self.assertEqual(first_calls, second_calls)
         self.assertFalse(
-            any(call[0][0] == "/bin/launchctl" for call in first_calls)
+            any(
+                call[0][:2]
+                in (
+                    ["/bin/launchctl", "bootstrap"],
+                    ["/bin/launchctl", "bootout"],
+                    ["/bin/launchctl", "disable"],
+                    ["/bin/launchctl", "enable"],
+                )
+                for call in first_calls
+            )
+        )
+
+    def test_dry_run_import_probe_disables_bytecode_and_changes_no_files(self) -> None:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        fake = self.fake_run(calls)
+
+        def run(arguments, **kwargs):
+            if arguments[0] == self.python_path and "-c" in arguments:
+                calls.append((list(arguments), kwargs))
+                return subprocess.run(arguments, **kwargs)
+            return fake(arguments, **kwargs)
+
+        def snapshot(path: Path) -> dict[str, tuple[int, int]]:
+            return {
+                str(candidate.relative_to(path)): (
+                    candidate.stat().st_size,
+                    candidate.stat().st_mtime_ns,
+                )
+                for candidate in path.rglob("*")
+                if candidate.is_file()
+            }
+
+        root_before = snapshot(ROOT)
+        home_before = snapshot(self.home)
+
+        receipt = self.installer.install(
+            source_worker_configs=(self.codex_config, self.openclaw_config),
+            plist_template=TEMPLATE_PATH,
+            python_path=self.python_path,
+            module_root=ROOT,
+            runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+            codex_path=str(self.codex),
+            openclaw_path=str(self.openclaw),
+            working_directory=ROOT,
+            home_directory=self.home,
+            run=run,
+            dry_run=True,
+        )
+
+        self.assertFalse(receipt.activated)
+        self.assertEqual(snapshot(ROOT), root_before)
+        self.assertEqual(snapshot(self.home), home_before)
+        import_calls = [
+            call for call in calls if call[0][0] == self.python_path and "-c" in call[0]
+        ]
+        self.assertEqual(len(import_calls), 1)
+        self.assertEqual(import_calls[0][0][:3], [self.python_path, "-B", "-c"])
+        self.assertEqual(
+            import_calls[0][1]["env"],
+            {
+                "PYTHONPATH": str(ROOT.resolve()),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+        )
+        self.assertFalse(any(self.home.rglob("__pycache__")))
+
+    def test_requires_the_exact_plist_dictionary_for_templates_and_existing_files(self) -> None:
+        template_value = plistlib.loads(TEMPLATE_PATH.read_bytes())
+        mutations = (
+            ("missing KeepAlive", lambda value: value.pop("KeepAlive")),
+            ("false RunAtLoad", lambda value: value.update(RunAtLoad=False)),
+            ("integer KeepAlive", lambda value: value.update(KeepAlive=1)),
+            ("wrong ProcessType", lambda value: value.update(ProcessType="Interactive")),
+            ("extra key", lambda value: value.update(ThrottleInterval=10)),
+        )
+        for name, mutate in mutations:
+            with self.subTest(source="template", mutation=name):
+                value = dict(template_value)
+                mutate(value)
+                mutated_template = self.root / f"{name.replace(' ', '-')}.plist"
+                mutated_template.write_bytes(plistlib.dumps(value, sort_keys=False))
+                with self.assertRaisesRegex(ValueError, "exact canonical contract"):
+                    self.installer.install(
+                        source_worker_configs=(self.codex_config, self.openclaw_config),
+                        plist_template=mutated_template,
+                        python_path=self.python_path,
+                        module_root=ROOT,
+                        runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                        codex_path=str(self.codex),
+                        openclaw_path=str(self.openclaw),
+                        working_directory=ROOT,
+                        home_directory=self.home,
+                        run=self.fake_run([]),
+                        dry_run=True,
+                    )
+
+        self.install(dry_run=False)
+        canonical_plist = plistlib.loads(self.paths.plist.read_bytes())
+        for name, mutate in mutations:
+            with self.subTest(source="existing", mutation=name):
+                value = dict(canonical_plist)
+                mutate(value)
+                self.paths.plist.write_bytes(plistlib.dumps(value, sort_keys=False))
+                with self.assertRaisesRegex(ValueError, "exact canonical contract"):
+                    self.install(dry_run=True)
+                self.paths.plist.write_bytes(
+                    plistlib.dumps(canonical_plist, sort_keys=False)
+                )
+
+    def test_dry_run_reports_an_active_legacy_fence_without_mutating_it(self) -> None:
+        self.write_legacy_install(loaded=True)
+
+        receipt, calls = self.install(dry_run=True)
+
+        self.assertFalse(receipt.activated)
+        self.assertEqual(receipt.legacy_state, "loaded")
+        self.assertEqual(receipt.transition_state, "blocked_legacy_loaded")
+        self.assertTrue(self.legacy_loaded)
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(
+            any(
+                arguments[:2]
+                in (
+                    ["/bin/launchctl", "bootstrap"],
+                    ["/bin/launchctl", "bootout"],
+                    ["/bin/launchctl", "disable"],
+                    ["/bin/launchctl", "enable"],
+                )
+                for arguments, _kwargs in calls
+            )
+        )
+
+    def test_refuses_loaded_or_enabled_legacy_without_explicit_replacement(self) -> None:
+        for loaded, expected_state in ((True, "loaded"), (False, "enabled")):
+            with self.subTest(expected_state=expected_state):
+                self.write_legacy_install(loaded=loaded)
+                with self.assertRaisesRegex(ValueError, "legacy.*--replace-legacy"):
+                    self.install(dry_run=False)
+                self.assertEqual(self.legacy_loaded, loaded)
+                self.assertFalse(self.supervisor_loaded)
+                self.assertFalse(
+                    any(
+                        arguments[1] in {"bootstrap", "bootout", "disable", "enable"}
+                        for arguments, _kwargs in self.last_calls
+                        if arguments[0] == "/bin/launchctl"
+                    )
+                )
+                self.legacy_plist.unlink()
+                self.legacy_config.unlink()
+
+    def test_replace_legacy_stops_it_before_starting_the_supervisor(self) -> None:
+        self.write_legacy_install(loaded=True)
+
+        receipt, calls = self.install(dry_run=False, replace_legacy=True)
+
+        self.assertTrue(receipt.activated)
+        self.assertEqual(receipt.legacy_state, "loaded")
+        self.assertEqual(receipt.transition_state, "legacy_replaced")
+        self.assertTrue(self.supervisor_loaded)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        self.assertFalse(self.concurrent_active_seen)
+        mutations = [
+            arguments
+            for arguments, _kwargs in calls
+            if arguments[0] == "/bin/launchctl"
+            and arguments[1] in {"bootstrap", "bootout", "disable", "enable"}
+        ]
+        self.assertLess(
+            mutations.index(["/bin/launchctl", "disable", self.legacy_ref]),
+            mutations.index(["/bin/launchctl", "bootout", self.legacy_ref]),
+        )
+        self.assertLess(
+            mutations.index(["/bin/launchctl", "bootout", self.legacy_ref]),
+            mutations.index(
+                [
+                    "/bin/launchctl",
+                    "bootstrap",
+                    f"gui/{os.getuid()}",
+                    str(self.paths.plist),
+                ]
+            ),
+        )
+
+    def test_replace_legacy_rolls_back_bootstrap_or_readback_failure(self) -> None:
+        for failure_attribute in (
+            "fail_supervisor_bootstrap",
+            "bad_supervisor_readback",
+        ):
+            with self.subTest(failure_attribute=failure_attribute):
+                self.write_legacy_install(loaded=True)
+                setattr(self, failure_attribute, True)
+
+                with self.assertRaisesRegex(RuntimeError, "rolled back"):
+                    self.install(dry_run=False, replace_legacy=True)
+
+                self.assertTrue(self.legacy_loaded)
+                self.assertFalse(self.legacy_disabled)
+                self.assertFalse(self.supervisor_loaded)
+                self.assertFalse(self.concurrent_active_seen)
+                mutations = [
+                    arguments
+                    for arguments, _kwargs in self.last_calls
+                    if arguments[0] == "/bin/launchctl"
+                    and arguments[1] in {"bootstrap", "bootout", "disable", "enable"}
+                ]
+                self.assertIn(
+                    ["/bin/launchctl", "bootout", self.supervisor_ref],
+                    mutations,
+                )
+                self.assertIn(
+                    ["/bin/launchctl", "enable", self.legacy_ref],
+                    mutations,
+                )
+                self.assertIn(
+                    [
+                        "/bin/launchctl",
+                        "bootstrap",
+                        f"gui/{os.getuid()}",
+                        str(self.legacy_plist),
+                    ],
+                    mutations,
+                )
+                setattr(self, failure_attribute, False)
+                self.legacy_loaded = False
+                self.legacy_plist.unlink()
+                self.legacy_config.unlink()
+
+    def test_replace_legacy_requires_disable_and_stop_readback_before_bootstrap(self) -> None:
+        for failure_attribute in (
+            "ignore_legacy_disable",
+            "ignore_legacy_bootout",
+        ):
+            with self.subTest(failure_attribute=failure_attribute):
+                self.write_legacy_install(loaded=True)
+                setattr(self, failure_attribute, True)
+
+                with self.assertRaisesRegex(RuntimeError, "rolled back"):
+                    self.install(dry_run=False, replace_legacy=True)
+
+                self.assertTrue(self.legacy_loaded)
+                self.assertFalse(self.legacy_disabled)
+                self.assertFalse(self.supervisor_loaded)
+                self.assertFalse(
+                    any(
+                        arguments[:2] == ["/bin/launchctl", "bootstrap"]
+                        and arguments[-1] == str(self.paths.plist)
+                        for arguments, _kwargs in self.last_calls
+                    )
+                )
+                setattr(self, failure_attribute, False)
+                self.legacy_loaded = False
+                self.legacy_plist.unlink()
+                self.legacy_config.unlink()
+
+    def test_refuses_an_already_concurrent_legacy_and_supervisor_state(self) -> None:
+        self.install(dry_run=False)
+        self.write_legacy_install(loaded=True)
+
+        with self.assertRaisesRegex(ValueError, "both.*loaded|concurrent"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        self.assertFalse(
+            any(
+                arguments[1] in {"bootstrap", "bootout", "disable", "enable"}
+                for arguments, _kwargs in self.last_calls
+                if arguments[0] == "/bin/launchctl"
+            )
         )
 
     def test_dry_run_refuses_existing_identity_drift_without_launchctl(self) -> None:

@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict, dataclass
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -173,20 +174,36 @@ def load_isolated_workers(
 class WorkerFailure:
     agent_slug: str
     runtime: str
+    outcome: str
     error_type: str
+    consecutive_failures: int
+    restart_delay_seconds: float
+    fatal: bool
 
 
 WorkerRunner = Callable[[Path, DispatcherConfig, Callable[[], bool]], None]
 
 
-def _privacy_safe_failure(config: DispatcherConfig, error: Exception) -> WorkerFailure:
-    error_type = type(error).__name__
+def _privacy_safe_failure(
+    config: DispatcherConfig,
+    error: Exception | None,
+    *,
+    outcome: str,
+    consecutive_failures: int,
+    restart_delay_seconds: float,
+    fatal: bool,
+) -> WorkerFailure:
+    error_type = "UnexpectedReturn" if error is None else type(error).__name__
     if not error_type.isidentifier() or len(error_type) > 128:
         error_type = "WorkerError"
     return WorkerFailure(
         agent_slug=config.agent_slug,
         runtime=worker_runtime(config),
+        outcome=outcome,
         error_type=error_type,
+        consecutive_failures=consecutive_failures,
+        restart_delay_seconds=restart_delay_seconds,
+        fatal=fatal,
     )
 
 
@@ -263,6 +280,10 @@ def run_supervisor(
     stop_requested: Callable[[], bool] = lambda: False,
     report_failure: Callable[[WorkerFailure], None] = _report_failure,
     poll_interval: float = 0.05,
+    max_consecutive_failures: int = 3,
+    restart_backoff_initial: float = 1,
+    restart_backoff_max: float = 30,
+    restart_wait: Callable[[float], bool] | None = None,
     codex_path: str = "codex",
     openclaw_path: str = "openclaw",
     working_directory: str | Path = ".",
@@ -271,13 +292,28 @@ def run_supervisor(
     codex_resume_timeout: float = 300,
     openclaw_timeout: int = 300,
 ) -> tuple[WorkerFailure, ...]:
-    """Supervise two threads; one failure never transfers its config or state."""
-    if poll_interval <= 0:
+    """Restart isolated workers and stop the pair after a persistent failure."""
+    if not math.isfinite(poll_interval) or poll_interval <= 0:
         raise ValueError("poll_interval must be positive")
+    if (
+        isinstance(max_consecutive_failures, bool)
+        or not isinstance(max_consecutive_failures, int)
+        or max_consecutive_failures < 1
+    ):
+        raise ValueError("max_consecutive_failures must be positive")
+    if not math.isfinite(restart_backoff_initial) or restart_backoff_initial < 0:
+        raise ValueError("restart_backoff_initial must not be negative")
+    if (
+        not math.isfinite(restart_backoff_max)
+        or restart_backoff_max < restart_backoff_initial
+    ):
+        raise ValueError(
+            "restart_backoff_max must be at least restart_backoff_initial"
+        )
     workers = load_isolated_workers(config)
     worker_paths = tuple(path.resolve() for path in config.worker_config_paths)
     stop_event = threading.Event()
-    failures: list[tuple[int, WorkerFailure]] = []
+    failures: list[WorkerFailure] = []
     failure_lock = threading.Lock()
 
     if worker_runner is None:
@@ -304,22 +340,60 @@ def run_supervisor(
     def combined_stop_requested() -> bool:
         return stop_event.is_set() or stop_requested()
 
-    def run_one(index: int, path: Path, worker: DispatcherConfig) -> None:
-        try:
-            selected_runner(path, worker, combined_stop_requested)
-        except Exception as exc:
-            failure = _privacy_safe_failure(worker, exc)
+    def wait_before_restart(delay: float) -> bool:
+        if restart_wait is not None:
+            return restart_wait(delay)
+        return stop_event.wait(delay)
+
+    def run_one(path: Path, worker: DispatcherConfig) -> None:
+        consecutive_failures = 0
+        next_restart_delay = restart_backoff_initial
+        while not combined_stop_requested():
+            error: Exception | None = None
+            outcome = "unexpected_return"
+            try:
+                selected_runner(path, worker, combined_stop_requested)
+            except Exception as exc:
+                error = exc
+                outcome = "exception"
+            if combined_stop_requested():
+                break
+            consecutive_failures += 1
+            fatal = consecutive_failures >= max_consecutive_failures
+            restart_delay = (
+                0.0
+                if fatal
+                else next_restart_delay
+            )
+            failure = _privacy_safe_failure(
+                worker,
+                error,
+                outcome=outcome,
+                consecutive_failures=consecutive_failures,
+                restart_delay_seconds=restart_delay,
+                fatal=fatal,
+            )
             with failure_lock:
-                failures.append((index, failure))
-            report_failure(failure)
+                failures.append(failure)
+            try:
+                report_failure(failure)
+            except Exception:
+                # Reporting is deliberately secondary to worker supervision.
+                pass
+            if fatal:
+                stop_event.set()
+                break
+            if restart_delay > 0 and wait_before_restart(restart_delay):
+                break
+            next_restart_delay = min(restart_backoff_max, restart_delay * 2)
 
     threads = [
         threading.Thread(
             target=run_one,
-            args=(index, path, worker),
+            args=(path, worker),
             name=f"handoff-{worker_runtime(worker)}-worker",
         )
-        for index, (path, worker) in enumerate(zip(worker_paths, workers))
+        for path, worker in zip(worker_paths, workers)
     ]
     for thread in threads:
         thread.start()
@@ -333,7 +407,7 @@ def run_supervisor(
         stop_event.set()
         for thread in threads:
             thread.join()
-    return tuple(failure for _index, failure in sorted(failures))
+    return tuple(failures)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -346,6 +420,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--lease-seconds", type=int, default=120)
     parser.add_argument("--codex-resume-timeout", type=float, default=300)
     parser.add_argument("--openclaw-timeout", type=int, default=300)
+    parser.add_argument("--max-consecutive-failures", type=int, default=3)
+    parser.add_argument("--restart-backoff-initial", type=float, default=1)
+    parser.add_argument("--restart-backoff-max", type=float, default=30)
     return parser
 
 
@@ -361,8 +438,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         lease_seconds=args.lease_seconds,
         codex_resume_timeout=args.codex_resume_timeout,
         openclaw_timeout=args.openclaw_timeout,
+        max_consecutive_failures=args.max_consecutive_failures,
+        restart_backoff_initial=args.restart_backoff_initial,
+        restart_backoff_max=args.restart_backoff_max,
     )
-    return 1 if failures else 0
+    return 1 if any(failure.fatal for failure in failures) else 0
 
 
 if __name__ == "__main__":
