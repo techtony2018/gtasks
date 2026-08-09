@@ -2304,6 +2304,49 @@ class SupervisorInstallerTests(SupervisorFixture):
             self.installer.OVERRIDE_EXPLICITLY_ENABLED,
         )
 
+    def test_replace_legacy_retries_transient_loaded_readback_after_bootout(self) -> None:
+        self.write_legacy_install(loaded=True)
+        self._legacy_override_state = self.installer.OVERRIDE_ABSENT
+        original_fake_run = self.fake_run
+
+        def delayed_bootout_run(calls):
+            run = original_fake_run(calls)
+            stale_readback = False
+
+            def wrapped(arguments, **kwargs):
+                nonlocal stale_readback
+                if (
+                    arguments[:2] == ["/bin/launchctl", "bootout"]
+                    and arguments[2] == self.legacy_ref
+                    and not stale_readback
+                ):
+                    result = run(arguments, **kwargs)
+                    self.legacy_loaded = True
+                    stale_readback = True
+                    return result
+                if (
+                    arguments[:2] == ["/bin/launchctl", "print"]
+                    and arguments[2] == self.legacy_ref
+                    and stale_readback
+                ):
+                    result = run(arguments, **kwargs)
+                    self.legacy_loaded = False
+                    stale_readback = False
+                    return result
+                return run(arguments, **kwargs)
+
+            return wrapped
+
+        self.fake_run = delayed_bootout_run
+
+        self.install(dry_run=False, replace_legacy=True)
+
+        self.assertTrue(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+
     def test_bootstrap_toctou_legacy_activation_fails_and_restores_clean_state(self) -> None:
         self.supervisor_disabled = False
         self.legacy_disabled = True

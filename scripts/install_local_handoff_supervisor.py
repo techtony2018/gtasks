@@ -18,6 +18,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Callable, NamedTuple, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -824,14 +825,19 @@ def _force_unloaded(
         ["/bin/launchctl", "bootout", reference],
         stage=f"{stage}_bootout",
     )
-    return (
-        _loaded_readback(
-            run,
-            reference,
-            stage=f"{stage}_unloaded_readback",
-        ).returncode
-        != 0
-    )
+    for attempt in range(3):
+        if (
+            _loaded_readback(
+                run,
+                reference,
+                stage=f"{stage}_unloaded_readback_{attempt + 1}",
+            ).returncode
+            != 0
+        ):
+            return True
+        if attempt < 2:
+            time.sleep(0.05)
+    return False
 
 
 def _disable_and_unload_label(
