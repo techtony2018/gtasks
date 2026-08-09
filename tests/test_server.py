@@ -5449,6 +5449,33 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.status_updates, [])
 
+    def test_profiles_expose_public_runtime_without_private_session_material(self) -> None:
+        agents = tuple(
+            AgentProfile(
+                slug=f"agents/{name}",
+                name=name,
+                title=name,
+                summary="",
+                work_root=f"collections/{name}-tasks",
+                default_goal_slugs=(),
+                runtime="openclaw" if name.endswith("-oc") else "codex",
+            )
+            for name in ("tammy", "timmy", "toddy", "tammy-oc", "timmy-oc", "toddy-oc")
+        )
+        status, payload, _ = ServerHarness(self, FakeAdapter(agents=agents)).request(
+            "GET", "/api/agents"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["agents"]), 6)
+        self.assertEqual(
+            [agent["runtime"] for agent in payload["agents"]],
+            ["codex", "codex", "codex", "openclaw", "openclaw", "openclaw"],
+        )
+        encoded = json.dumps(payload)
+        self.assertNotIn("session_key", encoded)
+        self.assertNotIn("registration_id", encoded)
+
 
 class ArtifactApiTests(unittest.TestCase):
 
@@ -6601,6 +6628,31 @@ class AgentDelegationApiTests(unittest.TestCase):
         )
         self.assertEqual(payload["version"], payload["lease"]["updated_at"])
         self.assertEqual(adapter.created_delegations, [adapter.delegations[0]])
+
+    def test_get_fails_closed_by_projecting_expired_state_at_read_time(self) -> None:
+        now = datetime(2026, 7, 30, 21, 0, tzinfo=timezone.utc)
+        stale_active = AgentDelegationLease(
+            slug="agent-delegations/22222222-2222-4222-8222-222222222222",
+            source_agent="agents/tammy",
+            executor_agent="agents/tammy-oc",
+            authorized_by="people/tony-guan",
+            starts_at=now - timedelta(hours=2),
+            ends_at=now - timedelta(minutes=1),
+            display_timezone="America/Los_Angeles",
+            allowed_operations=("task_status",),
+            state=DelegationState.ACTIVE,
+            created_at=now - timedelta(hours=3),
+            updated_at=now - timedelta(hours=3),
+        )
+
+        status, payload, _ = ServerHarness(
+            self, FakeAdapter(delegations=(stale_active,)), clock=lambda: now
+        ).request("GET", self.PATH)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["delegations"][0]["state"], "expired")
+        self.assertEqual(payload["delegations"][0]["version"], stale_active.updated_at.isoformat())
+        self.assertNotIn("session_key", json.dumps(payload))
 
     def test_post_schedules_future_lease_and_is_idempotent(self) -> None:
         adapter = FakeAdapter()

@@ -3155,6 +3155,68 @@ assert(state.handoffLogFocusKey === null, "completed focus restoration remained 
   }"""
         self.assertIn(required_rule, mobile)
 
+    def test_openclaw_delegation_ui_is_confirmed_compact_and_fail_closed(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        markup = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        for copy in (
+            "OpenClaw",
+            "No goals assigned yet",
+            "Owned work",
+            "Additional delegated work",
+            "Temporarily delegate work",
+            "Permanent owner",
+            "Temporary executor",
+            "End Early",
+            "Extend",
+            "Revoke",
+        ):
+            self.assertIn(copy, javascript + markup)
+        self.assertIn('fetch("/api/agent-delegations"', javascript)
+        self.assertIn("window.confirm", javascript)
+        create_flow = javascript[
+            javascript.index("async function createTemporaryDelegation"):
+            javascript.index("async function changeTemporaryDelegation")
+        ]
+        self.assertLess(create_flow.index("window.confirm"), create_flow.index('fetch("/api/agent-delegations"'))
+        self.assertIn("expected_version", javascript)
+        self.assertIn("display_timezone", javascript)
+        self.assertIn('type = "datetime-local"', javascript)
+        self.assertIn("delegation-card", stylesheet)
+        self.assertIn("restoreDelegationFocus", javascript)
+        self.assertIn("@media (max-width: 760px)", stylesheet)
+        self.assertNotIn("session_key", javascript)
+        self.assertNotIn("registration_id", javascript)
+
+    def test_openclaw_delegation_runtime_cancels_without_write_and_expires_locally(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const past = new Date(Date.now() - 60000).toISOString();
+state.delegations = [{ source_agent: "agents/tammy", executor_agent: "agents/tammy-oc", state: "active", ends_at: past }];
+assert(activeDelegationForSource("agents/tammy") === null, "expired client projection stayed actionable");
+let fetches = 0;
+globalThis.fetch = async () => { fetches += 1; throw new Error("must not fetch"); };
+window.confirm = () => false;
+state.agents = [{ slug: "agents/tammy", name: "Tammy" }, { slug: "agents/tammy-oc", name: "Tammy-OC" }];
+const end = { value: new Date(Date.now() + 3600000).toISOString() };
+const submit = { disabled: false };
+const section = { querySelector: () => null };
+const form = {
+  closest: () => section,
+  querySelector: (selector) => selector.includes("delegation-end") ? end : submit,
+};
+await createTemporaryDelegation(
+  { preventDefault() {}, currentTarget: form },
+  "agents/tammy",
+  "agents/tammy-oc",
+);
+assert(fetches === 0, "cancelled confirmation still submitted a mutation");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

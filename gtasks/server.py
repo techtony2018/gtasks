@@ -825,6 +825,7 @@ def _handler_class(
         return {}
 
     def delegation_payload(lease: AgentDelegationLease) -> dict[str, Any]:
+        effective_state = lease_state_at(lease, clock().astimezone(timezone.utc))
         return {
             "slug": lease.slug,
             "source_agent": lease.source_agent,
@@ -834,9 +835,10 @@ def _handler_class(
             "ends_at": lease.ends_at.isoformat(),
             "display_timezone": lease.display_timezone,
             "allowed_operations": list(lease.allowed_operations),
-            "state": lease.state.value,
+            "state": effective_state.value,
             "created_at": lease.created_at.isoformat(),
             "updated_at": lease.updated_at.isoformat(),
+            "version": lease.updated_at.isoformat(),
         }
 
     def delegation_response(

@@ -2522,6 +2522,19 @@ body.is-resizing-detail {
 .agent-work-summary strong { font-size: 13px; }
 .agent-work-summary span { color: var(--muted); font-size: 11px; line-height: 1.45; }
 
+.agent-runtime-label { margin: -4px 0 0; color: var(--muted); font-size: 11px; }
+.delegated-work-summary { margin-top: 0; border-left-color: var(--accent); }
+.delegation-card { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-muted); }
+.delegation-card h3, .delegation-card p { margin: 0; }
+.delegation-card h3 { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.delegation-status, .delegation-owner-copy, .delegation-stale { color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+.delegation-form { display: grid; gap: 8px; }
+.delegation-form label { display: grid; gap: 4px; font-size: 11px; font-weight: 700; }
+.delegation-form input { width: 100%; min-width: 0; min-height: 38px; }
+.delegation-actions, .delegation-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; }
+.delegation-shortcuts .secondary-button { min-height: 32px; padding: 5px 8px; font-size: 10px; }
+.delegation-error { margin: 0; }
+
 .agent-handoff-status {
   display: grid;
   gap: 4px;
@@ -5936,6 +5949,11 @@ button:active {
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
     display: block;
   }
+
+  .agent-profile-grid { grid-template-columns: minmax(0, 1fr); }
+  .delegation-card, .delegation-form, .delegation-form input { min-width: 0; max-width: 100%; }
+  .delegation-actions .secondary-button,
+  .delegation-form > .primary-button { min-height: 44px; }
 
   .detail-resize-handle {
     display: none;

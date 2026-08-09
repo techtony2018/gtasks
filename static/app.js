@@ -272,6 +272,10 @@ const state = {
   agentsLoaded: false,
   agentsLoading: false,
   agentsLoadPromise: null,
+  delegations: [],
+  delegationsLoaded: false,
+  delegationsLoading: false,
+  delegationsError: "",
   agentTasks: [],
   agentIssues: [],
   agentWorkLoaded: false,
@@ -873,6 +877,9 @@ const elements = {
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
+  taskTemporaryExecutor: document.querySelector("#task-temporary-executor"),
+  taskExecutorAvatar: document.querySelector("#task-executor-avatar"),
+  taskExecutorName: document.querySelector("#task-executor-name"),
   taskHandoffPanel: document.querySelector("#task-handoff-panel"),
   taskHandoffHeading: document.querySelector("#task-handoff-heading"),
   taskHandoffCopy: document.querySelector("#task-handoff-copy"),
@@ -3117,6 +3124,15 @@ function renderAgentHandoffStatus(agent) {
   return status;
 }
 
+function agentRuntimeLabel(agent) {
+  if (agent.runtime !== "openclaw") return "Codex";
+  const latest = verifiedHandoffEventsForAgent(agent)
+    .slice()
+    .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0))[0];
+  if (!latest) return "OpenClaw · no verified session activity";
+  return `OpenClaw · last verified session activity ${latest.occurred_at ? new Date(latest.occurred_at).toLocaleString() : "time unavailable"}`;
+}
+
 function renderSystemHandoffAttention() {
   const verifiedAgents = new Set(state.agents.map((agent) => agent.slug));
   const problematic = state.handoffLogEvents.filter((event) => (
@@ -3238,6 +3254,204 @@ function renderUnifiedHandoffHistory({ historyOpen = false } = {}) {
   return details;
 }
 
+const OPENCLAW_PAIR_BY_SOURCE = {
+  "agents/tammy": "agents/tammy-oc",
+  "agents/timmy": "agents/timmy-oc",
+  "agents/toddy": "agents/toddy-oc",
+};
+const SOURCE_BY_OPENCLAW_PAIR = Object.fromEntries(
+  Object.entries(OPENCLAW_PAIR_BY_SOURCE).map(([source, executor]) => [executor, source]),
+);
+
+function activeDelegationForSource(sourceSlug) {
+  return state.delegations.find((lease) => (
+    lease.source_agent === sourceSlug &&
+    ["active", "scheduled"].includes(lease.state) &&
+    Number.isFinite(new Date(lease.ends_at).getTime()) &&
+    new Date(lease.ends_at).getTime() > Date.now()
+  )) || null;
+}
+
+function delegationRemainingLabel(lease) {
+  if (!lease) return "No temporary delegation is active.";
+  const end = new Date(lease.ends_at);
+  const remaining = Math.max(0, end.getTime() - Date.now());
+  if (!Number.isFinite(end.getTime()) || remaining <= 0 || lease.state === "expired") {
+    return "Authorization expired; no delegated work can start.";
+  }
+  const minutes = Math.ceil(remaining / 60000);
+  const duration = minutes >= 1440
+    ? `${Math.ceil(minutes / 1440)}d`
+    : minutes >= 60 ? `${Math.ceil(minutes / 60)}h` : `${minutes}m`;
+  return `${lease.state === "scheduled" ? "Starts later" : "Active"} · ${duration} remaining · ends ${end.toLocaleString()}`;
+}
+
+function localDateTimeValue(date) {
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+
+function delegationMutationError(section, message) {
+  const error = section.querySelector(".delegation-error");
+  error.textContent = message;
+  error.classList.remove("is-hidden");
+  error.focus({ preventScroll: true });
+}
+
+function restoreDelegationFocus(agentSlug) {
+  window.requestAnimationFrame(() => {
+    document.querySelector(
+      `[data-delegation-agent="${CSS.escape(agentSlug)}"] .delegation-status`,
+    )?.focus({ preventScroll: true });
+  });
+}
+
+async function createTemporaryDelegation(event, sourceAgent, executorAgent) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const section = form.closest(".delegation-card");
+  const endInput = form.querySelector('[name="delegation-end"]');
+  const endsAt = new Date(endInput.value);
+  if (!Number.isFinite(endsAt.getTime()) || endsAt <= new Date()) {
+    delegationMutationError(section, "Choose a future end time between 15 minutes and 7 days.");
+    return;
+  }
+  const ownerName = state.agents.find((agent) => agent.slug === sourceAgent)?.name || sourceAgent;
+  const executorName = state.agents.find((agent) => agent.slug === executorAgent)?.name || executorAgent;
+  if (!window.confirm(`Temporarily delegate eligible ${ownerName} work to ${executorName} until ${endsAt.toLocaleString()}? Permanent ownership will not change.`)) return;
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    if (!await loadAgentDelegations()) throw new Error("Canonical authorization could not be refreshed. No change was made.");
+    if (activeDelegationForSource(sourceAgent)) throw new Error("A current authorization already exists. Refresh before changing it.");
+    const response = await fetch("/api/agent-delegations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        source_agent: sourceAgent,
+        executor_agent: executorAgent,
+        starts_at: new Date().toISOString(),
+        ends_at: endsAt.toISOString(),
+        display_timezone: "America/Los_Angeles",
+        allowed_operations: ["task_status", "todo", "comment", "artifact"],
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Delegation was not verified.");
+    if (!await loadAgentDelegations()) throw new Error("Verified mutation succeeded, but its refreshed authorization could not be displayed yet.");
+    render();
+    restoreDelegationFocus(executorAgent);
+    showToast("Temporary delegation was saved after canonical readback.");
+  } catch (error) {
+    delegationMutationError(section, error.message || "Temporary delegation was not saved.");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function changeTemporaryDelegation(lease, action, section, requestedEnd = null) {
+  const verb = action === "extend" ? "Extend" : action === "revoke" ? "Revoke" : "End Early";
+  if (!window.confirm(`${verb} this temporary authorization? Permanent ownership will not change.`)) return;
+  try {
+    if (!await loadAgentDelegations()) throw new Error("Canonical authorization could not be refreshed. No change was made.");
+    const current = state.delegations.find((item) => item.slug === lease.slug);
+    if (!current || !["active", "scheduled"].includes(current.state)) {
+      throw new Error("This authorization is no longer active. No change was made.");
+    }
+    const extendedEnd = requestedEnd ? new Date(requestedEnd) : null;
+    if (action === "extend" && (!extendedEnd || !Number.isFinite(extendedEnd.getTime()))) {
+      throw new Error("Choose a valid later end time.");
+    }
+    const body = action === "extend"
+      ? { ends_at: extendedEnd.toISOString(), expected_version: current.version }
+      : { action: action === "revoke" ? "revoke" : "complete", expected_version: current.version };
+    const response = await fetch(`/api/agent-delegations/${encodeURIComponent(current.slug)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Delegation change was not verified.");
+    if (!await loadAgentDelegations()) throw new Error("Verified mutation succeeded, but its refreshed authorization could not be displayed yet.");
+    render();
+    restoreDelegationFocus(current.executor_agent);
+    showToast(`${verb} was verified.`);
+  } catch (error) {
+    delegationMutationError(section, error.message || "Delegation could not be changed.");
+  }
+}
+
+function renderDelegationControls(agent) {
+  const section = node("section", "delegation-card");
+  section.dataset.delegationAgent = agent.slug;
+  const sourceSlug = SOURCE_BY_OPENCLAW_PAIR[agent.slug];
+  const lease = sourceSlug ? activeDelegationForSource(sourceSlug) : null;
+  section.append(node("h3", "", "Temporarily delegate work"));
+  const status = node("p", "delegation-status", delegationRemainingLabel(lease));
+  status.setAttribute("role", "status");
+  status.tabIndex = -1;
+  section.append(status);
+  if (state.delegationsError) {
+    section.append(node("p", "delegation-stale", "Last verified authorization remains visible; refresh failed."));
+  }
+  const error = node("p", "form-error delegation-error is-hidden");
+  error.setAttribute("role", "alert");
+  error.tabIndex = -1;
+  if (lease) {
+    const actions = node("div", "delegation-actions");
+    const endInput = document.createElement("input");
+    endInput.type = "datetime-local";
+    endInput.setAttribute("aria-label", "New delegation end time (America/Los_Angeles)");
+    const minimumExtension = new Date(new Date(lease.ends_at).getTime() + 15 * 60000);
+    const maximumExtension = new Date(new Date(lease.starts_at).getTime() + 7 * 86400000);
+    endInput.min = localDateTimeValue(minimumExtension);
+    endInput.max = localDateTimeValue(maximumExtension);
+    endInput.value = localDateTimeValue(new Date(Math.min(
+      new Date(lease.ends_at).getTime() + 60 * 60000,
+      maximumExtension.getTime(),
+    )));
+    const extend = node("button", "secondary-button", "Extend");
+    extend.type = "button";
+    if (minimumExtension > maximumExtension) {
+      endInput.disabled = true;
+      extend.disabled = true;
+    }
+    extend.addEventListener("click", () => void changeTemporaryDelegation(lease, "extend", section, endInput.value));
+    const end = node("button", "secondary-button", "End Early");
+    end.type = "button";
+    end.addEventListener("click", () => void changeTemporaryDelegation(lease, "end", section));
+    const revoke = node("button", "danger-button", "Revoke");
+    revoke.type = "button";
+    revoke.addEventListener("click", () => void changeTemporaryDelegation(lease, "revoke", section));
+    actions.append(extend, end, revoke);
+    section.append(endInput, actions, error);
+    return section;
+  }
+  const form = node("form", "delegation-form");
+  const label = node("label", "", "Authorization ends (America/Los_Angeles)");
+  const input = document.createElement("input");
+  input.type = "datetime-local";
+  input.name = "delegation-end";
+  input.required = true;
+  input.min = localDateTimeValue(new Date(Date.now() + 15 * 60000));
+  input.max = localDateTimeValue(new Date(Date.now() + 7 * 86400000));
+  input.value = localDateTimeValue(new Date(Date.now() + 8 * 3600000));
+  label.append(input);
+  const shortcuts = node("div", "delegation-shortcuts");
+  [["1 hour", 1], ["8 hours", 8], ["24 hours", 24]].forEach(([copy, hours]) => {
+    const button = node("button", "secondary-button", copy);
+    button.type = "button";
+    button.addEventListener("click", () => { input.value = localDateTimeValue(new Date(Date.now() + hours * 3600000)); });
+    shortcuts.append(button);
+  });
+  const submit = node("button", "primary-button", "Temporarily delegate work");
+  submit.type = "submit";
+  form.addEventListener("submit", (event) => void createTemporaryDelegation(event, sourceSlug, agent.slug));
+  form.append(label, shortcuts, node("p", "delegation-owner-copy", "Permanent owner does not change. Delegated work is additional and only starts when this Agent has no owned work ready."), submit);
+  section.append(form, error);
+  return section;
+}
+
 function renderAgentWorkView({ historyOpen = false } = {}) {
   const wrapper = node("section", "agent-work-view");
   if (!state.agents.length) {
@@ -3282,6 +3496,11 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       goalList.append(item);
     });
     const allWork = agentWorkFor(agent);
+    const delegatedSource = SOURCE_BY_OPENCLAW_PAIR[agent.slug];
+    const activeLease = delegatedSource ? activeDelegationForSource(delegatedSource) : null;
+    const delegatedWork = activeLease
+      ? state.agentTasks.filter((task) => task.owner?.slug === delegatedSource && task.status === "planned")
+      : [];
     const counts = agentStatusCounts(allWork);
     const work = allWork.filter((task) => task.status !== "proposed");
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
@@ -3289,6 +3508,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     const nextWork = work.find((task) => Array.isArray(task.open_todos) && task.open_todos.length) || latest;
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
+    workSummary.append(node("span", "agent-work-kind", "Owned work"));
     workSummary.append(node("strong", "", work.length ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed` : "No authorized work yet"));
     const openTodoCount = work.reduce(
       (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
@@ -3305,6 +3525,11 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     }
     workSummary.append(nextLine);
     workSummary.append(node("span", "", recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
+    const delegatedSummary = node("div", "agent-work-summary delegated-work-summary");
+    delegatedSummary.append(
+      node("h3", "", "Additional delegated work"),
+      node("strong", "", delegatedWork.length ? `${delegatedWork.length} eligible planned item${delegatedWork.length === 1 ? "" : "s"}` : "No additional delegated work"),
+    );
     card.append(
       heading,
       node(
@@ -3312,12 +3537,15 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
         "",
         goals.length
           ? `${goals.length} default goal${goals.length === 1 ? "" : "s"}`
-          : "No default goals linked",
+          : "No goals assigned yet",
       ),
+      node("p", "agent-runtime-label", agentRuntimeLabel(agent)),
       goalList,
       workSummary,
+      delegatedSummary,
       renderAgentHandoffStatus(agent),
     );
+    if (agent.runtime === "openclaw") card.append(renderDelegationControls(agent));
     if (agent.chat_url) {
       const chat = node("a", "secondary-button", "Open Codex chat");
       chat.href = agent.chat_url;
@@ -3555,9 +3783,10 @@ async function loadAgents() {
       }
       state.agents = Array.isArray(payload.agents) ? payload.agents : [];
       state.agentsLoaded = true;
+      await loadAgentDelegations();
       render();
     } catch (_error) {
-      state.agents = [];
+      // Keep the last verified cards visible when a refresh is transiently unavailable.
     } finally {
       state.agentsLoading = false;
     }
@@ -3565,6 +3794,28 @@ async function loadAgents() {
     state.agentsLoadPromise = null;
   });
   return state.agentsLoadPromise;
+}
+
+async function loadAgentDelegations() {
+  if (state.delegationsLoading) return false;
+  state.delegationsLoading = true;
+  state.delegationsError = "";
+  try {
+    const response = await fetch("/api/agent-delegations", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Temporary delegation could not be read.");
+    state.delegations = Array.isArray(payload.delegations) ? payload.delegations : [];
+    state.delegationsLoaded = true;
+    return true;
+  } catch (error) {
+    state.delegationsError = error.message || "Temporary delegation could not be read.";
+    return false;
+  } finally {
+    state.delegationsLoading = false;
+  }
 }
 
 function loadAgentWork() {
@@ -6459,6 +6710,24 @@ function renderTaskHandoffTimeline(taskSlug) {
   elements.taskHandoffLoadMore.disabled = entry.loading;
 }
 
+function renderTaskTemporaryExecutor(task) {
+  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
+  const lease = ownerSlug ? activeDelegationForSource(ownerSlug) : null;
+  const events = task ? taskHandoffEntry(task.slug).events : [];
+  const latestDelegated = events
+    .filter((event) => event.delegation_slug === lease?.slug && event.executor_agent === lease?.executor_agent)
+    .slice()
+    .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0))[0];
+  const terminal = new Set(["completed", "revoked", "expired", "terminal_delivery_failure", "dead_letter"]);
+  const executor = latestDelegated && !terminal.has(latestDelegated.execution_state)
+    ? state.agents.find((agent) => agent.slug === latestDelegated.executor_agent)
+    : null;
+  elements.taskTemporaryExecutor.classList.toggle("is-hidden", !executor);
+  if (!executor) return;
+  setCompactAgentAvatar(elements.taskExecutorAvatar, executor);
+  elements.taskExecutorName.textContent = `${executor.name} · ${delegationRemainingLabel(lease)}`;
+}
+
 function syncTaskHandoffTimelineDisclosure() {
   if (!elements.taskHandoffTimeline || !elements.taskHandoffTimelineHeading) return;
   elements.taskHandoffTimelineHeading.setAttribute(
@@ -6483,6 +6752,7 @@ async function readTaskHandoffPage(taskSlug, { reset }) {
   state.taskHandoffEvents.set(taskSlug, entry);
   if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
     renderTaskHandoffTimeline(taskSlug);
+    renderTaskTemporaryExecutor(findTaskBySlug(taskSlug));
   }
   const params = new URLSearchParams({
     limit: String(HANDOFF_EVENT_PAGE_SIZE),
@@ -6966,6 +7236,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
+  renderTaskTemporaryExecutor(task);
   elements.taskHandoffTimeline.open = false;
   syncTaskHandoffTimelineDisclosure();
   elements.taskTodoError.classList.add("is-hidden");
