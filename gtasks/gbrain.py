@@ -926,6 +926,7 @@ class CollectionIssue:
     category: str = "core_data"
     impact: str = "This task could not be shown until its core data is corrected."
     repair_action: str | None = None
+    owner_agent: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -4789,6 +4790,7 @@ class GBrainAdapter:
                 return None, CollectionIssue(
                     slug=agent_slug,
                     message=str(exc),
+                    owner_agent=agent_slug,
                     impact=(
                         "This agent profile is unavailable until its canonical "
                         "GBrain page is repaired."
@@ -5123,6 +5125,7 @@ class GBrainAdapter:
                     CollectionIssue(
                         slug=root_slug,
                         message=str(exc),
+                        owner_agent=agent.slug,
                         impact=(
                             f"{agent.name}'s work could not be read. Tony's "
                             "personal tasks remain unaffected."
@@ -5135,6 +5138,7 @@ class GBrainAdapter:
                     CollectionIssue(
                         slug=root_slug,
                         message="agent work backlinks were not a list",
+                        owner_agent=agent.slug,
                         impact=(
                             f"{agent.name}'s work could not be read. Tony's "
                             "personal tasks remain unaffected."
@@ -5174,14 +5178,17 @@ class GBrainAdapter:
                     lifecycle_edges = _lifecycle_edges(task.slug, edges)
                     if len(lifecycle_edges) != 1:
                         issues.append(
-                            _visible_warning(
-                                task.slug,
-                                "Task does not have one verified lifecycle membership.",
-                                category="lifecycle_membership",
-                                impact=(
-                                    "It is shown from its core fields, but changes are "
-                                    "disabled until its lifecycle membership is repaired."
+                            replace(
+                                _visible_warning(
+                                    task.slug,
+                                    "Task does not have one verified lifecycle membership.",
+                                    category="lifecycle_membership",
+                                    impact=(
+                                        "It is shown from its core fields, but changes are "
+                                        "disabled until its lifecycle membership is repaired."
+                                    ),
                                 ),
+                                owner_agent=agent.slug,
                             )
                         )
                     if (
@@ -5193,7 +5200,10 @@ class GBrainAdapter:
                         )
                     if include_todos:
                         todo_read = self._list_task_todos_for_task(task, limit=100)
-                        issues.extend(todo_read.issues)
+                        issues.extend(
+                            replace(issue, owner_agent=agent.slug)
+                            for issue in todo_read.issues
+                        )
                         task = replace(task, todos=todo_read.todos)
                     tasks.append(
                         {
@@ -5220,6 +5230,7 @@ class GBrainAdapter:
                         CollectionIssue(
                             slug=slug,
                             message=str(exc),
+                            owner_agent=agent.slug,
                             impact=(
                                 f"This malformed {agent.name} work item is "
                                 "reported in Inbox and is not shown on Board."

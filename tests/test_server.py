@@ -42,6 +42,7 @@ from gtasks.gbrain import (
     ArtifactRead,
     AgentRead,
     AgentWorkRead,
+    CollectionIssue,
     CollectionRead,
     GoalLinkReceipt,
     GoalDeletionReceipt,
@@ -63,6 +64,62 @@ from gtasks.gbrain import (
     SystemTicketRead,
     LifecycleIntegrityError,
 )
+
+
+class ExecutorPrioritySnapshotTests(unittest.TestCase):
+    class Adapter:
+        def __init__(self, issues):
+            self.issues = tuple(issues)
+
+        def list_agent_work(self, *, include_todos=True):
+            return AgentWorkRead(tasks=(), issues=self.issues, roots=())
+
+    def test_unrelated_agent_issue_does_not_block_openclaw_delegation(self) -> None:
+        ready, _version = server_module._canonical_executor_priority_snapshot(
+            self.Adapter(
+                (
+                    CollectionIssue(
+                        slug="tasks/toddy-malformed",
+                        message="Toddy task is malformed",
+                        owner_agent="agents/toddy",
+                    ),
+                )
+            ),
+            "agents/tammy-oc",
+        )
+
+        self.assertFalse(ready)
+
+    def test_requested_executor_issue_blocks_openclaw_delegation(self) -> None:
+        ready, _version = server_module._canonical_executor_priority_snapshot(
+            self.Adapter(
+                (
+                    CollectionIssue(
+                        slug="tasks/tammy-oc-malformed",
+                        message="Tammy-OC task is malformed",
+                        owner_agent="agents/tammy-oc",
+                    ),
+                )
+            ),
+            "agents/tammy-oc",
+        )
+
+        self.assertTrue(ready)
+
+    def test_unattributed_issue_fails_closed_for_requested_executor(self) -> None:
+        ready, _version = server_module._canonical_executor_priority_snapshot(
+            self.Adapter(
+                (
+                    CollectionIssue(
+                        slug="tasks/ambiguous-malformed",
+                        message="Task owner could not be determined",
+                    ),
+                )
+            ),
+            "agents/tammy-oc",
+        )
+
+        self.assertTrue(ready)
 from gtasks.server import (
     ArtifactPublisherAuth,
     HandoffDispatcherAuth,

@@ -418,7 +418,12 @@ def _canonical_executor_priority_snapshot(
         if owner == executor_agent:
             relevant.append(task)
     relevant.sort(key=lambda task: str(task.get("slug", "")))
-    owned_work_ready = bool(work.issues) or any(
+    relevant_issues = tuple(
+        issue
+        for issue in work.issues
+        if issue.owner_agent in {None, executor_agent}
+    )
+    owned_work_ready = bool(relevant_issues) or any(
         task.get("status") in {"planned", "active"} for task in relevant
     )
     fingerprint = hashlib.sha256(
@@ -426,7 +431,7 @@ def _canonical_executor_priority_snapshot(
             {
                 "executor_agent": executor_agent,
                 "tasks": relevant,
-                "issues": [issue.to_dict() for issue in work.issues],
+                "issues": [issue.to_dict() for issue in relevant_issues],
                 "roots": list(work.roots),
             },
             sort_keys=True,

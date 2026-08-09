@@ -4740,6 +4740,44 @@ class AgentCreationTests(unittest.TestCase):
 
 
 class AgentReadTests(unittest.TestCase):
+    def test_specific_profile_read_failure_is_attributed_to_that_agent(self) -> None:
+        class ProfileFailureRunner:
+            def run(self, tool: str, params: dict) -> object:
+                slug = params.get("slug")
+                if tool == "list_pages":
+                    return [
+                        {
+                            "slug": f"agents/{name}",
+                            "type": "agent",
+                            "title": name.title(),
+                            "compiled_truth": "",
+                            "frontmatter": {},
+                        }
+                        for name in ("toddy", "timmy", "tammy")
+                    ]
+                if tool == "get_page" and slug == "agents/toddy":
+                    raise GBrainCommandError("Toddy profile unavailable")
+                if tool == "get_page" and slug in {"agents/timmy", "agents/tammy"}:
+                    return {
+                        "slug": slug,
+                        "type": "agent",
+                        "title": slug.split("/")[-1].title(),
+                        "compiled_truth": "",
+                        "frontmatter": {},
+                    }
+                if tool == "get_links" and slug in {
+                    "agents/toddy",
+                    "agents/timmy",
+                    "agents/tammy",
+                }:
+                    return []
+                raise AssertionError((tool, params))
+
+        read = GBrainAdapter(ProfileFailureRunner()).list_agent_profiles()
+
+        issue = next(issue for issue in read.issues if issue.slug == "agents/toddy")
+        self.assertEqual(issue.owner_agent, "agents/toddy")
+
     def test_unprovisioned_openclaw_scopes_are_not_activated_by_legacy_directory_reads(
         self,
     ) -> None:
@@ -5742,6 +5780,7 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.tasks, ())
         self.assertEqual(result.issues[0].slug, "notes/not-a-task")
+        self.assertEqual(result.issues[0].owner_agent, "agents/toddy")
         self.assertIn("not shown on Board", result.issues[0].impact)
 
 
