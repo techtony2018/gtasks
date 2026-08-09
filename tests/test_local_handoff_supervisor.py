@@ -583,6 +583,11 @@ class SupervisorInstallerTests(SupervisorFixture):
     def setUp(self) -> None:
         super().setUp()
         self.installer = load_installer()
+        unload_timeout = patch.object(
+            self.installer, "LAUNCHCTL_UNLOAD_TIMEOUT_SECONDS", 2.0
+        )
+        unload_timeout.start()
+        self.addCleanup(unload_timeout.stop)
         self.home = self.root / "home"
         self.home.mkdir()
         self.paths = self.installer.canonical_install_paths(self.home)
@@ -2358,6 +2363,44 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.legacy_loaded)
         self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+
+    def test_force_unloaded_waits_for_launchd_exit_timeout(self) -> None:
+        elapsed = 0.0
+
+        def monotonic() -> float:
+            return elapsed
+
+        def sleep(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
+        def run(arguments, **_kwargs):
+            if arguments[:2] == ["/bin/launchctl", "bootout"]:
+                return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+            if arguments[:2] == ["/bin/launchctl", "print"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0 if elapsed < 5.0 else 3,
+                    stdout="loaded" if elapsed < 5.0 else "",
+                    stderr="" if elapsed < 5.0 else "not loaded",
+                )
+            raise AssertionError(f"unexpected command: {arguments}")
+
+        with (
+            patch.object(
+                self.installer, "LAUNCHCTL_UNLOAD_TIMEOUT_SECONDS", 10.0
+            ),
+            patch.object(self.installer.time, "monotonic", side_effect=monotonic),
+            patch.object(self.installer.time, "sleep", side_effect=sleep),
+        ):
+            unloaded = self.installer._force_unloaded(
+                run,
+                self.legacy_ref,
+                stage="test_launchd_exit_timeout",
+            )
+
+        self.assertTrue(unloaded)
+        self.assertGreaterEqual(elapsed, 5.0)
 
     def test_rollback_restarts_loaded_legacy_after_bootout_cleanup_is_delayed(self) -> None:
         self.supervisor_disabled = True
