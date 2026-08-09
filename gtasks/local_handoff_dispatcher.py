@@ -1131,14 +1131,20 @@ class PrivateWakeInbox:
         return tuple(dict(row) for row in rows)
 
     def _has_launch_event(
-        self, *, handoff_id: str, launch_id: str, state: str
+        self,
+        *,
+        handoff_id: str,
+        launch_id: str,
+        state: str,
+        detail: str | None = None,
     ) -> bool:
         return self._connection.execute(
             """
             SELECT 1 FROM wake_launches
             WHERE handoff_id = ? AND launch_id = ? AND state = ?
+                AND (? IS NULL OR detail = ?)
             """,
-            (handoff_id, launch_id, state),
+            (handoff_id, launch_id, state, detail, detail),
         ).fetchone() is not None
 
     @staticmethod
@@ -1748,18 +1754,22 @@ class PrivateWakeInbox:
                     if response["status"] == "suppressed"
                     else "suppressed"
                 )
+                terminal_event_state = (
+                    "handed_back"
+                    if terminal_state == "handed_back"
+                    else "checkpoint_terminal_reconciled"
+                )
+                terminal_detail = f"server_{response['status']}"
                 if row["pending_server_action"] != action:
                     if (
                         row["pending_server_action"] is None
                         and row["state"] == terminal_state
+                        and row["last_error"] == terminal_detail
                         and self._has_launch_event(
                             handoff_id=row["handoff_id"],
                             launch_id=row["current_launch_id"],
-                            state=(
-                                "handed_back"
-                                if terminal_state == "handed_back"
-                                else "checkpoint_terminal_reconciled"
-                            ),
+                            state=terminal_event_state,
+                            detail=terminal_detail,
                         )
                     ):
                         self._connection.commit()
@@ -1777,7 +1787,7 @@ class PrivateWakeInbox:
                     """,
                     (
                         terminal_state,
-                        f"server_{response['status']}",
+                        terminal_detail,
                         self._timestamp(now),
                         claim.item.handoff_id,
                     ),
@@ -1786,15 +1796,11 @@ class PrivateWakeInbox:
                     handoff_id=claim.item.handoff_id,
                     launch_id=row["current_launch_id"],
                     attempt=row["attempt"],
-                    state=(
-                        "handed_back"
-                        if terminal_state == "handed_back"
-                        else "checkpoint_terminal_reconciled"
-                    ),
+                    state=terminal_event_state,
                     now=now,
                     pid=row["launch_pid"],
                     grant_ref=row["launch_grant_ref"],
-                    detail=f"server_{response['status']}",
+                    detail=terminal_detail,
                 )
             elif action == "terminal_failure":
                 if row["pending_server_action"] != action:

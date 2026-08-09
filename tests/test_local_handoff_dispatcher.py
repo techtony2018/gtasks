@@ -1726,7 +1726,69 @@ class PrivateWakeInboxTests(unittest.TestCase):
 
                 self.assertEqual(completed.state, expected_state)
                 self.assertIsNone(completed.pending_server_action)
+                self.assertEqual(completed.last_error, f"server_{status}")
+                self.assertEqual(
+                    inbox.launch_events("handoff-100")[-1]["detail"],
+                    f"server_{status}",
+                )
                 self.assertEqual(replay, completed)
+
+    def test_checkpoint_terminal_replay_rejects_mismatched_persisted_status(
+        self,
+    ) -> None:
+        transitions = (
+            ("completed", "dead_letter"),
+            ("dead_letter", "completed"),
+        )
+        for persisted_status, replay_status in transitions:
+            with (
+                self.subTest(
+                    persisted_status=persisted_status,
+                    replay_status=replay_status,
+                ),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+                self.addCleanup(inbox.close)
+                launch_id = self._queue_checkpoint(inbox)
+                pending = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+                self.assertIsNotNone(pending)
+
+                completed = inbox.complete_server_action(
+                    pending,
+                    action="checkpoint",
+                    response={
+                        "handoff_id": "handoff-100",
+                        "status": persisted_status,
+                        "launch_id": launch_id,
+                        "checkpointed": False,
+                    },
+                    now=self.NOW + timedelta(seconds=2),
+                )
+
+                with self.assertRaisesRegex(ValueError, "pending inbox action"):
+                    inbox.complete_server_action(
+                        pending,
+                        action="checkpoint",
+                        response={
+                            "handoff_id": "handoff-100",
+                            "status": replay_status,
+                            "launch_id": launch_id,
+                            "checkpointed": False,
+                        },
+                        now=self.NOW + timedelta(seconds=3),
+                    )
+
+                self.assertEqual(inbox.get("handoff-100"), completed)
+                terminal_events = tuple(
+                    event
+                    for event in inbox.launch_events("handoff-100")
+                    if event["state"] == "checkpoint_terminal_reconciled"
+                )
+                self.assertEqual(len(terminal_events), 1)
+                self.assertEqual(
+                    terminal_events[0]["detail"], f"server_{persisted_status}"
+                )
 
     def test_checkpoint_completion_rejects_every_other_exact_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
