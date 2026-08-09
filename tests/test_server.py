@@ -3669,7 +3669,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.84")
+        self.assertEqual(payload["version"], "V0.0.85")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3677,11 +3677,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.84")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.84")
+        self.assertEqual(payload["current_version"], "V0.0.85")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.85")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.85",
                 "V0.0.84",
                 "V0.0.83",
                 "V0.0.82",
@@ -6313,6 +6314,25 @@ class ProjectBrowserFixtureTests(unittest.TestCase):
                         response = connection.getresponse()
                         fixture_status = json.loads(response.read().decode("utf-8"))
                         connection.close()
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", server.server_address[1], timeout=3
+                        )
+                        connection.request(
+                            "GET", f"/api/artifacts?task={adapter.task.slug}&limit=10&cursor=0"
+                        )
+                        response = connection.getresponse()
+                        artifacts = json.loads(response.read().decode("utf-8"))
+                        connection.close()
+                        connection = http.client.HTTPConnection(
+                            "127.0.0.1", server.server_address[1], timeout=3
+                        )
+                        connection.request(
+                            "GET",
+                            f"/api/tasks/{adapter.task.slug}/handoff-events?limit=200&after_sequence=0",
+                        )
+                        response = connection.getresponse()
+                        task_events = json.loads(response.read().decode("utf-8"))
+                        connection.close()
                     finally:
                         server.shutdown()
                         server.server_close()
@@ -6320,6 +6340,32 @@ class ProjectBrowserFixtureTests(unittest.TestCase):
                     self.assertEqual(
                         "temporary_execution" in work["tasks"][0], has_executor
                     )
+                    if scenario == "active":
+                        self.assertEqual(len(artifacts["artifacts"]), 1)
+                        artifact = artifacts["artifacts"][0]
+                        self.assertEqual(artifact["created_by"], "agents/tammy-oc")
+                        self.assertEqual(
+                            artifact["agent_collection"],
+                            "collections/tammy-oc-artifacts",
+                        )
+                        self.assertEqual(artifact["produced_for"], adapter.task.slug)
+                        self.assertEqual(
+                            artifact["delegation_ref"],
+                            "agent-delegations/22222222-2222-4222-8222-222222222222",
+                        )
+                        delegated = [
+                            event for event in task_events["events"]
+                            if event.get("executor_agent") == "agents/tammy-oc"
+                        ]
+                        self.assertTrue(delegated)
+                        self.assertTrue(all(
+                            event.get("permanent_owner") == "agents/tammy"
+                            and event.get("delegation_slug")
+                            == "agent-delegations/22222222-2222-4222-8222-222222222222"
+                            for event in delegated
+                        ))
+                    else:
+                        self.assertEqual(artifacts["artifacts"], [])
                     self.assertEqual(adapter.external_mutation_count, 0)
                     self.assertEqual(fixture_status, {
                         "fixture_only": True,

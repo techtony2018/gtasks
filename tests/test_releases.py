@@ -8,6 +8,8 @@ from gtasks.releases import CURRENT_RELEASE, RELEASES
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 README = PROJECT_ROOT / "README.md"
 RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
+OPENCLAW_DELEGATION_RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "openclaw-agent-delegation.md"
+DOCUMENTATION_RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "mission-control-system-documentation.md"
 RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
 V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md"
 V079_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.79.md"
@@ -25,10 +27,52 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.84")
+        self.assertEqual(__version__, "V0.0.85")
+
+    def test_v0_0_85_records_openclaw_agents_and_temporary_delegation(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.85")
+        self.assertIn("three independent fixed-session OpenClaw Agents", release["summary"])
+        self.assertIn("Tony-authorized time-bounded delegation", release["summary"])
+        self.assertIn("preserves permanent ownership", release["summary"])
+        self.assertIn("prioritizes each OpenClaw Agent's own work", release["summary"])
+
+    def test_openclaw_delegation_documentation_contract_is_complete(self) -> None:
+        documents = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (README, RUNBOOK, OPENCLAW_DELEGATION_RUNBOOK, DOCUMENTATION_RUNBOOK)
+        )
+
+        for identity in (
+            "agents/tammy",
+            "agents/timmy",
+            "agents/toddy",
+            "agents/tammy-oc",
+            "agents/timmy-oc",
+            "agents/toddy-oc",
+        ):
+            self.assertIn(identity, documents)
+        normalized = documents.casefold()
+        for required_contract in (
+            "fixed session",
+            "two-worker supervisor",
+            "no default Goal",
+            "owned work always outranks delegated work",
+            "15 minutes through 7 days",
+            "america/los_angeles",
+            "--dry-run",
+            "Tammy-OC canary",
+            "disable only the affected OpenClaw worker",
+            "preserve canonical leases and events",
+            "leave the Codex worker running",
+            "~/Library/Application Support/GTasks/handoff-dispatcher",
+            "curl -fsS http://127.0.0.1:4179/api/health",
+        ):
+            self.assertIn(required_contract.casefold(), normalized)
 
     def test_v0_0_84_records_single_stargraph_style_word_art(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.84")
 
         self.assertEqual(release["version"], "V0.0.84")
         self.assertIn("single Mission Control typographic artword", release["summary"])
@@ -327,6 +371,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.82",
                 "V0.0.83",
                 "V0.0.84",
+                "V0.0.85",
             ],
         )
 

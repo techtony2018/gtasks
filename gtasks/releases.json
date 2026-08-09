@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.84",
+  "current_version": "V0.0.85",
   "releases": [
     {
       "version": "V0.0.1",
@@ -504,6 +504,12 @@
       "date": "2026-08-06",
       "title": "Single Mission Control word art",
       "summary": "Replaces the central illustrated banner with a single Mission Control typographic artword in the Memory Stargraph family style, retaining a direct dark HUD frame and blue-white glowing lights around the words."
+    },
+    {
+      "version": "V0.0.85",
+      "date": "2026-08-09",
+      "title": "OpenClaw Agents and temporary delegation",
+      "summary": "Adds three independent fixed-session OpenClaw Agents and Tony-authorized time-bounded delegation that preserves permanent ownership and prioritizes each OpenClaw Agent's own work."
     }
   ]
 }

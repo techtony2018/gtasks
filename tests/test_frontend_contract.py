@@ -3289,6 +3289,32 @@ assert(executorHidden, "unknown claim did not fail closed");
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_task_detail_loads_executor_projection_before_agents_view(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const task = { slug: "tasks/fixture", owner_agent: "agents/tammy" };
+state.selectedKind = "task";
+state.selectedSlug = task.slug;
+state.agentsLoaded = false;
+state.delegationsLoaded = false;
+state.agentWorkLoaded = false;
+let agentLoads = 0;
+let workLoads = 0;
+let renders = 0;
+loadAgents = async () => { agentLoads += 1; };
+loadAgentWork = async () => { workLoads += 1; };
+renderTaskTemporaryExecutor = (value) => {
+  if (value?.slug === task.slug) renders += 1;
+};
+await ensureTaskTemporaryExecutorProjection(task);
+assert(agentLoads === 1, "task detail did not load Agent/delegation projection");
+assert(workLoads === 1, "task detail did not load Agent work projection");
+assert(renders === 2, "task executor did not render before and after projection load");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_openclaw_cards_use_claim_projection_and_pair_controls(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         agent_view = javascript[

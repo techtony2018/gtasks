@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from gtasks.domain import (
     ACTIVE_ROOT,
     COMPLETED_ROOT,
+    AgentArtifact,
     AgentProfile,
     Project,
     new_inbox_task,
@@ -75,6 +76,7 @@ class IsolatedProjectAdapter:
     ) -> None:
         self.read_cache_path = read_cache_path
         self.fixture_now: datetime | None = None
+        self.delegation_scenario = "inactive"
         self.task = replace(new_inbox_task(
             "Isolated project task",
             datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
@@ -227,8 +229,62 @@ class IsolatedProjectAdapter:
             raise ValueError("unknown isolated task")
         return TodoRead(todos=())
 
-    def list_agent_artifacts(self, **_filters) -> ArtifactRead:
-        return ArtifactRead(artifacts=())
+    def _synthetic_artifacts(self) -> tuple[AgentArtifact, ...]:
+        if self.delegation_scenario != "active":
+            return ()
+        active = next((
+            lease for lease in self.delegations
+            if lease.source_agent == "agents/tammy"
+            and lease.executor_agent == "agents/tammy-oc"
+            and lease.state == DelegationState.ACTIVE
+            and self.fixture_now is not None
+            and lease.starts_at <= self.fixture_now < lease.ends_at
+        ), None)
+        if active is None:
+            return ()
+        return (AgentArtifact(
+            slug="artifacts/44444444-4444-4444-8444-444444444444",
+            title="Synthetic delegated execution evidence",
+            artifact_kind="qa_report",
+            created_by="agents/tammy-oc",
+            agent_collection="collections/tammy-oc-artifacts",
+            produced_for=self.task.slug,
+            markdown=(
+                "# Synthetic delegated execution evidence\n\n"
+                "Fixture-only evidence for the permanent owner agents/tammy."
+            ),
+            attachments=(),
+            project=None,
+            goal=None,
+            git_url=None,
+            supersedes=None,
+            created_at=self.fixture_now,
+            delegation_ref=active.slug,
+        ),)
+
+    def list_agent_artifacts(self, **filters) -> ArtifactRead:
+        artifacts = self._synthetic_artifacts()
+        for field, attribute in (
+            ("agent", "created_by"),
+            ("task", "produced_for"),
+            ("project", "project"),
+            ("goal", "goal"),
+            ("kind", "artifact_kind"),
+        ):
+            value = filters.get(field)
+            if value:
+                artifacts = tuple(
+                    artifact for artifact in artifacts
+                    if getattr(artifact, attribute) == value
+                )
+        cursor = filters.get("cursor", 0)
+        limit = filters.get("limit", 25)
+        page = artifacts[cursor:cursor + limit]
+        next_cursor = cursor + len(page) if cursor + len(page) < len(artifacts) else None
+        return ArtifactRead(artifacts=page, next_cursor=next_cursor)
+
+    def get_agent_artifact(self, slug: str) -> AgentArtifact:
+        return next(artifact for artifact in self._synthetic_artifacts() if artifact.slug == slug)
 
     def list_proposals(self) -> ProposalRead:
         return ProposalRead(proposals=())
@@ -486,6 +542,49 @@ def _seed_handoff_events(
             now=now,
         )
 
+    if adapter.delegations:
+        delegated_registration = AgentRegistration(
+            registration_id="fixture-openclaw-registration",
+            agent_slug="agents/tammy-oc",
+            route="hosts/tammy",
+            verified=True,
+        )
+        delegated_dispatcher = HandoffDispatcher(
+            store,
+            registrations=(registration, delegated_registration),
+            delegations=lambda: adapter.delegations,
+        )
+        delegated_record = delegated_dispatcher.record(
+            ActionableChange(
+                task_slug=adapter.task.slug,
+                canonical_event_id="events/fixture-delegated-020",
+                canonical_version="v020",
+                trigger="todo_added",
+                assigned_to=("agents/tammy",),
+                route="hosts/tammy",
+                summary="Synthetic delegated OpenClaw execution evidence.",
+                occurred_at=now,
+                correlation_id="correlation-fixture-delegated",
+                task_status=adapter.task.status,
+            ),
+            now=now,
+        )
+        delegated_claim = store.claim(
+            delegated_registration.registration_id,
+            now=now + timedelta(seconds=4),
+            lease_seconds=30,
+        )
+        if delegated_claim is not None:
+            store.acknowledge(
+                delegated_record.handoff_id,
+                "completed",
+                registration_id=delegated_registration.registration_id,
+                lease_token=delegated_claim.lease_token,
+                lease_generation=delegated_claim.lease_generation,
+                mutation_id="mutations/fixture-delegated-completed",
+                now=now + timedelta(seconds=4),
+            )
+
     first_event = store.query_events(
         limit=1,
         after_sequence=0,
@@ -599,6 +698,7 @@ def build_fixture_server(
     # state without any canonical or external reads.
     adapter = IsolatedProjectAdapter(read_cache_path=read_cache_path)
     adapter.fixture_now = fixture_now
+    adapter.delegation_scenario = delegation_scenario
     delegations, claim = _delegation_fixture_state(
         delegation_scenario,
         now=fixture_now,

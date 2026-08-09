@@ -25,6 +25,21 @@ host state and are never written to repository files or audit events.
 `--skip-git-repo-check` is required because an existing Agent workspace may be
 a trusted non-Git directory; it does not bypass approvals or sandboxing.
 
+For the OpenClaw rollout, each host instead runs one paired two-worker
+supervisor. Its Codex and OpenClaw workers have separate mode-`0600` configs,
+credentials, fixed targets, claim state, inbox state, and runtime adapters.
+The supervisor never merges identities or credentials. The accepted pairs are
+exactly `agents/tammy` / `agents/tammy-oc`, `agents/timmy` /
+`agents/timmy-oc`, and `agents/toddy` / `agents/toddy-oc`. OpenClaw resumes a
+pre-existing fixed session; it never creates, replaces, forks, or guesses one.
+
+Delegated execution is additive and does not rewrite `assigned_to`. A verified
+Tony authorization may last 15 minutes through 7 days. Owned work always
+outranks delegated work; a zero delegated claim is valid. Expiry, completion,
+or revocation stops new delegated claims and hands unfinished work back to the
+permanent Codex owner. Full provisioning and canary instructions are in
+[`openclaw-agent-delegation.md`](openclaw-agent-delegation.md).
+
 ## Durable delegated launch boundary
 
 `received` proves only that the target host durably accepted the wake. It does

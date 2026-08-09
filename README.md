@@ -173,11 +173,35 @@ The app never reads from or writes to the global GBrain `index` node.
 
 ## Agent profiles and work visibility
 
-GTasks recognizes only the three explicitly approved canonical agent scopes:
+GTasks recognizes six explicitly approved canonical Agent scopes. The existing
+Codex identities are:
 
 - `agents/toddy` with `collections/toddys-tasks`
 - `agents/timmy` with `collections/timmys-tasks`
 - `agents/tammy` with `collections/tammys-tasks`
+
+The independent OpenClaw identities are:
+
+- `agents/tammy-oc` with `collections/tammy-oc-tasks`
+- `agents/timmy-oc` with `collections/timmy-oc-tasks`
+- `agents/toddy-oc` with `collections/toddy-oc-tasks`
+
+OpenClaw identities start with no default Goal and may later receive their own
+Goals and owned tasks. Each host uses a two-worker supervisor: one isolated
+Codex worker and one isolated OpenClaw worker. Every OpenClaw worker resumes
+one pre-authorized fixed session and never creates, replaces, forks, or guesses
+a session. Private credentials and fixed-session identifiers stay under
+`~/Library/Application Support/GTasks/handoff-dispatcher`; they are not stored
+in Git or rendered by Mission Control.
+
+Tony may explicitly authorize a time-bounded delegation from a Codex Agent to
+its paired OpenClaw Agent. The window is selectable from 15 minutes through 7
+days, stored in UTC, and displayed in `America/Los_Angeles`. Permanent
+`assigned_to` ownership does not change, owned work always outranks delegated
+work, and expiry, completion, or revocation hands any unfinished task back to
+the permanent owner. See
+[`docs/runbooks/openclaw-agent-delegation.md`](docs/runbooks/openclaw-agent-delegation.md)
+for dry-run, canary, rollback, and recovery gates.
 
 Agent profiles are read from `type: agent` GBrain pages. Goal ownership comes
 from the single typed agent-to-goal `default_agent_for` edge; Goal detail reads

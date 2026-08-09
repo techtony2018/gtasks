@@ -6800,6 +6800,19 @@ function renderTaskTemporaryExecutor(task) {
   elements.taskExecutorName.textContent = `${executor.name} · ${delegationRemainingLabel(lease)}`;
 }
 
+async function ensureTaskTemporaryExecutorProjection(task) {
+  renderTaskTemporaryExecutor(task);
+  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
+  if (
+    !ownerSlug ||
+    (state.agentsLoaded && state.delegationsLoaded && state.agentWorkLoaded)
+  ) return;
+  await Promise.all([loadAgents(), loadAgentWork()]);
+  if (state.selectedKind === "task" && state.selectedSlug === task.slug) {
+    renderTaskTemporaryExecutor(findTaskBySlug(task.slug) || task);
+  }
+}
+
 function syncTaskHandoffTimelineDisclosure() {
   if (!elements.taskHandoffTimeline || !elements.taskHandoffTimelineHeading) return;
   elements.taskHandoffTimelineHeading.setAttribute(
@@ -7308,7 +7321,7 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
     setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
-  renderTaskTemporaryExecutor(task);
+  void ensureTaskTemporaryExecutorProjection(task);
   elements.taskHandoffTimeline.open = false;
   syncTaskHandoffTimelineDisclosure();
   elements.taskTodoError.classList.add("is-hidden");

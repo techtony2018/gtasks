@@ -40,6 +40,15 @@ actually released and verified. Do not refresh the current-state description
 from a planned, blocked, uncommitted, QA-failed, or partially deployed
 candidate. Keep those items in an explicitly labelled future/blocked section.
 
+The six-Agent OpenClaw delegation candidate is governed by
+[`openclaw-agent-delegation.md`](openclaw-agent-delegation.md). Until its
+sequential live canaries and deployment are verified, the canonical System
+Overview must describe Tammy-OC, Timmy-OC, and Toddy-OC only as an unreleased
+candidate. After release, refresh the shared Overview once; do not duplicate it
+into six identity pages. The exact identities are `agents/tammy`,
+`agents/timmy`, `agents/toddy`, `agents/tammy-oc`, `agents/timmy-oc`, and
+`agents/toddy-oc`. The three OpenClaw profiles begin with no default Goal.
+
 For each refresh, inspect:
 
 1. deployed `/api/health` version and the process working directory;
