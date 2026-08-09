@@ -29,12 +29,20 @@ from gtasks.local_handoff_dispatcher import (  # noqa: E402
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher"
 
 
-def canonical_install_paths(home_directory: str | Path) -> tuple[Path, Path]:
+def canonical_single_worker_install_paths(
+    home_directory: str | Path,
+) -> tuple[Path, Path]:
+    """Return the legacy one-worker paths retained through supervisor canaries."""
     home = Path(home_directory).resolve()
     return (
         home / "Library" / "Application Support" / "GTasks" / "handoff-dispatcher.json",
         home / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist",
     )
+
+
+def canonical_install_paths(home_directory: str | Path) -> tuple[Path, Path]:
+    """Backward-compatible name for the existing one-worker installer."""
+    return canonical_single_worker_install_paths(home_directory)
 
 
 def _resolve_executable(value: str) -> str:

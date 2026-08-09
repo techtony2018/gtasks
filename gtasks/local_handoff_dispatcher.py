@@ -261,8 +261,16 @@ class DispatcherConfig:
             raise ValueError("agent_slug must contain exactly one Agent identity")
         registration_id = _require_identifier(value["registration_id"], "registration_id")
         fixed_thread_id = value["fixed_thread_id"]
-        if not isinstance(fixed_thread_id, str) or _THREAD_ID.fullmatch(fixed_thread_id) is None:
-            raise ValueError("fixed_thread_id must be one bounded existing thread id")
+        if (
+            not isinstance(fixed_thread_id, str)
+            or not fixed_thread_id
+            or len(fixed_thread_id) > 256
+            or "\0" in fixed_thread_id
+            or any(character.isspace() for character in fixed_thread_id)
+        ):
+            raise ValueError(
+                "fixed_thread_id must be one bounded existing runtime binding"
+            )
         mission_control_url = _validated_dispatcher_url(value["mission_control_url"])
         token_file = value["token_file"]
         if not isinstance(token_file, str) or not token_file:

@@ -152,6 +152,8 @@ class DispatcherConfigTests(unittest.TestCase):
             ({**self.values, "agent_slugs": ["agents/tammy", "agents/timmy"]}, "exactly"),
             ({**self.values, "agent_slug": ["agents/tammy", "agents/timmy"]}, "agent_slug"),
             ({**self.values, "agent_slug": "agents/tammy/agents/timmy"}, "agent_slug"),
+            ({**self.values, "fixed_thread_id": "agent:tammy oc:fixed"}, "runtime binding"),
+            ({**self.values, "fixed_thread_id": "x" * 257}, "runtime binding"),
             ({**self.values, "schema_version": 2}, "schema_version"),
         )
         for values, message in cases:
@@ -818,6 +820,14 @@ class LocalDispatcherClientTests(unittest.TestCase):
 
 
 class CodexResumeAdapterTests(unittest.TestCase):
+    def test_keeps_codex_thread_validation_stricter_than_runtime_binding_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fixed_thread_id"):
+            CodexResumeAdapter(
+                "codex",
+                fixed_thread_id="agent:tammy-oc:fixed",
+                working_directory=".",
+            )
+
     def test_verifies_local_version_and_resume_help_with_argument_lists(self) -> None:
         calls: list[tuple[object, object]] = []
 
@@ -3609,6 +3619,30 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(calls[5][0], ["/bin/launchctl", "print", launch_ref])
         for _, kwargs in calls:
             self.assertNotIn("shell", kwargs)
+
+    def test_retains_named_single_worker_paths_for_supervisor_canary_rollback(self) -> None:
+        self.assertEqual(
+            self.installer.canonical_single_worker_install_paths(self.home),
+            self.installer.canonical_install_paths(self.home),
+        )
+        config_path, plist_path = self.installer.canonical_single_worker_install_paths(
+            self.home
+        )
+        self.assertEqual(
+            config_path,
+            self.home.resolve()
+            / "Library"
+            / "Application Support"
+            / "GTasks"
+            / "handoff-dispatcher.json",
+        )
+        self.assertEqual(
+            plist_path,
+            self.home.resolve()
+            / "Library"
+            / "LaunchAgents"
+            / "com.tony.gtasks-handoff-dispatcher.plist",
+        )
 
     def test_verified_module_root_is_independent_from_agent_workspace(self) -> None:
         agent_workspace = self.directory / "agent-workspace"

@@ -20,6 +20,14 @@ CONFIG_FIELDS = {
     "mission_control_url",
     "token_file",
 }
+REVIEWED_AGENT_SLUGS = (
+    "agents/tammy",
+    "agents/timmy",
+    "agents/toddy",
+    "agents/tammy-oc",
+    "agents/timmy-oc",
+    "agents/toddy-oc",
+)
 
 
 def _read_private_json(path: Path) -> dict[str, object]:
@@ -49,8 +57,8 @@ def _sha256(value: str) -> str:
 
 
 def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
-    if len(identity_configs) != 3:
-        raise ValueError("Exactly three --identity-config files are required")
+    if len(identity_configs) != 6:
+        raise ValueError("Exactly six --identity-config files are required")
     entries: list[dict[str, str]] = []
     for config_path in identity_configs:
         config = _read_private_json(config_path)
@@ -78,10 +86,15 @@ def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
                 "token_sha256": _sha256(token),
             }
         )
+    configured_slugs = [entry["agent_slug"] for entry in entries]
+    if set(configured_slugs) != set(REVIEWED_AGENT_SLUGS):
+        raise ValueError("Dispatcher identities must be exactly the six reviewed Agents")
     for field in ("agent_slug", "registration_sha256", "token_sha256"):
         values = [entry[field] for entry in entries]
         if len(set(values)) != len(values):
             raise ValueError(f"Dispatcher {field} values must be unique")
+    entry_by_slug = {entry["agent_slug"]: entry for entry in entries}
+    entries = [entry_by_slug[agent_slug] for agent_slug in REVIEWED_AGENT_SLUGS]
     payload: dict[str, object] = {"schema_version": 1, "identities": entries}
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -104,7 +117,7 @@ def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Hash three private host dispatcher identities for Mission Control."
+        description="Hash six private host dispatcher identities for Mission Control."
     )
     parser.add_argument(
         "--identity-config", action="append", type=Path, default=[], dest="identities"
@@ -115,7 +128,7 @@ def main() -> int:
         provision(args.identities, args.output)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
-    print(json.dumps({"status": "provisioned", "identity_count": 3, "output": str(args.output)}))
+    print(json.dumps({"status": "provisioned", "identity_count": 6, "output": str(args.output)}))
     return 0
 
 
