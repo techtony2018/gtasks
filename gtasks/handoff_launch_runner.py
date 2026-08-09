@@ -267,7 +267,9 @@ class GatedLaunchController:
         expected = request.to_dict(launch_id)
         if not _atomic_create_json(request_path, expected):
             existing = _read_private_json(
-                request_path, keys=_REQUEST_KEYS, field="launch request"
+                request_path,
+                keys=(_REQUEST_KEYS, _REQUEST_WITH_ENVIRONMENT_KEYS),
+                field="launch request",
             )
             if existing != expected:
                 raise ValueError("launch id is already bound to another request")

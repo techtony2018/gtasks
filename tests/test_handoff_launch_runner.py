@@ -107,6 +107,41 @@ class GatedLaunchRunnerTests(unittest.TestCase):
         self._wait_for(launch_id, "completed")
         self.assertEqual(marker.read_text(encoding="utf-8"), "1")
 
+    def test_environment_request_replays_across_restart_and_refuses_a_changed_value(self) -> None:
+        launch_id = "launch/environment-replay"
+        marker = self.directory / "environment-marker"
+        request = LaunchRequest(
+            argv=(
+                sys.executable,
+                "-c",
+                "import os; from pathlib import Path; "
+                f"Path({str(marker)!r}).write_text(os.environ['HANDOFF_TEST_TOKEN'])",
+            ),
+            working_directory=str(self.directory),
+            timeout_seconds=2,
+            environment=(("HANDOFF_TEST_TOKEN", "fixed-value"),),
+        )
+
+        self.controller.start(launch_id, request)
+        self._wait_for(launch_id, "ready")
+        self.controller.start(launch_id, request)
+        restarted = GatedLaunchController(self.directory / "launches")
+        restarted.start(launch_id, request)
+        with self.assertRaisesRegex(ValueError, "bound to another request"):
+            restarted.start(
+                launch_id,
+                LaunchRequest(
+                    argv=request.argv,
+                    working_directory=request.working_directory,
+                    timeout_seconds=request.timeout_seconds,
+                    environment=(("HANDOFF_TEST_TOKEN", "rotated-value"),),
+                ),
+            )
+
+        restarted.open_gate(launch_id, "grant/environment-replay")
+        self._wait_for(launch_id, "completed")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "fixed-value")
+
     def test_missing_executable_is_proven_prelaunch_failure(self) -> None:
         launch_id = "launch/missing-executable"
         request = LaunchRequest(
