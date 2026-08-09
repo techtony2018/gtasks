@@ -3572,6 +3572,12 @@ class InstallerTests(unittest.TestCase):
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
             if arguments[1] == "print":
+                if arguments[2].endswith(
+                    "/com.tony.gtasks-handoff-dispatcher-supervisor"
+                ):
+                    return subprocess.CompletedProcess(
+                        arguments, 3, stdout="", stderr="not loaded"
+                    )
                 if self.plist.exists():
                     stdout = self.launchctl_output()
                     return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
@@ -3767,6 +3773,127 @@ class InstallerTests(unittest.TestCase):
                     )
                 )
 
+    def test_refuses_drifted_loaded_reserved_supervisor_label_without_marker(self) -> None:
+        launch_domain = f"gui/{os.getuid()}"
+        supervisor_ref = (
+            f"{launch_domain}/com.tony.gtasks-handoff-dispatcher-supervisor"
+        )
+        calls: list[list[str]] = []
+
+        def run(arguments, **kwargs):
+            calls.append(list(arguments))
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="disabled services = {\n}\n", stderr=""
+                )
+            if arguments == ["/bin/launchctl", "print", supervisor_ref]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=self.launchctl_output(
+                        arguments=[self.python_path, "-m", "wrong.supervisor"]
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                arguments, 3, stdout="", stderr="not loaded"
+            )
+
+        with self.assertRaisesRegex(ValueError, "reserved supervisor label"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=run,
+                home_directory=self.home,
+            )
+
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.plist.exists())
+        self.assertFalse(
+            any(arguments[:2] == ["/bin/launchctl", "bootstrap"] for arguments in calls)
+        )
+
+    def test_refuses_explicitly_enabled_unloaded_supervisor_label_without_marker(self) -> None:
+        launch_domain = f"gui/{os.getuid()}"
+
+        def run(arguments, **kwargs):
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        "disabled services = {\n"
+                        '\t"com.tony.gtasks-handoff-dispatcher-supervisor" => false\n'
+                        "}\n"
+                    ),
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                arguments, 3, stdout="", stderr="not loaded"
+            )
+
+        with self.assertRaisesRegex(ValueError, "supervisor.*enabled"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=run,
+                home_directory=self.home,
+            )
+
     def test_verified_module_root_is_independent_from_agent_workspace(self) -> None:
         agent_workspace = self.directory / "agent-workspace"
         agent_workspace.mkdir()
@@ -3882,6 +4009,12 @@ class InstallerTests(unittest.TestCase):
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
             if arguments[1] == "print":
+                if arguments[2].endswith(
+                    "/com.tony.gtasks-handoff-dispatcher-supervisor"
+                ):
+                    return subprocess.CompletedProcess(
+                        arguments, 3, stdout="", stderr="not loaded"
+                    )
                 stdout = self.launchctl_output()
                 return subprocess.CompletedProcess(arguments, 0, stdout=stdout, stderr="")
             return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")

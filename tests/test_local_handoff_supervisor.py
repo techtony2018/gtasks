@@ -1249,6 +1249,327 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.legacy_loaded)
         self.assertTrue(self.legacy_disabled)
 
+    def test_sigkill_window_fences_both_labels_before_any_install_file_write(self) -> None:
+        class SimulatedSigkill(BaseException):
+            pass
+
+        self.write_legacy_install(loaded=True)
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        events: list[tuple[str, object]] = []
+        fake_run = self.fake_run(calls)
+
+        def run(arguments, **kwargs):
+            if arguments[0] == "/bin/launchctl":
+                events.append(("launchctl", list(arguments)))
+            return fake_run(arguments, **kwargs)
+
+        canonical_writes = {
+            self.paths.codex_worker_config,
+            self.paths.openclaw_worker_config,
+            self.paths.supervisor_config,
+            self.paths.plist,
+        }
+        original_atomic_write = self.installer._atomic_write
+
+        def simulated_kill(path: Path, content: bytes, mode: int) -> None:
+            if path in canonical_writes:
+                events.append(("install_write", path))
+                raise SimulatedSigkill()
+            original_atomic_write(path, content, mode)
+
+        with patch.object(self.installer, "_atomic_write", side_effect=simulated_kill):
+            with self.assertRaises(SimulatedSigkill):
+                self.installer.install(
+                    source_worker_configs=(self.codex_config, self.openclaw_config),
+                    plist_template=TEMPLATE_PATH,
+                    python_path=self.python_path,
+                    module_root=ROOT,
+                    runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                    codex_path=str(self.codex),
+                    openclaw_path=str(self.openclaw),
+                    working_directory=ROOT,
+                    home_directory=self.home,
+                    run=run,
+                    dry_run=False,
+                    replace_legacy=True,
+                )
+
+        first_write = next(
+            index for index, event in enumerate(events) if event[0] == "install_write"
+        )
+        launchctl_before_write = [
+            event[1] for event in events[:first_write] if event[0] == "launchctl"
+        ]
+        launch_domain = f"gui/{os.getuid()}"
+        for label, reference in (
+            (self.installer.DEFAULT_LABEL, self.supervisor_ref),
+            (self.installer.LEGACY_LABEL, self.legacy_ref),
+        ):
+            disable = ["/bin/launchctl", "disable", reference]
+            disabled_readback = [
+                "/bin/launchctl",
+                "print-disabled",
+                launch_domain,
+            ]
+            unloaded_readback = ["/bin/launchctl", "print", reference]
+            disable_index = launchctl_before_write.index(disable)
+            self.assertIn(disabled_readback, launchctl_before_write[disable_index + 1 :])
+            self.assertIn(unloaded_readback, launchctl_before_write[disable_index + 1 :])
+            self.assertTrue(
+                self.supervisor_disabled
+                if label == self.installer.DEFAULT_LABEL
+                else self.legacy_disabled
+            )
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.installer.recovery_marker_path(self.paths).exists())
+
+    def test_timeout_at_every_launchctl_stage_is_normalized_and_recovers(self) -> None:
+        _receipt, baseline_calls = self.install(dry_run=False)
+        launchctl_stage_count = sum(
+            arguments[0] == "/bin/launchctl"
+            for arguments, _kwargs in baseline_calls
+        )
+
+        def reset_clean_state() -> None:
+            for path in (
+                self.paths.codex_worker_config,
+                self.paths.openclaw_worker_config,
+                self.paths.supervisor_config,
+                self.paths.plist,
+                self.installer.recovery_marker_path(self.paths),
+            ):
+                path.unlink(missing_ok=True)
+            self.supervisor_loaded = False
+            self.supervisor_disabled = False
+            self.legacy_loaded = False
+            self.legacy_disabled = False
+
+        reset_clean_state()
+        for target_stage in range(1, launchctl_stage_count + 1):
+            with self.subTest(launchctl_stage=target_stage):
+                calls: list[tuple[list[str], dict[str, object]]] = []
+                fake_run = self.fake_run(calls)
+                launchctl_count = 0
+
+                def run(arguments, **kwargs):
+                    nonlocal launchctl_count
+                    if arguments[0] == "/bin/launchctl":
+                        launchctl_count += 1
+                        if launchctl_count == target_stage:
+                            raise subprocess.TimeoutExpired(arguments, 10)
+                    return fake_run(arguments, **kwargs)
+
+                with self.assertRaises(RuntimeError) as raised:
+                    self.installer.install(
+                        source_worker_configs=(self.codex_config, self.openclaw_config),
+                        plist_template=TEMPLATE_PATH,
+                        python_path=self.python_path,
+                        module_root=ROOT,
+                        runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                        codex_path=str(self.codex),
+                        openclaw_path=str(self.openclaw),
+                        working_directory=ROOT,
+                        home_directory=self.home,
+                        run=run,
+                        dry_run=False,
+                    )
+
+                self.assertNotIsInstance(raised.exception, subprocess.TimeoutExpired)
+                self.assertFalse(self.supervisor_loaded)
+                self.assertFalse(self.supervisor_disabled)
+                self.assertFalse(self.legacy_loaded)
+                self.assertFalse(self.legacy_disabled)
+                self.assertFalse(self.paths.plist.exists())
+                self.assertFalse(self.paths.supervisor_config.exists())
+                self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+                reset_clean_state()
+
+    def test_rollback_timeout_persists_safe_recovery_and_next_run_resumes(self) -> None:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        fake_run = self.fake_run(calls)
+        supervisor_disable_count = 0
+        self.fail_supervisor_bootstrap = True
+
+        def run(arguments, **kwargs):
+            nonlocal supervisor_disable_count
+            if arguments == ["/bin/launchctl", "disable", self.supervisor_ref]:
+                supervisor_disable_count += 1
+                if supervisor_disable_count == 2:
+                    raise subprocess.TimeoutExpired(arguments, 10)
+            return fake_run(arguments, **kwargs)
+
+        with self.assertRaisesRegex(RuntimeError, "recovery_required") as raised:
+            self.installer.install(
+                source_worker_configs=(self.codex_config, self.openclaw_config),
+                plist_template=TEMPLATE_PATH,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                codex_path=str(self.codex),
+                openclaw_path=str(self.openclaw),
+                working_directory=ROOT,
+                home_directory=self.home,
+                run=run,
+                dry_run=False,
+            )
+
+        self.assertNotIn("TimeoutExpired(", str(raised.exception))
+        self.assertFalse(self.supervisor_loaded)
+        self.assertTrue(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        marker = self.installer.recovery_marker_path(self.paths)
+        self.assertTrue(marker.exists())
+        self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+        marker_value = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(marker_value["status"], "recovery_required")
+        self.assertEqual(marker_value["last_error_type"], "RuntimeError")
+        self.assertIn("TimeoutExpired", marker_value["rollback_error_types"])
+
+        receipt, _resume_calls = self.install(dry_run=False)
+
+        self.assertTrue(receipt.activated)
+        self.assertFalse(marker.exists())
+        self.assertTrue(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+
+    def test_timeout_at_every_exact_rollback_stage_leaves_resumable_safe_fence(self) -> None:
+        baseline_calls: list[tuple[list[str], dict[str, object]]] = []
+        self.fail_supervisor_bootstrap = True
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.installer.install(
+                source_worker_configs=(self.codex_config, self.openclaw_config),
+                plist_template=TEMPLATE_PATH,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                codex_path=str(self.codex),
+                openclaw_path=str(self.openclaw),
+                working_directory=ROOT,
+                home_directory=self.home,
+                run=self.fake_run(baseline_calls),
+                dry_run=False,
+            )
+        supervisor_bootstrap = [
+            "/bin/launchctl",
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            str(self.paths.plist),
+        ]
+        baseline_commands = [
+            arguments
+            for arguments, _kwargs in baseline_calls
+            if arguments[0] == "/bin/launchctl"
+        ]
+        rollback_stage_count = len(baseline_commands) - (
+            baseline_commands.index(supervisor_bootstrap) + 1
+        )
+        self.assertGreater(rollback_stage_count, 0)
+
+        def reset_clean_state() -> None:
+            for path in (
+                self.paths.codex_worker_config,
+                self.paths.openclaw_worker_config,
+                self.paths.supervisor_config,
+                self.paths.plist,
+                self.installer.recovery_marker_path(self.paths),
+            ):
+                path.unlink(missing_ok=True)
+            self.supervisor_loaded = False
+            self.supervisor_disabled = False
+            self.legacy_loaded = False
+            self.legacy_disabled = False
+
+        reset_clean_state()
+        for target_stage in range(1, rollback_stage_count + 1):
+            with self.subTest(rollback_launchctl_stage=target_stage):
+                calls: list[tuple[list[str], dict[str, object]]] = []
+                fake_run = self.fake_run(calls)
+                rollback_started = False
+                rollback_count = 0
+                self.fail_supervisor_bootstrap = True
+
+                def run(arguments, **kwargs):
+                    nonlocal rollback_started, rollback_count
+                    if arguments == supervisor_bootstrap:
+                        result = fake_run(arguments, **kwargs)
+                        if result.returncode != 0:
+                            rollback_started = True
+                        return result
+                    if rollback_started and arguments[0] == "/bin/launchctl":
+                        rollback_count += 1
+                        if rollback_count == target_stage:
+                            raise subprocess.TimeoutExpired(arguments, 10)
+                    return fake_run(arguments, **kwargs)
+
+                with self.assertRaisesRegex(RuntimeError, "recovery_required"):
+                    self.installer.install(
+                        source_worker_configs=(self.codex_config, self.openclaw_config),
+                        plist_template=TEMPLATE_PATH,
+                        python_path=self.python_path,
+                        module_root=ROOT,
+                        runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                        codex_path=str(self.codex),
+                        openclaw_path=str(self.openclaw),
+                        working_directory=ROOT,
+                        home_directory=self.home,
+                        run=run,
+                        dry_run=False,
+                    )
+
+                marker = self.installer.recovery_marker_path(self.paths)
+                self.assertTrue(marker.exists())
+                self.assertFalse(self.supervisor_loaded)
+                self.assertTrue(self.supervisor_disabled)
+                self.assertFalse(self.legacy_loaded)
+                self.assertTrue(self.legacy_disabled)
+
+                resumed, _calls = self.install(dry_run=False)
+                self.assertTrue(resumed.activated)
+                self.assertFalse(marker.exists())
+                reset_clean_state()
+
+    def test_launchctl_oserror_is_normalized_and_exactly_rolled_back(self) -> None:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        fake_run = self.fake_run(calls)
+        failed = False
+
+        def run(arguments, **kwargs):
+            nonlocal failed
+            if (
+                not failed
+                and arguments[:2] == ["/bin/launchctl", "bootstrap"]
+                and arguments[-1] == str(self.paths.plist)
+            ):
+                failed = True
+                raise OSError("private simulated launchctl detail")
+            return fake_run(arguments, **kwargs)
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back") as raised:
+            self.installer.install(
+                source_worker_configs=(self.codex_config, self.openclaw_config),
+                plist_template=TEMPLATE_PATH,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                codex_path=str(self.codex),
+                openclaw_path=str(self.openclaw),
+                working_directory=ROOT,
+                home_directory=self.home,
+                run=run,
+                dry_run=False,
+            )
+
+        self.assertNotIn("private simulated launchctl detail", str(raised.exception))
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+
     def test_bootstrap_toctou_legacy_activation_fails_and_restores_clean_state(self) -> None:
         self.inject_legacy_during_supervisor_bootstrap = True
 

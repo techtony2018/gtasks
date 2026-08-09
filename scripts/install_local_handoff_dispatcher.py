@@ -139,7 +139,7 @@ def _loaded_contract_matches(
     )
 
 
-def _disabled_label_value(output: str, label: str) -> bool:
+def _disabled_label_entry(output: str, label: str) -> tuple[bool, bool]:
     for raw_line in output.splitlines():
         if "=>" not in raw_line:
             continue
@@ -148,11 +148,16 @@ def _disabled_label_value(output: str, label: str) -> bool:
             continue
         value = raw_value.strip().lower()
         if value == "true":
-            return True
+            return True, True
         if value == "false":
-            return False
+            return True, False
         raise ValueError("launchctl returned an invalid disabled-label value")
-    return False
+    return False, False
+
+
+def _disabled_label_value(output: str, label: str) -> bool:
+    _present, disabled = _disabled_label_entry(output, label)
+    return disabled
 
 
 def _supervisor_marker_present(home_directory: str | Path) -> bool:
@@ -206,7 +211,7 @@ def _require_supervisor_fence_inactive(
     )
     if disabled.returncode != 0:
         raise ValueError("supervisor fence state could not be verified")
-    supervisor_disabled = _disabled_label_value(
+    supervisor_entry_present, supervisor_disabled = _disabled_label_entry(
         disabled.stdout, SUPERVISOR_LABEL
     )
     legacy_disabled = _disabled_label_value(disabled.stdout, DEFAULT_LABEL)
@@ -218,13 +223,23 @@ def _require_supervisor_fence_inactive(
         text=True,
         timeout=10,
     )
-    supervisor_loaded = loaded.returncode == 0 and _supervisor_loaded_contract(
-        loaded.stdout
-    )
+    if loaded.returncode == 0:
+        detail = (
+            "canonical contract"
+            if _supervisor_loaded_contract(loaded.stdout)
+            else "drifted contract"
+        )
+        raise ValueError(
+            f"reserved supervisor label is loaded with {detail}; "
+            "legacy bootstrap is refused"
+        )
+    if supervisor_entry_present and not supervisor_disabled:
+        raise ValueError(
+            "supervisor fence label is durably enabled while unloaded; "
+            "legacy bootstrap is refused"
+        )
     marker_present = _supervisor_marker_present(home_directory)
-    if supervisor_loaded or (
-        marker_present and (not supervisor_disabled or legacy_disabled)
-    ):
+    if marker_present and (not supervisor_disabled or legacy_disabled):
         raise ValueError(
             "durable supervisor fence is active; legacy bootstrap is refused"
         )

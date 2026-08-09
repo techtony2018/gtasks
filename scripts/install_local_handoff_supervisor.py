@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from html import escape
@@ -47,6 +48,15 @@ PLIST_KEYS = frozenset(
         "RunAtLoad",
         "KeepAlive",
         "ProcessType",
+    }
+)
+RECOVERY_SCHEMA_VERSION = 1
+RECOVERY_FILE_KEYS = frozenset(
+    {
+        "codex_worker_config",
+        "openclaw_worker_config",
+        "supervisor_config",
+        "plist",
     }
 )
 
@@ -103,6 +113,22 @@ class FileSnapshot:
     mode: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class RecoveryRecord:
+    status: str
+    supervisor: LaunchLabelSnapshot
+    legacy: LaunchLabelSnapshot
+    files: dict[str, FileSnapshot]
+    last_error_type: str | None = None
+    rollback_error_types: tuple[str, ...] = ()
+
+
+class LaunchctlCallError(RuntimeError):
+    def __init__(self, stage: str, error_type: str) -> None:
+        super().__init__(f"launchctl {stage} failed with {error_type}")
+        self.error_type = error_type
+
+
 def canonical_install_paths(home_directory: str | Path) -> CanonicalInstallPaths:
     home = Path(home_directory).resolve()
     base = (
@@ -118,6 +144,10 @@ def canonical_install_paths(home_directory: str | Path) -> CanonicalInstallPaths
         openclaw_worker_config=base / "workers" / "openclaw.json",
         plist=home / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist",
     )
+
+
+def recovery_marker_path(paths: CanonicalInstallPaths) -> Path:
+    return paths.supervisor_config.parent / ".install-recovery.json"
 
 
 def canonical_single_worker_install_paths(
@@ -160,6 +190,11 @@ def _atomic_write(path: Path, content: bytes, mode: int) -> None:
             os.fsync(output.fileno())
         temporary_path.chmod(mode)
         os.replace(temporary_path, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -292,12 +327,10 @@ def _read_label_disabled_state(
     launch_domain: str,
     label: str,
 ) -> bool:
-    disabled_readback = run(
+    disabled_readback = _run_launchctl(
+        run,
         ["/bin/launchctl", "print-disabled", launch_domain],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+        stage="snapshot_disabled_labels",
     )
     if disabled_readback.returncode != 0:
         raise ValueError("LaunchAgent disabled state could not be verified")
@@ -445,6 +478,699 @@ def _restore_file_snapshot(path: Path, snapshot: FileSnapshot) -> None:
         path.unlink(missing_ok=True)
 
 
+def _canonical_file_paths(paths: CanonicalInstallPaths) -> dict[str, Path]:
+    return {
+        "codex_worker_config": paths.codex_worker_config,
+        "openclaw_worker_config": paths.openclaw_worker_config,
+        "supervisor_config": paths.supervisor_config,
+        "plist": paths.plist,
+    }
+
+
+def _label_snapshot_payload(snapshot: LaunchLabelSnapshot) -> dict[str, object]:
+    return {
+        "loaded": snapshot.loaded,
+        "disabled": snapshot.disabled,
+        "plist_exists": snapshot.plist_exists,
+        "plist": snapshot.plist,
+    }
+
+
+def _label_snapshot_from_payload(
+    value: object, *, label: str
+) -> LaunchLabelSnapshot:
+    if not isinstance(value, dict) or set(value) != {
+        "loaded",
+        "disabled",
+        "plist_exists",
+        "plist",
+    }:
+        raise ValueError("recovery label snapshot is invalid")
+    loaded = value["loaded"]
+    disabled = value["disabled"]
+    plist_exists = value["plist_exists"]
+    plist = value["plist"]
+    if (
+        type(loaded) is not bool
+        or type(disabled) is not bool
+        or type(plist_exists) is not bool
+        or (plist is not None and not isinstance(plist, dict))
+        or ((loaded or (plist_exists and not disabled)) and plist is None)
+    ):
+        raise ValueError("recovery label snapshot is invalid")
+    return LaunchLabelSnapshot(
+        label=label,
+        state=_launch_state_name(
+            loaded=loaded,
+            disabled=disabled,
+            plist_exists=plist_exists,
+        ),
+        loaded=loaded,
+        disabled=disabled,
+        plist_exists=plist_exists,
+        plist=plist,
+    )
+
+
+def _file_snapshot_payload(snapshot: FileSnapshot) -> dict[str, object]:
+    encoded = (
+        base64.b64encode(snapshot.content).decode("ascii")
+        if snapshot.content is not None
+        else None
+    )
+    return {
+        "exists": snapshot.exists,
+        "content_base64": encoded,
+        "mode": snapshot.mode,
+        "sha256": (
+            sha256(snapshot.content).hexdigest()
+            if snapshot.content is not None
+            else None
+        ),
+    }
+
+
+def _file_snapshot_from_payload(value: object) -> FileSnapshot:
+    if not isinstance(value, dict) or set(value) != {
+        "exists",
+        "content_base64",
+        "mode",
+        "sha256",
+    }:
+        raise ValueError("recovery file snapshot is invalid")
+    exists = value["exists"]
+    encoded = value["content_base64"]
+    mode = value["mode"]
+    digest = value["sha256"]
+    if type(exists) is not bool:
+        raise ValueError("recovery file snapshot is invalid")
+    if not exists:
+        if encoded is not None or mode is not None or digest is not None:
+            raise ValueError("recovery file snapshot is invalid")
+        return FileSnapshot(exists=False, content=None, mode=None)
+    if (
+        not isinstance(encoded, str)
+        or type(mode) is not int
+        or mode < 0
+        or mode > 0o7777
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        raise ValueError("recovery file snapshot is invalid")
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ValueError("recovery file snapshot is invalid") from exc
+    if sha256(content).hexdigest() != digest:
+        raise ValueError("recovery file snapshot checksum is invalid")
+    return FileSnapshot(exists=True, content=content, mode=mode)
+
+
+def _recovery_record_payload(record: RecoveryRecord) -> dict[str, object]:
+    return {
+        "schema_version": RECOVERY_SCHEMA_VERSION,
+        "status": record.status,
+        "supervisor": _label_snapshot_payload(record.supervisor),
+        "legacy": _label_snapshot_payload(record.legacy),
+        "files": {
+            name: _file_snapshot_payload(snapshot)
+            for name, snapshot in sorted(record.files.items())
+        },
+        "last_error_type": record.last_error_type,
+        "rollback_error_types": list(record.rollback_error_types),
+    }
+
+
+def _recovery_record_from_payload(value: object) -> RecoveryRecord:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "status",
+        "supervisor",
+        "legacy",
+        "files",
+        "last_error_type",
+        "rollback_error_types",
+    }:
+        raise ValueError("supervisor recovery marker is invalid")
+    if (
+        type(value["schema_version"]) is not int
+        or value["schema_version"] != RECOVERY_SCHEMA_VERSION
+    ):
+        raise ValueError("supervisor recovery marker schema is unsupported")
+    status = value["status"]
+    if status not in {"transitioning", "recovery_required"}:
+        raise ValueError("supervisor recovery marker status is invalid")
+    files_value = value["files"]
+    if not isinstance(files_value, dict) or set(files_value) != RECOVERY_FILE_KEYS:
+        raise ValueError("supervisor recovery marker files are invalid")
+    last_error_type = value["last_error_type"]
+    rollback_error_types = value["rollback_error_types"]
+    if last_error_type is not None and (
+        not isinstance(last_error_type, str)
+        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", last_error_type)
+    ):
+        raise ValueError("supervisor recovery marker error type is invalid")
+    if (
+        not isinstance(rollback_error_types, list)
+        or len(rollback_error_types) > 32
+        or any(
+            not isinstance(item, str)
+            or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", item)
+            for item in rollback_error_types
+        )
+    ):
+        raise ValueError("supervisor recovery marker rollback errors are invalid")
+    return RecoveryRecord(
+        status=status,
+        supervisor=_label_snapshot_from_payload(
+            value["supervisor"], label=DEFAULT_LABEL
+        ),
+        legacy=_label_snapshot_from_payload(value["legacy"], label=LEGACY_LABEL),
+        files={
+            name: _file_snapshot_from_payload(files_value[name])
+            for name in sorted(RECOVERY_FILE_KEYS)
+        },
+        last_error_type=last_error_type,
+        rollback_error_types=tuple(rollback_error_types),
+    )
+
+
+def _write_recovery_record(path: Path, record: RecoveryRecord) -> None:
+    serialized = (
+        json.dumps(_recovery_record_payload(record), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write(path, serialized, 0o600)
+    restored = _load_recovery_record(path)
+    if restored != record:
+        raise RuntimeError("supervisor recovery marker readback failed")
+
+
+def _load_recovery_record(path: Path) -> RecoveryRecord:
+    snapshot = _capture_file_snapshot(path, "supervisor recovery marker")
+    if not snapshot.exists or snapshot.content is None or snapshot.mode != 0o600:
+        raise ValueError("supervisor recovery marker must be a private 0600 file")
+    try:
+        value = json.loads(snapshot.content)
+    except json.JSONDecodeError as exc:
+        raise ValueError("supervisor recovery marker is invalid") from exc
+    return _recovery_record_from_payload(value)
+
+
+def _remove_recovery_record(path: Path) -> None:
+    path.unlink()
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+
+
+def _safe_exception_type(exc: BaseException) -> str:
+    if isinstance(exc, LaunchctlCallError):
+        return exc.error_type
+    name = type(exc).__name__
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name):
+        return name
+    return "Exception"
+
+
+def _run_launchctl(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    arguments: list[str],
+    *,
+    stage: str,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return run(
+            arguments,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LaunchctlCallError(stage, type(exc).__name__) from exc
+
+
+def _label_disabled_readback(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    label: str,
+    *,
+    stage: str,
+) -> bool:
+    readback = _run_launchctl(
+        run,
+        ["/bin/launchctl", "print-disabled", launch_domain],
+        stage=stage,
+    )
+    if readback.returncode != 0:
+        raise RuntimeError("LaunchAgent disabled state readback failed")
+    return _parse_disabled_state(readback.stdout, label)
+
+
+def _set_label_disabled(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    reference: str,
+    label: str,
+    disabled: bool,
+    *,
+    stage: str,
+) -> bool:
+    operation = "disable" if disabled else "enable"
+    result = _run_launchctl(
+        run,
+        ["/bin/launchctl", operation, reference],
+        stage=f"{stage}_{operation}",
+    )
+    if result.returncode != 0:
+        return False
+    return _label_disabled_readback(
+        run,
+        launch_domain,
+        label,
+        stage=f"{stage}_{operation}_readback",
+    ) is disabled
+
+
+def _loaded_readback(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    reference: str,
+    *,
+    stage: str,
+) -> subprocess.CompletedProcess[str]:
+    return _run_launchctl(
+        run,
+        ["/bin/launchctl", "print", reference],
+        stage=stage,
+    )
+
+
+def _force_unloaded(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    reference: str,
+    *,
+    stage: str,
+) -> bool:
+    _run_launchctl(
+        run,
+        ["/bin/launchctl", "bootout", reference],
+        stage=f"{stage}_bootout",
+    )
+    return (
+        _loaded_readback(
+            run,
+            reference,
+            stage=f"{stage}_unloaded_readback",
+        ).returncode
+        != 0
+    )
+
+
+def _disable_and_unload_label(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    reference: str,
+    label: str,
+    *,
+    stage: str,
+) -> bool:
+    if not _set_label_disabled(
+        run,
+        launch_domain,
+        reference,
+        label,
+        True,
+        stage=stage,
+    ):
+        return False
+    current = _loaded_readback(
+        run,
+        reference,
+        stage=f"{stage}_loaded_readback",
+    )
+    if current.returncode != 0:
+        return True
+    return _force_unloaded(run, reference, stage=stage)
+
+
+def _snapshot_loaded_contract_matches(
+    snapshot: LaunchLabelSnapshot,
+    readback: subprocess.CompletedProcess[str],
+) -> bool:
+    if readback.returncode != 0 or snapshot.plist is None:
+        return False
+    arguments = snapshot.plist.get("ProgramArguments")
+    working_directory = snapshot.plist.get("WorkingDirectory")
+    environment = snapshot.plist.get("EnvironmentVariables")
+    if (
+        not isinstance(arguments, list)
+        or any(not isinstance(item, str) for item in arguments)
+        or not isinstance(working_directory, str)
+        or not isinstance(environment, dict)
+        or not isinstance(environment.get("PYTHONPATH"), str)
+    ):
+        return False
+    return _loaded_contract_matches(
+        readback.stdout,
+        expected_arguments=arguments,
+        expected_working_directory=working_directory,
+        expected_module_root=environment["PYTHONPATH"],
+    )
+
+
+def _restore_label_snapshot(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    reference: str,
+    plist_path: Path,
+    snapshot: LaunchLabelSnapshot,
+    stage: str,
+) -> bool:
+    if not snapshot.loaded:
+        if not _force_unloaded(run, reference, stage=stage):
+            return False
+        return _set_label_disabled(
+            run,
+            launch_domain,
+            reference,
+            snapshot.label,
+            snapshot.disabled,
+            stage=stage,
+        )
+    current = _loaded_readback(
+        run,
+        reference,
+        stage=f"{stage}_initial_readback",
+    )
+    if not _set_label_disabled(
+        run,
+        launch_domain,
+        reference,
+        snapshot.label,
+        False,
+        stage=stage,
+    ):
+        return False
+    if current.returncode == 0 and not _snapshot_loaded_contract_matches(
+        snapshot, current
+    ):
+        if not _force_unloaded(run, reference, stage=stage):
+            return False
+        current = _loaded_readback(
+            run,
+            reference,
+            stage=f"{stage}_post_bootout_readback",
+        )
+    if current.returncode != 0:
+        bootstrap = _run_launchctl(
+            run,
+            ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)],
+            stage=f"{stage}_bootstrap",
+        )
+        if bootstrap.returncode != 0:
+            return False
+        current = _loaded_readback(
+            run,
+            reference,
+            stage=f"{stage}_contract_readback",
+        )
+    if not _snapshot_loaded_contract_matches(snapshot, current):
+        return False
+    return _set_label_disabled(
+        run,
+        launch_domain,
+        reference,
+        snapshot.label,
+        snapshot.disabled,
+        stage=stage,
+    )
+
+
+def _file_snapshots_match(
+    paths: CanonicalInstallPaths, snapshots: dict[str, FileSnapshot]
+) -> bool:
+    try:
+        return all(
+            _capture_file_snapshot(path, f"recovered {name}") == snapshots[name]
+            for name, path in _canonical_file_paths(paths).items()
+        )
+    except ValueError:
+        return False
+
+
+def _restore_file_snapshots(
+    paths: CanonicalInstallPaths, snapshots: dict[str, FileSnapshot]
+) -> None:
+    for name, path in _canonical_file_paths(paths).items():
+        _restore_file_snapshot(path, snapshots[name])
+
+
+def _rollback_recovery_record(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    launch_ref: str,
+    legacy_ref: str,
+    legacy_plist: Path,
+    paths: CanonicalInstallPaths,
+    record: RecoveryRecord,
+) -> tuple[bool, tuple[str, ...]]:
+    errors: list[str] = []
+    try:
+        files_changed = not _file_snapshots_match(paths, record.files)
+        if files_changed:
+            if not _disable_and_unload_label(
+                run,
+                launch_domain,
+                launch_ref,
+                DEFAULT_LABEL,
+                stage="rollback_supervisor_fence",
+            ):
+                raise RuntimeError("supervisor rollback fence failed")
+            if not _disable_and_unload_label(
+                run,
+                launch_domain,
+                legacy_ref,
+                LEGACY_LABEL,
+                stage="rollback_legacy_fence",
+            ):
+                raise RuntimeError("legacy rollback fence failed")
+            _restore_file_snapshots(paths, record.files)
+        if not _restore_label_snapshot(
+            run=run,
+            launch_domain=launch_domain,
+            reference=launch_ref,
+            plist_path=paths.plist,
+            snapshot=record.supervisor,
+            stage="restore_supervisor",
+        ):
+            raise RuntimeError("supervisor state restoration failed")
+        if not _restore_label_snapshot(
+            run=run,
+            launch_domain=launch_domain,
+            reference=legacy_ref,
+            plist_path=legacy_plist,
+            snapshot=record.legacy,
+            stage="restore_legacy",
+        ):
+            raise RuntimeError("legacy state restoration failed")
+
+        supervisor_final = _loaded_readback(
+            run,
+            launch_ref,
+            stage="rollback_supervisor_final_readback",
+        )
+        legacy_final = _loaded_readback(
+            run,
+            legacy_ref,
+            stage="rollback_legacy_final_readback",
+        )
+        if (supervisor_final.returncode == 0) is not record.supervisor.loaded:
+            raise RuntimeError("supervisor loaded state restoration failed")
+        if (legacy_final.returncode == 0) is not record.legacy.loaded:
+            raise RuntimeError("legacy loaded state restoration failed")
+        if record.supervisor.loaded and not _snapshot_loaded_contract_matches(
+            record.supervisor, supervisor_final
+        ):
+            raise RuntimeError("supervisor contract restoration failed")
+        if record.legacy.loaded and not _snapshot_loaded_contract_matches(
+            record.legacy, legacy_final
+        ):
+            raise RuntimeError("legacy contract restoration failed")
+        if _label_disabled_readback(
+            run,
+            launch_domain,
+            DEFAULT_LABEL,
+            stage="rollback_supervisor_disabled_final",
+        ) is not record.supervisor.disabled:
+            raise RuntimeError("supervisor disabled state restoration failed")
+        if _label_disabled_readback(
+            run,
+            launch_domain,
+            LEGACY_LABEL,
+            stage="rollback_legacy_disabled_final",
+        ) is not record.legacy.disabled:
+            raise RuntimeError("legacy disabled state restoration failed")
+        if not _file_snapshots_match(paths, record.files):
+            raise RuntimeError("installation file restoration failed")
+        supervisor_enabled = (
+            record.supervisor.plist_exists and not record.supervisor.disabled
+        )
+        legacy_enabled = record.legacy.plist_exists and not record.legacy.disabled
+        if (
+            record.supervisor.loaded and record.legacy.loaded
+        ) or (supervisor_enabled and legacy_enabled):
+            raise RuntimeError("unsafe concurrent pre-state cannot be restored")
+        return True, ()
+    except Exception as exc:
+        errors.append(_safe_exception_type(exc))
+        return False, tuple(errors)
+
+
+def _force_both_labels_safe(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    launch_ref: str,
+    legacy_ref: str,
+) -> tuple[bool, tuple[str, ...]]:
+    errors: list[str] = []
+    safe = True
+    for label, reference, stage in (
+        (DEFAULT_LABEL, launch_ref, "recovery_supervisor"),
+        (LEGACY_LABEL, legacy_ref, "recovery_legacy"),
+    ):
+        label_safe = False
+        for attempt in range(2):
+            disabled = False
+            unloaded = False
+            try:
+                disabled = _set_label_disabled(
+                    run,
+                    launch_domain,
+                    reference,
+                    label,
+                    True,
+                    stage=f"{stage}_{attempt + 1}",
+                )
+                if not disabled:
+                    errors.append("RuntimeError")
+            except Exception as exc:
+                errors.append(_safe_exception_type(exc))
+            try:
+                unloaded = _force_unloaded(
+                    run,
+                    reference,
+                    stage=f"{stage}_{attempt + 1}",
+                )
+                if not unloaded:
+                    errors.append("RuntimeError")
+            except Exception as exc:
+                errors.append(_safe_exception_type(exc))
+            if disabled and unloaded:
+                label_safe = True
+                break
+        safe = safe and label_safe
+    return safe, tuple(errors[:32])
+
+
+def _validate_recovery_record(
+    record: RecoveryRecord,
+    *,
+    paths: CanonicalInstallPaths,
+    legacy_config: Path,
+    legacy_plist: Path,
+) -> None:
+    supervisor_file = record.files["plist"]
+    if supervisor_file.exists is not record.supervisor.plist_exists:
+        raise ValueError("supervisor recovery plist snapshot is inconsistent")
+    if supervisor_file.exists:
+        if supervisor_file.content is None or record.supervisor.plist is None:
+            raise ValueError("supervisor recovery plist snapshot is incomplete")
+        try:
+            supervisor_plist = plistlib.loads(supervisor_file.content)
+        except plistlib.InvalidFileException as exc:
+            raise ValueError("supervisor recovery plist snapshot is invalid") from exc
+        if not _plist_value_matches_exactly(
+            supervisor_plist, record.supervisor.plist
+        ):
+            raise ValueError("supervisor recovery plist snapshot is inconsistent")
+        arguments = supervisor_plist.get("ProgramArguments")
+        working_directory = supervisor_plist.get("WorkingDirectory")
+        environment = supervisor_plist.get("EnvironmentVariables")
+        if (
+            set(supervisor_plist) != PLIST_KEYS
+            or supervisor_plist.get("Label") != DEFAULT_LABEL
+            or supervisor_plist.get("RunAtLoad") is not True
+            or supervisor_plist.get("KeepAlive") is not True
+            or supervisor_plist.get("ProcessType") != "Background"
+            or not isinstance(arguments, list)
+            or len(arguments) != 11
+            or any(not isinstance(item, str) or not item for item in arguments)
+            or arguments[1:4]
+            != ["-m", "gtasks.local_handoff_supervisor", "--config"]
+            or Path(arguments[4]).resolve() != paths.supervisor_config.resolve()
+            or arguments[5] != "--codex-path"
+            or arguments[7] != "--openclaw-path"
+            or arguments[9] != "--working-directory"
+            or not Path(arguments[0]).is_absolute()
+            or not Path(arguments[6]).is_absolute()
+            or not Path(arguments[8]).is_absolute()
+            or not isinstance(working_directory, str)
+            or arguments[10] != working_directory
+            or not isinstance(environment, dict)
+            or set(environment) != {"PYTHONPATH"}
+            or not isinstance(environment.get("PYTHONPATH"), str)
+            or not Path(environment["PYTHONPATH"]).is_absolute()
+        ):
+            raise ValueError("supervisor recovery plist contract is invalid")
+    if record.supervisor.loaded and not all(
+        record.files[name].exists
+        for name in (
+            "codex_worker_config",
+            "openclaw_worker_config",
+            "supervisor_config",
+            "plist",
+        )
+    ):
+        raise ValueError("loaded supervisor recovery snapshot is incomplete")
+    if record.legacy.loaded and (
+        not record.legacy.plist_exists or record.legacy.plist is None
+    ):
+        raise ValueError("loaded legacy recovery snapshot is incomplete")
+    if record.legacy.plist is not None:
+        current_legacy = _validated_legacy_plist(legacy_plist, legacy_config)
+        if not _plist_value_matches_exactly(current_legacy, record.legacy.plist):
+            raise ValueError("legacy recovery plist snapshot has drifted")
+    supervisor_enabled = (
+        record.supervisor.plist_exists and not record.supervisor.disabled
+    )
+    legacy_enabled = record.legacy.plist_exists and not record.legacy.disabled
+    if (record.supervisor.loaded and record.legacy.loaded) or (
+        supervisor_enabled and legacy_enabled
+    ):
+        raise ValueError("supervisor recovery marker contains an unsafe pre-state")
+
+
+def _recovery_required_record(
+    record: RecoveryRecord,
+    *,
+    error_type: str,
+    rollback_errors: tuple[str, ...],
+) -> RecoveryRecord:
+    return RecoveryRecord(
+        status="recovery_required",
+        supervisor=record.supervisor,
+        legacy=record.legacy,
+        files=record.files,
+        last_error_type=error_type,
+        rollback_error_types=tuple(rollback_errors[:32]),
+    )
+
+
 def _serialized_config(config: DispatcherConfig) -> bytes:
     return (json.dumps(config.to_json_dict(), indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
@@ -489,6 +1215,72 @@ def install(
     paths = canonical_install_paths(
         home_directory if home_directory is not None else Path.home()
     )
+    launch_domain = f"gui/{os.getuid()}"
+    launch_ref = f"{launch_domain}/{label}"
+    legacy_ref = f"{launch_domain}/{LEGACY_LABEL}"
+    legacy_config, legacy_plist = canonical_single_worker_install_paths(
+        home_directory if home_directory is not None else Path.home()
+    )
+    marker_path = recovery_marker_path(paths)
+    if marker_path.exists() or marker_path.is_symlink():
+        if dry_run:
+            raise RuntimeError(
+                "supervisor installation recovery is pending; dry-run cannot resume it"
+            )
+        try:
+            pending_recovery = _load_recovery_record(marker_path)
+            _validate_recovery_record(
+                pending_recovery,
+                paths=paths,
+                legacy_config=legacy_config,
+                legacy_plist=legacy_plist,
+            )
+        except Exception as exc:
+            _force_both_labels_safe(
+                run=run,
+                launch_domain=launch_domain,
+                launch_ref=launch_ref,
+                legacy_ref=legacy_ref,
+            )
+            raise RuntimeError(
+                "supervisor recovery marker could not be validated; recovery_required"
+            ) from exc
+        recovered, rollback_errors = _rollback_recovery_record(
+            run=run,
+            launch_domain=launch_domain,
+            launch_ref=launch_ref,
+            legacy_ref=legacy_ref,
+            legacy_plist=legacy_plist,
+            paths=paths,
+            record=pending_recovery,
+        )
+        if not recovered:
+            _safe, safe_errors = _force_both_labels_safe(
+                run=run,
+                launch_domain=launch_domain,
+                launch_ref=launch_ref,
+                legacy_ref=legacy_ref,
+            )
+            updated_recovery = _recovery_required_record(
+                pending_recovery,
+                error_type=(pending_recovery.last_error_type or "InterruptedInstall"),
+                rollback_errors=rollback_errors + safe_errors,
+            )
+            try:
+                _write_recovery_record(marker_path, updated_recovery)
+            except Exception:
+                pass
+            raise RuntimeError(
+                "pending supervisor installation could not restore exact pre-state; "
+                "recovery_required"
+            )
+        try:
+            _remove_recovery_record(marker_path)
+        except OSError as exc:
+            raise RuntimeError(
+                "supervisor exact pre-state was restored but recovery marker "
+                "cleanup failed; recovery_required"
+            ) from exc
     source_supervisor = SupervisorConfig(
         schema_version=1,
         worker_config_paths=(
@@ -631,9 +1423,11 @@ def install(
         existing_supervisor = SupervisorConfig.from_file(paths.supervisor_config)
         if existing_supervisor != installed_supervisor:
             raise ValueError("existing supervisor config does not match canonical workers")
-    prior_supervisor_plist = _capture_file_snapshot(
-        paths.plist, "existing canonical supervisor plist"
-    )
+    prior_files = {
+        name: _capture_file_snapshot(path, f"existing canonical {name}")
+        for name, path in _canonical_file_paths(paths).items()
+    }
+    prior_supervisor_plist = prior_files["plist"]
     if prior_supervisor_plist.exists:
         if prior_supervisor_plist.content is None:
             raise ValueError("existing canonical supervisor plist is invalid")
@@ -643,18 +1437,10 @@ def install(
             description="existing canonical supervisor plist",
         )
 
-    launch_domain = f"gui/{os.getuid()}"
-    launch_ref = f"{launch_domain}/{label}"
-    legacy_ref = f"{launch_domain}/{LEGACY_LABEL}"
-    legacy_config, legacy_plist = canonical_single_worker_install_paths(
-        home_directory if home_directory is not None else Path.home()
-    )
-    disabled_readback = run(
+    disabled_readback = _run_launchctl(
+        run,
         ["/bin/launchctl", "print-disabled", launch_domain],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+        stage="snapshot_disabled_labels",
     )
     if disabled_readback.returncode != 0:
         raise ValueError("LaunchAgent disabled states could not be snapshotted")
@@ -662,12 +1448,10 @@ def install(
     legacy_disabled = _parse_disabled_state(
         disabled_readback.stdout, LEGACY_LABEL
     )
-    supervisor_readback = run(
+    supervisor_readback = _run_launchctl(
+        run,
         ["/bin/launchctl", "print", launch_ref],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+        stage="snapshot_supervisor",
     )
     canonical_files_present = all(
         path.exists()
@@ -701,12 +1485,10 @@ def install(
         plist_exists=prior_supervisor_plist.exists,
         plist=(expected_plist if prior_supervisor_plist.exists else None),
     )
-    legacy_loaded_readback = run(
+    legacy_loaded_readback = _run_launchctl(
+        run,
         ["/bin/launchctl", "print", legacy_ref],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+        stage="snapshot_legacy",
     )
     legacy = _inspect_legacy_state(
         run=run,
@@ -752,224 +1534,191 @@ def install(
             "legacy LaunchAgent is active; pass --replace-legacy for a verified transition"
         )
 
+    recovery = RecoveryRecord(
+        status="transitioning",
+        supervisor=supervisor,
+        legacy=legacy,
+        files=prior_files,
+    )
     try:
+        _write_recovery_record(marker_path, recovery)
+    except Exception as exc:
+        raise RuntimeError(
+            "supervisor recovery marker could not be persisted before mutation"
+        ) from exc
+
+    try:
+        if not _disable_and_unload_label(
+            run,
+            launch_domain,
+            launch_ref,
+            label,
+            stage="transition_supervisor_fence",
+        ):
+            raise RuntimeError(
+                "supervisor LaunchAgent could not be durably disabled and unloaded"
+            )
+        if not _disable_and_unload_label(
+            run,
+            launch_domain,
+            legacy_ref,
+            LEGACY_LABEL,
+            stage="transition_legacy_fence",
+        ):
+            raise RuntimeError(
+                "legacy LaunchAgent could not be durably disabled and unloaded"
+            )
+
         _atomic_write(paths.codex_worker_config, worker_bytes[0], 0o600)
         _atomic_write(paths.openclaw_worker_config, worker_bytes[1], 0o600)
         _atomic_write(paths.supervisor_config, supervisor_bytes, 0o600)
         _atomic_write(paths.plist, plist_bytes, 0o644)
-    except OSError as exc:
-        try:
-            _restore_file_snapshot(paths.plist, prior_supervisor_plist)
-        except (OSError, RuntimeError):
-            raise RuntimeError(
-                "supervisor file staging failed and plist rollback failed"
-            ) from exc
-        raise RuntimeError("supervisor file staging failed; plist rolled back") from exc
 
-    def launchctl(arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        return run(
-            arguments,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-    def label_disabled(label_name: str) -> bool:
-        return _read_label_disabled_state(run, launch_domain, label_name)
-
-    def set_label_disabled(reference: str, label_name: str, value: bool) -> bool:
-        operation = "disable" if value else "enable"
-        result = launchctl(["/bin/launchctl", operation, reference])
-        if result.returncode != 0:
-            return False
-        try:
-            return label_disabled(label_name) is value
-        except ValueError:
-            return False
-
-    def loaded_readback(reference: str) -> subprocess.CompletedProcess[str]:
-        return launchctl(["/bin/launchctl", "print", reference])
-
-    def force_unloaded(reference: str) -> bool:
-        launchctl(["/bin/launchctl", "bootout", reference])
-        return loaded_readback(reference).returncode != 0
-
-    def stop_loaded(reference: str) -> bool:
-        stopped = launchctl(["/bin/launchctl", "bootout", reference])
-        return stopped.returncode == 0 and loaded_readback(reference).returncode != 0
-
-    def loaded_contract_matches(
-        snapshot: LaunchLabelSnapshot,
-        readback: subprocess.CompletedProcess[str],
-    ) -> bool:
-        if readback.returncode != 0 or snapshot.plist is None:
-            return False
-        return _loaded_contract_matches(
-            readback.stdout,
-            expected_arguments=list(snapshot.plist["ProgramArguments"]),
-            expected_working_directory=str(snapshot.plist["WorkingDirectory"]),
-            expected_module_root=str(
-                dict(snapshot.plist["EnvironmentVariables"])["PYTHONPATH"]
-            ),
-        )
-
-    def restore_label(
-        snapshot: LaunchLabelSnapshot,
-        reference: str,
-        plist_path: Path,
-    ) -> bool:
-        current = loaded_readback(reference)
-        if snapshot.loaded:
-            if not set_label_disabled(reference, snapshot.label, False):
-                return False
-            if current.returncode != 0:
-                restored = launchctl(
-                    ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)]
-                )
-                if restored.returncode != 0:
-                    return False
-                current = loaded_readback(reference)
-            if not loaded_contract_matches(snapshot, current):
-                return False
-            if snapshot.disabled and not set_label_disabled(
-                reference, snapshot.label, True
-            ):
-                return False
-            return True
-        if current.returncode == 0 and not force_unloaded(reference):
-            return False
-        return set_label_disabled(
-            reference, snapshot.label, snapshot.disabled
-        )
-
-    def file_snapshot_restored() -> bool:
-        try:
-            current = _capture_file_snapshot(
-                paths.plist, "restored canonical supervisor plist"
-            )
-        except ValueError:
-            return False
-        return current == prior_supervisor_plist
-
-    def rollback_exact_pre_state() -> bool:
-        try:
-            set_label_disabled(launch_ref, label, True)
-            if not force_unloaded(launch_ref):
-                return False
-            legacy_safely_disabled = set_label_disabled(
-                legacy_ref, LEGACY_LABEL, True
-            )
-            if not legacy_safely_disabled and (
-                supervisor.loaded or supervisor.enabled
-            ):
-                return False
-            legacy_current = loaded_readback(legacy_ref)
-            if (
-                legacy_current.returncode == 0
-                and not legacy.loaded
-                and not force_unloaded(legacy_ref)
-            ):
-                return False
-            _restore_file_snapshot(paths.plist, prior_supervisor_plist)
-            if not restore_label(supervisor, launch_ref, paths.plist):
-                return False
-            if not restore_label(legacy, legacy_ref, legacy_plist):
-                return False
-
-            supervisor_final = loaded_readback(launch_ref)
-            legacy_final = loaded_readback(legacy_ref)
-            supervisor_loaded_final = supervisor_final.returncode == 0
-            legacy_loaded_final = legacy_final.returncode == 0
-            if supervisor_loaded_final != supervisor.loaded:
-                return False
-            if legacy_loaded_final != legacy.loaded:
-                return False
-            if supervisor.loaded and not loaded_contract_matches(
-                supervisor, supervisor_final
-            ):
-                return False
-            if legacy.loaded and not loaded_contract_matches(legacy, legacy_final):
-                return False
-            if label_disabled(label) is not supervisor.disabled:
-                return False
-            if label_disabled(LEGACY_LABEL) is not legacy.disabled:
-                return False
-            if not file_snapshot_restored():
-                return False
-            if supervisor_loaded_final and legacy_loaded_final:
-                return False
-            supervisor_enabled_final = (
-                prior_supervisor_plist.exists and not supervisor.disabled
-            )
-            legacy_enabled_final = (
-                (legacy_plist.exists() or legacy_plist.is_symlink())
-                and not legacy.disabled
-            )
-            if supervisor_enabled_final and legacy_enabled_final:
-                return False
-            return True
-        except (OSError, RuntimeError, ValueError):
-            return False
-
-    def activation_failed(message: str) -> None:
-        if rollback_exact_pre_state():
-            raise RuntimeError(f"{message}; exact pre-state rolled back")
-        raise RuntimeError(f"{message}; exact pre-state rollback failed")
-
-    if not set_label_disabled(legacy_ref, LEGACY_LABEL, True):
-        activation_failed("legacy LaunchAgent could not be durably disabled")
-    if legacy.loaded and not stop_loaded(legacy_ref):
-        activation_failed("legacy LaunchAgent could not be stopped")
-    if supervisor.loaded and not stop_loaded(launch_ref):
-        activation_failed("existing supervisor LaunchAgent could not be stopped")
-    if not set_label_disabled(launch_ref, label, False):
-        activation_failed("supervisor LaunchAgent could not be durably enabled")
-
-    bootstrap = launchctl(
-        ["/bin/launchctl", "bootstrap", launch_domain, str(paths.plist)]
-    )
-    if bootstrap.returncode != 0:
-        activation_failed("supervisor LaunchAgent bootstrap failed")
-    supervisor_final = loaded_readback(launch_ref)
-    if supervisor_final.returncode != 0 or not _loaded_contract_matches(
-        supervisor_final.stdout,
-        expected_arguments=expected_arguments,
-        expected_working_directory=str(resolved_working_directory),
-        expected_module_root=str(resolved_module_root),
-    ):
-        activation_failed("supervisor LaunchAgent readback failed")
-    legacy_final = loaded_readback(legacy_ref)
-    try:
-        final_legacy_disabled = label_disabled(LEGACY_LABEL)
-        final_supervisor_disabled = label_disabled(label)
-    except ValueError:
-        final_legacy_disabled = False
-        final_supervisor_disabled = True
-    if (
-        legacy_final.returncode == 0
-        or not final_legacy_disabled
-        or final_supervisor_disabled
-    ):
-        activation_failed("LaunchAgent final isolation readback failed")
-
-    try:
         installed = SupervisorConfig.from_file(paths.supervisor_config)
         installed_workers = load_isolated_workers(installed)
-    except (OSError, ValueError):
-        activation_failed("installed worker configuration readback failed")
-    if installed != installed_supervisor or tuple(
-        worker.to_json_dict() for worker in installed_workers
-    ) != tuple(worker.to_json_dict() for worker in ordered_workers):
-        activation_failed("installed worker configuration readback failed")
-    try:
+        if installed != installed_supervisor or tuple(
+            worker.to_json_dict() for worker in installed_workers
+        ) != tuple(worker.to_json_dict() for worker in ordered_workers):
+            raise RuntimeError("installed worker configuration readback failed")
         _parse_exact_plist(
             paths.plist.read_bytes(),
             expected=expected_plist,
             description="rendered supervisor plist",
         )
-    except (OSError, ValueError):
-        activation_failed("rendered supervisor LaunchAgent failed readback")
+
+        if (
+            _loaded_readback(
+                run,
+                launch_ref,
+                stage="preactivation_supervisor_unloaded_readback",
+            ).returncode
+            == 0
+            or _loaded_readback(
+                run,
+                legacy_ref,
+                stage="preactivation_legacy_unloaded_readback",
+            ).returncode
+            == 0
+            or not _label_disabled_readback(
+                run,
+                launch_domain,
+                label,
+                stage="preactivation_supervisor_disabled_readback",
+            )
+            or not _label_disabled_readback(
+                run,
+                launch_domain,
+                LEGACY_LABEL,
+                stage="preactivation_legacy_disabled_readback",
+            )
+        ):
+            raise RuntimeError("preactivation isolation readback failed")
+
+        if not _set_label_disabled(
+            run,
+            launch_domain,
+            launch_ref,
+            label,
+            False,
+            stage="activate_supervisor",
+        ):
+            raise RuntimeError(
+                "supervisor LaunchAgent could not be durably enabled"
+            )
+        bootstrap = _run_launchctl(
+            run,
+            ["/bin/launchctl", "bootstrap", launch_domain, str(paths.plist)],
+            stage="activate_supervisor_bootstrap",
+        )
+        if bootstrap.returncode != 0:
+            raise RuntimeError("supervisor LaunchAgent bootstrap failed")
+        supervisor_final = _loaded_readback(
+            run,
+            launch_ref,
+            stage="activate_supervisor_contract_readback",
+        )
+        if supervisor_final.returncode != 0 or not _loaded_contract_matches(
+            supervisor_final.stdout,
+            expected_arguments=expected_arguments,
+            expected_working_directory=str(resolved_working_directory),
+            expected_module_root=str(resolved_module_root),
+        ):
+            raise RuntimeError("supervisor LaunchAgent readback failed")
+        legacy_final = _loaded_readback(
+            run,
+            legacy_ref,
+            stage="activate_legacy_isolation_readback",
+        )
+        if (
+            legacy_final.returncode == 0
+            or not _label_disabled_readback(
+                run,
+                launch_domain,
+                LEGACY_LABEL,
+                stage="activate_legacy_disabled_readback",
+            )
+            or _label_disabled_readback(
+                run,
+                launch_domain,
+                label,
+                stage="activate_supervisor_enabled_readback",
+            )
+        ):
+            raise RuntimeError("LaunchAgent final isolation readback failed")
+        installed = SupervisorConfig.from_file(paths.supervisor_config)
+        installed_workers = load_isolated_workers(installed)
+        if installed != installed_supervisor or tuple(
+            worker.to_json_dict() for worker in installed_workers
+        ) != tuple(worker.to_json_dict() for worker in ordered_workers):
+            raise RuntimeError("installed worker configuration readback failed")
+        _parse_exact_plist(
+            paths.plist.read_bytes(),
+            expected=expected_plist,
+            description="rendered supervisor plist",
+        )
+        _remove_recovery_record(marker_path)
+    except Exception as original_error:
+        recovered, rollback_errors = _rollback_recovery_record(
+            run=run,
+            launch_domain=launch_domain,
+            launch_ref=launch_ref,
+            legacy_ref=legacy_ref,
+            legacy_plist=legacy_plist,
+            paths=paths,
+            record=recovery,
+        )
+        if recovered:
+            try:
+                if marker_path.exists() or marker_path.is_symlink():
+                    _remove_recovery_record(marker_path)
+            except OSError as cleanup_error:
+                raise RuntimeError(
+                    "supervisor installation failed; exact pre-state rolled back; "
+                    "recovery marker cleanup failed"
+                ) from original_error
+            raise RuntimeError(
+                "supervisor installation failed; exact pre-state rolled back"
+            ) from original_error
+
+        _safe, safe_errors = _force_both_labels_safe(
+            run=run,
+            launch_domain=launch_domain,
+            launch_ref=launch_ref,
+            legacy_ref=legacy_ref,
+        )
+        recovery_required = _recovery_required_record(
+            recovery,
+            error_type=_safe_exception_type(original_error),
+            rollback_errors=rollback_errors + safe_errors,
+        )
+        try:
+            _write_recovery_record(marker_path, recovery_required)
+        except Exception:
+            pass
+        raise RuntimeError(
+            "supervisor installation failed; exact pre-state was not restored; "
+            "recovery_required"
+        ) from original_error
     return receipt
 
 
