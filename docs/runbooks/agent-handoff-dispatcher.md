@@ -285,9 +285,11 @@ id on the command line.
 ### Paired supervisor transition and install recovery
 
 The paired Codex/OpenClaw installer owns
-`com.tony.gtasks-handoff-dispatcher-supervisor`. Run its mutation-free dry run
-first, then use `--replace-legacy` only for the reviewed transition from the
-retained one-worker label:
+`com.tony.gtasks-handoff-dispatcher-supervisor`. Run its state-read-only dry
+run first, then use `--replace-legacy` only for the reviewed transition from
+the retained one-worker label. The first invocation may create the shared
+private mutex described below; it does not publish config, plist, marker, or
+launchd state during dry run.
 
 ```bash
 /absolute/path/to/python3 scripts/install_local_handoff_supervisor.py \
@@ -307,6 +309,26 @@ as `absent`, `explicitly_enabled`, or `explicitly_disabled`. Current launchd
 renders `enabled`/`disabled`; the parser also accepts the documented boolean
 `false`/`true` variants. Missing labels remain `absent` and are not treated as
 explicitly enabled.
+
+Both installer scripts acquire one exclusive interprocess `flock` at this
+exact canonical path before inspecting any recovery marker, plist, config, or
+launchd state:
+
+```text
+~/Library/Application Support/GTasks/handoff-dispatcher/.install.lock
+```
+
+The lock is a persistent, regular, non-symlink mode-`0600` file. An installer
+holds it continuously through validation, all writes, launchd transition,
+rollback or recovery, final readback, and receipt construction. Bounded lock
+contention stops without entering the installer body or mutating canonical
+state. A symlink, non-regular entry, or non-`0600` mode is a stop condition;
+do not replace or delete the lock while either installer may be running.
+
+The lock is only a mutex. The mode-`0600` `.install-recovery.json` below is the
+crash-evidence record. If an installer process crashes, the OS releases its
+`flock`, while the recovery marker remains for the next lock holder to inspect
+and reconcile before doing any new work.
 
 Before its first canonical file write or launchd mutation, the supervisor
 installer writes and reads back this private mode-`0600` transition record:

@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from gtasks.handoff_install_lock import (  # noqa: E402
+    DEFAULT_LOCK_TIMEOUT_SECONDS,
+    install_lock_path,
+    locked_handoff_install,
+)
 from gtasks.local_handoff_dispatcher import (  # noqa: E402
     CodexResumeAdapter,
     DispatcherConfig,
@@ -1293,6 +1298,7 @@ def _validate_existing_worker(
         raise ValueError("existing worker fixed runtime binding must be preserved")
 
 
+@locked_handoff_install
 def install(
     *,
     source_worker_configs: tuple[str | Path, str | Path],
@@ -1308,6 +1314,7 @@ def install(
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     dry_run: bool = False,
     replace_legacy: bool = False,
+    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
 ) -> InstallReceipt:
     if not isinstance(source_worker_configs, tuple) or len(source_worker_configs) != 2:
         raise ValueError("exactly two source worker configs are required")

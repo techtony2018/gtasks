@@ -21,6 +21,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from gtasks.handoff_install_lock import (  # noqa: E402
+    DEFAULT_LOCK_TIMEOUT_SECONDS,
+    install_lock_path,
+    locked_handoff_install,
+)
 from gtasks.local_handoff_dispatcher import (  # noqa: E402
     CodexResumeAdapter,
     DispatcherConfig,
@@ -270,6 +275,7 @@ def _require_supervisor_fence_inactive(
         )
 
 
+@locked_handoff_install
 def install(
     *,
     source_config: str | Path,
@@ -284,6 +290,7 @@ def install(
     label: str = DEFAULT_LABEL,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     home_directory: str | Path | None = None,
+    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
 ) -> InstallReceipt:
     source_path = Path(source_config)
     destination_path = Path(destination_config)

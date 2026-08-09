@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import fcntl
 import hashlib
 import importlib.util
+import inspect
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import plistlib
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import warnings
 from unittest.mock import patch
 
 import gtasks.local_handoff_supervisor as supervisor_module
@@ -29,8 +34,12 @@ from gtasks.local_handoff_supervisor import (
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_PATH = ROOT / "scripts" / "install_local_handoff_supervisor.py"
+LEGACY_INSTALLER_PATH = ROOT / "scripts" / "install_local_handoff_dispatcher.py"
 TEMPLATE_PATH = (
     ROOT / "config" / "openclaw-agents" / "dispatcher-supervisor.plist.template"
+)
+LEGACY_TEMPLATE_PATH = (
+    ROOT / "config" / "handoff-dispatcher" / "agent.plist.template"
 )
 
 
@@ -42,6 +51,17 @@ def load_installer():
         raise AssertionError("supervisor installer module is unavailable")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_legacy_installer():
+    spec = importlib.util.spec_from_file_location(
+        "install_local_handoff_dispatcher_for_lock_tests", LEGACY_INSTALLER_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("legacy installer module is unavailable")
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -819,6 +839,42 @@ class SupervisorInstallerTests(SupervisorFixture):
         )
         return receipt, calls
 
+    def install_legacy(
+        self,
+        legacy_installer,
+        *,
+        run,
+        lock_timeout_seconds: float = 10.0,
+    ):
+        destination, plist = legacy_installer.canonical_install_paths(self.home)
+        arguments = dict(
+            source_config=self.codex_config,
+            destination_config=destination,
+            plist_template=LEGACY_TEMPLATE_PATH,
+            plist_destination=plist,
+            python_path=self.python_path,
+            module_root=ROOT,
+            runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+            codex_path=str(self.codex),
+            working_directory=ROOT,
+            run=run,
+            home_directory=self.home,
+        )
+        if "lock_timeout_seconds" in inspect.signature(
+            legacy_installer.install
+        ).parameters:
+            arguments["lock_timeout_seconds"] = lock_timeout_seconds
+        return legacy_installer.install(**arguments)
+
+    def start_forked_process(self, process) -> None:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="This process .* is multi-threaded, use of fork",
+                category=DeprecationWarning,
+            )
+            process.start()
+
     def test_uses_canonical_nonlegacy_paths(self) -> None:
         base = (
             self.home.resolve()
@@ -844,6 +900,479 @@ class SupervisorInstallerTests(SupervisorFixture):
         )
         self.assertNotIn(legacy_config, self.paths)
         self.assertNotIn(legacy_plist, self.paths)
+
+    def test_both_installers_share_one_private_regular_install_lock(self) -> None:
+        legacy_installer = load_legacy_installer()
+        supervisor_lock_path = getattr(self.installer, "install_lock_path", None)
+        legacy_lock_path = getattr(legacy_installer, "install_lock_path", None)
+        self.assertTrue(callable(supervisor_lock_path))
+        self.assertTrue(callable(legacy_lock_path))
+
+        expected = (
+            self.home.resolve()
+            / "Library"
+            / "Application Support"
+            / "GTasks"
+            / "handoff-dispatcher"
+            / ".install.lock"
+        )
+        self.assertEqual(supervisor_lock_path(self.home), expected)
+        self.assertEqual(legacy_lock_path(self.home), expected)
+
+        self.install(dry_run=True)
+
+        details = expected.lstat()
+        self.assertTrue(stat.S_ISREG(details.st_mode))
+        self.assertFalse(expected.is_symlink())
+        self.assertEqual(stat.S_IMODE(details.st_mode), 0o600)
+
+    def test_both_installers_reject_an_unsafe_lock_before_body_inspection(
+        self,
+    ) -> None:
+        legacy_installer = load_legacy_installer()
+        lock_path = (
+            self.home.resolve()
+            / "Library"
+            / "Application Support"
+            / "GTasks"
+            / "handoff-dispatcher"
+            / ".install.lock"
+        )
+        target = self.root / "attacker-lock-target"
+        target.write_bytes(b"")
+        target.chmod(0o600)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.symlink_to(target)
+
+        def forbidden_run(*_args, **_kwargs):
+            self.fail("installer body must not run for a symlinked lock")
+
+        installers = (
+            (
+                "legacy",
+                lambda: self.install_legacy(
+                    legacy_installer,
+                    run=forbidden_run,
+                ),
+            ),
+            (
+                "supervisor",
+                lambda: self.installer.install(
+                    source_worker_configs=(
+                        self.codex_config,
+                        self.openclaw_config,
+                    ),
+                    plist_template=TEMPLATE_PATH,
+                    python_path=self.python_path,
+                    module_root=ROOT,
+                    runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                    codex_path=str(self.codex),
+                    openclaw_path=str(self.openclaw),
+                    working_directory=ROOT,
+                    home_directory=self.home,
+                    run=forbidden_run,
+                    dry_run=False,
+                ),
+            ),
+        )
+        for name, invoke in installers:
+            with self.subTest(installer=name, lock="symlink"), self.assertRaisesRegex(
+                ValueError, "install lock.*symbolic link"
+            ):
+                invoke()
+
+        lock_path.unlink()
+        lock_path.write_bytes(b"")
+        lock_path.chmod(0o644)
+        for name, invoke in installers:
+            with self.subTest(
+                installer=name, lock="non-private"
+            ), self.assertRaisesRegex(ValueError, "install lock.*mode 0600"):
+                invoke()
+
+        self.assertFalse(self.paths.supervisor_config.exists())
+        self.assertFalse(self.paths.plist.exists())
+        self.assertFalse(self.legacy_config.exists())
+        self.assertFalse(self.legacy_plist.exists())
+
+    def test_bounded_lock_contention_blocks_both_installers_without_writes(
+        self,
+    ) -> None:
+        legacy_installer = load_legacy_installer()
+        self.assertIn(
+            "lock_timeout_seconds", inspect.signature(self.installer.install).parameters
+        )
+        self.assertIn(
+            "lock_timeout_seconds", inspect.signature(legacy_installer.install).parameters
+        )
+        lock_path = (
+            self.home.resolve()
+            / "Library"
+            / "Application Support"
+            / "GTasks"
+            / "handoff-dispatcher"
+            / ".install.lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        recovery_marker = self.installer.recovery_marker_path(self.paths)
+        recovery_marker.write_text("{", encoding="utf-8")
+        recovery_marker.chmod(0o600)
+        marker_before = recovery_marker.read_bytes()
+        context = multiprocessing.get_context("fork")
+        held = context.Event()
+        release = context.Event()
+
+        def hold_lock() -> None:
+            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                held.set()
+                release.wait(5)
+            finally:
+                os.close(descriptor)
+
+        holder = context.Process(target=hold_lock)
+        self.start_forked_process(holder)
+        self.assertTrue(held.wait(5), "lock holder did not acquire the test lock")
+        calls: list[list[str]] = []
+
+        def forbidden_run(arguments, **_kwargs):
+            calls.append(list(arguments))
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "install lock.*busy"):
+                self.install_legacy(
+                    legacy_installer,
+                    run=forbidden_run,
+                    lock_timeout_seconds=0.05,
+                )
+            with self.assertRaisesRegex(RuntimeError, "install lock.*busy"):
+                self.installer.install(
+                    source_worker_configs=(
+                        self.codex_config,
+                        self.openclaw_config,
+                    ),
+                    plist_template=TEMPLATE_PATH,
+                    python_path=self.python_path,
+                    module_root=ROOT,
+                    runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                    codex_path=str(self.codex),
+                    openclaw_path=str(self.openclaw),
+                    working_directory=ROOT,
+                    home_directory=self.home,
+                    run=forbidden_run,
+                    dry_run=False,
+                    lock_timeout_seconds=0.05,
+                )
+        finally:
+            release.set()
+            holder.join(5)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(5)
+
+        self.assertEqual(holder.exitcode, 0)
+        self.assertEqual(calls, [])
+        self.assertFalse(self.paths.supervisor_config.exists())
+        self.assertFalse(self.paths.plist.exists())
+        self.assertEqual(recovery_marker.read_bytes(), marker_before)
+        self.assertEqual(recovery_marker.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(self.legacy_config.exists())
+        self.assertFalse(self.legacy_plist.exists())
+
+    def test_legacy_holds_lock_then_supervisor_rechecks_and_fails_safely(self) -> None:
+        legacy_installer = load_legacy_installer()
+        context = multiprocessing.get_context("fork")
+        legacy_paused = context.Event()
+        release_legacy = context.Event()
+        supervisor_entered = context.Event()
+        results = context.Queue()
+
+        def legacy_target() -> None:
+            legacy_override = legacy_installer.OVERRIDE_ABSENT
+            legacy_loaded = False
+
+            def run(arguments, **_kwargs):
+                nonlocal legacy_override, legacy_loaded
+                if len(arguments) > 1 and arguments[1] == "-c":
+                    legacy_paused.set()
+                    if not release_legacy.wait(5):
+                        raise RuntimeError("test release was not received")
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=(
+                            f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                        ),
+                        stderr="",
+                    )
+                if arguments[-1] == "--version":
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                    )
+                if arguments[-1] == "--help":
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout="Usage: codex exec resume --skip-git-repo-check",
+                        stderr="",
+                    )
+                if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                    lines = []
+                    if self.paths.plist.exists():
+                        lines.append(
+                            f'\t"{self.installer.DEFAULT_LABEL}" => enabled\n'
+                        )
+                    if legacy_override != legacy_installer.OVERRIDE_ABSENT:
+                        rendered = (
+                            "disabled"
+                            if legacy_override
+                            == legacy_installer.OVERRIDE_EXPLICITLY_DISABLED
+                            else "enabled"
+                        )
+                        lines.append(
+                            f'\t"{legacy_installer.DEFAULT_LABEL}" => {rendered}\n'
+                        )
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=f"disabled services = {{\n{''.join(lines)}}}\n",
+                        stderr="",
+                    )
+                if arguments[:2] == ["/bin/launchctl", "print"]:
+                    if arguments[2] == self.supervisor_ref and self.paths.plist.exists():
+                        return subprocess.CompletedProcess(
+                            arguments, 0, stdout=self.launchctl_output(), stderr=""
+                        )
+                    if arguments[2] == self.legacy_ref and legacy_loaded:
+                        return subprocess.CompletedProcess(
+                            arguments,
+                            0,
+                            stdout=self.launchctl_output(
+                                arguments=self.legacy_arguments(),
+                                label=self.installer.LEGACY_LABEL,
+                            ),
+                            stderr="",
+                        )
+                    return subprocess.CompletedProcess(
+                        arguments, 3, stdout="", stderr="not loaded"
+                    )
+                if arguments == ["/bin/launchctl", "enable", self.legacy_ref]:
+                    legacy_override = legacy_installer.OVERRIDE_EXPLICITLY_ENABLED
+                elif arguments == ["/bin/launchctl", "bootout", self.legacy_ref]:
+                    legacy_loaded = False
+                elif arguments[:2] == ["/bin/launchctl", "bootstrap"]:
+                    legacy_loaded = True
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="", stderr=""
+                )
+
+            try:
+                receipt = self.install_legacy(legacy_installer, run=run)
+                results.put(("legacy", "ok", receipt.config_sha256, receipt.plist_sha256))
+            except Exception as exc:
+                results.put(("legacy", "error", type(exc).__name__, str(exc)))
+
+        def supervisor_target() -> None:
+            calls: list[tuple[list[str], dict[str, object]]] = []
+            base_run = self.fake_run(calls)
+            initialized = False
+
+            def run(arguments, **kwargs):
+                nonlocal initialized
+                if not initialized:
+                    initialized = True
+                    self.legacy_loaded = self.legacy_plist.exists()
+                    if self.legacy_loaded:
+                        self.legacy_disabled = False
+                supervisor_entered.set()
+                return base_run(arguments, **kwargs)
+
+            try:
+                receipt = self.installer.install(
+                    source_worker_configs=(self.codex_config, self.openclaw_config),
+                    plist_template=TEMPLATE_PATH,
+                    python_path=self.python_path,
+                    module_root=ROOT,
+                    runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                    codex_path=str(self.codex),
+                    openclaw_path=str(self.openclaw),
+                    working_directory=ROOT,
+                    home_directory=self.home,
+                    run=run,
+                    dry_run=False,
+                )
+                results.put(("supervisor", "ok", receipt.plist_sha256))
+            except Exception as exc:
+                results.put(("supervisor", "error", type(exc).__name__, str(exc)))
+
+        legacy_process = context.Process(target=legacy_target)
+        supervisor_process = context.Process(target=supervisor_target)
+        self.start_forked_process(legacy_process)
+        self.assertTrue(legacy_paused.wait(5), "legacy installer did not pause")
+        self.start_forked_process(supervisor_process)
+        supervisor_entered_while_locked = supervisor_entered.wait(0.3)
+        supervisor_waited = supervisor_process.is_alive()
+        release_legacy.set()
+        legacy_process.join(8)
+        supervisor_process.join(8)
+        for process in (legacy_process, supervisor_process):
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        self.assertFalse(supervisor_entered_while_locked)
+        self.assertTrue(supervisor_waited)
+        self.assertEqual(legacy_process.exitcode, 0)
+        self.assertEqual(supervisor_process.exitcode, 0)
+        outcomes = {
+            item[0]: item[1:]
+            for item in (results.get(timeout=2), results.get(timeout=2))
+        }
+        self.assertEqual(outcomes["legacy"][0], "ok")
+        self.assertEqual(outcomes["supervisor"][0:2], ("error", "ValueError"))
+        self.assertIn("legacy LaunchAgent is active", outcomes["supervisor"][2])
+        self.assertEqual(
+            hashlib.sha256(self.legacy_config.read_bytes()).hexdigest(),
+            outcomes["legacy"][1],
+        )
+        self.assertEqual(
+            hashlib.sha256(self.legacy_plist.read_bytes()).hexdigest(),
+            outcomes["legacy"][2],
+        )
+        self.assertFalse(self.paths.plist.exists())
+        self.assertFalse(self.paths.supervisor_config.exists())
+        self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
+
+    def test_supervisor_holds_lock_then_legacy_rechecks_final_fence(self) -> None:
+        legacy_installer = load_legacy_installer()
+        context = multiprocessing.get_context("fork")
+        supervisor_paused = context.Event()
+        release_supervisor = context.Event()
+        legacy_entered = context.Event()
+        results = context.Queue()
+
+        def supervisor_target() -> None:
+            calls: list[tuple[list[str], dict[str, object]]] = []
+            base_run = self.fake_run(calls)
+            paused = False
+
+            def run(arguments, **kwargs):
+                nonlocal paused
+                if (
+                    not paused
+                    and arguments
+                    == ["/bin/launchctl", "disable", self.supervisor_ref]
+                ):
+                    paused = True
+                    supervisor_paused.set()
+                    if not release_supervisor.wait(5):
+                        raise RuntimeError("test release was not received")
+                return base_run(arguments, **kwargs)
+
+            try:
+                receipt = self.installer.install(
+                    source_worker_configs=(self.codex_config, self.openclaw_config),
+                    plist_template=TEMPLATE_PATH,
+                    python_path=self.python_path,
+                    module_root=ROOT,
+                    runner_path=ROOT / "gtasks" / "local_handoff_supervisor.py",
+                    codex_path=str(self.codex),
+                    openclaw_path=str(self.openclaw),
+                    working_directory=ROOT,
+                    home_directory=self.home,
+                    run=run,
+                    dry_run=False,
+                )
+                results.put(("supervisor", "ok", receipt.plist_sha256))
+            except Exception as exc:
+                results.put(("supervisor", "error", type(exc).__name__, str(exc)))
+
+        def legacy_target() -> None:
+            def run(arguments, **_kwargs):
+                legacy_entered.set()
+                if len(arguments) > 1 and arguments[1] == "-c":
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=(
+                            f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                        ),
+                        stderr="",
+                    )
+                if arguments[-1] == "--version":
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                    )
+                if arguments[-1] == "--help":
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout="Usage: codex exec resume --skip-git-repo-check",
+                        stderr="",
+                    )
+                if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=(
+                            "disabled services = {\n"
+                            f'\t"{self.installer.DEFAULT_LABEL}" => enabled\n'
+                            "}\n"
+                        ),
+                        stderr="",
+                    )
+                if arguments == ["/bin/launchctl", "print", self.supervisor_ref]:
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout=self.launchctl_output(), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    arguments, 3, stdout="", stderr="not loaded"
+                )
+
+            try:
+                receipt = self.install_legacy(legacy_installer, run=run)
+                results.put(("legacy", "ok", receipt.plist_sha256))
+            except Exception as exc:
+                results.put(("legacy", "error", type(exc).__name__, str(exc)))
+
+        supervisor_process = context.Process(target=supervisor_target)
+        legacy_process = context.Process(target=legacy_target)
+        self.start_forked_process(supervisor_process)
+        self.assertTrue(supervisor_paused.wait(5), "supervisor installer did not pause")
+        self.assertTrue(self.installer.recovery_marker_path(self.paths).exists())
+        self.start_forked_process(legacy_process)
+        legacy_entered_while_locked = legacy_entered.wait(0.3)
+        legacy_waited = legacy_process.is_alive()
+        release_supervisor.set()
+        supervisor_process.join(8)
+        legacy_process.join(8)
+        for process in (supervisor_process, legacy_process):
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        self.assertFalse(legacy_entered_while_locked)
+        self.assertTrue(legacy_waited)
+        self.assertEqual(supervisor_process.exitcode, 0)
+        self.assertEqual(legacy_process.exitcode, 0)
+        outcomes = {
+            item[0]: item[1:]
+            for item in (results.get(timeout=2), results.get(timeout=2))
+        }
+        self.assertEqual(outcomes["supervisor"][0], "ok")
+        self.assertEqual(outcomes["legacy"][0:2], ("error", "ValueError"))
+        self.assertIn("reserved supervisor label is loaded", outcomes["legacy"][2])
+        self.assertEqual(
+            hashlib.sha256(self.paths.plist.read_bytes()).hexdigest(),
+            outcomes["supervisor"][1],
+        )
+        self.assertTrue(self.paths.supervisor_config.exists())
+        self.assertFalse(self.legacy_config.exists())
+        self.assertFalse(self.legacy_plist.exists())
+        self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
 
     def test_parses_real_launchctl_override_formats_without_losing_absence(self) -> None:
         label = self.installer.DEFAULT_LABEL
@@ -932,7 +1461,9 @@ class SupervisorInstallerTests(SupervisorFixture):
             )
         )
 
-    def test_dry_run_import_probe_disables_bytecode_and_changes_no_files(self) -> None:
+    def test_dry_run_import_probe_disables_bytecode_and_changes_no_files_beyond_lock(
+        self,
+    ) -> None:
         calls: list[tuple[list[str], dict[str, object]]] = []
         fake = self.fake_run(calls)
 
@@ -952,6 +1483,7 @@ class SupervisorInstallerTests(SupervisorFixture):
                 if candidate.is_file()
             }
 
+        self.install(dry_run=True)
         root_before = snapshot(ROOT)
         home_before = snapshot(self.home)
 
