@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
@@ -134,6 +134,12 @@ _THREAD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}")
 
 class CodexContractError(RuntimeError):
     """The installed Codex CLI does not support exact-thread resume."""
+
+
+class HandoffLaunchAdapter(Protocol):
+    """The runtime-specific command builder injected into one worker loop."""
+
+    def launch_request(self, claim: Mapping[str, object]) -> LaunchRequest: ...
 
 
 class RejectRedirectHandler(HTTPRedirectHandler):
@@ -1859,7 +1865,7 @@ class WakeInboxWorker:
     def __init__(
         self,
         client: object,
-        adapter: object,
+        adapter: HandoffLaunchAdapter,
         inbox: PrivateWakeInbox,
         *,
         retry_delay_seconds: float = 1,
@@ -2780,7 +2786,7 @@ def _wake_inbox_path(claim_path: Path) -> Path:
 
 def run_forever(
     client: LocalDispatcherClient,
-    adapter: CodexResumeAdapter,
+    adapter: HandoffLaunchAdapter,
     *,
     wait_seconds: int = 25,
     lease_seconds: int = 120,
