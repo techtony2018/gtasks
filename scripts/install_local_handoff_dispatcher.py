@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from gtasks.local_handoff_dispatcher import (  # noqa: E402
 
 
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher"
+SUPERVISOR_LABEL = "com.tony.gtasks-handoff-dispatcher-supervisor"
 
 
 def canonical_single_worker_install_paths(
@@ -86,11 +88,12 @@ def _atomic_write(path: Path, content: bytes, mode: int) -> None:
 
 
 def _render_template(template: str, replacements: dict[str, str]) -> str:
+    placeholders = set(re.findall(r"__([A-Z][A-Z0-9_]*)__", template))
+    if placeholders - set(replacements):
+        raise ValueError("plist template contains an unresolved placeholder")
     rendered = template
     for name, value in replacements.items():
         rendered = rendered.replace(f"__{name}__", escape(value))
-    if "__" in rendered:
-        raise ValueError("plist template contains an unresolved placeholder")
     return rendered
 
 
@@ -134,6 +137,97 @@ def _loaded_contract_matches(
         and working_directory == expected_working_directory
         and environment.get("PYTHONPATH") == expected_module_root
     )
+
+
+def _disabled_label_value(output: str, label: str) -> bool:
+    for raw_line in output.splitlines():
+        if "=>" not in raw_line:
+            continue
+        raw_key, raw_value = raw_line.rsplit("=>", 1)
+        if raw_key.strip().strip('"') != label:
+            continue
+        value = raw_value.strip().lower()
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError("launchctl returned an invalid disabled-label value")
+    return False
+
+
+def _supervisor_marker_present(home_directory: str | Path) -> bool:
+    marker = (
+        Path(home_directory).resolve()
+        / "Library"
+        / "LaunchAgents"
+        / f"{SUPERVISOR_LABEL}.plist"
+    )
+    if marker.is_symlink():
+        raise ValueError("supervisor fence marker must not be a symbolic link")
+    if not marker.exists():
+        return False
+    try:
+        value = plistlib.loads(marker.read_bytes())
+    except (OSError, plistlib.InvalidFileException) as exc:
+        raise ValueError("supervisor fence marker is invalid") from exc
+    arguments = value.get("ProgramArguments") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("Label") != SUPERVISOR_LABEL
+        or not isinstance(arguments, list)
+        or len(arguments) < 3
+        or arguments[1:3] != ["-m", "gtasks.local_handoff_supervisor"]
+    ):
+        raise ValueError("supervisor fence marker is invalid")
+    return True
+
+
+def _supervisor_loaded_contract(output: str) -> bool:
+    arguments, _working_directory, environment = _parse_launchctl_contract(output)
+    return (
+        len(arguments) >= 3
+        and arguments[1:3] == ["-m", "gtasks.local_handoff_supervisor"]
+        and environment.get("XPC_SERVICE_NAME") == SUPERVISOR_LABEL
+    )
+
+
+def _require_supervisor_fence_inactive(
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    home_directory: str | Path,
+    launch_domain: str,
+) -> None:
+    disabled = run(
+        ["/bin/launchctl", "print-disabled", launch_domain],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if disabled.returncode != 0:
+        raise ValueError("supervisor fence state could not be verified")
+    supervisor_disabled = _disabled_label_value(
+        disabled.stdout, SUPERVISOR_LABEL
+    )
+    legacy_disabled = _disabled_label_value(disabled.stdout, DEFAULT_LABEL)
+    supervisor_ref = f"{launch_domain}/{SUPERVISOR_LABEL}"
+    loaded = run(
+        ["/bin/launchctl", "print", supervisor_ref],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    supervisor_loaded = loaded.returncode == 0 and _supervisor_loaded_contract(
+        loaded.stdout
+    )
+    marker_present = _supervisor_marker_present(home_directory)
+    if supervisor_loaded or (
+        marker_present and (not supervisor_disabled or legacy_disabled)
+    ):
+        raise ValueError(
+            "durable supervisor fence is active; legacy bootstrap is refused"
+        )
 
 
 def install(
@@ -267,6 +361,13 @@ def install(
     )
     launch_domain = f"gui/{os.getuid()}"
     launch_ref = f"{launch_domain}/{label}"
+    _require_supervisor_fence_inactive(
+        run=run,
+        home_directory=(
+            home_directory if home_directory is not None else Path.home()
+        ),
+        launch_domain=launch_domain,
+    )
     loaded = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,

@@ -544,12 +544,16 @@ class SupervisorInstallerTests(SupervisorFixture):
             f"{launch_domain}/{self.installer.LEGACY_LABEL}"
         )
         self.supervisor_loaded = False
+        self.supervisor_disabled = False
         self.legacy_loaded = False
         self.legacy_disabled = False
         self.fail_supervisor_bootstrap = False
         self.bad_supervisor_readback = False
+        self.inject_legacy_during_supervisor_bootstrap = False
+        self.corrupt_installed_config_after_bootstrap = False
         self.ignore_legacy_disable = False
         self.ignore_legacy_bootout = False
+        self.ignore_supervisor_disable = False
         self.concurrent_active_seen = False
         self.last_calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -666,19 +670,29 @@ class SupervisorInstallerTests(SupervisorFixture):
                     stderr="",
                 )
             if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
-                disabled = "true" if self.legacy_disabled else "false"
+                legacy_disabled = "true" if self.legacy_disabled else "false"
+                supervisor_disabled = (
+                    "true" if self.supervisor_disabled else "false"
+                )
                 return subprocess.CompletedProcess(
                     arguments,
                     0,
                     stdout=(
                         "disabled services = {\n"
-                        f'\t"{self.installer.LEGACY_LABEL}" => {disabled}\n'
+                        f'\t"{self.installer.LEGACY_LABEL}" => {legacy_disabled}\n'
+                        f'\t"{self.installer.DEFAULT_LABEL}" => {supervisor_disabled}\n'
                         "}\n"
                     ),
                     stderr="",
                 )
             if arguments[:2] == ["/bin/launchctl", "print"]:
                 if arguments[2] == self.supervisor_ref and self.supervisor_loaded:
+                    if self.corrupt_installed_config_after_bootstrap:
+                        self.paths.supervisor_config.write_text(
+                            "{}", encoding="utf-8"
+                        )
+                        self.paths.supervisor_config.chmod(0o600)
+                        self.corrupt_installed_config_after_bootstrap = False
                     output = self.launchctl_output()
                     if self.bad_supervisor_readback:
                         output = output.replace(
@@ -702,10 +716,16 @@ class SupervisorInstallerTests(SupervisorFixture):
                     arguments, 3, stdout="", stderr="not loaded"
                 )
             if arguments[:2] == ["/bin/launchctl", "disable"]:
-                if not self.ignore_legacy_disable:
+                if arguments[2] == self.supervisor_ref:
+                    if not self.ignore_supervisor_disable:
+                        self.supervisor_disabled = True
+                elif not self.ignore_legacy_disable:
                     self.legacy_disabled = True
             elif arguments[:2] == ["/bin/launchctl", "enable"]:
-                self.legacy_disabled = False
+                if arguments[2] == self.supervisor_ref:
+                    self.supervisor_disabled = False
+                else:
+                    self.legacy_disabled = False
             elif arguments[:2] == ["/bin/launchctl", "bootout"]:
                 if arguments[2] == self.supervisor_ref:
                     self.supervisor_loaded = False
@@ -714,12 +734,23 @@ class SupervisorInstallerTests(SupervisorFixture):
                         self.legacy_loaded = False
             elif arguments[:2] == ["/bin/launchctl", "bootstrap"]:
                 if arguments[3] == str(self.paths.plist):
+                    if self.supervisor_disabled:
+                        return subprocess.CompletedProcess(
+                            arguments, 5, stdout="", stderr="service disabled"
+                        )
                     if self.fail_supervisor_bootstrap:
+                        self.fail_supervisor_bootstrap = False
                         return subprocess.CompletedProcess(
                             arguments, 5, stdout="", stderr="bootstrap failed"
                         )
                     self.supervisor_loaded = True
+                    if self.inject_legacy_during_supervisor_bootstrap:
+                        self.legacy_loaded = True
                 elif arguments[3] == str(self.legacy_plist):
+                    if self.legacy_disabled:
+                        return subprocess.CompletedProcess(
+                            arguments, 5, stdout="", stderr="service disabled"
+                        )
                     self.legacy_loaded = True
             self.concurrent_active_seen = self.concurrent_active_seen or (
                 self.supervisor_loaded and self.legacy_loaded
@@ -772,6 +803,19 @@ class SupervisorInstallerTests(SupervisorFixture):
         )
         self.assertNotIn(legacy_config, self.paths)
         self.assertNotIn(legacy_plist, self.paths)
+
+    def test_snapshots_disabled_labels_without_plists_as_disabled_not_absent(self) -> None:
+        self.legacy_disabled = True
+
+        receipt, _calls = self.install(dry_run=True)
+
+        self.assertEqual(receipt.legacy_state, "disabled")
+        self.assertEqual(
+            self.installer._launch_state_name(
+                loaded=False, disabled=True, plist_exists=False
+            ),
+            "disabled",
+        )
 
     def test_dry_run_receipt_is_deterministic_redacted_and_writes_nothing(self) -> None:
         first, first_calls = self.install(dry_run=True)
@@ -1167,6 +1211,160 @@ class SupervisorInstallerTests(SupervisorFixture):
             [call[0] for call in calls],
         )
         self.assertTrue(all("shell" not in kwargs for _args, kwargs in calls))
+
+    def test_clean_install_durably_fences_later_legacy_bootstrap_across_login(self) -> None:
+        receipt, calls = self.install(dry_run=False)
+
+        self.assertTrue(receipt.activated)
+        self.assertEqual(receipt.transition_state, "legacy_fenced")
+        self.assertTrue(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        self.assertIn(
+            ["/bin/launchctl", "disable", self.legacy_ref],
+            [arguments for arguments, _kwargs in calls],
+        )
+        self.assertIn(
+            ["/bin/launchctl", "enable", self.supervisor_ref],
+            [arguments for arguments, _kwargs in calls],
+        )
+
+        self.supervisor_loaded = False
+        self.write_legacy_install(loaded=False, disabled=True)
+        later_bootstrap = self.fake_run(calls)(
+            [
+                "/bin/launchctl",
+                "bootstrap",
+                f"gui/{os.getuid()}",
+                str(self.legacy_plist),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        self.assertNotEqual(later_bootstrap.returncode, 0)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+
+    def test_bootstrap_toctou_legacy_activation_fails_and_restores_clean_state(self) -> None:
+        self.inject_legacy_during_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.paths.plist.exists())
+
+    def test_rollback_boots_out_supervisor_even_when_disable_readback_fails(self) -> None:
+        self.inject_legacy_during_supervisor_bootstrap = True
+        self.ignore_supervisor_disable = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.paths.plist.exists())
+        self.assertIn(
+            ["/bin/launchctl", "bootout", self.supervisor_ref],
+            [arguments for arguments, _kwargs in self.last_calls],
+        )
+
+    def test_failed_install_restores_prior_supervisor_plist_bytes_mode_and_states(self) -> None:
+        expected_plist = self.installer._expected_supervisor_plist(
+            label=self.installer.DEFAULT_LABEL,
+            arguments=self.expected_arguments(),
+            working_directory=str(ROOT.resolve()),
+            module_root=str(ROOT.resolve()),
+        )
+        prior_bytes = plistlib.dumps(
+            expected_plist, fmt=plistlib.FMT_BINARY, sort_keys=False
+        )
+        self.paths.plist.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.plist.write_bytes(prior_bytes)
+        self.paths.plist.chmod(0o640)
+        self.supervisor_disabled = True
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False)
+
+        self.assertEqual(self.paths.plist.read_bytes(), prior_bytes)
+        self.assertEqual(self.paths.plist.stat().st_mode & 0o777, 0o640)
+        self.assertFalse(self.supervisor_loaded)
+        self.assertTrue(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+
+    def test_failed_reinstall_restores_loaded_supervisor_and_durable_login_fence(self) -> None:
+        self.install(dry_run=False)
+        prior_bytes = plistlib.dumps(
+            plistlib.loads(self.paths.plist.read_bytes()),
+            fmt=plistlib.FMT_BINARY,
+            sort_keys=False,
+        )
+        self.paths.plist.write_bytes(prior_bytes)
+        self.paths.plist.chmod(0o640)
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False)
+
+        self.assertEqual(self.paths.plist.read_bytes(), prior_bytes)
+        self.assertEqual(self.paths.plist.stat().st_mode & 0o777, 0o640)
+        self.assertTrue(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+
+        self.supervisor_loaded = False
+        later_legacy = self.fake_run([])(
+            [
+                "/bin/launchctl",
+                "bootstrap",
+                f"gui/{os.getuid()}",
+                str(self.legacy_plist),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(later_legacy.returncode, 0)
+        self.assertFalse(self.legacy_loaded)
+
+    def test_failed_replacement_restores_enabled_unloaded_legacy_exactly(self) -> None:
+        self.write_legacy_install(loaded=False, disabled=False)
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.paths.plist.exists())
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+
+    def test_failed_installed_config_readback_rolls_back_launch_and_plist_state(self) -> None:
+        self.corrupt_installed_config_after_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+            self.install(dry_run=False)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertFalse(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.paths.plist.exists())
 
     def test_refuses_cross_host_pair_before_any_subprocess(self) -> None:
         self._worker_config(

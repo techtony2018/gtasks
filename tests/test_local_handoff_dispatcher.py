@@ -3611,12 +3611,24 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(calls[1][0], [str(self.codex.resolve()), "--version"])
         self.assertEqual(calls[2][0], [str(self.codex.resolve()), "exec", "resume", "--help"])
         launch_ref = f"gui/{os.getuid()}/com.tony.gtasks-handoff-dispatcher"
-        self.assertEqual(calls[3][0], ["/bin/launchctl", "print", launch_ref])
+        launch_domain = f"gui/{os.getuid()}"
+        self.assertEqual(
+            calls[3][0], ["/bin/launchctl", "print-disabled", launch_domain]
+        )
         self.assertEqual(
             calls[4][0],
-            ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist)],
+            [
+                "/bin/launchctl",
+                "print",
+                f"{launch_domain}/com.tony.gtasks-handoff-dispatcher-supervisor",
+            ],
         )
         self.assertEqual(calls[5][0], ["/bin/launchctl", "print", launch_ref])
+        self.assertEqual(
+            calls[6][0],
+            ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist)],
+        )
+        self.assertEqual(calls[7][0], ["/bin/launchctl", "print", launch_ref])
         for _, kwargs in calls:
             self.assertNotIn("shell", kwargs)
 
@@ -3643,6 +3655,117 @@ class InstallerTests(unittest.TestCase):
             / "LaunchAgents"
             / "com.tony.gtasks-handoff-dispatcher.plist",
         )
+
+    def test_refuses_legacy_bootstrap_when_supervisor_fence_persists_after_login(self) -> None:
+        supervisor_label = "com.tony.gtasks-handoff-dispatcher-supervisor"
+        supervisor_plist = (
+            self.home.resolve()
+            / "Library"
+            / "LaunchAgents"
+            / f"{supervisor_label}.plist"
+        )
+        supervisor_plist.parent.mkdir(parents=True, exist_ok=True)
+        supervisor_plist.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": supervisor_label,
+                    "ProgramArguments": [
+                        self.python_path,
+                        "-m",
+                        "gtasks.local_handoff_supervisor",
+                    ],
+                    "WorkingDirectory": str(ROOT.resolve()),
+                    "EnvironmentVariables": {"PYTHONPATH": str(ROOT.resolve())},
+                    "RunAtLoad": True,
+                    "KeepAlive": True,
+                    "ProcessType": "Background",
+                }
+            )
+        )
+        launch_domain = f"gui/{os.getuid()}"
+        legacy_ref = f"{launch_domain}/{self.installer.DEFAULT_LABEL}"
+        supervisor_ref = f"{launch_domain}/{supervisor_label}"
+        legacy_loaded = False
+        supervisor_disabled_state = False
+        calls: list[list[str]] = []
+
+        def run(arguments, **kwargs):
+            nonlocal legacy_loaded
+            calls.append(list(arguments))
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        "disabled services = {\n"
+                        f'\t"{self.installer.DEFAULT_LABEL}" => true\n'
+                        f'\t"{supervisor_label}" => '
+                        f'{str(supervisor_disabled_state).lower()}\n'
+                        "}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments == ["/bin/launchctl", "print", supervisor_ref]:
+                return subprocess.CompletedProcess(
+                    arguments, 3, stdout="", stderr="logged out"
+                )
+            if arguments == ["/bin/launchctl", "print", legacy_ref]:
+                if legacy_loaded:
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout=self.launchctl_output(), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    arguments, 3, stdout="", stderr="not loaded"
+                )
+            if arguments[:2] == ["/bin/launchctl", "bootstrap"]:
+                legacy_loaded = True
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        for supervisor_disabled_state in (False, True):
+            with self.subTest(supervisor_disabled=supervisor_disabled_state):
+                legacy_loaded = False
+                calls.clear()
+                with self.assertRaisesRegex(ValueError, "supervisor fence"):
+                    self.installer.install(
+                        source_config=self.source,
+                        destination_config=self.destination,
+                        plist_template=TEMPLATE_PATH,
+                        plist_destination=self.plist,
+                        python_path=self.python_path,
+                        module_root=ROOT,
+                        runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                        codex_path=str(self.codex),
+                        working_directory=ROOT,
+                        run=run,
+                        home_directory=self.home,
+                    )
+
+                self.assertFalse(
+                    any(
+                        arguments[:2] == ["/bin/launchctl", "bootstrap"]
+                        for arguments in calls
+                    )
+                )
 
     def test_verified_module_root_is_independent_from_agent_workspace(self) -> None:
         agent_workspace = self.directory / "agent-workspace"

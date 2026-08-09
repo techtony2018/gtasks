@@ -11,7 +11,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -81,11 +83,24 @@ class InstallReceipt:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyLaunchState:
+class LaunchLabelSnapshot:
+    label: str
     state: str
     loaded: bool
     disabled: bool
+    plist_exists: bool
     plist: dict[str, object] | None
+
+    @property
+    def enabled(self) -> bool:
+        return self.plist_exists and not self.disabled
+
+
+@dataclass(frozen=True, slots=True)
+class FileSnapshot:
+    exists: bool
+    content: bytes | None
+    mode: int | None
 
 
 def canonical_install_paths(home_directory: str | Path) -> CanonicalInstallPaths:
@@ -150,11 +165,12 @@ def _atomic_write(path: Path, content: bytes, mode: int) -> None:
 
 
 def _render_template(template: str, replacements: dict[str, str]) -> str:
+    placeholders = set(re.findall(r"__([A-Z][A-Z0-9_]*)__", template))
+    if placeholders - set(replacements):
+        raise ValueError("plist template contains an unresolved placeholder")
     rendered = template
     for name, value in replacements.items():
         rendered = rendered.replace(f"__{name}__", escape(value))
-    if "__" in rendered:
-        raise ValueError("plist template contains an unresolved placeholder")
     return rendered
 
 
@@ -271,8 +287,10 @@ def _parse_disabled_state(output: str, label: str) -> bool:
     return False
 
 
-def _read_legacy_disabled_state(
-    run: Callable[..., subprocess.CompletedProcess[str]], launch_domain: str
+def _read_label_disabled_state(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    label: str,
 ) -> bool:
     disabled_readback = run(
         ["/bin/launchctl", "print-disabled", launch_domain],
@@ -282,8 +300,14 @@ def _read_legacy_disabled_state(
         timeout=10,
     )
     if disabled_readback.returncode != 0:
-        raise ValueError("legacy LaunchAgent disabled state could not be verified")
-    return _parse_disabled_state(disabled_readback.stdout, LEGACY_LABEL)
+        raise ValueError("LaunchAgent disabled state could not be verified")
+    return _parse_disabled_state(disabled_readback.stdout, label)
+
+
+def _read_legacy_disabled_state(
+    run: Callable[..., subprocess.CompletedProcess[str]], launch_domain: str
+) -> bool:
+    return _read_label_disabled_state(run, launch_domain, LEGACY_LABEL)
 
 
 def _validated_legacy_plist(
@@ -334,15 +358,19 @@ def _inspect_legacy_state(
     legacy_ref: str,
     legacy_config: Path,
     legacy_plist: Path,
-) -> LegacyLaunchState:
-    disabled = _read_legacy_disabled_state(run, launch_domain)
-    loaded_readback = run(
-        ["/bin/launchctl", "print", legacy_ref],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    disabled: bool | None = None,
+    loaded_readback: subprocess.CompletedProcess[str] | None = None,
+) -> LaunchLabelSnapshot:
+    if disabled is None:
+        disabled = _read_legacy_disabled_state(run, launch_domain)
+    if loaded_readback is None:
+        loaded_readback = run(
+            ["/bin/launchctl", "print", legacy_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     loaded = loaded_readback.returncode == 0
     plist_present = legacy_plist.exists() or legacy_plist.is_symlink()
     parsed_plist: dict[str, object] | None = None
@@ -361,20 +389,60 @@ def _inspect_legacy_state(
             ),
         ):
             raise ValueError("loaded legacy LaunchAgent contract could not be verified")
-    if loaded:
-        state = "loaded"
-    elif plist_present and disabled:
-        state = "disabled"
-    elif plist_present:
-        state = "enabled"
-    else:
-        state = "absent"
-    return LegacyLaunchState(
+    state = _launch_state_name(
+        loaded=loaded,
+        disabled=disabled,
+        plist_exists=plist_present,
+    )
+    return LaunchLabelSnapshot(
+        label=LEGACY_LABEL,
         state=state,
         loaded=loaded,
         disabled=disabled,
+        plist_exists=plist_present,
         plist=parsed_plist,
     )
+
+
+def _launch_state_name(*, loaded: bool, disabled: bool, plist_exists: bool) -> str:
+    if loaded:
+        return "loaded"
+    if disabled:
+        return "disabled"
+    if plist_exists:
+        return "enabled"
+    return "absent"
+
+
+def _capture_file_snapshot(path: Path, description: str) -> FileSnapshot:
+    try:
+        details = path.lstat()
+    except FileNotFoundError:
+        return FileSnapshot(exists=False, content=None, mode=None)
+    except OSError as exc:
+        raise ValueError(f"{description} could not be inspected") from exc
+    if stat.S_ISLNK(details.st_mode):
+        raise ValueError(f"{description} must not be a symbolic link")
+    if not stat.S_ISREG(details.st_mode):
+        raise ValueError(f"{description} must be a regular file")
+    try:
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"{description} could not be read") from exc
+    return FileSnapshot(
+        exists=True,
+        content=content,
+        mode=stat.S_IMODE(details.st_mode),
+    )
+
+
+def _restore_file_snapshot(path: Path, snapshot: FileSnapshot) -> None:
+    if snapshot.exists:
+        if snapshot.content is None or snapshot.mode is None:
+            raise RuntimeError("file rollback snapshot is incomplete")
+        _atomic_write(path, snapshot.content, snapshot.mode)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _serialized_config(config: DispatcherConfig) -> bytes:
@@ -563,15 +631,14 @@ def install(
         existing_supervisor = SupervisorConfig.from_file(paths.supervisor_config)
         if existing_supervisor != installed_supervisor:
             raise ValueError("existing supervisor config does not match canonical workers")
-    if paths.plist.is_symlink():
-        raise ValueError("existing canonical supervisor plist must not be a symbolic link")
-    if paths.plist.exists():
-        try:
-            existing_plist_bytes = paths.plist.read_bytes()
-        except OSError as exc:
-            raise ValueError("existing canonical supervisor plist is invalid") from exc
+    prior_supervisor_plist = _capture_file_snapshot(
+        paths.plist, "existing canonical supervisor plist"
+    )
+    if prior_supervisor_plist.exists:
+        if prior_supervisor_plist.content is None:
+            raise ValueError("existing canonical supervisor plist is invalid")
         _parse_exact_plist(
-            existing_plist_bytes,
+            prior_supervisor_plist.content,
             expected=expected_plist,
             description="existing canonical supervisor plist",
         )
@@ -582,7 +649,20 @@ def install(
     legacy_config, legacy_plist = canonical_single_worker_install_paths(
         home_directory if home_directory is not None else Path.home()
     )
-    loaded = run(
+    disabled_readback = run(
+        ["/bin/launchctl", "print-disabled", launch_domain],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if disabled_readback.returncode != 0:
+        raise ValueError("LaunchAgent disabled states could not be snapshotted")
+    supervisor_disabled = _parse_disabled_state(disabled_readback.stdout, label)
+    legacy_disabled = _parse_disabled_state(
+        disabled_readback.stdout, LEGACY_LABEL
+    )
+    supervisor_readback = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,
         capture_output=True,
@@ -598,27 +678,49 @@ def install(
             paths.plist,
         )
     )
-    if loaded.returncode == 0 and not canonical_files_present:
+    if supervisor_readback.returncode == 0 and not canonical_files_present:
         raise ValueError(
             "loaded supervisor identity cannot be verified without canonical files"
         )
-    if loaded.returncode == 0 and not _loaded_contract_matches(
-        loaded.stdout,
+    if supervisor_readback.returncode == 0 and not _loaded_contract_matches(
+        supervisor_readback.stdout,
         expected_arguments=expected_arguments,
         expected_working_directory=str(resolved_working_directory),
         expected_module_root=str(resolved_module_root),
     ):
         raise ValueError("loaded supervisor does not match the exact canonical contract")
-    supervisor_loaded = loaded.returncode == 0
+    supervisor = LaunchLabelSnapshot(
+        label=label,
+        state=_launch_state_name(
+            loaded=supervisor_readback.returncode == 0,
+            disabled=supervisor_disabled,
+            plist_exists=prior_supervisor_plist.exists,
+        ),
+        loaded=supervisor_readback.returncode == 0,
+        disabled=supervisor_disabled,
+        plist_exists=prior_supervisor_plist.exists,
+        plist=(expected_plist if prior_supervisor_plist.exists else None),
+    )
+    legacy_loaded_readback = run(
+        ["/bin/launchctl", "print", legacy_ref],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     legacy = _inspect_legacy_state(
         run=run,
         launch_domain=launch_domain,
         legacy_ref=legacy_ref,
         legacy_config=legacy_config,
         legacy_plist=legacy_plist,
+        disabled=legacy_disabled,
+        loaded_readback=legacy_loaded_readback,
     )
-    legacy_active = legacy.state in {"loaded", "enabled"}
-    if supervisor_loaded and legacy_active:
+    legacy_active = legacy.loaded or legacy.enabled
+    if (supervisor.loaded and legacy.loaded) or (
+        supervisor.enabled and legacy.enabled
+    ):
         raise ValueError(
             "concurrent legacy and supervisor state is unsafe; both are loaded or enabled"
         )
@@ -626,10 +728,12 @@ def install(
         transition_state = "would_replace_legacy" if dry_run else "legacy_replaced"
     elif legacy_active:
         transition_state = f"blocked_legacy_{legacy.state}"
-    elif legacy.state == "disabled":
-        transition_state = "legacy_already_disabled"
+    elif dry_run:
+        transition_state = "would_fence_legacy"
+    elif legacy.disabled:
+        transition_state = "legacy_fence_preserved"
     else:
-        transition_state = "no_legacy"
+        transition_state = "legacy_fenced"
     receipt = InstallReceipt(
         label=label,
         supervisor_config_path=str(paths.supervisor_config),
@@ -648,192 +752,212 @@ def install(
             "legacy LaunchAgent is active; pass --replace-legacy for a verified transition"
         )
 
-    _atomic_write(paths.codex_worker_config, worker_bytes[0], 0o600)
-    _atomic_write(paths.openclaw_worker_config, worker_bytes[1], 0o600)
-    _atomic_write(paths.supervisor_config, supervisor_bytes, 0o600)
-    _atomic_write(paths.plist, plist_bytes, 0o644)
+    try:
+        _atomic_write(paths.codex_worker_config, worker_bytes[0], 0o600)
+        _atomic_write(paths.openclaw_worker_config, worker_bytes[1], 0o600)
+        _atomic_write(paths.supervisor_config, supervisor_bytes, 0o600)
+        _atomic_write(paths.plist, plist_bytes, 0o644)
+    except OSError as exc:
+        try:
+            _restore_file_snapshot(paths.plist, prior_supervisor_plist)
+        except (OSError, RuntimeError):
+            raise RuntimeError(
+                "supervisor file staging failed and plist rollback failed"
+            ) from exc
+        raise RuntimeError("supervisor file staging failed; plist rolled back") from exc
 
-    replacement_started = False
+    def launchctl(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        return run(
+            arguments,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
 
-    def restore_legacy() -> bool:
-        run(
-            ["/bin/launchctl", "bootout", launch_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        supervisor_readback = run(
-            ["/bin/launchctl", "print", launch_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if supervisor_readback.returncode == 0:
-            return False
-        enable = run(
-            ["/bin/launchctl", "enable", legacy_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if enable.returncode != 0:
+    def label_disabled(label_name: str) -> bool:
+        return _read_label_disabled_state(run, launch_domain, label_name)
+
+    def set_label_disabled(reference: str, label_name: str, value: bool) -> bool:
+        operation = "disable" if value else "enable"
+        result = launchctl(["/bin/launchctl", operation, reference])
+        if result.returncode != 0:
             return False
         try:
-            if _read_legacy_disabled_state(run, launch_domain):
-                return False
+            return label_disabled(label_name) is value
         except ValueError:
             return False
-        if not legacy.loaded:
-            return True
-        legacy_readback = run(
-            ["/bin/launchctl", "print", legacy_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if legacy_readback.returncode != 0:
-            restored = run(
-                ["/bin/launchctl", "bootstrap", launch_domain, str(legacy_plist)],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if restored.returncode != 0:
-                return False
-            legacy_readback = run(
-                ["/bin/launchctl", "print", legacy_ref],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        if legacy_readback.returncode != 0 or legacy.plist is None:
+
+    def loaded_readback(reference: str) -> subprocess.CompletedProcess[str]:
+        return launchctl(["/bin/launchctl", "print", reference])
+
+    def force_unloaded(reference: str) -> bool:
+        launchctl(["/bin/launchctl", "bootout", reference])
+        return loaded_readback(reference).returncode != 0
+
+    def stop_loaded(reference: str) -> bool:
+        stopped = launchctl(["/bin/launchctl", "bootout", reference])
+        return stopped.returncode == 0 and loaded_readback(reference).returncode != 0
+
+    def loaded_contract_matches(
+        snapshot: LaunchLabelSnapshot,
+        readback: subprocess.CompletedProcess[str],
+    ) -> bool:
+        if readback.returncode != 0 or snapshot.plist is None:
             return False
-        contract_restored = _loaded_contract_matches(
-            legacy_readback.stdout,
-            expected_arguments=list(legacy.plist["ProgramArguments"]),
-            expected_working_directory=str(legacy.plist["WorkingDirectory"]),
+        return _loaded_contract_matches(
+            readback.stdout,
+            expected_arguments=list(snapshot.plist["ProgramArguments"]),
+            expected_working_directory=str(snapshot.plist["WorkingDirectory"]),
             expected_module_root=str(
-                dict(legacy.plist["EnvironmentVariables"])["PYTHONPATH"]
+                dict(snapshot.plist["EnvironmentVariables"])["PYTHONPATH"]
             ),
         )
-        if not contract_restored:
+
+    def restore_label(
+        snapshot: LaunchLabelSnapshot,
+        reference: str,
+        plist_path: Path,
+    ) -> bool:
+        current = loaded_readback(reference)
+        if snapshot.loaded:
+            if not set_label_disabled(reference, snapshot.label, False):
+                return False
+            if current.returncode != 0:
+                restored = launchctl(
+                    ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)]
+                )
+                if restored.returncode != 0:
+                    return False
+                current = loaded_readback(reference)
+            if not loaded_contract_matches(snapshot, current):
+                return False
+            if snapshot.disabled and not set_label_disabled(
+                reference, snapshot.label, True
+            ):
+                return False
+            return True
+        if current.returncode == 0 and not force_unloaded(reference):
             return False
-        if legacy.disabled:
-            redisabled = run(
-                ["/bin/launchctl", "disable", legacy_ref],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
+        return set_label_disabled(
+            reference, snapshot.label, snapshot.disabled
+        )
+
+    def file_snapshot_restored() -> bool:
+        try:
+            current = _capture_file_snapshot(
+                paths.plist, "restored canonical supervisor plist"
             )
-            if redisabled.returncode != 0:
+        except ValueError:
+            return False
+        return current == prior_supervisor_plist
+
+    def rollback_exact_pre_state() -> bool:
+        try:
+            set_label_disabled(launch_ref, label, True)
+            if not force_unloaded(launch_ref):
                 return False
-            try:
-                return _read_legacy_disabled_state(run, launch_domain)
-            except ValueError:
+            legacy_safely_disabled = set_label_disabled(
+                legacy_ref, LEGACY_LABEL, True
+            )
+            if not legacy_safely_disabled and (
+                supervisor.loaded or supervisor.enabled
+            ):
                 return False
-        return True
+            legacy_current = loaded_readback(legacy_ref)
+            if (
+                legacy_current.returncode == 0
+                and not legacy.loaded
+                and not force_unloaded(legacy_ref)
+            ):
+                return False
+            _restore_file_snapshot(paths.plist, prior_supervisor_plist)
+            if not restore_label(supervisor, launch_ref, paths.plist):
+                return False
+            if not restore_label(legacy, legacy_ref, legacy_plist):
+                return False
+
+            supervisor_final = loaded_readback(launch_ref)
+            legacy_final = loaded_readback(legacy_ref)
+            supervisor_loaded_final = supervisor_final.returncode == 0
+            legacy_loaded_final = legacy_final.returncode == 0
+            if supervisor_loaded_final != supervisor.loaded:
+                return False
+            if legacy_loaded_final != legacy.loaded:
+                return False
+            if supervisor.loaded and not loaded_contract_matches(
+                supervisor, supervisor_final
+            ):
+                return False
+            if legacy.loaded and not loaded_contract_matches(legacy, legacy_final):
+                return False
+            if label_disabled(label) is not supervisor.disabled:
+                return False
+            if label_disabled(LEGACY_LABEL) is not legacy.disabled:
+                return False
+            if not file_snapshot_restored():
+                return False
+            if supervisor_loaded_final and legacy_loaded_final:
+                return False
+            supervisor_enabled_final = (
+                prior_supervisor_plist.exists and not supervisor.disabled
+            )
+            legacy_enabled_final = (
+                (legacy_plist.exists() or legacy_plist.is_symlink())
+                and not legacy.disabled
+            )
+            if supervisor_enabled_final and legacy_enabled_final:
+                return False
+            return True
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def activation_failed(message: str) -> None:
-        if replacement_started:
-            if restore_legacy():
-                raise RuntimeError(f"{message}; legacy worker rolled back")
-            raise RuntimeError(f"{message}; legacy rollback failed")
-        raise RuntimeError(message)
+        if rollback_exact_pre_state():
+            raise RuntimeError(f"{message}; exact pre-state rolled back")
+        raise RuntimeError(f"{message}; exact pre-state rollback failed")
 
-    if legacy_active:
-        replacement_started = True
-        disabled = run(
-            ["/bin/launchctl", "disable", legacy_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if disabled.returncode != 0:
-            activation_failed("legacy LaunchAgent could not be disabled")
-        try:
-            legacy_is_disabled = _read_legacy_disabled_state(run, launch_domain)
-        except ValueError:
-            legacy_is_disabled = False
-        if not legacy_is_disabled:
-            activation_failed("legacy LaunchAgent disable readback failed")
-        if legacy.loaded:
-            bootout_legacy = run(
-                ["/bin/launchctl", "bootout", legacy_ref],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if bootout_legacy.returncode != 0:
-                activation_failed("legacy LaunchAgent could not be stopped")
-            legacy_stop_readback = run(
-                ["/bin/launchctl", "print", legacy_ref],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if legacy_stop_readback.returncode == 0:
-                activation_failed("legacy LaunchAgent stop readback failed")
+    if not set_label_disabled(legacy_ref, LEGACY_LABEL, True):
+        activation_failed("legacy LaunchAgent could not be durably disabled")
+    if legacy.loaded and not stop_loaded(legacy_ref):
+        activation_failed("legacy LaunchAgent could not be stopped")
+    if supervisor.loaded and not stop_loaded(launch_ref):
+        activation_failed("existing supervisor LaunchAgent could not be stopped")
+    if not set_label_disabled(launch_ref, label, False):
+        activation_failed("supervisor LaunchAgent could not be durably enabled")
 
-    if supervisor_loaded:
-        bootout_supervisor = run(
-            ["/bin/launchctl", "bootout", launch_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if bootout_supervisor.returncode != 0:
-            activation_failed("existing supervisor LaunchAgent could not be stopped")
-    bootstrap = run(
-        ["/bin/launchctl", "bootstrap", launch_domain, str(paths.plist)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
+    bootstrap = launchctl(
+        ["/bin/launchctl", "bootstrap", launch_domain, str(paths.plist)]
     )
     if bootstrap.returncode != 0:
         activation_failed("supervisor LaunchAgent bootstrap failed")
-    readback = run(
-        ["/bin/launchctl", "print", launch_ref],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if readback.returncode != 0 or not _loaded_contract_matches(
-        readback.stdout,
+    supervisor_final = loaded_readback(launch_ref)
+    if supervisor_final.returncode != 0 or not _loaded_contract_matches(
+        supervisor_final.stdout,
         expected_arguments=expected_arguments,
         expected_working_directory=str(resolved_working_directory),
         expected_module_root=str(resolved_module_root),
     ):
         activation_failed("supervisor LaunchAgent readback failed")
-    if legacy_active:
-        legacy_readback = run(
-            ["/bin/launchctl", "print", legacy_ref],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        try:
-            legacy_is_disabled = _read_legacy_disabled_state(run, launch_domain)
-        except ValueError:
-            legacy_is_disabled = False
-        if legacy_readback.returncode == 0 or not legacy_is_disabled:
-            activation_failed("legacy LaunchAgent isolation readback failed")
+    legacy_final = loaded_readback(legacy_ref)
+    try:
+        final_legacy_disabled = label_disabled(LEGACY_LABEL)
+        final_supervisor_disabled = label_disabled(label)
+    except ValueError:
+        final_legacy_disabled = False
+        final_supervisor_disabled = True
+    if (
+        legacy_final.returncode == 0
+        or not final_legacy_disabled
+        or final_supervisor_disabled
+    ):
+        activation_failed("LaunchAgent final isolation readback failed")
 
-    installed = SupervisorConfig.from_file(paths.supervisor_config)
-    installed_workers = load_isolated_workers(installed)
+    try:
+        installed = SupervisorConfig.from_file(paths.supervisor_config)
+        installed_workers = load_isolated_workers(installed)
+    except (OSError, ValueError):
+        activation_failed("installed worker configuration readback failed")
     if installed != installed_supervisor or tuple(
         worker.to_json_dict() for worker in installed_workers
     ) != tuple(worker.to_json_dict() for worker in ordered_workers):
