@@ -35,6 +35,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
 _REQUEST_KEYS = frozenset(
     {"schema_version", "launch_id", "argv", "working_directory", "timeout_seconds"}
 )
+_REQUEST_WITH_ENVIRONMENT_KEYS = _REQUEST_KEYS | frozenset({"environment"})
 _READY_KEYS = frozenset({"schema_version", "launch_id", "pid", "ready_at"})
 _GATE_KEYS = frozenset({"launch_id", "launch_grant_ref"})
 _CANCEL_KEYS = frozenset({"launch_id"})
@@ -81,7 +82,12 @@ def _ensure_private_directory(path: Path, field: str) -> None:
     _validate_private_directory(path, field)
 
 
-def _read_private_json(path: Path, *, keys: frozenset[str], field: str) -> dict[str, object]:
+def _read_private_json(
+    path: Path,
+    *,
+    keys: frozenset[str] | tuple[frozenset[str], ...],
+    field: str,
+) -> dict[str, object]:
     if path.is_symlink():
         raise ValueError(f"{field} must not be a symbolic link")
     details = path.stat()
@@ -91,7 +97,8 @@ def _read_private_json(path: Path, *, keys: frozenset[str], field: str) -> dict[
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{field} must contain valid JSON") from exc
-    if not isinstance(value, dict) or set(value) != keys:
+    accepted_keys = keys if isinstance(keys, tuple) else (keys,)
+    if not isinstance(value, dict) or frozenset(value) not in accepted_keys:
         raise ValueError(f"{field} has an unexpected shape")
     return value
 
@@ -153,6 +160,7 @@ class LaunchRequest:
     argv: tuple[str, ...]
     working_directory: str
     timeout_seconds: float
+    environment: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -171,28 +179,48 @@ class LaunchRequest:
             or self.timeout_seconds > 86400
         ):
             raise ValueError("launch timeout must be between 0 and 86400 seconds")
+        if (
+            not isinstance(self.environment, tuple)
+            or any(
+                not isinstance(name, str)
+                or re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", name) is None
+                or not isinstance(value, str)
+                or not value
+                or "\0" in value
+                for name, value in self.environment
+            )
+            or len({name for name, _value in self.environment}) != len(self.environment)
+        ):
+            raise ValueError("launch environment must contain unique bounded variables")
 
     def to_dict(self, launch_id: str) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": 1,
             "launch_id": _identifier(launch_id, "launch_id"),
             "argv": list(self.argv),
             "working_directory": self.working_directory,
             "timeout_seconds": self.timeout_seconds,
         }
+        if self.environment:
+            payload["environment"] = dict(self.environment)
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "LaunchRequest":
-        if set(value) != _REQUEST_KEYS or value.get("schema_version") != 1:
+        if set(value) not in {_REQUEST_KEYS, _REQUEST_WITH_ENVIRONMENT_KEYS} or value.get("schema_version") != 1:
             raise ValueError("launch request has an unexpected shape")
         _identifier(value.get("launch_id"), "launch_id")
         argv = value.get("argv")
         if not isinstance(argv, list):
             raise ValueError("launch argv must be a list")
+        raw_environment = value.get("environment", {})
+        if not isinstance(raw_environment, dict):
+            raise ValueError("launch environment must be an object")
         return cls(
             argv=tuple(argv),
             working_directory=str(value.get("working_directory")),
             timeout_seconds=value.get("timeout_seconds"),  # type: ignore[arg-type]
+            environment=tuple(raw_environment.items()),
         )
 
 
@@ -464,7 +492,7 @@ def run_launch(directory: str | Path, *, poll_seconds: float = 0.02) -> int:
     _validate_private_directory(launch_directory, "launch directory")
     request_value = _read_private_json(
         launch_directory / "request.json",
-        keys=_REQUEST_KEYS,
+        keys=(_REQUEST_KEYS, _REQUEST_WITH_ENVIRONMENT_KEYS),
         field="launch request",
     )
     request = LaunchRequest.from_dict(request_value)
@@ -517,6 +545,7 @@ def run_launch(directory: str | Path, *, poll_seconds: float = 0.02) -> int:
             completed = subprocess.run(
                 list(request.argv),
                 cwd=request.working_directory,
+                env={**os.environ, **dict(request.environment)},
                 check=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

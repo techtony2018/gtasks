@@ -36,6 +36,7 @@ from gtasks.handoff_launch_runner import (
     LaunchObservation,
     LaunchRequest,
 )
+from gtasks.openclaw_adapter import OpenClawSessionAdapter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -914,6 +915,129 @@ class CodexResumeAdapterTests(unittest.TestCase):
         self.assertNotIn('"exec", "start"', source)
         self.assertNotIn('"exec", "new"', source)
         self.assertNotIn('"exec", "fork"', source)
+
+
+class OpenClawGatedRunLoopTests(unittest.TestCase):
+    NOW = datetime(2026, 8, 8, 17, 0, tzinfo=timezone.utc)
+
+    class Client:
+        def execution_start(self, claim, *, wake_token, launch_id):
+            return {
+                "handoff_id": claim["handoff_id"],
+                "status": "execution_started",
+                "launch_id": launch_id,
+                "launch_grant": "grant/openclaw-fixed-session",
+                "execution_started": True,
+            }
+
+        def execution_checkpoint(self, claim, *, launch_id, reason):
+            return {
+                "handoff_id": claim["handoff_id"],
+                "status": "suppressed",
+                "launch_id": launch_id,
+                "checkpointed": True,
+            }
+
+    def test_runs_only_the_fixed_openclaw_session_after_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            fake_cli = directory / "fake-openclaw.py"
+            invocation_log = directory / "invocation.json"
+            fake_cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                f"open({str(invocation_log)!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+                "session = sys.argv[sys.argv.index('--session-key') + 1]\n"
+                "print('warning: synthetic local profile reload')\n"
+                "print(json.dumps({'status':'ok','sessionKey':session,"
+                "'finalAssistantVisibleText':'fixed session complete'}))\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            inbox = PrivateWakeInbox(directory / "inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            adapter = OpenClawSessionAdapter(
+                executable=str(fake_cli),
+                session_key="agent:tammy-oc:fixed",
+                timeout_seconds=5,
+                working_directory=directory,
+            )
+            wake_token = "wake/handoff-key-100"
+            inbox.enqueue(claim_payload(status="received"), wake_token=wake_token, now=self.NOW)
+            inbox.mark_pending(handoff_id="handoff-100", wake_token=wake_token, now=self.NOW)
+            worker = WakeInboxWorker(
+                self.Client(),
+                adapter,
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=GatedLaunchController(directory / "launches"),
+            )
+
+            result = None
+            for _ in range(20):
+                result = worker.run_once(now=self.NOW)
+                if inbox.get("handoff-100").state == "completed":
+                    break
+                time.sleep(0.02)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+            arguments = json.loads(invocation_log.read_text(encoding="utf-8"))
+            self.assertEqual(
+                arguments,
+                [
+                    "agent", "--local", "--json", "--timeout", "5",
+                    "--session-key", "agent:tammy-oc:fixed", "--message",
+                    arguments[-1],
+                ],
+            )
+            self.assertNotIn("new", arguments)
+            self.assertNotIn("create", arguments)
+            self.assertNotIn("fork", arguments)
+
+    def test_hands_back_a_malformed_openclaw_completion_without_persisting_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            fake_cli = directory / "fake-openclaw.py"
+            fake_cli.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('{\\\"status\\\":')\n",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            inbox = PrivateWakeInbox(directory / "inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            wake_token = "wake/handoff-key-100"
+            inbox.enqueue(claim_payload(status="received"), wake_token=wake_token, now=self.NOW)
+            inbox.mark_pending(handoff_id="handoff-100", wake_token=wake_token, now=self.NOW)
+            controller = GatedLaunchController(directory / "launches")
+            worker = WakeInboxWorker(
+                self.Client(),
+                OpenClawSessionAdapter(
+                    executable=str(fake_cli),
+                    session_key="agent:tammy-oc:fixed",
+                    timeout_seconds=5,
+                    working_directory=directory,
+                ),
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=controller,
+            )
+
+            for _ in range(20):
+                worker.run_once(now=self.NOW)
+                if inbox.get("handoff-100").state == "handed_back":
+                    break
+                time.sleep(0.02)
+
+            item = inbox.get("handoff-100")
+            self.assertEqual(item.state, "handed_back")
+            self.assertEqual(item.last_error, "server_suppressed")
+            evidence = (controller.launch_directory(item.current_launch_id) / "result.json").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("nonzero_exit", evidence)
+            self.assertNotIn('"status":', evidence)
 
 
 class PrivateWakeInboxTests(unittest.TestCase):
