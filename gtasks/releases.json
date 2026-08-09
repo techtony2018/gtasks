@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.86",
+  "current_version": "V0.0.87",
   "releases": [
     {
       "version": "V0.0.1",
@@ -516,6 +516,12 @@
       "date": "2026-08-09",
       "title": "Authenticated local dispatcher activation preflight",
       "summary": "Requires each paired local Dispatcher worker to verify its authenticated canonical Agent registration and local Mission Control route through a no-side-effect POST before legacy replacement or installation mutation."
+    },
+    {
+      "version": "V0.0.87",
+      "date": "2026-08-09",
+      "title": "Reliable local dispatcher authority acknowledgements",
+      "summary": "Gives authority-backed dispatcher mutations enough time to complete canonical registration and delegation readback while preserving durable idempotent retries and fail-closed wake ordering."
     }
   ]
 }

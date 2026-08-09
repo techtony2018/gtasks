@@ -376,6 +376,111 @@ class LocalDispatcherClientTests(unittest.TestCase):
         )
         self.assertEqual(response["status"], "leased")
 
+    def test_authority_backed_wake_uses_mutation_timeout(self) -> None:
+        self.responses.append(
+            FakeResponse(
+                200,
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "leased",
+                    "wake_authorized": True,
+                },
+            )
+        )
+
+        self.client.authorize_wake(
+            claim_payload(), wake_token="wake/handoff-key-100"
+        )
+
+        self.assertEqual(self.request_details()[4], 60)
+
+    def test_only_authority_backed_mutations_use_the_extended_timeout(self) -> None:
+        client = LocalDispatcherClient(
+            "http://127.0.0.1:4176/",
+            registration_id="private-registration-tammy",
+            bearer_token="local-bearer-token",
+            agent_slug="agents/tammy",
+            opener=self.client._opener,
+            request_timeout=7,
+        )
+        registration_ref = hashlib.sha256(
+            b"private-registration-tammy"
+        ).hexdigest()
+        self.responses.extend(
+            (
+                FakeResponse(
+                    200,
+                    {
+                        "verified": True,
+                        "agent_slug": "agents/tammy",
+                        "registration_ref": registration_ref,
+                        "route": "hosts/tammy",
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    claim_payload(
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    ),
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "handoff_id": "handoff-100",
+                        "status": "execution_started",
+                        "launch_id": "launch/timeout-scope",
+                        "launch_grant": "grant/timeout-scope",
+                        "execution_started": True,
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "handoff_id": "handoff-100",
+                        "status": "suppressed",
+                        "launch_id": "launch/timeout-scope",
+                        "checkpointed": True,
+                    },
+                ),
+                FakeResponse(
+                    200,
+                    {
+                        "handoff_id": "handoff-100",
+                        "status": "received",
+                        "launch_id": "launch/timeout-scope",
+                        "abandoned": True,
+                    },
+                ),
+                FakeResponse(200, {"status": "retrying"}),
+            )
+        )
+        claim = claim_payload()
+
+        client.preflight()
+        client.recover(claim)
+        client.execution_start(
+            claim,
+            wake_token="wake/handoff-key-100",
+            launch_id="launch/timeout-scope",
+        )
+        client.execution_checkpoint(
+            claim,
+            launch_id="launch/timeout-scope",
+            reason="timeout scope verification",
+        )
+        client.execution_abandon(
+            claim,
+            launch_id="launch/timeout-scope",
+            reason="timeout_scope_verification",
+        )
+        client.fail(claim, failure_class="retryable")
+
+        self.assertEqual(
+            [self.request_details(index)[4] for index in range(6)],
+            [7, 60, 60, 60, 60, 60],
+        )
+
     def test_execution_start_and_checkpoint_use_exact_launch_fences(self) -> None:
         claim = claim_payload(status="received")
         self.responses.extend(
@@ -669,6 +774,13 @@ class LocalDispatcherClientTests(unittest.TestCase):
             ).hexdigest()
             self.assertEqual(headers["idempotency-key"], expected_id)
             self.assertRegex(headers["idempotency-key"], r"^[a-z0-9][a-z0-9._/-]{0,127}$")
+
+    def test_ack_uses_authority_readback_timeout_instead_of_short_poll_timeout(self) -> None:
+        self.responses.append(FakeResponse(200, {"status": "received"}))
+
+        self.client.ack(claim_payload(), status="received")
+
+        self.assertEqual(self.request_details()[4], 60)
 
     def test_generation_and_attempt_fence_acknowledgement_mutation_ids(self) -> None:
         self.responses.extend(

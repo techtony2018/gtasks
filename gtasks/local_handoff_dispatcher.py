@@ -39,6 +39,7 @@ CONFIG_KEYS = frozenset(
     }
 )
 CLAIM_SCHEMA_VERSION = 2
+AUTHORITY_MUTATION_TIMEOUT_SECONDS = 60
 LEGACY_CLAIM_KEYS = frozenset(
     {
         "handoff_id",
@@ -2287,6 +2288,10 @@ class LocalDispatcherClient:
             ProxyHandler({}), RejectRedirectHandler()
         ).open
         self._request_timeout = request_timeout
+        self._authority_mutation_timeout = max(
+            request_timeout,
+            AUTHORITY_MUTATION_TIMEOUT_SECONDS,
+        )
 
     def _post(
         self,
@@ -2393,6 +2398,7 @@ class LocalDispatcherClient:
                 "registration_id": self._registration_id,
                 "expected_generation": generation,
             },
+            timeout=self._authority_mutation_timeout,
             accepted_statuses=frozenset({409}),
         )
         if status_code == 409:
@@ -2461,6 +2467,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/wake",
             {"wake_token": wake_token},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         if not isinstance(response, dict) or set(response) != WAKE_AUTHORIZATION_KEYS:
             raise ValueError("wake authorization response shape is invalid")
@@ -2495,6 +2502,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/execution-start",
             {"wake_token": wake_token, "launch_id": launch_id},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         if not isinstance(response, dict) or set(response) != EXECUTION_START_KEYS:
             raise ValueError("execution start response shape is invalid")
@@ -2541,6 +2549,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/execution-checkpoint",
             {"launch_id": launch_id, "reason": reason},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         if not isinstance(response, dict) or set(response) != EXECUTION_CHECKPOINT_KEYS:
             raise ValueError("execution checkpoint response shape is invalid")
@@ -2582,6 +2591,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/execution-abandon",
             {"launch_id": launch_id, "reason": reason},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         if not isinstance(response, dict) or set(response) != EXECUTION_ABANDON_KEYS:
             raise ValueError("execution abandon response shape is invalid")
@@ -2646,6 +2656,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/ack",
             {"status": status, "detail": detail},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         return response
 
@@ -2668,6 +2679,7 @@ class LocalDispatcherClient:
             f"/api/handoffs/{quote(handoff_id, safe='')}/failure",
             {"failure_class": failure_class},
             headers=headers,
+            timeout=self._authority_mutation_timeout,
         )
         expected_status = "retrying" if failure_class == "retryable" else "dead_letter"
         if not isinstance(response, Mapping) or response.get("status") != expected_status:

@@ -27,10 +27,17 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.86")
+        self.assertEqual(__version__, "V0.0.87")
+
+    def test_v0_0_87_records_authority_mutation_timeout_repair(self) -> None:
+        release = RELEASES[-1]
+
+        self.assertEqual(release["version"], "V0.0.87")
+        self.assertIn("authority-backed dispatcher mutations", release["summary"])
+        self.assertIn("fail-closed wake ordering", release["summary"])
 
     def test_v0_0_86_records_authenticated_local_dispatcher_preflight(self) -> None:
-        release = RELEASES[-1]
+        release = next(item for item in RELEASES if item["version"] == "V0.0.86")
 
         self.assertEqual(release["version"], "V0.0.86")
         self.assertIn("authenticated canonical Agent registration", release["summary"])
@@ -381,6 +388,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.84",
                 "V0.0.85",
                 "V0.0.86",
+                "V0.0.87",
             ],
         )
 
