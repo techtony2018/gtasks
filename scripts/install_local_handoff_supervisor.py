@@ -39,6 +39,9 @@ from gtasks.openclaw_adapter import OpenClawSessionAdapter  # noqa: E402
 
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher-supervisor"
 LEGACY_LABEL = "com.tony.gtasks-handoff-dispatcher"
+OVERRIDE_ABSENT = "absent"
+OVERRIDE_EXPLICITLY_ENABLED = "explicitly_enabled"
+OVERRIDE_EXPLICITLY_DISABLED = "explicitly_disabled"
 PLIST_KEYS = frozenset(
     {
         "Label",
@@ -50,7 +53,7 @@ PLIST_KEYS = frozenset(
         "ProcessType",
     }
 )
-RECOVERY_SCHEMA_VERSION = 1
+RECOVERY_SCHEMA_VERSION = 2
 RECOVERY_FILE_KEYS = frozenset(
     {
         "codex_worker_config",
@@ -97,9 +100,13 @@ class LaunchLabelSnapshot:
     label: str
     state: str
     loaded: bool
-    disabled: bool
+    override_state: str
     plist_exists: bool
     plist: dict[str, object] | None
+
+    @property
+    def disabled(self) -> bool:
+        return self.override_state == OVERRIDE_EXPLICITLY_DISABLED
 
     @property
     def enabled(self) -> bool:
@@ -306,27 +313,27 @@ def _plist_value_matches_exactly(actual: object, expected: object) -> bool:
     return actual == expected
 
 
-def _parse_disabled_state(output: str, label: str) -> bool:
+def _parse_override_state(output: str, label: str) -> str:
     for raw_line in output.splitlines():
         if "=>" not in raw_line:
             continue
         raw_key, raw_value = raw_line.rsplit("=>", 1)
         if raw_key.strip().strip('"') != label:
             continue
-        value = raw_value.strip().lower()
-        if value == "true":
-            return True
-        if value == "false":
-            return False
-        raise ValueError("launchctl returned an invalid legacy disabled state")
-    return False
+        value = raw_value.strip().strip('"').lower()
+        if value in {"disabled", "true"}:
+            return OVERRIDE_EXPLICITLY_DISABLED
+        if value in {"enabled", "false"}:
+            return OVERRIDE_EXPLICITLY_ENABLED
+        raise ValueError("launchctl returned an invalid label override state")
+    return OVERRIDE_ABSENT
 
 
-def _read_label_disabled_state(
+def _read_label_override_state(
     run: Callable[..., subprocess.CompletedProcess[str]],
     launch_domain: str,
     label: str,
-) -> bool:
+) -> str:
     disabled_readback = _run_launchctl(
         run,
         ["/bin/launchctl", "print-disabled", launch_domain],
@@ -334,13 +341,13 @@ def _read_label_disabled_state(
     )
     if disabled_readback.returncode != 0:
         raise ValueError("LaunchAgent disabled state could not be verified")
-    return _parse_disabled_state(disabled_readback.stdout, label)
+    return _parse_override_state(disabled_readback.stdout, label)
 
 
-def _read_legacy_disabled_state(
+def _read_legacy_override_state(
     run: Callable[..., subprocess.CompletedProcess[str]], launch_domain: str
-) -> bool:
-    return _read_label_disabled_state(run, launch_domain, LEGACY_LABEL)
+) -> str:
+    return _read_label_override_state(run, launch_domain, LEGACY_LABEL)
 
 
 def _validated_legacy_plist(
@@ -391,11 +398,12 @@ def _inspect_legacy_state(
     legacy_ref: str,
     legacy_config: Path,
     legacy_plist: Path,
-    disabled: bool | None = None,
+    override_state: str | None = None,
     loaded_readback: subprocess.CompletedProcess[str] | None = None,
 ) -> LaunchLabelSnapshot:
-    if disabled is None:
-        disabled = _read_legacy_disabled_state(run, launch_domain)
+    if override_state is None:
+        override_state = _read_legacy_override_state(run, launch_domain)
+    disabled = override_state == OVERRIDE_EXPLICITLY_DISABLED
     if loaded_readback is None:
         loaded_readback = run(
             ["/bin/launchctl", "print", legacy_ref],
@@ -431,7 +439,7 @@ def _inspect_legacy_state(
         label=LEGACY_LABEL,
         state=state,
         loaded=loaded,
-        disabled=disabled,
+        override_state=override_state,
         plist_exists=plist_present,
         plist=parsed_plist,
     )
@@ -490,7 +498,7 @@ def _canonical_file_paths(paths: CanonicalInstallPaths) -> dict[str, Path]:
 def _label_snapshot_payload(snapshot: LaunchLabelSnapshot) -> dict[str, object]:
     return {
         "loaded": snapshot.loaded,
-        "disabled": snapshot.disabled,
+        "override_state": snapshot.override_state,
         "plist_exists": snapshot.plist_exists,
         "plist": snapshot.plist,
     }
@@ -501,18 +509,24 @@ def _label_snapshot_from_payload(
 ) -> LaunchLabelSnapshot:
     if not isinstance(value, dict) or set(value) != {
         "loaded",
-        "disabled",
+        "override_state",
         "plist_exists",
         "plist",
     }:
         raise ValueError("recovery label snapshot is invalid")
     loaded = value["loaded"]
-    disabled = value["disabled"]
+    override_state = value["override_state"]
     plist_exists = value["plist_exists"]
     plist = value["plist"]
+    disabled = override_state == OVERRIDE_EXPLICITLY_DISABLED
     if (
         type(loaded) is not bool
-        or type(disabled) is not bool
+        or override_state
+        not in {
+            OVERRIDE_ABSENT,
+            OVERRIDE_EXPLICITLY_ENABLED,
+            OVERRIDE_EXPLICITLY_DISABLED,
+        }
         or type(plist_exists) is not bool
         or (plist is not None and not isinstance(plist, dict))
         or ((loaded or (plist_exists and not disabled)) and plist is None)
@@ -526,7 +540,7 @@ def _label_snapshot_from_payload(
             plist_exists=plist_exists,
         ),
         loaded=loaded,
-        disabled=disabled,
+        override_state=override_state,
         plist_exists=plist_exists,
         plist=plist,
     )
@@ -618,7 +632,11 @@ def _recovery_record_from_payload(value: object) -> RecoveryRecord:
     ):
         raise ValueError("supervisor recovery marker schema is unsupported")
     status = value["status"]
-    if status not in {"transitioning", "recovery_required"}:
+    if status not in {
+        "transitioning",
+        "recovery_required",
+        "safe_disabled_fallback",
+    }:
         raise ValueError("supervisor recovery marker status is invalid")
     files_value = value["files"]
     if not isinstance(files_value, dict) or set(files_value) != RECOVERY_FILE_KEYS:
@@ -712,13 +730,13 @@ def _run_launchctl(
         raise LaunchctlCallError(stage, type(exc).__name__) from exc
 
 
-def _label_disabled_readback(
+def _label_override_readback(
     run: Callable[..., subprocess.CompletedProcess[str]],
     launch_domain: str,
     label: str,
     *,
     stage: str,
-) -> bool:
+) -> str:
     readback = _run_launchctl(
         run,
         ["/bin/launchctl", "print-disabled", launch_domain],
@@ -726,7 +744,25 @@ def _label_disabled_readback(
     )
     if readback.returncode != 0:
         raise RuntimeError("LaunchAgent disabled state readback failed")
-    return _parse_disabled_state(readback.stdout, label)
+    return _parse_override_state(readback.stdout, label)
+
+
+def _label_disabled_readback(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    launch_domain: str,
+    label: str,
+    *,
+    stage: str,
+) -> bool:
+    return (
+        _label_override_readback(
+            run,
+            launch_domain,
+            label,
+            stage=stage,
+        )
+        == OVERRIDE_EXPLICITLY_DISABLED
+    )
 
 
 def _set_label_disabled(
@@ -746,12 +782,17 @@ def _set_label_disabled(
     )
     if result.returncode != 0:
         return False
-    return _label_disabled_readback(
+    expected_override = (
+        OVERRIDE_EXPLICITLY_DISABLED
+        if disabled
+        else OVERRIDE_EXPLICITLY_ENABLED
+    )
+    return _label_override_readback(
         run,
         launch_domain,
         label,
         stage=f"{stage}_{operation}_readback",
-    ) is disabled
+    ) == expected_override
 
 
 def _loaded_readback(
@@ -848,7 +889,28 @@ def _restore_label_snapshot(
     plist_path: Path,
     snapshot: LaunchLabelSnapshot,
     stage: str,
+    remove_plist_for_absent_override: bool = False,
 ) -> bool:
+    if snapshot.override_state == OVERRIDE_ABSENT:
+        if not _disable_and_unload_label(
+            run,
+            launch_domain,
+            reference,
+            snapshot.label,
+            stage=stage,
+        ):
+            return False
+        if remove_plist_for_absent_override:
+            try:
+                plist_path.unlink(missing_ok=True)
+                directory_descriptor = os.open(plist_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+            except OSError:
+                return False
+        return True
     if not snapshot.loaded:
         if not _force_unloaded(run, reference, stage=stage):
             return False
@@ -937,7 +999,7 @@ def _rollback_recovery_record(
     legacy_plist: Path,
     paths: CanonicalInstallPaths,
     record: RecoveryRecord,
-) -> tuple[bool, tuple[str, ...]]:
+) -> tuple[str | None, tuple[str, ...]]:
     errors: list[str] = []
     try:
         files_changed = not _file_snapshots_match(paths, record.files)
@@ -966,6 +1028,7 @@ def _rollback_recovery_record(
             plist_path=paths.plist,
             snapshot=record.supervisor,
             stage="restore_supervisor",
+            remove_plist_for_absent_override=True,
         ):
             raise RuntimeError("supervisor state restoration failed")
         if not _restore_label_snapshot(
@@ -988,46 +1051,83 @@ def _rollback_recovery_record(
             legacy_ref,
             stage="rollback_legacy_final_readback",
         )
-        if (supervisor_final.returncode == 0) is not record.supervisor.loaded:
+        supervisor_loaded_expected = (
+            record.supervisor.loaded
+            if record.supervisor.override_state != OVERRIDE_ABSENT
+            else False
+        )
+        legacy_loaded_expected = (
+            record.legacy.loaded
+            if record.legacy.override_state != OVERRIDE_ABSENT
+            else False
+        )
+        if (supervisor_final.returncode == 0) is not supervisor_loaded_expected:
             raise RuntimeError("supervisor loaded state restoration failed")
-        if (legacy_final.returncode == 0) is not record.legacy.loaded:
+        if (legacy_final.returncode == 0) is not legacy_loaded_expected:
             raise RuntimeError("legacy loaded state restoration failed")
-        if record.supervisor.loaded and not _snapshot_loaded_contract_matches(
+        if supervisor_loaded_expected and not _snapshot_loaded_contract_matches(
             record.supervisor, supervisor_final
         ):
             raise RuntimeError("supervisor contract restoration failed")
-        if record.legacy.loaded and not _snapshot_loaded_contract_matches(
+        if legacy_loaded_expected and not _snapshot_loaded_contract_matches(
             record.legacy, legacy_final
         ):
             raise RuntimeError("legacy contract restoration failed")
-        if _label_disabled_readback(
+        supervisor_override_expected = (
+            OVERRIDE_EXPLICITLY_DISABLED
+            if record.supervisor.override_state == OVERRIDE_ABSENT
+            else record.supervisor.override_state
+        )
+        legacy_override_expected = (
+            OVERRIDE_EXPLICITLY_DISABLED
+            if record.legacy.override_state == OVERRIDE_ABSENT
+            else record.legacy.override_state
+        )
+        if _label_override_readback(
             run,
             launch_domain,
             DEFAULT_LABEL,
             stage="rollback_supervisor_disabled_final",
-        ) is not record.supervisor.disabled:
-            raise RuntimeError("supervisor disabled state restoration failed")
-        if _label_disabled_readback(
+        ) != supervisor_override_expected:
+            raise RuntimeError("supervisor override state restoration failed")
+        if _label_override_readback(
             run,
             launch_domain,
             LEGACY_LABEL,
             stage="rollback_legacy_disabled_final",
-        ) is not record.legacy.disabled:
-            raise RuntimeError("legacy disabled state restoration failed")
-        if not _file_snapshots_match(paths, record.files):
+        ) != legacy_override_expected:
+            raise RuntimeError("legacy override state restoration failed")
+        files_restored = _file_snapshots_match(paths, record.files)
+        if record.supervisor.override_state == OVERRIDE_ABSENT:
+            files_restored = (
+                not paths.plist.exists()
+                and all(
+                    _capture_file_snapshot(path, f"recovered {name}")
+                    == record.files[name]
+                    for name, path in _canonical_file_paths(paths).items()
+                    if name != "plist"
+                )
+            )
+        if not files_restored:
             raise RuntimeError("installation file restoration failed")
         supervisor_enabled = (
-            record.supervisor.plist_exists and not record.supervisor.disabled
+            record.supervisor.override_state == OVERRIDE_EXPLICITLY_ENABLED
         )
-        legacy_enabled = record.legacy.plist_exists and not record.legacy.disabled
+        legacy_enabled = (
+            record.legacy.override_state == OVERRIDE_EXPLICITLY_ENABLED
+        )
         if (
             record.supervisor.loaded and record.legacy.loaded
         ) or (supervisor_enabled and legacy_enabled):
             raise RuntimeError("unsafe concurrent pre-state cannot be restored")
-        return True, ()
+        fallback_used = (
+            record.supervisor.override_state == OVERRIDE_ABSENT
+            or record.legacy.override_state == OVERRIDE_ABSENT
+        )
+        return ("safe_disabled_fallback" if fallback_used else "exact"), ()
     except Exception as exc:
         errors.append(_safe_exception_type(exc))
-        return False, tuple(errors)
+        return None, tuple(errors)
 
 
 def _force_both_labels_safe(
@@ -1146,9 +1246,9 @@ def _validate_recovery_record(
         if not _plist_value_matches_exactly(current_legacy, record.legacy.plist):
             raise ValueError("legacy recovery plist snapshot has drifted")
     supervisor_enabled = (
-        record.supervisor.plist_exists and not record.supervisor.disabled
+        record.supervisor.override_state == OVERRIDE_EXPLICITLY_ENABLED
     )
-    legacy_enabled = record.legacy.plist_exists and not record.legacy.disabled
+    legacy_enabled = record.legacy.override_state == OVERRIDE_EXPLICITLY_ENABLED
     if (record.supervisor.loaded and record.legacy.loaded) or (
         supervisor_enabled and legacy_enabled
     ):
@@ -1160,9 +1260,10 @@ def _recovery_required_record(
     *,
     error_type: str,
     rollback_errors: tuple[str, ...],
+    status: str = "recovery_required",
 ) -> RecoveryRecord:
     return RecoveryRecord(
-        status="recovery_required",
+        status=status,
         supervisor=record.supervisor,
         legacy=record.legacy,
         files=record.files,
@@ -1245,7 +1346,7 @@ def install(
             raise RuntimeError(
                 "supervisor recovery marker could not be validated; recovery_required"
             ) from exc
-        recovered, rollback_errors = _rollback_recovery_record(
+        recovery_outcome, rollback_errors = _rollback_recovery_record(
             run=run,
             launch_domain=launch_domain,
             launch_ref=launch_ref,
@@ -1254,7 +1355,7 @@ def install(
             paths=paths,
             record=pending_recovery,
         )
-        if not recovered:
+        if recovery_outcome is None:
             _safe, safe_errors = _force_both_labels_safe(
                 run=run,
                 launch_domain=launch_domain,
@@ -1273,6 +1374,24 @@ def install(
             raise RuntimeError(
                 "pending supervisor installation could not restore exact pre-state; "
                 "recovery_required"
+            )
+        if recovery_outcome == "safe_disabled_fallback":
+            safe_receipt = _recovery_required_record(
+                pending_recovery,
+                status="safe_disabled_fallback",
+                error_type=(pending_recovery.last_error_type or "InterruptedInstall"),
+                rollback_errors=rollback_errors,
+            )
+            try:
+                _write_recovery_record(marker_path, safe_receipt)
+            except Exception as exc:
+                raise RuntimeError(
+                    "pending supervisor installation used safe_disabled_fallback; "
+                    "recovery receipt update failed; recovery_required"
+                ) from exc
+            raise RuntimeError(
+                "pending supervisor installation used safe_disabled_fallback; "
+                "private recovery receipt retained for operator review"
             )
         try:
             _remove_recovery_record(marker_path)
@@ -1444,8 +1563,8 @@ def install(
     )
     if disabled_readback.returncode != 0:
         raise ValueError("LaunchAgent disabled states could not be snapshotted")
-    supervisor_disabled = _parse_disabled_state(disabled_readback.stdout, label)
-    legacy_disabled = _parse_disabled_state(
+    supervisor_override = _parse_override_state(disabled_readback.stdout, label)
+    legacy_override = _parse_override_state(
         disabled_readback.stdout, LEGACY_LABEL
     )
     supervisor_readback = _run_launchctl(
@@ -1477,11 +1596,11 @@ def install(
         label=label,
         state=_launch_state_name(
             loaded=supervisor_readback.returncode == 0,
-            disabled=supervisor_disabled,
+            disabled=supervisor_override == OVERRIDE_EXPLICITLY_DISABLED,
             plist_exists=prior_supervisor_plist.exists,
         ),
         loaded=supervisor_readback.returncode == 0,
-        disabled=supervisor_disabled,
+        override_state=supervisor_override,
         plist_exists=prior_supervisor_plist.exists,
         plist=(expected_plist if prior_supervisor_plist.exists else None),
     )
@@ -1496,12 +1615,13 @@ def install(
         legacy_ref=legacy_ref,
         legacy_config=legacy_config,
         legacy_plist=legacy_plist,
-        disabled=legacy_disabled,
+        override_state=legacy_override,
         loaded_readback=legacy_loaded_readback,
     )
     legacy_active = legacy.loaded or legacy.enabled
     if (supervisor.loaded and legacy.loaded) or (
-        supervisor.enabled and legacy.enabled
+        supervisor.override_state == OVERRIDE_EXPLICITLY_ENABLED
+        and legacy.override_state == OVERRIDE_EXPLICITLY_ENABLED
     ):
         raise ValueError(
             "concurrent legacy and supervisor state is unsafe; both are loaded or enabled"
@@ -1657,12 +1777,13 @@ def install(
                 LEGACY_LABEL,
                 stage="activate_legacy_disabled_readback",
             )
-            or _label_disabled_readback(
+            or _label_override_readback(
                 run,
                 launch_domain,
                 label,
                 stage="activate_supervisor_enabled_readback",
             )
+            != OVERRIDE_EXPLICITLY_ENABLED
         ):
             raise RuntimeError("LaunchAgent final isolation readback failed")
         installed = SupervisorConfig.from_file(paths.supervisor_config)
@@ -1678,7 +1799,7 @@ def install(
         )
         _remove_recovery_record(marker_path)
     except Exception as original_error:
-        recovered, rollback_errors = _rollback_recovery_record(
+        recovery_outcome, rollback_errors = _rollback_recovery_record(
             run=run,
             launch_domain=launch_domain,
             launch_ref=launch_ref,
@@ -1687,7 +1808,7 @@ def install(
             paths=paths,
             record=recovery,
         )
-        if recovered:
+        if recovery_outcome == "exact":
             try:
                 if marker_path.exists() or marker_path.is_symlink():
                     _remove_recovery_record(marker_path)
@@ -1698,6 +1819,24 @@ def install(
                 ) from original_error
             raise RuntimeError(
                 "supervisor installation failed; exact pre-state rolled back"
+            ) from original_error
+        if recovery_outcome == "safe_disabled_fallback":
+            safe_receipt = _recovery_required_record(
+                recovery,
+                status="safe_disabled_fallback",
+                error_type=_safe_exception_type(original_error),
+                rollback_errors=rollback_errors,
+            )
+            try:
+                _write_recovery_record(marker_path, safe_receipt)
+            except Exception:
+                raise RuntimeError(
+                    "supervisor installation failed; safe_disabled_fallback applied; "
+                    "recovery receipt update failed; recovery_required"
+                ) from original_error
+            raise RuntimeError(
+                "supervisor installation failed; safe_disabled_fallback applied; "
+                "private recovery receipt retained for operator review"
             ) from original_error
 
         _safe, safe_errors = _force_both_labels_safe(

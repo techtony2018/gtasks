@@ -3507,6 +3507,7 @@ class InstallerTests(unittest.TestCase):
         self.codex.write_text("#!/bin/sh\n", encoding="utf-8")
         self.codex.chmod(0o755)
         self.python_path = str(Path(sys.executable).resolve())
+        self.legacy_override_state = self.installer.OVERRIDE_ABSENT
         self.config = {
             "schema_version": 1,
             "agent_slug": "agents/tammy",
@@ -3555,6 +3556,51 @@ class InstallerTests(unittest.TestCase):
         self.source.write_text(json.dumps(values or self.config), encoding="utf-8")
         self.source.chmod(mode)
 
+    def write_supervisor_recovery_marker(
+        self, *, status: str = "transitioning"
+    ) -> Path:
+        marker = self.installer.supervisor_recovery_marker_path(self.home)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "status": status,
+                    "supervisor": {
+                        "loaded": False,
+                        "override_state": "absent",
+                        "plist_exists": False,
+                        "plist": None,
+                    },
+                    "legacy": {
+                        "loaded": False,
+                        "override_state": "absent",
+                        "plist_exists": False,
+                        "plist": None,
+                    },
+                    "files": {
+                        name: {
+                            "exists": False,
+                            "content_base64": None,
+                            "mode": None,
+                            "sha256": None,
+                        }
+                        for name in (
+                            "codex_worker_config",
+                            "openclaw_worker_config",
+                            "supervisor_config",
+                            "plist",
+                        )
+                    },
+                    "last_error_type": None,
+                    "rollback_error_types": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        marker.chmod(0o600)
+        return marker
+
     def install(self):
         calls: list[object] = []
 
@@ -3571,6 +3617,31 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
+            if arguments[:2] == ["/bin/launchctl", "enable"]:
+                self.legacy_override_state = (
+                    self.installer.OVERRIDE_EXPLICITLY_ENABLED
+                )
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="", stderr=""
+                )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                override = ""
+                if self.legacy_override_state != self.installer.OVERRIDE_ABSENT:
+                    rendered = (
+                        "disabled"
+                        if self.legacy_override_state
+                        == self.installer.OVERRIDE_EXPLICITLY_DISABLED
+                        else "enabled"
+                    )
+                    override = (
+                        f'\t"{self.installer.DEFAULT_LABEL}" => {rendered}\n'
+                    )
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=f"disabled services = {{\n{override}}}\n",
+                    stderr="",
+                )
             if arguments[1] == "print":
                 if arguments[2].endswith(
                     "/com.tony.gtasks-handoff-dispatcher-supervisor"
@@ -3631,10 +3702,16 @@ class InstallerTests(unittest.TestCase):
         )
         self.assertEqual(calls[5][0], ["/bin/launchctl", "print", launch_ref])
         self.assertEqual(
-            calls[6][0],
+            calls[6][0], ["/bin/launchctl", "enable", launch_ref]
+        )
+        self.assertEqual(
+            calls[7][0], ["/bin/launchctl", "print-disabled", launch_domain]
+        )
+        self.assertEqual(
+            calls[8][0],
             ["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist)],
         )
-        self.assertEqual(calls[7][0], ["/bin/launchctl", "print", launch_ref])
+        self.assertEqual(calls[9][0], ["/bin/launchctl", "print", launch_ref])
         for _, kwargs in calls:
             self.assertNotIn("shell", kwargs)
 
@@ -3660,6 +3737,304 @@ class InstallerTests(unittest.TestCase):
             / "Library"
             / "LaunchAgents"
             / "com.tony.gtasks-handoff-dispatcher.plist",
+        )
+
+    def test_parses_real_launchctl_override_formats_without_losing_absence(self) -> None:
+        label = self.installer.SUPERVISOR_LABEL
+        fixtures = {
+            "enabled": self.installer.OVERRIDE_EXPLICITLY_ENABLED,
+            "false": self.installer.OVERRIDE_EXPLICITLY_ENABLED,
+            "disabled": self.installer.OVERRIDE_EXPLICITLY_DISABLED,
+            "true": self.installer.OVERRIDE_EXPLICITLY_DISABLED,
+        }
+        for rendered, expected in fixtures.items():
+            with self.subTest(rendered=rendered):
+                output = (
+                    "disabled services = {\n"
+                    f'\t"{label}" => {rendered}\n'
+                    "}\n"
+                )
+                self.assertEqual(
+                    self.installer._parse_override_state(output, label), expected
+                )
+        self.assertEqual(
+            self.installer._parse_override_state(
+                "disabled services = {\n}\n", label
+            ),
+            self.installer.OVERRIDE_ABSENT,
+        )
+
+    def test_recovery_marker_blocks_before_any_launchctl_or_install_write(self) -> None:
+        marker = self.installer.supervisor_recovery_marker_path(self.home)
+        valid_marker = {
+            "schema_version": 2,
+            "status": "transitioning",
+            "supervisor": {
+                "loaded": False,
+                "override_state": "absent",
+                "plist_exists": False,
+                "plist": None,
+            },
+            "legacy": {
+                "loaded": False,
+                "override_state": "absent",
+                "plist_exists": False,
+                "plist": None,
+            },
+            "files": {
+                name: {
+                    "exists": False,
+                    "content_base64": None,
+                    "mode": None,
+                    "sha256": None,
+                }
+                for name in (
+                    "codex_worker_config",
+                    "openclaw_worker_config",
+                    "supervisor_config",
+                    "plist",
+                )
+            },
+            "last_error_type": None,
+            "rollback_error_types": [],
+        }
+        for name, content in (
+            ("valid transition", json.dumps(valid_marker)),
+            ("malformed", "{"),
+        ):
+            with self.subTest(marker=name):
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(content, encoding="utf-8")
+                marker.chmod(0o600)
+                calls: list[list[str]] = []
+                original_atomic_write = self.installer._atomic_write
+
+                def forbidden_write(path: Path, data: bytes, mode: int) -> None:
+                    if path in {self.destination, self.plist}:
+                        self.fail("installer files must not be written while recovery exists")
+                    original_atomic_write(path, data, mode)
+
+                with patch.object(
+                    self.installer, "_atomic_write", side_effect=forbidden_write
+                ), self.assertRaisesRegex(
+                    ValueError, "recovery marker.*paired supervisor recovery"
+                ):
+                    self.installer.install(
+                        source_config=self.source,
+                        destination_config=self.destination,
+                        plist_template=TEMPLATE_PATH,
+                        plist_destination=self.plist,
+                        python_path=self.python_path,
+                        module_root=ROOT,
+                        runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                        codex_path=str(self.codex),
+                        working_directory=ROOT,
+                        run=lambda arguments, **_kwargs: calls.append(list(arguments)),
+                        home_directory=self.home,
+                    )
+
+                self.assertEqual(calls, [])
+                self.assertFalse(self.destination.exists())
+                self.assertFalse(self.plist.exists())
+                marker.unlink()
+
+    def test_recovery_marker_after_process_preflight_blocks_first_launchctl_and_writes(
+        self,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def run(arguments, **_kwargs):
+            calls.append(list(arguments))
+            if len(arguments) > 1 and arguments[1] == "-c":
+                self.write_supervisor_recovery_marker(status="recovery_required")
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            self.fail("launchctl must not run after a recovery marker appears")
+
+        with self.assertRaisesRegex(ValueError, "recovery marker"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=run,
+                home_directory=self.home,
+            )
+
+        self.assertFalse(any(call[0] == "/bin/launchctl" for call in calls))
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.plist.exists())
+
+    def test_recovery_marker_during_fence_blocks_next_launchctl_and_writes(
+        self,
+    ) -> None:
+        launchctl_calls: list[list[str]] = []
+
+        def run(arguments, **_kwargs):
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            launchctl_calls.append(list(arguments))
+            self.assertEqual(arguments[1], "print-disabled")
+            self.write_supervisor_recovery_marker()
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                stdout="disabled services = {\n}\n",
+                stderr="",
+            )
+
+        with self.assertRaisesRegex(ValueError, "recovery marker"):
+            self.installer.install(
+                source_config=self.source,
+                destination_config=self.destination,
+                plist_template=TEMPLATE_PATH,
+                plist_destination=self.plist,
+                python_path=self.python_path,
+                module_root=ROOT,
+                runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+                codex_path=str(self.codex),
+                working_directory=ROOT,
+                run=run,
+                home_directory=self.home,
+            )
+
+        self.assertEqual(
+            launchctl_calls,
+            [["/bin/launchctl", "print-disabled", f"gui/{os.getuid()}"]],
+        )
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.plist.exists())
+
+    def test_disabled_unloaded_supervisor_without_files_or_recovery_allows_legacy(self) -> None:
+        launch_domain = f"gui/{os.getuid()}"
+        supervisor_ref = f"{launch_domain}/{self.installer.SUPERVISOR_LABEL}"
+        legacy_ref = f"{launch_domain}/{self.installer.DEFAULT_LABEL}"
+        legacy_override = self.installer.OVERRIDE_EXPLICITLY_DISABLED
+        legacy_loaded = False
+        calls: list[list[str]] = []
+
+        def run(arguments, **kwargs):
+            nonlocal legacy_override, legacy_loaded
+            calls.append(list(arguments))
+            if len(arguments) > 1 and arguments[1] == "-c":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        f"{(ROOT / 'gtasks' / 'local_handoff_dispatcher.py').resolve()}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments[-1] == "--version":
+                return subprocess.CompletedProcess(
+                    arguments, 0, stdout="codex-cli 1.2.3", stderr=""
+                )
+            if arguments[-1] == "--help":
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout="Usage: codex exec resume --skip-git-repo-check",
+                    stderr="",
+                )
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        "disabled services = {\n"
+                        f'\t"{self.installer.SUPERVISOR_LABEL}" => disabled\n'
+                        f'\t"{self.installer.DEFAULT_LABEL}" => '
+                        f'{"disabled" if legacy_override == self.installer.OVERRIDE_EXPLICITLY_DISABLED else "enabled"}\n'
+                        "}\n"
+                    ),
+                    stderr="",
+                )
+            if arguments == ["/bin/launchctl", "print", supervisor_ref]:
+                return subprocess.CompletedProcess(
+                    arguments, 3, stdout="", stderr="not loaded"
+                )
+            if arguments == ["/bin/launchctl", "print", legacy_ref]:
+                if legacy_loaded:
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout=self.launchctl_output(), stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    arguments, 3, stdout="", stderr="not loaded"
+                )
+            if arguments == ["/bin/launchctl", "enable", legacy_ref]:
+                legacy_override = self.installer.OVERRIDE_EXPLICITLY_ENABLED
+                return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+            if arguments[:2] == ["/bin/launchctl", "bootstrap"]:
+                if legacy_override == self.installer.OVERRIDE_EXPLICITLY_DISABLED:
+                    return subprocess.CompletedProcess(
+                        arguments, 5, stdout="", stderr="service disabled"
+                    )
+                legacy_loaded = True
+                return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        receipt = self.installer.install(
+            source_config=self.source,
+            destination_config=self.destination,
+            plist_template=TEMPLATE_PATH,
+            plist_destination=self.plist,
+            python_path=self.python_path,
+            module_root=ROOT,
+            runner_path=ROOT / "gtasks" / "local_handoff_dispatcher.py",
+            codex_path=str(self.codex),
+            working_directory=ROOT,
+            run=run,
+            home_directory=self.home,
+        )
+
+        self.assertEqual(receipt.label, self.installer.DEFAULT_LABEL)
+        self.assertTrue(legacy_loaded)
+        self.assertIn(["/bin/launchctl", "enable", legacy_ref], calls)
+        self.assertLess(
+            calls.index(["/bin/launchctl", "enable", legacy_ref]),
+            calls.index(
+                ["/bin/launchctl", "bootstrap", launch_domain, str(self.plist)]
+            ),
         )
 
     def test_refuses_legacy_bootstrap_when_supervisor_fence_persists_after_login(self) -> None:
@@ -3913,6 +4288,17 @@ class InstallerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(arguments, 0, stdout="codex-cli 1.2.3", stderr="")
             if arguments[-1] == "--help":
                 return subprocess.CompletedProcess(arguments, 0, stdout="Usage: codex exec resume --skip-git-repo-check", stderr="")
+            if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
+                return subprocess.CompletedProcess(
+                    arguments,
+                    0,
+                    stdout=(
+                        "disabled services = {\n"
+                        f'\t"{self.installer.DEFAULT_LABEL}" => enabled\n'
+                        "}\n"
+                    ),
+                    stderr="",
+                )
             if arguments[1] == "print":
                 if self.plist.exists():
                     stdout = self.launchctl_output(

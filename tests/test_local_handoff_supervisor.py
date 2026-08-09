@@ -526,6 +526,40 @@ class SupervisorLifecycleTests(SupervisorFixture):
 
 
 class SupervisorInstallerTests(SupervisorFixture):
+    @property
+    def supervisor_disabled(self) -> bool:
+        return (
+            self._supervisor_override_state
+            == self.installer.OVERRIDE_EXPLICITLY_DISABLED
+        )
+
+    @supervisor_disabled.setter
+    def supervisor_disabled(self, value: bool) -> None:
+        self._supervisor_override_state = (
+            self.installer.OVERRIDE_EXPLICITLY_DISABLED
+            if value
+            else self.installer.OVERRIDE_EXPLICITLY_ENABLED
+        )
+
+    @property
+    def legacy_disabled(self) -> bool:
+        return (
+            self._legacy_override_state
+            == self.installer.OVERRIDE_EXPLICITLY_DISABLED
+        )
+
+    @legacy_disabled.setter
+    def legacy_disabled(self, value: bool) -> None:
+        self._legacy_override_state = (
+            self.installer.OVERRIDE_EXPLICITLY_DISABLED
+            if value
+            else self.installer.OVERRIDE_EXPLICITLY_ENABLED
+        )
+
+    def reset_absent_overrides(self) -> None:
+        self._supervisor_override_state = self.installer.OVERRIDE_ABSENT
+        self._legacy_override_state = self.installer.OVERRIDE_ABSENT
+
     def setUp(self) -> None:
         super().setUp()
         self.installer = load_installer()
@@ -544,9 +578,8 @@ class SupervisorInstallerTests(SupervisorFixture):
             f"{launch_domain}/{self.installer.LEGACY_LABEL}"
         )
         self.supervisor_loaded = False
-        self.supervisor_disabled = False
         self.legacy_loaded = False
-        self.legacy_disabled = False
+        self.reset_absent_overrides()
         self.fail_supervisor_bootstrap = False
         self.bad_supervisor_readback = False
         self.inject_legacy_during_supervisor_bootstrap = False
@@ -670,17 +703,25 @@ class SupervisorInstallerTests(SupervisorFixture):
                     stderr="",
                 )
             if arguments[:2] == ["/bin/launchctl", "print-disabled"]:
-                legacy_disabled = "true" if self.legacy_disabled else "false"
-                supervisor_disabled = (
-                    "true" if self.supervisor_disabled else "false"
-                )
+                override_lines = []
+                for label, state in (
+                    (self.installer.LEGACY_LABEL, self._legacy_override_state),
+                    (self.installer.DEFAULT_LABEL, self._supervisor_override_state),
+                ):
+                    if state == self.installer.OVERRIDE_ABSENT:
+                        continue
+                    rendered = (
+                        "disabled"
+                        if state == self.installer.OVERRIDE_EXPLICITLY_DISABLED
+                        else "enabled"
+                    )
+                    override_lines.append(f'\t"{label}" => {rendered}\n')
                 return subprocess.CompletedProcess(
                     arguments,
                     0,
                     stdout=(
                         "disabled services = {\n"
-                        f'\t"{self.installer.LEGACY_LABEL}" => {legacy_disabled}\n'
-                        f'\t"{self.installer.DEFAULT_LABEL}" => {supervisor_disabled}\n'
+                        f'{"".join(override_lines)}'
                         "}\n"
                     ),
                     stderr="",
@@ -803,6 +844,36 @@ class SupervisorInstallerTests(SupervisorFixture):
         )
         self.assertNotIn(legacy_config, self.paths)
         self.assertNotIn(legacy_plist, self.paths)
+
+    def test_parses_real_launchctl_override_formats_without_losing_absence(self) -> None:
+        label = self.installer.DEFAULT_LABEL
+        fixtures = {
+            "enabled": self.installer.OVERRIDE_EXPLICITLY_ENABLED,
+            "false": self.installer.OVERRIDE_EXPLICITLY_ENABLED,
+            "disabled": self.installer.OVERRIDE_EXPLICITLY_DISABLED,
+            "true": self.installer.OVERRIDE_EXPLICITLY_DISABLED,
+        }
+        for rendered, expected in fixtures.items():
+            with self.subTest(rendered=rendered):
+                output = (
+                    "disabled services = {\n"
+                    f'\t"{label}" => {rendered}\n'
+                    "}\n"
+                )
+                self.assertEqual(
+                    self.installer._parse_override_state(output, label), expected
+                )
+        self.assertEqual(
+            self.installer._parse_override_state(
+                "disabled services = {\n}\n", label
+            ),
+            self.installer.OVERRIDE_ABSENT,
+        )
+        with self.assertRaisesRegex(ValueError, "invalid.*override"):
+            self.installer._parse_override_state(
+                f'disabled services = {{\n\t"{label}" => unknown\n}}\n',
+                label,
+            )
 
     def test_snapshots_disabled_labels_without_plists_as_disabled_not_absent(self) -> None:
         self.legacy_disabled = True
@@ -1039,6 +1110,7 @@ class SupervisorInstallerTests(SupervisorFixture):
             "bad_supervisor_readback",
         ):
             with self.subTest(failure_attribute=failure_attribute):
+                self.supervisor_disabled = True
                 self.write_legacy_install(loaded=True)
                 setattr(self, failure_attribute, True)
 
@@ -1083,6 +1155,7 @@ class SupervisorInstallerTests(SupervisorFixture):
             "ignore_legacy_bootout",
         ):
             with self.subTest(failure_attribute=failure_attribute):
+                self.supervisor_disabled = True
                 self.write_legacy_install(loaded=True)
                 setattr(self, failure_attribute, True)
 
@@ -1110,6 +1183,21 @@ class SupervisorInstallerTests(SupervisorFixture):
 
         with self.assertRaisesRegex(ValueError, "both.*loaded|concurrent"):
             self.install(dry_run=False, replace_legacy=True)
+
+        self.assertFalse(
+            any(
+                arguments[1] in {"bootstrap", "bootout", "disable", "enable"}
+                for arguments, _kwargs in self.last_calls
+                if arguments[0] == "/bin/launchctl"
+            )
+        )
+
+    def test_refuses_both_explicitly_enabled_overrides_before_mutation(self) -> None:
+        self.supervisor_disabled = False
+        self.legacy_disabled = False
+
+        with self.assertRaisesRegex(ValueError, "both.*enabled|concurrent"):
+            self.install(dry_run=False)
 
         self.assertFalse(
             any(
@@ -1325,6 +1413,8 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertTrue(self.installer.recovery_marker_path(self.paths).exists())
 
     def test_timeout_at_every_launchctl_stage_is_normalized_and_recovers(self) -> None:
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
         _receipt, baseline_calls = self.install(dry_run=False)
         launchctl_stage_count = sum(
             arguments[0] == "/bin/launchctl"
@@ -1341,9 +1431,9 @@ class SupervisorInstallerTests(SupervisorFixture):
             ):
                 path.unlink(missing_ok=True)
             self.supervisor_loaded = False
-            self.supervisor_disabled = False
             self.legacy_loaded = False
-            self.legacy_disabled = False
+            self.supervisor_disabled = False
+            self.legacy_disabled = True
 
         reset_clean_state()
         for target_stage in range(1, launchctl_stage_count + 1):
@@ -1379,7 +1469,7 @@ class SupervisorInstallerTests(SupervisorFixture):
                 self.assertFalse(self.supervisor_loaded)
                 self.assertFalse(self.supervisor_disabled)
                 self.assertFalse(self.legacy_loaded)
-                self.assertFalse(self.legacy_disabled)
+                self.assertTrue(self.legacy_disabled)
                 self.assertFalse(self.paths.plist.exists())
                 self.assertFalse(self.paths.supervisor_config.exists())
                 self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
@@ -1389,6 +1479,8 @@ class SupervisorInstallerTests(SupervisorFixture):
         calls: list[tuple[list[str], dict[str, object]]] = []
         fake_run = self.fake_run(calls)
         supervisor_disable_count = 0
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
         self.fail_supervisor_bootstrap = True
 
         def run(arguments, **kwargs):
@@ -1438,6 +1530,8 @@ class SupervisorInstallerTests(SupervisorFixture):
 
     def test_timeout_at_every_exact_rollback_stage_leaves_resumable_safe_fence(self) -> None:
         baseline_calls: list[tuple[list[str], dict[str, object]]] = []
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
         self.fail_supervisor_bootstrap = True
         with self.assertRaisesRegex(RuntimeError, "rolled back"):
             self.installer.install(
@@ -1479,9 +1573,9 @@ class SupervisorInstallerTests(SupervisorFixture):
             ):
                 path.unlink(missing_ok=True)
             self.supervisor_loaded = False
-            self.supervisor_disabled = False
             self.legacy_loaded = False
-            self.legacy_disabled = False
+            self.supervisor_disabled = False
+            self.legacy_disabled = True
 
         reset_clean_state()
         for target_stage in range(1, rollback_stage_count + 1):
@@ -1536,6 +1630,8 @@ class SupervisorInstallerTests(SupervisorFixture):
         calls: list[tuple[list[str], dict[str, object]]] = []
         fake_run = self.fake_run(calls)
         failed = False
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
 
         def run(arguments, **kwargs):
             nonlocal failed
@@ -1567,10 +1663,118 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.supervisor_loaded)
         self.assertFalse(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
-        self.assertFalse(self.legacy_disabled)
+        self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.installer.recovery_marker_path(self.paths).exists())
 
+    def test_absent_overrides_use_safe_disabled_fallback_and_recovery_receipt(self) -> None:
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "safe_disabled_fallback"):
+            self.install(dry_run=False)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertTrue(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        self.assertFalse(self.paths.plist.exists())
+        marker = self.installer.recovery_marker_path(self.paths)
+        self.assertTrue(marker.exists())
+        self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+        receipt = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "safe_disabled_fallback")
+        self.assertEqual(
+            receipt["supervisor"]["override_state"],
+            self.installer.OVERRIDE_ABSENT,
+        )
+        self.assertEqual(
+            receipt["legacy"]["override_state"],
+            self.installer.OVERRIDE_ABSENT,
+        )
+        bootstrap = [
+            "/bin/launchctl",
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            str(self.paths.plist),
+        ]
+        commands = [
+            arguments
+            for arguments, _kwargs in self.last_calls
+            if arguments[0] == "/bin/launchctl"
+        ]
+        rollback_commands = commands[commands.index(bootstrap) + 1 :]
+        self.assertFalse(
+            any(arguments[1] == "enable" for arguments in rollback_commands)
+        )
+
+    def test_absent_legacy_override_fallback_never_reenables_legacy(self) -> None:
+        self.supervisor_disabled = True
+        self.write_legacy_install(loaded=True)
+        self._legacy_override_state = self.installer.OVERRIDE_ABSENT
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "safe_disabled_fallback"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertTrue(self.supervisor_disabled)
+        self.assertFalse(self.legacy_loaded)
+        self.assertTrue(self.legacy_disabled)
+        self.assertFalse(self.paths.plist.exists())
+        self.assertTrue(self.legacy_plist.exists())
+        bootstrap = [
+            "/bin/launchctl",
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            str(self.paths.plist),
+        ]
+        commands = [
+            arguments
+            for arguments, _kwargs in self.last_calls
+            if arguments[0] == "/bin/launchctl"
+        ]
+        rollback_commands = commands[commands.index(bootstrap) + 1 :]
+        self.assertNotIn(
+            ["/bin/launchctl", "enable", self.legacy_ref], rollback_commands
+        )
+        self.assertFalse(
+            any(
+                arguments[:2] == ["/bin/launchctl", "bootstrap"]
+                and arguments[-1] == str(self.legacy_plist)
+                for arguments in rollback_commands
+            )
+        )
+
+    def test_absent_supervisor_fallback_restores_explicit_legacy_exactly(self) -> None:
+        self.write_legacy_install(loaded=True)
+        self.fail_supervisor_bootstrap = True
+
+        with self.assertRaisesRegex(RuntimeError, "safe_disabled_fallback"):
+            self.install(dry_run=False, replace_legacy=True)
+
+        self.assertFalse(self.supervisor_loaded)
+        self.assertTrue(self.supervisor_disabled)
+        self.assertFalse(self.paths.plist.exists())
+        self.assertTrue(self.legacy_loaded)
+        self.assertFalse(self.legacy_disabled)
+        self.assertFalse(self.concurrent_active_seen)
+        receipt = json.loads(
+            self.installer.recovery_marker_path(self.paths).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(receipt["status"], "safe_disabled_fallback")
+        self.assertEqual(
+            receipt["supervisor"]["override_state"],
+            self.installer.OVERRIDE_ABSENT,
+        )
+        self.assertEqual(
+            receipt["legacy"]["override_state"],
+            self.installer.OVERRIDE_EXPLICITLY_ENABLED,
+        )
+
     def test_bootstrap_toctou_legacy_activation_fails_and_restores_clean_state(self) -> None:
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
         self.inject_legacy_during_supervisor_bootstrap = True
 
         with self.assertRaisesRegex(RuntimeError, "rolled back"):
@@ -1579,21 +1783,22 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.supervisor_loaded)
         self.assertFalse(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
-        self.assertFalse(self.legacy_disabled)
+        self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.paths.plist.exists())
 
     def test_rollback_boots_out_supervisor_even_when_disable_readback_fails(self) -> None:
         self.inject_legacy_during_supervisor_bootstrap = True
         self.ignore_supervisor_disable = True
 
-        with self.assertRaisesRegex(RuntimeError, "rolled back"):
+        with self.assertRaisesRegex(RuntimeError, "recovery_required"):
             self.install(dry_run=False)
 
         self.assertFalse(self.supervisor_loaded)
         self.assertFalse(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
-        self.assertFalse(self.legacy_disabled)
+        self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.paths.plist.exists())
+        self.assertTrue(self.installer.recovery_marker_path(self.paths).exists())
         self.assertIn(
             ["/bin/launchctl", "bootout", self.supervisor_ref],
             [arguments for arguments, _kwargs in self.last_calls],
@@ -1613,6 +1818,7 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.paths.plist.write_bytes(prior_bytes)
         self.paths.plist.chmod(0o640)
         self.supervisor_disabled = True
+        self.legacy_disabled = True
         self.fail_supervisor_bootstrap = True
 
         with self.assertRaisesRegex(RuntimeError, "rolled back"):
@@ -1623,7 +1829,7 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.supervisor_loaded)
         self.assertTrue(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
-        self.assertFalse(self.legacy_disabled)
+        self.assertTrue(self.legacy_disabled)
 
     def test_failed_reinstall_restores_loaded_supervisor_and_durable_login_fence(self) -> None:
         self.install(dry_run=False)
@@ -1663,6 +1869,7 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.legacy_loaded)
 
     def test_failed_replacement_restores_enabled_unloaded_legacy_exactly(self) -> None:
+        self.supervisor_disabled = True
         self.write_legacy_install(loaded=False, disabled=False)
         self.fail_supervisor_bootstrap = True
 
@@ -1670,12 +1877,14 @@ class SupervisorInstallerTests(SupervisorFixture):
             self.install(dry_run=False, replace_legacy=True)
 
         self.assertFalse(self.supervisor_loaded)
-        self.assertFalse(self.supervisor_disabled)
+        self.assertTrue(self.supervisor_disabled)
         self.assertFalse(self.paths.plist.exists())
         self.assertFalse(self.legacy_loaded)
         self.assertFalse(self.legacy_disabled)
 
     def test_failed_installed_config_readback_rolls_back_launch_and_plist_state(self) -> None:
+        self.supervisor_disabled = False
+        self.legacy_disabled = True
         self.corrupt_installed_config_after_bootstrap = True
 
         with self.assertRaisesRegex(RuntimeError, "rolled back"):
@@ -1684,7 +1893,7 @@ class SupervisorInstallerTests(SupervisorFixture):
         self.assertFalse(self.supervisor_loaded)
         self.assertFalse(self.supervisor_disabled)
         self.assertFalse(self.legacy_loaded)
-        self.assertFalse(self.legacy_disabled)
+        self.assertTrue(self.legacy_disabled)
         self.assertFalse(self.paths.plist.exists())
 
     def test_refuses_cross_host_pair_before_any_subprocess(self) -> None:

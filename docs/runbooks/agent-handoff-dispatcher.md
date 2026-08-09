@@ -282,6 +282,81 @@ The installed runner command is equivalent to:
 Do not put a bearer token, registration id, lease capability, or fixed thread
 id on the command line.
 
+### Paired supervisor transition and install recovery
+
+The paired Codex/OpenClaw installer owns
+`com.tony.gtasks-handoff-dispatcher-supervisor`. Run its mutation-free dry run
+first, then use `--replace-legacy` only for the reviewed transition from the
+retained one-worker label:
+
+```bash
+/absolute/path/to/python3 scripts/install_local_handoff_supervisor.py \
+  --worker-config /private/<agent>/codex.json \
+  --worker-config /private/<agent>/openclaw.json \
+  --python-path /absolute/path/to/python3 \
+  --module-root /absolute/path/to/gtasks \
+  --runner-path /absolute/path/to/gtasks/gtasks/local_handoff_supervisor.py \
+  --codex-path /absolute/path/to/codex \
+  --openclaw-path /absolute/path/to/openclaw \
+  --working-directory /absolute/path/to/agent-workspace \
+  --dry-run
+```
+
+Both installers interpret each `launchctl print-disabled` label independently
+as `absent`, `explicitly_enabled`, or `explicitly_disabled`. Current launchd
+renders `enabled`/`disabled`; the parser also accepts the documented boolean
+`false`/`true` variants. Missing labels remain `absent` and are not treated as
+explicitly enabled.
+
+Before its first canonical file write or launchd mutation, the supervisor
+installer writes and reads back this private mode-`0600` transition record:
+
+```text
+~/Library/Application Support/GTasks/handoff-dispatcher/.install-recovery.json
+```
+
+It fences and verifies both labels before publishing files. On failure, an
+explicit prior override is restored exactly, including the prior loaded state.
+launchd has no safe per-label operation that restores an absent override. If
+either prior override was absent, rollback therefore uses the conservative
+contract: the absent label is booted out and left explicitly disabled and is
+never enabled or bootstrapped. For an absent supervisor override, the
+supervisor plist is also removed. The private record remains with status
+`safe_disabled_fallback`; this is a recovery receipt, not a claim that the
+absent override was restored exactly. Rollback and final readback never permit
+both labels to be loaded or durably enabled.
+
+The retained one-worker installer checks the private recovery path before
+every canonical write and every launchctl action. Any entry at that path,
+including a valid transition/recovery receipt, malformed JSON, a symlink, or
+an unreadable entry, blocks installation. With no recovery marker, the
+specific safe fallback state—supervisor explicitly disabled, unloaded, and
+without its plist—is inactive and permits the retained installer to explicitly
+enable and read back its own label before bootstrap.
+
+Recover a stopped transition as follows:
+
+1. Do not start the retained installer and do not infer prior state from an
+   unvalidated or malformed record. Re-run the same paired supervisor install
+   command without `--dry-run`; a valid exact-state record is rolled back and
+   removed before a fresh install begins.
+2. If the command reports `safe_disabled_fallback`, inspect the private receipt
+   and its two `override_state` snapshots. Every label whose prior override was
+   `absent` must now be unloaded with `launchctl print` and must read as
+   `disabled` (or boolean `true`) in
+   `launchctl print-disabled "gui/$(id -u)"`. If the absent label is the
+   supervisor, its plist must also be absent. Any explicitly enabled or
+   disabled counterpart must match its exact recorded load/override state. Do
+   not proceed if both labels are loaded or both are enabled.
+3. Archive the mode-`0600` receipt as recovery evidence. Only after the safe
+   readback may an operator remove the original receipt and deliberately run
+   either the paired installer or the retained one-worker installer. The
+   installers do not automatically erase a `safe_disabled_fallback` receipt.
+4. If the record is malformed, the paired installer attempts only the
+   disable/unload safety fence and reports `recovery_required`; it does not
+   fabricate an exact prior state. Preserve the record and investigate before
+   the same explicit operator acknowledgement in step 3.
+
 ## Audit retention, export, and redaction
 
 The durable store uses 90-day default retention. Retention is declared in
