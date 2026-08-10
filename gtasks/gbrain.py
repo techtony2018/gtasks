@@ -6236,6 +6236,7 @@ class GBrainAdapter:
             stored_task = Task.from_page(raw_page)
             expected = (
                 task.slug,
+                task.title,
                 task.summary,
                 task.status,
                 task.due_day,
@@ -6244,6 +6245,7 @@ class GBrainAdapter:
             )
             actual = (
                 stored_task.slug,
+                stored_task.title,
                 stored_task.summary,
                 stored_task.status,
                 stored_task.due_day,
@@ -6360,6 +6362,7 @@ class GBrainAdapter:
                 )
             stored_task = Task.from_page(stored_page, edges=stored_links)
             expected = (
+                task.title,
                 task.summary,
                 task.detail,
                 task.status,
@@ -6374,6 +6377,7 @@ class GBrainAdapter:
                 task.event_progress,
             )
             actual = (
+                stored_task.title,
                 stored_task.summary,
                 stored_task.detail,
                 stored_task.status,

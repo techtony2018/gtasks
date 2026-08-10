@@ -172,6 +172,17 @@ def main() -> int:
 
     page = adapter.runner.run("get_page", {"slug": task.slug})
     links = adapter.runner.run("get_links", {"slug": task.slug})
+    if not isinstance(page, dict):
+        raise SystemExit(
+            f"Task title verification returned no canonical page for {task.slug}"
+        )
+    page_title = page.get("title")
+    if page_title != task.title:
+        raise SystemExit(
+            "Task write completed but canonical title verification failed for "
+            f"{task.slug}: expected {task.title!r}, got {page_title!r}. "
+            "Inspect and repair this slug before retrying; do not create a replacement."
+        )
     typed = [
         {
             "from_slug": edge.get("from_slug"),
@@ -196,7 +207,7 @@ def main() -> int:
         "lifecycle_root": task.lifecycle_root,
         "stargraph_url": stargraph_url(task.slug),
         "links": typed,
-        "page_title": page.get("title") if isinstance(page, dict) else None,
+        "page_title": page_title,
     }, indent=2, sort_keys=True))
     return 0
 

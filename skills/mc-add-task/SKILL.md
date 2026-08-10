@@ -51,7 +51,11 @@ Optional:
 
    If a matching open task already exists, report it instead of creating a duplicate unless Tony explicitly wants another copy.
 
-3. Create the task through the bundled helper. Resolve `<active-skill-root>` from the loaded skill path:
+3. Create the task through the bundled helper. This is the only authorized
+   creation path for this skill. Do not call `gbrain put`, `gbrain call
+   put_page`, or an MCP `put_page` tool directly; those paths can omit the
+   canonical title and other required task fields. Resolve `<active-skill-root>`
+   from the loaded skill path:
 
    ```bash
    python3 "<active-skill-root>/scripts/mc_add_task.py" \
@@ -70,9 +74,11 @@ Optional:
      --owner-agent agents/toddy
    ```
 
-4. Read the helper JSON output. It verifies:
+4. Read the helper JSON output and require `page_title` to exactly equal the
+   requested `title`. The helper verifies:
 
    - page write;
+   - exact canonical title readback;
    - lifecycle collection membership;
    - `assigned_to` relationship for Agent tasks;
    - canonical GBrain readback.
@@ -85,5 +91,8 @@ Optional:
 
 - Do not create System Tickets from this skill.
 - Do not create tasks with unverified owners.
+- Never bypass the bundled helper with a direct page write.
+- Treat a missing, UUID-derived, or mismatched canonical title as a partial
+  mutation: report the exact slug and stop without creating a replacement.
 - Do not fabricate due dates beyond deterministic relative-date resolution.
 - If a write partially succeeds but verification fails, stop and report the exact slug and error before retrying.

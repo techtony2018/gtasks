@@ -4093,6 +4093,28 @@ class InboxMutationTests(unittest.TestCase):
             ),
         )
 
+    def test_rejects_uuid_derived_title_readback(self) -> None:
+        task = new_inbox_task(
+            "Apply for EDD unemployment insurance",
+            datetime(2026, 8, 9, 14, 22, tzinfo=timezone.utc),
+            "title1",
+        )
+        malformed = stored_page(task)
+        malformed["title"] = task.slug.rsplit("/", 1)[-1].replace("-", " ").title()
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": task.slug}],
+                "get_page": [malformed],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).create_inbox(task)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertIn("page readback", str(raised.exception))
+        self.assertNotIn("add_link", [tool for tool, _ in runner.calls])
+
     def test_surfaces_a_partial_write_if_edge_readback_fails(self) -> None:
         task = new_inbox_task(
             "Create the launch brief",
