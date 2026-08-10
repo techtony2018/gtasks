@@ -62,15 +62,11 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.87. It gives local Dispatcher
-authority mutations a bounded 60-second request budget while retaining
-fail-closed acknowledgement ordering, idempotent retries, and canonical
-registration/delegation readback.
-
-V0.0.88 is an uncommitted release candidate for unified Task and System Ticket
-Markdown. Its catalog entry reserves the next sequential version but is not
-evidence of a shipment: independent UI/UX QA, commit/push, dashboard-managed
-deployment, runtime health, and bounded canonical readback remain required.
+Latest verified and deployed release: V0.0.88. New Tasks and System Tickets use
+one safe Markdown formatter with deterministic headings, clickable external
+links, verified in-app Ticket links, preserved user-authored details, and
+marker-gated compiled-body readback. Historical pages are not bulk-migrated or
+silently rewritten.
 
 ### Independent UI/UX release gate
 
