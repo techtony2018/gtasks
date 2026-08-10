@@ -88,6 +88,376 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_system_ticket_markdown_routes_are_safe_and_render_inside_mission_control(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function safeSystemTicketMarkdownRoute", javascript)
+        self.assertIn("function openMarkdownSystemTicketReference", javascript)
+        self.assertIn('<div id="system-ticket-detail-request"></div>', html)
+        self.assertIn('<div id="system-ticket-detail-criteria"></div>', html)
+
+        renderer = javascript[
+            javascript.index("function renderSafeMarkdown") :
+            javascript.index("const AGENT_TASKS_PREFERENCE_KEY")
+        ]
+        self.assertNotIn("innerHTML", renderer)
+        self.assertIn("safeSystemTicketMarkdownRoute(url)", renderer)
+        self.assertIn("openMarkdownSystemTicketReference(ticketSlug, link)", renderer)
+
+        internal_ticket_branch = renderer[
+            renderer.index("safeSystemTicketMarkdownRoute(url)") :
+            renderer.index("if (href)", renderer.index("safeSystemTicketMarkdownRoute(url)"))
+        ]
+        self.assertNotIn('link.target = "_blank"', internal_ticket_branch)
+        self.assertNotIn('link.rel = "noreferrer"', internal_ticket_branch)
+
+        navigation = javascript[
+            javascript.index("async function openMarkdownSystemTicketReference") :
+            javascript.index("async function openHandoffTaskReference")
+        ]
+        self.assertIn("loadCorrelatedSystemTicket(ticketSlug)", navigation)
+        self.assertIn("selectSystemTicket(ticketSlug, originControl)", navigation)
+        self.assertIn("MISSING_LINKED_TASK_ERROR", navigation)
+
+        ticket_detail = javascript[
+            javascript.index("function renderSystemTicketList") :
+            javascript.index("function openEditSystemTicket")
+        ]
+        self.assertRegex(
+            ticket_detail,
+            r"renderSafeMarkdown\(\s*elements\.systemTicketDetailRequest",
+        )
+        self.assertRegex(
+            ticket_detail,
+            r"renderSafeMarkdown\(\s*elements\.systemTicketDetailCriteria",
+        )
+        self.assertRegex(ticket_detail, r"renderSafeMarkdown\(item, entry(?:,|\))")
+
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const valid = "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620";
+assert(
+  safeSystemTicketMarkdownRoute(valid) === "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620",
+  "canonical encoded System Ticket route was rejected",
+);
+for (const unsafe of [
+  "#system-ticket/tasks%252Ffad23bf2-571f-4db0-b9f5-07ab52ae8620",
+  "#system-ticket/tasks%2Ffad23bf2-571f-6db0-b9f5-07ab52ae8620",
+  "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620%2Fchild",
+  "#system-ticket/tasks%5Cfad23bf2-571f-4db0-b9f5-07ab52ae8620",
+  "#task/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620",
+]) {
+  assert(safeSystemTicketMarkdownRoute(unsafe) === null, `unsafe route accepted: ${unsafe}`);
+}
+const container = new FakeElement();
+renderSafeMarkdown(
+  container,
+  `[Ticket](${valid}) https://example.com/docs). http://127.0.0.1:4179/status. http://localhost:4179/health. http://127.0.0.1 http://localhost:4179 http://localhost.evil/secret javascript:alert(1) <img src=x onerror=alert(1)>`,
+);
+const anchors = [];
+const text = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  if (entry?.textContent) text.push(entry.textContent);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(anchors.length === 6, `expected only safe links, received ${anchors.length}`);
+assert(anchors[0].getAttribute("target") === null, "internal Ticket link opened a new tab");
+assert(anchors[1].href === "https://example.com/docs", "HTTPS bare URL included punctuation");
+assert(anchors[2].href === "http://127.0.0.1:4179/status", "loopback bare URL included punctuation");
+assert(anchors[3].href === "http://localhost:4179/health", "localhost bare URL was not rendered");
+assert(anchors[4].href === "http://127.0.0.1", "bare 127.0.0.1 did not terminate safely");
+assert(anchors[5].href === "http://localhost:4179", "bare localhost host/port did not terminate safely");
+assert(!anchors.some((link) => String(link.href).includes("localhost.evil")), "localhost prefix matched a non-loopback host");
+assert(!anchors.some((link) => String(link.href).startsWith("javascript:")), "unsafe scheme became a link");
+assert(text.join("").includes("<img src=x onerror=alert(1)>"), "raw HTML rendered instead of text");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_markdown_renderer_keeps_tilde_and_arbitrary_backtick_fences_inert(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const route = "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const container = new FakeElement();
+renderSafeMarkdown(
+  container,
+  [
+    "~~~md",
+    `[Tilde Ticket](${route}) http://localhost:4179/inside-tilde`,
+    "~~~",
+    "",
+    "````text",
+    `[Four Tick Ticket](${route}) http://127.0.0.1:4179/inside-four`,
+    "```",
+    "still code http://localhost/inside-four",
+    "````",
+    "",
+    "http://localhost http://127.0.0.1:4179",
+  ].join("\n"),
+);
+const anchors = [];
+const pre = [];
+const text = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  if (entry?.tagName === "PRE") pre.push(entry);
+  if (entry?.textContent) text.push(entry.textContent);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(pre.length === 2, `expected two fenced blocks, received ${pre.length}`);
+assert(anchors.length === 2, `links inside fences became active: ${anchors.length}`);
+assert(anchors[0].href === "http://localhost", "outside bare localhost link was lost");
+assert(anchors[1].href === "http://127.0.0.1:4179", "outside loopback host/port link was lost");
+assert(text.join("\n").includes("still code http://localhost/inside-four"), "shorter backtick run closed a four-backtick fence");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_markdown_renderer_keeps_arbitrary_inline_backtick_runs_inert(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const route = "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const container = new FakeElement();
+renderSafeMarkdown(
+  container,
+  "``literal ` tick and [Ticket](" + route + ")``\n\nhttp://localhost:4179/outside",
+);
+const anchors = [];
+const code = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  if (entry?.tagName === "CODE") code.push(entry);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(code.length === 1, `expected one inline code span, received ${code.length}`);
+assert(code[0].textContent === "literal ` tick and [Ticket](" + route + ")", "matching double-backtick content drifted");
+assert(anchors.length === 1, `internal Markdown inside inline code became active: ${anchors.length}`);
+assert(anchors[0].href === "http://localhost:4179/outside", "outside loopback link was lost");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bare_loopback_urls_keep_query_and_fragment_tails(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const container = new FakeElement();
+renderSafeMarkdown(
+  container,
+  "http://localhost:4179?mode=qa#ticket http://127.0.0.1#health http://localhost.evil?mode=qa",
+);
+const anchors = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(anchors.length === 2, `hostile prefix or tail tokenization drifted: ${anchors.length}`);
+assert(anchors[0].href === "http://localhost:4179?mode=qa#ticket", `query/fragment tail was lost: ${anchors[0].href}`);
+assert(anchors[1].href === "http://127.0.0.1#health", `fragment tail was lost: ${anchors[1].href}`);
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_http_tokenizer_rejects_whole_hostile_candidates_without_prefix_links(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const container = new FakeElement();
+const hostile = [
+  "http://localhost@evil.com/path",
+  "http://localhost_evil/path",
+  "http://localhost%2Fevil/path",
+  "http://127.0.0.1%2Eevil/path",
+];
+renderSafeMarkdown(
+  container,
+  [
+    "http://localhost:4179/path?mode=qa#ticket",
+    "http://127.0.0.1:8788?slug=tasks%2Fsafe#detail",
+    ...hostile,
+  ].join(" "),
+);
+const anchors = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(anchors.length === 2, `hostile candidate was partially autolinked: ${anchors.map((link) => link.href).join(",")}`);
+assert(anchors[0].href === "http://localhost:4179/path?mode=qa#ticket", "valid localhost path/query/fragment drifted");
+assert(anchors[1].href === "http://127.0.0.1:8788?slug=tasks%2Fsafe#detail", "valid 127.0.0.1 query/fragment drifted");
+assert(!anchors.some((link) => hostile.some((candidate) => candidate.startsWith(link.href))), "a hostile URL retained a loopback prefix anchor");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_markdown_renderer_decodes_safe_generated_escapes_and_entities(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const route = "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const container = new FakeElement();
+renderSafeMarkdown(
+  container,
+  `# Generated \\# \\[title\\]
+
+[Canonical \\[Ticket&#93;](${route})
+
+[External \\[Doc&#93;](https://example.com)`,
+);
+const anchors = [];
+const text = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  if (entry?.textContent) text.push(entry.textContent);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(container);
+assert(anchors.length === 2, "generated links were not rendered");
+assert(anchors[0].textContent === "Canonical [Ticket]", `entity/escape leaked into label: ${anchors[0].textContent}`);
+assert(anchors[1].textContent === "External [Doc]", `external label escape leaked: ${anchors[1].textContent}`);
+const rendered = text.join(" ");
+assert(rendered.includes("Generated # [title]"), `heading escapes remained visible: ${rendered}`);
+assert(!rendered.includes("&#93;") && !rendered.includes("\\#"), "generated escape syntax remained visible");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_and_ticket_display_projections_render_with_historical_fallbacks(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('id="system-ticket-detail-markdown"', html)
+        self.assertIn("task.display_markdown || task.detail || \"\"", javascript)
+        self.assertIn("ticket.display_markdown", javascript)
+        self.assertIn("sourceKind: \"task\"", javascript)
+        self.assertIn("sourceKind: \"system-ticket\"", javascript)
+
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const destination = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const route = "#system-ticket/tasks%2Ffad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const taskContainer = new FakeElement();
+renderSafeMarkdown(taskContainer, `# Task\n\n[Destination](${route})`, {
+  sourceKind: "task",
+  sourceSlug: "tasks/0bcdef12-3456-4abc-8def-0123456789ab",
+  referenceScope: "body",
+});
+const anchors = [];
+const walk = (entry) => {
+  if (entry?.tagName === "A") anchors.push(entry);
+  for (const child of entry?.children || []) walk(child);
+};
+walk(taskContainer);
+assert(anchors.length === 1, "Task display projection did not render the internal Ticket link");
+assert(anchors[0].dataset.systemTicketReferenceSourceKind === "task", "Task source kind was not recorded");
+assert(anchors[0].dataset.systemTicketReferenceSourceSlug === "tasks/0bcdef12-3456-4abc-8def-0123456789ab", "Task source slug was not recorded");
+assert(safeSystemTicketMarkdownRoute(anchors[0].href) === destination, "Task projection link target drifted");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_markdown_ticket_navigation_restores_task_and_nested_ticket_sources(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        close_details = javascript[
+            javascript.index("function closeDetails") :
+            javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn("systemTicketMarkdownReturn", javascript)
+        self.assertIn("restoreMarkdownSystemTicketReferenceFocus", javascript)
+        self.assertIn("sourceKind", close_details)
+        self.assertIn("sourceSlug", close_details)
+        self.assertIn("referenceKey", close_details)
+
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/1bcdef12-3456-4abc-8def-0123456789ab";
+const firstTicketSlug = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const secondTicketSlug = "tasks/0bcdef12-3456-4abc-8def-0123456789ab";
+const taskCard = new FakeElement("button");
+taskCard.dataset.slug = taskSlug;
+const taskReplacement = new FakeElement("a");
+taskReplacement.isConnected = true;
+const ticketReplacement = new FakeElement("a");
+ticketReplacement.isConnected = true;
+const sourceCard = new FakeElement("button");
+sourceCard.isConnected = true;
+sourceCard.dataset.slug = firstTicketSlug;
+document.querySelector = (selector) => {
+  if (selector.includes('source-kind="task"')) return taskReplacement;
+  if (selector.includes('source-kind="system-ticket"')) return ticketReplacement;
+  return null;
+};
+document.querySelectorAll = (selector) => (
+  selector === ".system-ticket-card" ? [sourceCard] : []
+);
+render = () => {};
+state.snapshot = { tasks: [{ slug: taskSlug, title: "Task source", detail: "" }], goals: [] };
+state.systemTickets = [{ slug: firstTicketSlug, title: "First Ticket" }];
+state.completedSystemTickets = [];
+state.selectedKind = "system-ticket";
+state.selectedSlug = firstTicketSlug;
+state.detailReturnFocus = { element: taskCard, slug: taskSlug };
+state.systemTicketMarkdownReturn = {
+  sourceKind: "task",
+  sourceSlug: taskSlug,
+  destinationTicketSlug: firstTicketSlug,
+  referenceKey: "body:0",
+  detailReturnFocus: { element: taskCard, slug: taskSlug },
+  parent: null,
+};
+elements.detailPanel.setAttribute("aria-hidden", "false");
+selectTask = (slug) => {
+  state.selectedKind = "task";
+  state.selectedSlug = slug;
+};
+selectSystemTicket = (slug) => {
+  state.selectedKind = "system-ticket";
+  state.selectedSlug = slug;
+};
+closeDetails();
+assert(state.selectedKind === "task" && state.selectedSlug === taskSlug, "Task source detail was not restored");
+assert(taskReplacement.focused, "Task-origin Markdown link did not regain focus");
+
+taskReplacement.focused = false;
+state.selectedKind = "system-ticket";
+state.selectedSlug = secondTicketSlug;
+state.systemTicketMarkdownReturn = {
+  sourceKind: "system-ticket",
+  sourceSlug: firstTicketSlug,
+  destinationTicketSlug: secondTicketSlug,
+  referenceKey: "body:0",
+  detailReturnFocus: { element: sourceCard, slug: firstTicketSlug },
+  parent: {
+    sourceKind: "task",
+    sourceSlug: taskSlug,
+    destinationTicketSlug: firstTicketSlug,
+    referenceKey: "body:0",
+    detailReturnFocus: { element: taskCard, slug: taskSlug },
+    parent: null,
+  },
+};
+closeDetails();
+assert(state.selectedKind === "system-ticket" && state.selectedSlug === firstTicketSlug, "Nested Ticket source was not restored first");
+assert(ticketReplacement.focused, "Nested Ticket Markdown link did not regain focus");
+closeDetails();
+assert(state.selectedKind === "task" && state.selectedSlug === taskSlug, "Nested return did not continue to Task source");
+assert(taskReplacement.focused, "Nested return did not restore the exact Task link");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_job_applied_metric_editor_shows_scoped_breakdown_and_safe_minimum(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1052,8 +1422,56 @@ assert(elements.detailTitle.textContent === "Loaded canonical task", `canonical 
             javascript.index("function agentBoardCard") : javascript.index("function updateBoardStatus")
         ]
         self.assertIn("selectTask(task.slug, task)", card)
-        self.assertIn("function selectTask(slug, taskFallback = null, returnFocus = null)", javascript)
-        self.assertIn("findTaskBySlug(slug) || taskFallback", javascript)
+        self.assertIn("function selectTask(\n  slug,\n  taskFallback = null", javascript)
+        self.assertIn("const knownTask = findTaskBySlug(slug)", javascript)
+        self.assertIn("const task = knownTask || taskFallback", javascript)
+        self.assertIn("selectTaskWithCanonicalRead(slug, returnFocus, task)", javascript)
+
+    def test_all_fallback_task_selections_require_one_exact_detail_hydration(self) -> None:
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const slug = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620";
+const fallback = {
+  slug,
+  title: "Inline fallback",
+  summary: "Inline fallback",
+  detail: "Fallback detail",
+  status: "active",
+  priority: "normal",
+  due_day: "2026-08-10",
+  todos: [],
+  open_todos: [],
+  artifacts: [],
+};
+const exact = {
+  ...fallback,
+  title: "Exact canonical Task",
+  detail: "Canonical detail",
+  display_markdown: "# Exact canonical Task\n\n## 详情\n\nCanonical detail",
+};
+state.snapshot = { tasks: [], goals: [], views: {} };
+state.agentTasks = [fallback];
+state.agents = [];
+const requested = [];
+fetch = async (url) => {
+  requested.push(String(url));
+  if (String(url) === `/api/tasks/${encodeURIComponent(slug)}`) {
+    return { ok: true, json: async () => ({ task: exact }) };
+  }
+  return { ok: true, json: async () => ({ artifacts: [], events: [], entries: [] }) };
+};
+render = () => {};
+await selectTask(slug, fallback, new FakeElement("button"));
+assert(
+  requested.filter((url) => url === `/api/tasks/${encodeURIComponent(slug)}`).length === 1,
+  `fallback selection did not perform exactly one exact hydration: ${requested.join(",")}`,
+);
+assert(state.selectedSlug === slug && state.selectedKind === "task", "exact Task was not selected");
+assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact projection did not replace inline fallback");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_mobile_task_detail_is_a_visible_focused_sheet(self) -> None:
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")

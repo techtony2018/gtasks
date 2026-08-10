@@ -609,6 +609,14 @@ def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
     return result
 
 
+def exact_task_api_payload(adapter: GBrainAdapter, task_slug: str) -> dict[str, Any]:
+    """Expose an optional display projection without changing Task authority."""
+    projector = getattr(adapter, "get_task_api_payload", None)
+    if callable(projector):
+        return dict(projector(task_slug))
+    return adapter.get_task(task_slug).to_dict()
+
+
 def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=4) as executor:
         active_future = executor.submit(adapter.list_collection_tasks, ACTIVE_ROOT)
@@ -2063,7 +2071,7 @@ def _handler_class(
                     return
                 try:
                     with foreground_operation():
-                        task = adapter.get_task(task_slug)
+                        task_payload = exact_task_api_payload(adapter, task_slug)
                 except GBrainCommandError as exc:
                     if is_page_not_found_error(exc):
                         self._json(
@@ -2088,7 +2096,7 @@ def _handler_class(
                         {"error": str(exc), "code": "gbrain_unavailable"},
                     )
                     return
-                self._json(HTTPStatus.OK, {"task": task.to_dict()})
+                self._json(HTTPStatus.OK, {"task": task_payload})
                 return
             if path == "/api/projects":
                 try:

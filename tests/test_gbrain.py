@@ -38,6 +38,11 @@ from gtasks.domain import (
     new_task,
 )
 import gtasks.gbrain as gbrain_module
+from gtasks.markdown_policy import (
+    SystemTicketReference,
+    render_system_ticket_body,
+    render_task_body,
+)
 from gtasks.handoff_dispatcher import (
     AgentRegistration,
     DurableHandoffStore,
@@ -61,12 +66,16 @@ from gtasks.gbrain import (
 from gtasks.delegation import AgentDelegationLease, DelegationState
 
 
+MARKDOWN_CONTRACT = "unified-task-ticket-v1"
+
+
 def stored_page(task) -> dict:
     return {
         "slug": task.slug,
         "type": "task",
         "title": task.title,
         "compiled_truth": f"# {task.title}",
+        "compiled_markdown": f"# {task.title}\n\n## 详情\n\n{task.detail}",
         "frontmatter": {
             "status": task.status,
             "summary": task.summary,
@@ -77,9 +86,17 @@ def stored_page(task) -> dict:
             "scheduled_day": "none",
             "inbox": task.inbox,
             "completed_at": None,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
             "links": [{"to": ACTIVE_ROOT, "type": "member_of"}],
         },
     }
+
+
+def marked_stored_page(task) -> dict:
+    page = stored_page(task)
+    page["frontmatter"]["markdown_contract"] = MARKDOWN_CONTRACT
+    return page
 
 
 class EntityTypePreservationTests(unittest.TestCase):
@@ -874,6 +891,7 @@ class StatefulIdentityMigrationRunner:
                 "type": raw_type,
                 "title": title,
                 "compiled_truth": content,
+                "compiled_markdown": content.split("\n---\n", 1)[1].strip(),
                 "frontmatter": frontmatter,
                 "deleted_at": None,
             }
@@ -3864,7 +3882,7 @@ class InboxMutationTests(unittest.TestCase):
             now=datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
             identity="metric1",
         )
-        page = stored_page(task)
+        page = marked_stored_page(task)
         page["frontmatter"]["progress_metric"] = metric.to_dict()
         edge = {
             "from_slug": task.slug,
@@ -3874,7 +3892,7 @@ class InboxMutationTests(unittest.TestCase):
         runner = FakeRunner(
             {
                 "put_page": [{"slug": task.slug}],
-                "get_page": [page, page],
+                "get_page": [page, page, page],
                 "add_link": [edge],
                 "get_links": [[], [edge], [edge]],
             }
@@ -3904,7 +3922,7 @@ class InboxMutationTests(unittest.TestCase):
             now=datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc),
             identity="linked1",
         )
-        page = stored_page(task)
+        page = marked_stored_page(task)
         page["frontmatter"]["project"] = project.slug
         page["frontmatter"]["links"].append(
             {"to": project.slug, "type": "member_of"}
@@ -3963,8 +3981,10 @@ class InboxMutationTests(unittest.TestCase):
         self,
     ) -> None:
         now = datetime(2026, 7, 30, 9, 15, tzinfo=timezone.utc)
+        ticket_slug = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620"
         base = new_task(
             title="Prepare a wellbeing update",
+            detail=f"Use {ticket_slug} for the canonical handoff.",
             next_action="Draft three bullets",
             now=now,
             identity="agent12",
@@ -3976,13 +3996,18 @@ class InboxMutationTests(unittest.TestCase):
             lifecycle_root=work_root,
             owner_agent=agent_slug,
         )
-        page = stored_page(task)
+        page = marked_stored_page(task)
         page["frontmatter"]["links"] = [
             {"to": work_root, "type": "member_of"},
             {"to": agent_slug, "type": "assigned_to"},
         ]
         page["frontmatter"]["created_at"] = now.isoformat()
         page["frontmatter"]["updated_at"] = now.isoformat()
+        page["compiled_markdown"] = render_task_body(
+            task.title,
+            task.detail,
+            {ticket_slug: SystemTicketReference(ticket_slug, "Dispatcher")},
+        )
         agent_page = {
             "slug": agent_slug,
             "type": "agent",
@@ -3994,16 +4019,39 @@ class InboxMutationTests(unittest.TestCase):
         class AgentCreationRunner:
             def __init__(self) -> None:
                 self.links: set[tuple[str, str, str]] = set()
+                self.calls = []
 
             def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, deepcopy(params)))
                 if tool == "list_pages":
                     return [agent_page]
                 if tool == "put_page":
                     return {"slug": task.slug}
                 if tool == "get_page":
+                    if params["slug"] == ticket_slug:
+                        return {
+                            "slug": ticket_slug,
+                            "type": "task",
+                            "title": "Dispatcher",
+                            "frontmatter": {
+                                "type": "task",
+                                "title": "Dispatcher",
+                                "status": "planned",
+                                "priority": "normal",
+                                "verbatim_request": "Canonical dispatcher request.",
+                                "target_subsystem": "mission_control",
+                                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+                            },
+                        }
                     return agent_page if params["slug"] == agent_slug else page
                 if tool == "get_links":
                     slug = params["slug"]
+                    if slug == ticket_slug:
+                        return [{
+                            "from_slug": ticket_slug,
+                            "to_slug": SYSTEM_TICKETS_ROOT,
+                            "link_type": "member_of",
+                        }]
                     return [
                         {
                             "from_slug": source,
@@ -4045,6 +4093,12 @@ class InboxMutationTests(unittest.TestCase):
             {(task.slug, work_root, "member_of")},
         )
         self.assertIn((task.slug, agent_slug, "assigned_to"), runner.links)
+        body = next(
+            params["content"].split("\n---\n", 1)[1].strip()
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertEqual(body, page["compiled_markdown"])
 
     def test_writes_page_and_edge_then_verifies_both(self) -> None:
         task = new_inbox_task(
@@ -4061,7 +4115,7 @@ class InboxMutationTests(unittest.TestCase):
         runner = FakeRunner(
             {
                 "put_page": [{"slug": task.slug}],
-                "get_page": [stored_page(task)],
+                "get_page": [marked_stored_page(task), marked_stored_page(task)],
                 "add_link": [edge],
                 "get_links": [[], [edge]],
             }
@@ -4074,7 +4128,14 @@ class InboxMutationTests(unittest.TestCase):
         tools = [tool for tool, _ in runner.calls]
         self.assertEqual(
             tools,
-            ["put_page", "get_page", "get_links", "add_link", "get_links"],
+            [
+                "put_page",
+                "get_page",
+                "get_links",
+                "add_link",
+                "get_links",
+                "get_page",
+            ],
         )
         content = runner.calls[0][1]["content"]
         self.assertIn('due_day: "2026-07-30"', content)
@@ -4124,7 +4185,7 @@ class InboxMutationTests(unittest.TestCase):
         runner = FakeRunner(
             {
                 "put_page": [{"slug": task.slug}],
-                "get_page": [stored_page(task)],
+                "get_page": [marked_stored_page(task)],
                 "add_link": [{}],
                 "get_links": [[], []],
             }
@@ -4149,7 +4210,7 @@ class InboxMutationTests(unittest.TestCase):
         runner = FakeRunner(
             {
                 "put_page": [{"slug": task.slug}],
-                "get_page": [stored_page(task)],
+                "get_page": [marked_stored_page(task)],
                 "get_links": [duplicate_edges],
             }
         )
@@ -7618,6 +7679,117 @@ class TaskNextActionMutationTests(unittest.TestCase):
         )
         self.assertIn('"action": "Collect examples"', written)
         self.assertIn(f'"completed_at": "{now.isoformat()}"', written)
+        self.assertNotIn("markdown_contract", written)
+        self.assertIn(f"# {task.title}", written)
+
+    def test_marked_full_task_edit_rerenders_and_verifies_unified_body(self) -> None:
+        now = datetime(2026, 8, 10, 15, tzinfo=timezone.utc)
+        task = new_inbox_task("Original title", now, "marked-edit")
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["markdown_contract"] = MARKDOWN_CONTRACT
+        initial_page["compiled_truth"] = render_task_body(
+            task.title, task.detail, {}
+        )
+        updated_title = "Updated # title"
+        updated_detail = "Updated authoritative detail."
+        expected_body = render_task_body(updated_title, updated_detail, {})
+        final_page = deepcopy(initial_page)
+        final_page.update({"title": updated_title, "compiled_markdown": expected_body})
+        final_page["frontmatter"].update(
+            {
+                "type": "task",
+                "title": updated_title,
+                "summary": updated_title,
+                "detail": updated_detail,
+                "priority": task.priority,
+                "due_day": task.due_day.isoformat(),
+                "next_action": task.next_action,
+                "next_action_history": [],
+                "progress_metric": None,
+                "event_progress": None,
+                "updated_at": now.isoformat(),
+                "markdown_contract": MARKDOWN_CONTRACT,
+            }
+        )
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, final_page],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).edit_task(
+            task.slug,
+            title=updated_title,
+            detail=updated_detail,
+            priority=task.priority,
+            due_day=task.due_day,
+            next_action=task.next_action,
+            project_slug=None,
+            goal_slug=None,
+            status=task.status,
+            assignee_slug="tony",
+            progress_metric=None,
+            event_progress=None,
+            handoff_reason="",
+            now=now,
+        )
+
+        written = next(
+            params["content"] for tool, params in runner.calls if tool == "put_page"
+        )
+        self.assertTrue(receipt.verified)
+        self.assertIn(f'markdown_contract: "{MARKDOWN_CONTRACT}"', written)
+        self.assertTrue(written.rstrip().endswith(expected_body))
+
+    def test_marked_full_task_edit_rejects_stale_compiled_body_readback(self) -> None:
+        now = datetime(2026, 8, 10, 15, tzinfo=timezone.utc)
+        task = new_inbox_task("Original title", now, "marked-stale-edit")
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["markdown_contract"] = MARKDOWN_CONTRACT
+        initial_page["compiled_truth"] = render_task_body(
+            task.title, task.detail, {}
+        )
+        stale_page = deepcopy(initial_page)
+        stale_page["frontmatter"].update(
+            {"detail": "Changed detail", "updated_at": now.isoformat()}
+        )
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, stale_page],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": task.slug}],
+            }
+        )
+
+        with self.assertRaisesRegex(PartialMutationError, "compiled Markdown"):
+            GBrainAdapter(runner).edit_task(
+                task.slug,
+                title=task.title,
+                detail="Changed detail",
+                priority=task.priority,
+                due_day=task.due_day,
+                next_action=task.next_action,
+                project_slug=None,
+                goal_slug=None,
+                status=task.status,
+                assignee_slug="tony",
+                progress_metric=None,
+                event_progress=None,
+                handoff_reason="",
+                now=now,
+            )
 
     def test_sets_next_action_and_preserves_task_identity_and_relationships(self) -> None:
         now = datetime(2026, 7, 30, 14, 15, tzinfo=timezone(timedelta(hours=-7)))
@@ -7752,6 +7924,459 @@ class TaskNextActionMutationTests(unittest.TestCase):
         )
 
 
+class MarkdownCreationPathTests(unittest.TestCase):
+    TICKET_SLUG = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620"
+
+    def test_create_task_projects_verified_ticket_reference_without_a_relationship(self) -> None:
+        task = new_task(
+            title="Continue dispatcher work",
+            detail=f"Use {self.TICKET_SLUG}.",
+            now=datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            identity="markdown-task",
+        )
+        ticket = SystemTicket(
+            self.TICKET_SLUG,
+            "Dispatcher",
+            "planned",
+            "Original dispatcher request.",
+            "mission_control",
+            "normal",
+        )
+
+        class Runner:
+            def __init__(self) -> None:
+                self.calls = []
+                self.links = []
+                self.body = ""
+
+            def run(self, tool, params):
+                self.calls.append((tool, deepcopy(params)))
+                slug = params.get("slug")
+                if tool == "put_page":
+                    self.body = params["content"].split("\n---\n", 1)[1].strip()
+                    return {"slug": params["slug"]}
+                if tool == "get_page" and slug == task.slug:
+                    page = marked_stored_page(task)
+                    page["compiled_markdown"] = self.body
+                    return page
+                if tool == "get_page" and slug == self_ticket_slug:
+                    return {
+                        "slug": ticket.slug,
+                        "type": "task",
+                        "title": ticket.title,
+                        "frontmatter": {
+                            "type": "task",
+                            "title": ticket.title,
+                            "status": ticket.status,
+                            "priority": ticket.priority,
+                            "verbatim_request": ticket.verbatim_request,
+                            "target_subsystem": ticket.target_subsystem,
+                            "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+                        },
+                    }
+                if tool == "get_links" and slug == task.slug:
+                    return deepcopy(self.links)
+                if tool == "get_links" and slug == self_ticket_slug:
+                    return [{"from_slug": ticket.slug, "to_slug": SYSTEM_TICKETS_ROOT, "link_type": "member_of"}]
+                if tool == "add_link":
+                    self.links.append({
+                        "from_slug": params["from"], "to_slug": params["to"],
+                        "link_type": params["link_type"], "link_source": params.get("link_source"),
+                    })
+                    return {}
+                raise AssertionError(f"unexpected {tool}: {params}")
+
+        self_ticket_slug = self.TICKET_SLUG
+        runner = Runner()
+        receipt = GBrainAdapter(runner).create_task(task)
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(
+            runner.body,
+            render_task_body(
+                task.title,
+                task.detail,
+                {ticket.slug: SystemTicketReference(ticket.slug, ticket.title)},
+            ),
+        )
+        self.assertEqual(
+            [(edge["to_slug"], edge["link_type"]) for edge in runner.links],
+            [(ACTIVE_ROOT, "member_of")],
+        )
+
+    def test_reference_resolution_leaves_ordinary_tasks_unlinked_and_labels_only_explicit_unavailable_tickets(self) -> None:
+        ordinary = "tasks/0bcdef12-3456-4abc-8def-0123456789ab"
+        missing = "tasks/1bcdef12-3456-4abc-8def-0123456789ab"
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {
+                        "slug": ordinary,
+                        "type": "task",
+                        "title": "Ordinary task",
+                        "frontmatter": {"type": "task", "title": "Ordinary task"},
+                    },
+                    GBrainCommandError("page_not_found"),
+                ],
+                "get_links": [[]],
+            }
+        )
+
+        references = GBrainAdapter(runner)._verified_system_ticket_references(
+            (f"Follow {ordinary}.", f"System Ticket: {missing}")
+        )
+
+        self.assertEqual(references, {missing: None})
+        self.assertNotIn("search", [tool for tool, _params in runner.calls])
+        self.assertNotIn("add_link", [tool for tool, _params in runner.calls])
+
+    def test_frontmatter_only_ticket_membership_is_unavailable_not_clickable(self) -> None:
+        slug = "tasks/2bcdef12-3456-4abc-8def-0123456789ab"
+        page = {
+            "slug": slug,
+            "type": "task",
+            "title": "Forged ticket projection",
+            "frontmatter": {
+                "type": "task",
+                "title": "Forged ticket projection",
+                "status": "planned",
+                "priority": "normal",
+                "verbatim_request": "Do not trust frontmatter alone.",
+                "target_subsystem": "mission_control",
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        for live_links in (
+            [],
+            [{"from_slug": slug, "to_slug": SYSTEM_TICKETS_ROOT, "link_type": "wrong_type"}],
+        ):
+            with self.subTest(live_links=live_links):
+                runner = FakeRunner({"get_page": [page], "get_links": [live_links]})
+                detail = f"System Ticket: {slug}"
+                references = GBrainAdapter(runner)._verified_system_ticket_references(
+                    (detail,)
+                )
+                body = render_task_body("Continue", detail, references)
+
+                self.assertEqual(references, {slug: None})
+                self.assertIn(f"System Ticket unavailable: {slug}", body)
+                self.assertNotIn("#system-ticket/", body)
+
+        ordinary_runner = FakeRunner({"get_page": [page], "get_links": [[]]})
+        ordinary_body = render_task_body(
+            "Continue",
+            f"Follow {slug} when ready.",
+            GBrainAdapter(ordinary_runner)._verified_system_ticket_references(
+                (f"Follow {slug} when ready.",)
+            ),
+        )
+        self.assertNotIn("关联的 System Tickets", ordinary_body)
+        self.assertNotIn("#system-ticket/", ordinary_body)
+
+    def test_create_inbox_treats_a_missing_compiled_markdown_body_as_partial_mutation(self) -> None:
+        task = new_inbox_task(
+            "Verify body readback",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "markdown-readback",
+        )
+        page = marked_stored_page(task)
+        page.pop("compiled_markdown")
+        runner = FakeRunner(
+            {"put_page": [{"slug": task.slug}], "get_page": [page]}
+        )
+
+        with self.assertRaisesRegex(PartialMutationError, "compiled Markdown"):
+            GBrainAdapter(runner).create_inbox(task)
+
+        self.assertNotIn("add_link", [tool for tool, _params in runner.calls])
+
+    def test_create_inbox_rereads_full_task_and_rejects_unexpected_assignment(self) -> None:
+        task = new_inbox_task(
+            "Keep Tony ownership",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "tony-owner-readback",
+        )
+        page = marked_stored_page(task)
+        lifecycle = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        unexpected_assignment = {
+            "from_slug": task.slug,
+            "to_slug": "agents/tammy",
+            "link_type": "assigned_to",
+        }
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": task.slug}],
+                "get_page": [page, page],
+                "get_links": [[], [lifecycle, unexpected_assignment]],
+                "add_link": [{}],
+            }
+        )
+
+        with self.assertRaisesRegex(PartialMutationError, "ownership") as raised:
+            GBrainAdapter(runner).create_inbox(task)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertEqual(
+            [tool for tool, _params in runner.calls].count("get_page"),
+            2,
+        )
+
+    def test_create_inbox_rejects_final_page_drift_after_membership_write(self) -> None:
+        task = new_inbox_task(
+            "Verify the final page",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "final-page-readback",
+        )
+        initial = marked_stored_page(task)
+        drifted = deepcopy(initial)
+        drifted["frontmatter"]["detail"] = "Changed after the first readback."
+        lifecycle = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "put_page": [{"slug": task.slug}],
+                "get_page": [initial, drifted],
+                "get_links": [[], [lifecycle]],
+                "add_link": [{}],
+            }
+        )
+
+        with self.assertRaisesRegex(PartialMutationError, "final.*Task") as raised:
+            GBrainAdapter(runner).create_inbox(task)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+
+    def test_create_agent_task_wraps_post_write_edge_read_as_partial_mutation(self) -> None:
+        now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+        agent_slug = "agents/toddy"
+        work_root = "collections/toddys-tasks"
+        task = replace(
+            new_task(
+                title="Verify post-write boundary",
+                now=now,
+                identity="agent-edge-readback",
+            ),
+            lifecycle_root=work_root,
+            owner_agent=agent_slug,
+        )
+        profile = AgentProfile(
+            slug=agent_slug,
+            name="Toddy",
+            title="Codex Agent",
+            summary="Canonical execution agent.",
+            work_root=work_root,
+            default_goal_slugs=(),
+        )
+        agent_page = {
+            "slug": agent_slug,
+            "type": "agent",
+            "title": "Agent Toddy",
+            "compiled_truth": "# Agent Toddy",
+            "frontmatter": {},
+        }
+
+        class Runner:
+            def run(self, tool, params):
+                if tool == "get_page" and params["slug"] == agent_slug:
+                    return agent_page
+                if tool == "get_links" and params["slug"] == agent_slug:
+                    return []
+                if tool == "put_page":
+                    return {"slug": task.slug}
+                if tool == "get_links" and params["slug"] == task.slug:
+                    raise GBrainCommandError("post-write edge read failed")
+                raise AssertionError(f"unexpected {tool}: {params}")
+
+        adapter = GBrainAdapter(Runner())
+        with patch.object(
+            adapter,
+            "list_agent_profiles",
+            return_value=gbrain_module.AgentRead((profile,), ()),
+        ):
+            with self.assertRaises(PartialMutationError) as raised:
+                adapter.create_agent_task(task, agent_slug)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertIn("post-write edge read failed", str(raised.exception))
+
+    def test_create_agent_task_wraps_final_lifecycle_readback_as_partial_mutation(self) -> None:
+        now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+        agent_slug = "agents/toddy"
+        work_root = "collections/toddys-tasks"
+        task = replace(
+            new_task(
+                title="Verify final lifecycle boundary",
+                now=now,
+                identity="agent-final-lifecycle",
+            ),
+            lifecycle_root=work_root,
+            owner_agent=agent_slug,
+        )
+        profile = AgentProfile(
+            slug=agent_slug,
+            name="Toddy",
+            title="Codex Agent",
+            summary="Canonical execution agent.",
+            work_root=work_root,
+            default_goal_slugs=(),
+        )
+        agent_page = {
+            "slug": agent_slug,
+            "type": "agent",
+            "title": "Agent Toddy",
+            "compiled_truth": "# Agent Toddy",
+            "frontmatter": {},
+        }
+        task_page = marked_stored_page(task)
+        task_page["frontmatter"]["links"] = [
+            {"to": work_root, "type": "member_of"},
+            {"to": agent_slug, "type": "assigned_to"},
+        ]
+        task_page["compiled_markdown"] = render_task_body(
+            task.title, task.detail, {}
+        )
+        final_links = [
+            {"from_slug": task.slug, "to_slug": work_root, "link_type": "member_of"},
+            {"from_slug": task.slug, "to_slug": ACTIVE_ROOT, "link_type": "member_of"},
+            {"from_slug": task.slug, "to_slug": agent_slug, "link_type": "assigned_to"},
+        ]
+
+        class Runner:
+            def __init__(self):
+                self.task_link_reads = 0
+
+            def run(self, tool, params):
+                if tool == "get_page" and params["slug"] == agent_slug:
+                    return agent_page
+                if tool == "get_links" and params["slug"] == agent_slug:
+                    return []
+                if tool == "put_page":
+                    return {"slug": task.slug}
+                if tool == "add_link":
+                    return {}
+                if tool == "get_page" and params["slug"] == task.slug:
+                    return task_page
+                if tool == "get_links" and params["slug"] == task.slug:
+                    self.task_link_reads += 1
+                    return [] if self.task_link_reads == 1 else final_links
+                raise AssertionError(f"unexpected {tool}: {params}")
+
+        adapter = GBrainAdapter(Runner())
+        with patch.object(
+            adapter,
+            "list_agent_profiles",
+            return_value=gbrain_module.AgentRead((profile,), ()),
+        ):
+            with self.assertRaises(PartialMutationError) as raised:
+                adapter.create_agent_task(task, agent_slug)
+
+        self.assertEqual(raised.exception.slug, task.slug)
+        self.assertIn("lifecycle", str(raised.exception).lower())
+
+    def test_new_page_body_replaces_only_the_legacy_body_projection(self) -> None:
+        parent = new_inbox_task(
+            "Bible Study parent",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "bible-parent",
+        )
+        task = replace(
+            new_inbox_task(
+                "Bible Study child",
+                datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+                "bible-child",
+            ),
+            parent=parent.slug,
+        )
+        legacy = gbrain_module.render_task_page(task)
+        expected_body = render_task_body(task.title, task.detail, {})
+        rendered = gbrain_module.render_task_page(task, body=expected_body)
+
+        rendered_frontmatter = rendered.split("\n---\n", 1)[0].replace(
+            f"markdown_contract: {MARKDOWN_CONTRACT}\n", ""
+        )
+        self.assertEqual(legacy.split("\n---\n", 1)[0], rendered_frontmatter)
+        self.assertEqual(
+            rendered.split("\n---\n", 1)[1].strip(), expected_body.strip()
+        )
+        self.assertIn(f"markdown_contract: {MARKDOWN_CONTRACT}", rendered)
+
+    def test_exact_task_api_payload_exposes_display_only_compiled_markdown(self) -> None:
+        task = new_inbox_task(
+            "Display canonical body",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "task-display-payload",
+        )
+        page = stored_page(task)
+        display = render_task_body(task.title, task.detail, {})
+        page["compiled_markdown"] = display
+        page["frontmatter"]["markdown_contract"] = MARKDOWN_CONTRACT
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner({"get_page": [page], "get_links": [[], [edge]]})
+
+        payload = GBrainAdapter(runner).get_task_api_payload(task.slug)
+
+        self.assertEqual(payload["detail"], task.detail)
+        self.assertEqual(payload["display_markdown"], display)
+
+    def test_task_api_omits_unmarked_or_stale_display_projection(self) -> None:
+        task = new_inbox_task(
+            "Do not expose stale body",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "task-display-stale",
+        )
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        for marker, compiled in (
+            (None, render_task_body(task.title, task.detail, {})),
+            (MARKDOWN_CONTRACT, "# Stale body"),
+        ):
+            with self.subTest(marker=marker):
+                page = stored_page(task)
+                page["compiled_markdown"] = compiled
+                if marker is not None:
+                    page["frontmatter"]["markdown_contract"] = marker
+                runner = FakeRunner(
+                    {"get_page": [page], "get_links": [[], [edge]]}
+                )
+
+                payload = GBrainAdapter(runner).get_task_api_payload(task.slug)
+
+                self.assertNotIn("display_markdown", payload)
+
+    def test_historical_task_api_payload_safely_omits_missing_projection(self) -> None:
+        task = new_inbox_task(
+            "Historical task",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "historical-display",
+        )
+        page = stored_page(task)
+        page.pop("compiled_markdown")
+        edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner({"get_page": [page], "get_links": [[], [edge]]})
+
+        payload = GBrainAdapter(runner).get_task_api_payload(task.slug)
+
+        self.assertNotIn("display_markdown", payload)
+
+
 class SystemTicketAdapterTests(unittest.TestCase):
     def test_reads_pre_ui_system_ticket_from_its_existing_task_detail(self) -> None:
         page = {
@@ -7773,6 +8398,102 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual(ticket.status, "planned")
         self.assertEqual(ticket.target_subsystem, "mission_control")
         self.assertEqual(ticket.verbatim_request, "Tony requested a visible selected state.")
+
+    def test_ticket_read_exposes_compiled_markdown_without_changing_fields(self) -> None:
+        ticket = SystemTicket(
+            "tasks/system-tickets/display-a1b2c3",
+            "Display ticket body",
+            "planned",
+            "Preserve this exact request.",
+            "mission_control",
+            "normal",
+        )
+        display = render_system_ticket_body(
+            ticket.title, ticket.verbatim_request
+        )
+        page = {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "compiled_markdown": display,
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": ticket.title,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": ticket.target_subsystem,
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        edge = {
+            "from_slug": ticket.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[edge]],
+                "get_page": [page],
+                "get_links": [[edge]],
+            }
+        )
+
+        payload = GBrainAdapter(runner).list_system_tickets().to_dict()
+
+        self.assertEqual(payload["tickets"][0]["verbatim_request"], ticket.verbatim_request)
+        self.assertEqual(payload["tickets"][0]["display_markdown"], display)
+
+    def test_ticket_read_omits_unmarked_or_stale_display_projection(self) -> None:
+        ticket = SystemTicket(
+            "tasks/system-tickets/stale-display-a1b2c3",
+            "Do not expose stale Ticket body",
+            "planned",
+            "Canonical request.",
+            "mission_control",
+            "normal",
+        )
+        edge = {
+            "from_slug": ticket.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        for marker, compiled in (
+            (None, render_system_ticket_body(ticket.title, ticket.verbatim_request)),
+            (MARKDOWN_CONTRACT, "# Stale Ticket body"),
+        ):
+            with self.subTest(marker=marker):
+                page = {
+                    "slug": ticket.slug,
+                    "type": "task",
+                    "title": ticket.title,
+                    "compiled_markdown": compiled,
+                    "frontmatter": {
+                        "type": "task",
+                        "title": ticket.title,
+                        "status": ticket.status,
+                        "priority": ticket.priority,
+                        "verbatim_request": ticket.verbatim_request,
+                        "target_subsystem": ticket.target_subsystem,
+                        "links": [
+                            {"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}
+                        ],
+                    },
+                }
+                if marker is not None:
+                    page["frontmatter"]["markdown_contract"] = marker
+                runner = FakeRunner(
+                    {
+                        "get_backlinks": [[edge]],
+                        "get_page": [page],
+                        "get_links": [[edge]],
+                    }
+                )
+
+                payload = GBrainAdapter(runner).list_system_tickets().to_dict()
+
+                self.assertNotIn("display_markdown", payload["tickets"][0])
     def test_create_ticket_writes_task_type_typed_membership_and_exact_readback(self) -> None:
         now = datetime(2026, 7, 31, 9, 0, tzinfo=timezone.utc)
         ticket = SystemTicket(
@@ -7791,8 +8512,14 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "slug": ticket.slug,
             "type": "task",
             "title": ticket.title,
+            "compiled_markdown": render_system_ticket_body(
+                ticket.title,
+                ticket.verbatim_request,
+                acceptance_criteria=ticket.acceptance_criteria,
+            ),
             "frontmatter": {
                 "type": "task", "title": ticket.title, "status": "planned",
+                "markdown_contract": MARKDOWN_CONTRACT,
                 "priority": "high", "verbatim_request": ticket.verbatim_request,
                 "target_subsystem": "mission_control",
                 "acceptance_criteria": ticket.acceptance_criteria,
@@ -7813,11 +8540,107 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual(receipt.slug, ticket.slug)
         content = next(params["content"] for tool, params in runner.calls if tool == "put_page")
         self.assertIn("type: task", content)
+        self.assertIn(f"markdown_contract: {MARKDOWN_CONTRACT}", content)
         self.assertIn(SYSTEM_TICKETS_ROOT, content)
         self.assertEqual(
             next(params for tool, params in runner.calls if tool == "add_link")["link_type"],
             "member_of",
         )
+
+    def test_create_ticket_requires_exact_live_membership_edge(self) -> None:
+        now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+        ticket = SystemTicket(
+            "tasks/system-tickets/live-edge-a1b2c3",
+            "Verify live membership",
+            "planned",
+            "Do not trust frontmatter membership alone.",
+            "mission_control",
+            "normal",
+            created_at=now,
+            updated_at=now,
+        )
+        stored = {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "compiled_markdown": render_system_ticket_body(
+                ticket.title, ticket.verbatim_request
+            ),
+            "frontmatter": {
+                "type": "task",
+                "title": ticket.title,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": ticket.target_subsystem,
+                "linked_evidence": [],
+                "implementation_receipts": [],
+                "qa_receipts": [],
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        root = {"slug": SYSTEM_TICKETS_ROOT, "type": "collection"}
+        for live_links in (
+            [],
+            [
+                {
+                    "from_slug": ticket.slug,
+                    "to_slug": SYSTEM_TICKETS_ROOT,
+                    "link_type": "related_to",
+                }
+            ],
+            [
+                {
+                    "from_slug": "tasks/system-tickets/somewhere-else",
+                    "to_slug": SYSTEM_TICKETS_ROOT,
+                    "link_type": "member_of",
+                }
+            ],
+        ):
+            with self.subTest(live_links=live_links):
+                runner = FakeRunner(
+                    {
+                        "get_page": [root, stored],
+                        "put_page": [{"slug": ticket.slug}],
+                        "add_link": [{}],
+                        "get_links": [live_links],
+                    }
+                )
+                with self.assertRaisesRegex(
+                    PartialMutationError, "live System Tickets membership"
+                ) as raised:
+                    GBrainAdapter(runner).create_system_ticket(ticket)
+                self.assertEqual(raised.exception.slug, ticket.slug)
+
+    def test_create_ticket_wraps_post_write_edge_failure_as_partial_mutation(self) -> None:
+        now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)
+        ticket = SystemTicket(
+            "tasks/system-tickets/edge-failure-a1b2c3",
+            "Surface edge failure",
+            "planned",
+            "Keep the mutated slug visible.",
+            "mission_control",
+            "normal",
+            created_at=now,
+            updated_at=now,
+        )
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    {"slug": SYSTEM_TICKETS_ROOT, "type": "collection"}
+                ],
+                "put_page": [{"slug": ticket.slug}],
+                "add_link": [GBrainCommandError("edge write failed")],
+            }
+        )
+
+        with self.assertRaises(PartialMutationError) as raised:
+            GBrainAdapter(runner).create_system_ticket(ticket)
+
+        self.assertEqual(raised.exception.slug, ticket.slug)
+        self.assertIn("edge write failed", str(raised.exception))
 
     def test_nightly_selector_returns_all_planned_tickets_in_stable_order(self) -> None:
         first = SystemTicket("tasks/system-tickets/first-aaaaaa", "First", "planned", "A request", "mission_control", "normal", created_at=datetime(2026, 7, 30, tzinfo=timezone.utc))
@@ -7885,6 +8708,141 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertIn("Keep this text.", content)
         self.assertIn("implementation", content)
         self.assertIn(SYSTEM_TICKETS_ROOT, content)
+        self.assertNotIn("markdown_contract", content)
+
+    def test_update_marked_ticket_rerenders_and_verifies_unified_body(self) -> None:
+        now = datetime(2026, 8, 10, 16, tzinfo=timezone.utc)
+        original = SystemTicket(
+            "tasks/system-tickets/marked-edit-a1b2c3",
+            "Original Ticket",
+            "planned",
+            "Original request",
+            "mission_control",
+            "normal",
+            created_at=now,
+            updated_at=now,
+        )
+        updated = replace(
+            original,
+            title="Updated Ticket",
+            verbatim_request="Updated request",
+            acceptance_criteria="Updated criteria",
+            updated_at=now + timedelta(hours=1),
+        )
+        edge = {
+            "from_slug": original.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+
+        def page(ticket: SystemTicket, body: str) -> dict:
+            return {
+                "slug": ticket.slug,
+                "type": "task",
+                "title": ticket.title,
+                "compiled_truth": body,
+                "compiled_markdown": body,
+                "frontmatter": {
+                    "type": "task",
+                    "markdown_contract": MARKDOWN_CONTRACT,
+                    "title": ticket.title,
+                    "status": ticket.status,
+                    "priority": ticket.priority,
+                    "verbatim_request": ticket.verbatim_request,
+                    "target_subsystem": ticket.target_subsystem,
+                    "acceptance_criteria": ticket.acceptance_criteria,
+                    "linked_evidence": list(ticket.linked_evidence),
+                    "implementation_receipts": list(ticket.implementation_receipts),
+                    "qa_receipts": list(ticket.qa_receipts),
+                    "created_at": ticket.created_at.isoformat(),
+                    "updated_at": ticket.updated_at.isoformat(),
+                    "links": [
+                        {"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}
+                    ],
+                },
+            }
+
+        original_body = render_system_ticket_body(
+            original.title, original.verbatim_request
+        )
+        expected_body = render_system_ticket_body(
+            updated.title,
+            updated.verbatim_request,
+            acceptance_criteria=updated.acceptance_criteria,
+        )
+        runner = FakeRunner(
+            {
+                "get_page": [page(original, original_body), page(updated, expected_body)],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": original.slug}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).update_system_ticket(updated)
+
+        written = next(
+            params["content"] for tool, params in runner.calls if tool == "put_page"
+        )
+        self.assertTrue(receipt.verified)
+        self.assertIn(f'markdown_contract: "{MARKDOWN_CONTRACT}"', written)
+        self.assertTrue(written.rstrip().endswith(expected_body))
+
+    def test_update_marked_ticket_rejects_stale_body_readback(self) -> None:
+        now = datetime(2026, 8, 10, 16, tzinfo=timezone.utc)
+        original = SystemTicket(
+            "tasks/system-tickets/marked-stale-a1b2c3",
+            "Original Ticket",
+            "planned",
+            "Original request",
+            "mission_control",
+            "normal",
+            created_at=now,
+            updated_at=now,
+        )
+        updated = replace(original, verbatim_request="Changed request")
+        edge = {
+            "from_slug": original.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        stale_body = render_system_ticket_body(
+            original.title, original.verbatim_request
+        )
+        page = {
+            "slug": original.slug,
+            "type": "task",
+            "title": original.title,
+            "compiled_truth": stale_body,
+            "compiled_markdown": stale_body,
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": original.title,
+                "status": original.status,
+                "priority": original.priority,
+                "verbatim_request": original.verbatim_request,
+                "target_subsystem": original.target_subsystem,
+                "acceptance_criteria": "",
+                "linked_evidence": [],
+                "implementation_receipts": [],
+                "qa_receipts": [],
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        stale_readback = deepcopy(page)
+        stale_readback["frontmatter"]["verbatim_request"] = updated.verbatim_request
+        runner = FakeRunner(
+            {
+                "get_page": [page, stale_readback],
+                "get_links": [[edge], [edge]],
+                "put_page": [{"slug": original.slug}],
+            }
+        )
+
+        with self.assertRaisesRegex(PartialMutationError, "compiled Markdown"):
+            GBrainAdapter(runner).update_system_ticket(updated)
 
 
 class TaskProgressMetricMutationTests(unittest.TestCase):

@@ -28,46 +28,145 @@ const HANDOFF_EVENT_FILTER_OPTIONS = [
   ["correction", "Correction"],
 ];
 
-function renderSafeMarkdown(container, value) {
+function safeSystemTicketMarkdownRoute(value) {
+  const match = String(value || "").match(/^#system-ticket\/(tasks%2F[0-9a-f-]{36})$/i);
+  if (!match) return null;
+  const slug = decodeURIComponent(match[1]);
+  return /^tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(slug)
+    ? slug
+    : null;
+}
+
+function safeExternalMarkdownUrl(value) {
+  const source = String(value || "");
+  try {
+    const url = new URL(source);
+    if (url.protocol === "https:") return source;
+    if (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)) return source;
+  } catch (_error) {
+    // Invalid authored URLs remain authored text.
+  }
+  return null;
+}
+
+function splitBareMarkdownUrl(value) {
+  let url = String(value || "");
+  let trailing = "";
+  while (".,;:!?)}]>".includes(url.slice(-1))) {
+    trailing = url.slice(-1) + trailing;
+    url = url.slice(0, -1);
+  }
+  return { url, trailing };
+}
+
+function decodeSafeMarkdownText(value) {
+  const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+  return String(value || "")
+    .replace(/\\([!-/:-@[-`{-~])/g, "$1")
+    .replace(
+      /&(?:#([0-9]{1,7})|#x([0-9a-f]{1,6})|(amp|lt|gt|quot|apos));/gi,
+      (entity, decimal, hexadecimal, name) => {
+        if (name) return named[name.toLowerCase()];
+        const codePoint = Number.parseInt(decimal || hexadecimal, hexadecimal ? 16 : 10);
+        if (
+          !Number.isInteger(codePoint) || codePoint < 1 || codePoint > 0x10ffff ||
+          (codePoint >= 0xd800 && codePoint <= 0xdfff)
+        ) return entity;
+        return String.fromCodePoint(codePoint);
+      },
+    );
+}
+
+async function openMarkdownSystemTicketReference(ticketSlug, originControl = null) {
+  const sourceKind = originControl?.dataset?.systemTicketReferenceSourceKind || "";
+  const sourceSlug = originControl?.dataset?.systemTicketReferenceSourceSlug || "";
+  const referenceKey = originControl?.dataset?.systemTicketReferenceKey || "";
+  const markdownReturn = sourceKind && sourceSlug && referenceKey
+    ? {
+      sourceKind,
+      sourceSlug,
+      destinationTicketSlug: ticketSlug,
+      referenceKey,
+      detailReturnFocus: state.detailReturnFocus,
+      parent: state.systemTicketMarkdownReturn,
+    }
+    : null;
+  const ticket = await loadCorrelatedSystemTicket(ticketSlug);
+  if (ticket) {
+    selectSystemTicket(ticketSlug, originControl);
+    if (markdownReturn) state.systemTicketMarkdownReturn = markdownReturn;
+    return;
+  }
+  showToast(MISSING_LINKED_TASK_ERROR);
+  if (originControl instanceof HTMLElement) originControl.focus();
+}
+
+function renderSafeMarkdown(container, value, systemTicketReference = null) {
   const source = typeof value === "string" ? value : "";
+  let internalReferenceIndex = 0;
   container.replaceChildren();
   const lines = source.split(/\r?\n/);
   const appendInline = (target, text) => {
-    const pattern = /\[([^\]]{1,240})\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|`([^`\n]+)`/g;
+    const pattern = /\[([^\]]{1,240})\]\(([^)\s]+)\)|\*\*([^*\n]+)\*\*|(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\4(?!`)|(https:\/\/[^\s<]*|http:\/\/[^\s<]*)/g;
     let cursor = 0;
     for (const match of text.matchAll(pattern)) {
-      target.append(document.createTextNode(text.slice(cursor, match.index)));
+      target.append(document.createTextNode(decodeSafeMarkdownText(text.slice(cursor, match.index))));
       if (match[3] !== undefined) {
         const strong = document.createElement("strong");
-        strong.textContent = match[3];
+        strong.textContent = decodeSafeMarkdownText(match[3]);
         target.append(strong);
       } else if (match[4] !== undefined) {
         const code = document.createElement("code");
-        code.textContent = match[4];
+        code.textContent = match[5];
         target.append(code);
       } else {
-        const url = match[2];
+        const url = match[2] || match[6];
+        const ticketSlug = safeSystemTicketMarkdownRoute(url);
+        const bareUrl = match[6] ? splitBareMarkdownUrl(url) : null;
         let href = null;
         if (url.startsWith("/media/")) {
           const mediaUrl = safeStargraphMediaUrl(url);
           if (mediaUrl && /\.(?:png|jpe?g|gif|webp|pdf)$/i.test(mediaUrl.pathname)) {
             href = mediaUrl.href;
           }
-        } else if (/^(https:\/\/|http:\/\/127\.0\.0\.1(?::\d+)?\/)/.test(url)) {
-          href = url;
+        } else if (!ticketSlug) {
+          href = safeExternalMarkdownUrl(bareUrl?.url || url);
         }
-        if (href) {
+        if (ticketSlug) {
+          const link = document.createElement("a");
+          link.href = url;
+          link.textContent = decodeSafeMarkdownText(match[1]);
+          if (
+            systemTicketReference?.sourceKind &&
+            systemTicketReference?.sourceSlug &&
+            systemTicketReference.referenceScope
+          ) {
+            link.dataset.systemTicketReferenceSourceKind = systemTicketReference.sourceKind;
+            link.dataset.systemTicketReferenceSourceSlug = systemTicketReference.sourceSlug;
+            link.dataset.systemTicketReferenceKey =
+              `${systemTicketReference.referenceScope}:${internalReferenceIndex}`;
+            internalReferenceIndex += 1;
+          }
+          link.addEventListener("click", (event) => {
+            event.preventDefault();
+            void openMarkdownSystemTicketReference(ticketSlug, link);
+          });
+          target.append(link);
+        } else if (href) {
           const link = document.createElement("a");
           link.href = href;
-          link.textContent = match[1];
+          link.textContent = match[1]
+            ? decodeSafeMarkdownText(match[1])
+            : bareUrl?.url || href;
           link.target = "_blank";
           link.rel = "noreferrer";
           target.append(link);
+          if (bareUrl?.trailing) target.append(document.createTextNode(bareUrl.trailing));
         } else target.append(document.createTextNode(match[0]));
       }
       cursor = match.index + match[0].length;
     }
-    target.append(document.createTextNode(text.slice(cursor)));
+    target.append(document.createTextNode(decodeSafeMarkdownText(text.slice(cursor))));
   };
   let paragraph = [];
   let list = null;
@@ -106,19 +205,25 @@ function renderSafeMarkdown(container, value) {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (!line.trim()) { flushBlocks(); continue; }
-    const fence = line.match(/^```([A-Za-z0-9_+-]*)\s*$/);
+    const fence = line.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
     if (fence) {
       flushBlocks();
       const fencedLines = [];
+      const fenceCharacter = fence[1][0];
+      const fenceLength = fence[1].length;
+      const closingFence = new RegExp(
+        `^[ \\t]{0,3}${fenceCharacter}{${fenceLength},}[ \\t]*$`,
+      );
       index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+      while (index < lines.length && !closingFence.test(lines[index])) {
         fencedLines.push(lines[index]);
         index += 1;
       }
       const pre = document.createElement("pre");
       const code = document.createElement("code");
       code.textContent = fencedLines.join("\n");
-      if (fence[1]) code.dataset.language = fence[1];
+      const language = fence[2].trim().split(/\s+/, 1)[0];
+      if (/^[A-Za-z0-9_+-]+$/.test(language)) code.dataset.language = language;
       pre.append(code);
       container.append(pre);
       continue;
@@ -196,6 +301,7 @@ const state = {
   selectedKind: null,
   detailReturnFocus: null,
   detailFocusReturnAnchor: null,
+  systemTicketMarkdownReturn: null,
   artifactTaskReturn: null,
   artifactProducingTaskReturn: null,
   showCompletedTodos: false,
@@ -853,6 +959,9 @@ const elements = {
   systemTicketDetailTarget: document.querySelector("#system-ticket-detail-target"),
   systemTicketDetailCreated: document.querySelector("#system-ticket-detail-created"),
   systemTicketDetailUpdated: document.querySelector("#system-ticket-detail-updated"),
+  systemTicketDetailMarkdownSection: document.querySelector("#system-ticket-detail-markdown-section"),
+  systemTicketDetailMarkdown: document.querySelector("#system-ticket-detail-markdown"),
+  systemTicketDetailStructured: document.querySelector("#system-ticket-detail-structured"),
   systemTicketDetailRequest: document.querySelector("#system-ticket-detail-request"),
   systemTicketDetailCriteria: document.querySelector("#system-ticket-detail-criteria"),
   systemTicketDetailEvidence: document.querySelector("#system-ticket-detail-evidence"),
@@ -5280,13 +5389,27 @@ function openSystemTicketDialog() {
   window.setTimeout(() => elements.systemTicketTitle.focus(), 0);
 }
 
-function renderSystemTicketList(container, entries, emptyCopy) {
+function renderSystemTicketList(
+  container,
+  entries,
+  emptyCopy,
+  sourceSlug = "",
+  referenceSection = "",
+) {
   container.replaceChildren();
   if (!Array.isArray(entries) || !entries.length) {
     container.append(node("li", "is-empty", emptyCopy));
     return;
   }
-  entries.forEach((entry) => container.append(node("li", "", entry)));
+  entries.forEach((entry, index) => {
+    const item = document.createElement("li");
+    renderSafeMarkdown(item, entry, {
+      sourceKind: "system-ticket",
+      sourceSlug,
+      referenceScope: `${referenceSection}:${index}`,
+    });
+    container.append(item);
+  });
 }
 
 function findSystemTicket(ticketSlug) {
@@ -5298,6 +5421,9 @@ function findSystemTicket(ticketSlug) {
 function selectSystemTicket(ticketSlug, originControl = null) {
   const ticket = findSystemTicket(ticketSlug);
   if (!ticket) return;
+  if (!originControl?.dataset?.systemTicketReferenceSourceKind) {
+    state.systemTicketMarkdownReturn = null;
+  }
   if (originControl instanceof HTMLElement) {
     state.detailReturnFocus = detailReturnFocusAnchor(originControl, ticket.slug);
   }
@@ -5319,11 +5445,49 @@ function selectSystemTicket(ticketSlug, originControl = null) {
   elements.systemTicketDetailTarget.textContent = ticket.target_subsystem.replace(/_/g, " ");
   elements.systemTicketDetailCreated.textContent = ticket.created_at ? new Date(ticket.created_at).toLocaleString() : "Not recorded";
   elements.systemTicketDetailUpdated.textContent = ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : "Not recorded";
-  elements.systemTicketDetailRequest.textContent = ticket.verbatim_request || "No verbatim request recorded.";
-  elements.systemTicketDetailCriteria.textContent = ticket.acceptance_criteria || "No acceptance criteria recorded.";
-  renderSystemTicketList(elements.systemTicketDetailEvidence, ticket.linked_evidence, "No linked evidence recorded.");
-  renderSystemTicketList(elements.systemTicketDetailImplementation, ticket.implementation_receipts, "No implementation receipt recorded.");
-  renderSystemTicketList(elements.systemTicketDetailQa, ticket.qa_receipts, "No independent QA receipt recorded.");
+  const hasDisplayMarkdown =
+    typeof ticket.display_markdown === "string" && ticket.display_markdown.trim();
+  elements.systemTicketDetailMarkdownSection.classList.toggle("is-hidden", !hasDisplayMarkdown);
+  elements.systemTicketDetailStructured.classList.toggle("is-hidden", Boolean(hasDisplayMarkdown));
+  if (hasDisplayMarkdown) {
+    renderSafeMarkdown(
+      elements.systemTicketDetailMarkdown,
+      ticket.display_markdown,
+      { sourceKind: "system-ticket", sourceSlug: ticket.slug, referenceScope: "body" },
+    );
+  } else {
+    renderSafeMarkdown(
+      elements.systemTicketDetailRequest,
+      ticket.verbatim_request || "No verbatim request recorded.",
+      { sourceKind: "system-ticket", sourceSlug: ticket.slug, referenceScope: "request" },
+    );
+    renderSafeMarkdown(
+      elements.systemTicketDetailCriteria,
+      ticket.acceptance_criteria || "No acceptance criteria recorded.",
+      { sourceKind: "system-ticket", sourceSlug: ticket.slug, referenceScope: "criteria" },
+    );
+    renderSystemTicketList(
+      elements.systemTicketDetailEvidence,
+      ticket.linked_evidence,
+      "No linked evidence recorded.",
+      ticket.slug,
+      "evidence",
+    );
+    renderSystemTicketList(
+      elements.systemTicketDetailImplementation,
+      ticket.implementation_receipts,
+      "No implementation receipt recorded.",
+      ticket.slug,
+      "implementation",
+    );
+    renderSystemTicketList(
+      elements.systemTicketDetailQa,
+      ticket.qa_receipts,
+      "No independent QA receipt recorded.",
+      ticket.slug,
+      "qa",
+    );
+  }
   elements.systemTicketDetailError.classList.add("is-hidden");
   elements.systemTicketDetailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(ticket.slug)}`;
   elements.systemTicketDetailSlug.textContent = ticket.slug;
@@ -7156,7 +7320,7 @@ function keepSelectedCalendarTaskVisible(taskSlug) {
   });
 }
 
-function openTaskDetailLoading(slug, returnFocus = null) {
+function openTaskDetailLoading(slug, returnFocus = null, fallback = null) {
   state.detailReturnFocus = returnFocus
     ? detailReturnFocusAnchor(returnFocus, slug)
     : null;
@@ -7180,10 +7344,10 @@ function openTaskDetailLoading(slug, returnFocus = null) {
   elements.taskRejectButton.classList.add("is-hidden");
   elements.taskDuplicateButton.classList.add("is-hidden");
   elements.taskOwner.classList.add("is-hidden");
-  elements.detailTitle.textContent = "Reading canonical Task…";
+  elements.detailTitle.textContent = fallback?.title || fallback?.summary || "Reading canonical Task…";
   renderSafeMarkdown(
     elements.detailCopy,
-    "Mission Control accepted the selection and is reading the exact canonical Task from GBrain.",
+    fallback?.detail || "Mission Control accepted the selection and is reading the exact canonical Task from GBrain.",
   );
   elements.proposalDetailMeta.classList.add("is-hidden");
   elements.proposalDecisionHistory.classList.add("is-hidden");
@@ -7220,7 +7384,7 @@ async function readExactTaskForDetail(slug) {
   return payload.task;
 }
 
-function selectTaskWithCanonicalRead(slug, returnFocus = null) {
+function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) {
   if (
     state.taskDetailReadSlug === slug &&
     state.taskDetailReadPromise
@@ -7230,26 +7394,31 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null) {
   const token = state.taskDetailReadToken + 1;
   state.taskDetailReadToken = token;
   state.taskDetailReadSlug = slug;
-  openTaskDetailLoading(slug, returnFocus);
+  openTaskDetailLoading(slug, returnFocus, fallback);
   state.taskDetailReadPromise = (async () => {
     try {
       const task = await readExactTaskForDetail(slug);
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
         return null;
       }
-      selectTask(slug, task, returnFocus);
+      selectTask(slug, task, returnFocus, { exactHydrated: true });
       return task;
     } catch (error) {
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
         return null;
       }
-      elements.detailPanel.setAttribute("aria-busy", "false");
-      elements.taskDetailStatus.textContent = "Read failed";
-      elements.detailTitle.textContent = "Task detail unavailable";
-      renderSafeMarkdown(
-        elements.detailCopy,
-        `${error.message || "Canonical Task could not be read."} Use Refresh, then try opening this Task again.`,
-      );
+      if (fallback) {
+        selectTask(slug, fallback, returnFocus, { exactHydrated: true });
+        elements.taskDetailStatus.textContent = "Read failed";
+      } else {
+        elements.detailPanel.setAttribute("aria-busy", "false");
+        elements.taskDetailStatus.textContent = "Read failed";
+        elements.detailTitle.textContent = "Task detail unavailable";
+        renderSafeMarkdown(
+          elements.detailCopy,
+          `${error.message || "Canonical Task could not be read."} Use Refresh, then try opening this Task again.`,
+        );
+      }
       render();
       return null;
     } finally {
@@ -7262,8 +7431,21 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null) {
   return state.taskDetailReadPromise;
 }
 
-function selectTask(slug, taskFallback = null, returnFocus = null) {
-  const task = findTaskBySlug(slug) || taskFallback;
+function selectTask(
+  slug,
+  taskFallback = null,
+  returnFocus = null,
+  { exactHydrated = false } = {},
+) {
+  const knownTask = findTaskBySlug(slug);
+  if (knownTask && taskFallback?.slug === knownTask.slug) {
+    Object.assign(knownTask, taskFallback);
+  }
+  const task = knownTask || taskFallback;
+  if (
+    !exactHydrated &&
+    (!task || !Object.prototype.hasOwnProperty.call(task, "display_markdown"))
+  ) return selectTaskWithCanonicalRead(slug, returnFocus, task);
   if (!task) return selectTaskWithCanonicalRead(slug, returnFocus);
   state.detailReturnFocus = returnFocus
     ? detailReturnFocusAnchor(returnFocus, slug)
@@ -7289,7 +7471,11 @@ function selectTask(slug, taskFallback = null, returnFocus = null) {
   elements.taskRejectButton.classList.toggle("is-hidden", !isProposed);
   elements.taskDuplicateButton.classList.toggle("is-hidden", isProposed);
   elements.detailTitle.textContent = task.title || task.summary;
-  renderSafeMarkdown(elements.detailCopy, task.detail || "");
+  renderSafeMarkdown(
+    elements.detailCopy,
+    task.display_markdown || task.detail || "",
+    { sourceKind: "task", sourceSlug: task.slug, referenceScope: "body" },
+  );
   const isProposal = Boolean(
     task.status === "proposed" || task.proposal_submitted_at || task.decision ||
     (Array.isArray(task.proposal_decision_events) && task.proposal_decision_events.length),
@@ -7533,6 +7719,27 @@ function selectGoal(slug, returnFocus = undefined) {
 }
 
 function closeDetails() {
+  const systemTicketMarkdownReturn = state.selectedKind === "system-ticket"
+    ? state.systemTicketMarkdownReturn
+    : null;
+  if (systemTicketMarkdownReturn?.destinationTicketSlug === state.selectedSlug) {
+    const source = systemTicketMarkdownReturn.sourceKind === "task"
+      ? findTaskBySlug(systemTicketMarkdownReturn.sourceSlug)
+      : findSystemTicket(systemTicketMarkdownReturn.sourceSlug);
+    if (source) {
+      if (systemTicketMarkdownReturn.sourceKind === "task") {
+        selectTask(source.slug, source);
+      } else {
+        selectSystemTicket(source.slug);
+      }
+      state.detailReturnFocus = systemTicketMarkdownReturn.detailReturnFocus;
+      state.systemTicketMarkdownReturn = systemTicketMarkdownReturn.parent || null;
+      restoreMarkdownSystemTicketReferenceFocus(systemTicketMarkdownReturn);
+      return;
+    }
+    state.systemTicketMarkdownReturn = null;
+    state.detailReturnFocus = systemTicketMarkdownReturn.detailReturnFocus;
+  }
   const producingTaskReturn = state.selectedKind === "task"
     ? state.artifactProducingTaskReturn
     : null;
@@ -7583,6 +7790,21 @@ function closeDetails() {
   state.detailFocusReturnAnchor = returnFocus;
   render();
   restorePendingDetailFocus({ force: true });
+}
+
+function restoreMarkdownSystemTicketReferenceFocus(returnContext) {
+  window.requestAnimationFrame(() => {
+    const selector = [
+      `[data-system-ticket-reference-source-kind="${CSS.escape(returnContext.sourceKind)}"]`,
+      `[data-system-ticket-reference-source-slug="${CSS.escape(returnContext.sourceSlug)}"]`,
+      `[data-system-ticket-reference-key="${CSS.escape(returnContext.referenceKey)}"]`,
+    ].join("");
+    const target = document.querySelector(selector);
+    const fallback = returnContext.sourceKind === "task"
+      ? elements.detailTitle
+      : elements.systemTicketDetailTitle;
+    (target || fallback).focus({ preventScroll: true });
+  });
 }
 
 function detailFocusReturnTarget(anchor) {

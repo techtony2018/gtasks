@@ -62,12 +62,15 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Current verified release: V0.0.76. It adds event-driven Agent handoffs from
-verified canonical mutation receipts, identity-scoped delivery to existing
-fixed Codex threads, and one redacted append-only audit source for Task
-Timeline and Agents Handoff History. It builds on the V0.0.73 recoverable handoff
-completion path, the V0.0.74 `job_applied` progress repair, and the V0.0.75
-Artifact navigation and Calendar-control refinements.
+Latest verified and deployed release: V0.0.87. It gives local Dispatcher
+authority mutations a bounded 60-second request budget while retaining
+fail-closed acknowledgement ordering, idempotent retries, and canonical
+registration/delegation readback.
+
+V0.0.88 is an uncommitted release candidate for unified Task and System Ticket
+Markdown. Its catalog entry reserves the next sequential version but is not
+evidence of a shipment: independent UI/UX QA, commit/push, dashboard-managed
+deployment, runtime health, and bounded canonical readback remain required.
 
 ### Independent UI/UX release gate
 
@@ -82,6 +85,31 @@ substitute. The resulting commit must reference the corresponding QA evidence,
 be pushed, and then be deployed through the dashboard-managed service with a
 clean tracked checkout. This rule also applies to System Ticket
 nightly-automation UI work.
+
+### Unified Task and System Ticket Markdown
+
+New Tasks and System Tickets use the shared `gtasks.markdown_policy` formatter,
+not prompt-specific Markdown construction. A verified System Ticket reference
+uses exactly `#system-ticket/tasks%2F<uuid>` so it opens the Ticket inside
+Mission Control; it is never replaced with a Memory Stargraph link. The
+formatter only emits verified canonical references, leaves unavailable
+references as plain text, and rejects unsafe URL schemes. It applies only to
+new writes: historical bodies are neither bulk-migrated nor silently rewritten.
+Exact Task reads and System Ticket payloads expose the verified canonical body
+only as an optional display projection when the page carries the durable
+`markdown_contract: unified-task-ticket-v1` marker and the body exactly
+rerenders from current canonical fields and verified Ticket references.
+Structured fields and graph edges remain authoritative; marked content edits
+rerender and verify the body, while older unmarked pages preserve and display
+their existing detail/field fallback.
+
+The [`Task and Ticket Markdown runbook`](docs/runbooks/task-ticket-markdown.md)
+defines the templates, canonical readback, active `mc-add-task` skill sync, and
+verification gates. The repository skill and helper are updated, but syncing
+them to `/Users/tony/.codex/skills/mc-add-task` is currently **PENDING/BLOCKED**:
+the attempted `ditto` write returned `Operation not permitted`. Do not report
+the active skill as synchronized until both installed-file hashes match the
+repository source.
 
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual

@@ -423,11 +423,14 @@
             <div><dt>Created</dt><dd id="system-ticket-detail-created"></dd></div>
             <div><dt>Updated</dt><dd id="system-ticket-detail-updated"></dd></div>
           </dl>
-          <section class="ticket-copy-section"><h3>Verbatim request</h3><p id="system-ticket-detail-request"></p></section>
-          <section class="ticket-copy-section"><h3>Acceptance criteria</h3><p id="system-ticket-detail-criteria"></p></section>
-          <section class="ticket-receipt-section"><h3>Linked evidence</h3><ul id="system-ticket-detail-evidence"></ul></section>
-          <section class="ticket-receipt-section"><h3>Implementation receipts</h3><ul id="system-ticket-detail-implementation"></ul></section>
-          <section class="ticket-receipt-section"><h3>Independent QA receipts</h3><ul id="system-ticket-detail-qa"></ul></section>
+          <section class="ticket-copy-section is-hidden" id="system-ticket-detail-markdown-section"><h3>Canonical Markdown</h3><div class="detail-copy" id="system-ticket-detail-markdown"></div></section>
+          <div id="system-ticket-detail-structured">
+            <section class="ticket-copy-section"><h3>Verbatim request</h3><div id="system-ticket-detail-request"></div></section>
+            <section class="ticket-copy-section"><h3>Acceptance criteria</h3><div id="system-ticket-detail-criteria"></div></section>
+            <section class="ticket-receipt-section"><h3>Linked evidence</h3><ul id="system-ticket-detail-evidence"></ul></section>
+            <section class="ticket-receipt-section"><h3>Implementation receipts</h3><ul id="system-ticket-detail-implementation"></ul></section>
+            <section class="ticket-receipt-section"><h3>Independent QA receipts</h3><ul id="system-ticket-detail-qa"></ul></section>
+          </div>
           <p class="form-error is-hidden" id="system-ticket-detail-error" role="alert"></p>
           <a class="gbrain-link" id="system-ticket-detail-gbrain-link" target="_blank" rel="noreferrer">Open in Memory Stargraph</a>
           <code class="slug-label" id="system-ticket-detail-slug"></code>

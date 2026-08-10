@@ -123,6 +123,13 @@ def main() -> int:
 
     from gtasks.domain import AGENT_SCOPES, new_task
     from gtasks.gbrain import GBrainAdapter, SubprocessCommandRunner
+    from gtasks.markdown_policy import (
+        MarkdownContractError,
+        extract_system_ticket_slugs,
+        reference_is_explicitly_labeled_system_ticket,
+        render_task_body,
+        validate_generated_markdown,
+    )
 
     now = datetime.now(ZoneInfo("America/Los_Angeles"))
     task = new_task(
@@ -144,14 +151,51 @@ def main() -> int:
         task = replace(task, lifecycle_root=work_root, owner_agent=owner_agent)
         owner = owner_agent
 
+    detail_values = (task.detail,)
+    dry_run_references = {
+        slug: None
+        for slug in extract_system_ticket_slugs(task.detail)
+        if reference_is_explicitly_labeled_system_ticket(slug, detail_values)
+    }
     if args.dry_run:
+        validate_generated_markdown(task.detail)
+        try:
+            rendered_body = render_task_body(
+                task.title, task.detail, dry_run_references
+            )
+        except MarkdownContractError as exc:
+            if "internal route is not an exact verified canonical System Ticket" not in str(exc):
+                raise
+            print(json.dumps({
+                "ok": True,
+                "dry_run": True,
+                "verification_required": True,
+                "unverified_system_ticket_slugs": list(
+                    extract_system_ticket_slugs(task.detail)
+                ),
+                "markdown_contract": "unified-task-ticket-v1",
+                "slug": task.slug,
+                "title": task.title,
+                "detail": task.detail,
+                "rendered_body": None,
+                "owner": owner,
+                "lifecycle_root": task.lifecycle_root,
+                "message": (
+                    "Live canonical System Ticket title and membership "
+                    f"verification is required before rendering: {exc}"
+                ),
+            }, indent=2, sort_keys=True))
+            return 0
         print(json.dumps({
             "ok": True,
             "dry_run": True,
+            "verification_required": False,
+            "markdown_contract": "unified-task-ticket-v1",
             "slug": task.slug,
             "title": task.title,
             "summary": task.summary,
             "detail": task.detail,
+            "rendered_body": rendered_body,
             "status": task.status,
             "priority": task.priority,
             "due_day": task.due_day.isoformat() if task.due_day else None,
@@ -183,6 +227,14 @@ def main() -> int:
             f"{task.slug}: expected {task.title!r}, got {page_title!r}. "
             "Inspect and repair this slug before retrying; do not create a replacement."
         )
+    compiled_body = page.get("compiled_markdown")
+    if not isinstance(compiled_body, str) or not compiled_body.strip():
+        raise SystemExit(
+            "Task write completed but compiled Markdown body verification failed for "
+            f"{task.slug}. Inspect and repair this slug before retrying; do not create "
+            "a replacement."
+        )
+    rendered_body = compiled_body
     typed = [
         {
             "from_slug": edge.get("from_slug"),
@@ -194,9 +246,24 @@ def main() -> int:
         and edge.get("from_slug") == task.slug
         and edge.get("link_type") in {"member_of", "assigned_to"}
     ]
+    expected_links = {(task.slug, task.lifecycle_root, "member_of")}
+    if owner_agent:
+        expected_links.add((task.slug, owner_agent, "assigned_to"))
+    actual_links = {
+        (edge["from_slug"], edge["to_slug"], edge["link_type"])
+        for edge in typed
+    }
+    if not expected_links.issubset(actual_links):
+        raise SystemExit(
+            "Task write completed but relationship verification failed for "
+            f"{task.slug}: expected {sorted(expected_links)!r}, got "
+            f"{sorted(actual_links)!r}. Inspect and repair this slug before retrying; "
+            "do not create a replacement."
+        )
     print(json.dumps({
         "ok": True,
         "verified": True,
+        "markdown_contract": "unified-task-ticket-v1",
         "slug": task.slug,
         "title": task.title,
         "summary": task.summary,
@@ -205,6 +272,7 @@ def main() -> int:
         "due_day": task.due_day.isoformat() if task.due_day else None,
         "owner": owner,
         "lifecycle_root": task.lifecycle_root,
+        "rendered_body": rendered_body,
         "stargraph_url": stargraph_url(task.slug),
         "links": typed,
         "page_title": page_title,

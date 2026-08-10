@@ -125,6 +125,7 @@ from gtasks.server import (
     HandoffDispatcherAuth,
     build_task_snapshot,
     build_server,
+    exact_task_api_payload,
     load_artifact_publisher_auth,
 )
 from gtasks.handoff_dispatcher import (
@@ -3769,7 +3770,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.87")
+        self.assertEqual(payload["version"], "V0.0.88")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3777,11 +3778,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.87")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.87")
+        self.assertEqual(payload["current_version"], "V0.0.88")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.88")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.88",
                 "V0.0.87",
                 "V0.0.86",
                 "V0.0.85",
@@ -4071,6 +4073,37 @@ class LogsApiTests(unittest.TestCase):
 
 
 class TasksApiTests(unittest.TestCase):
+    def test_exact_task_payload_uses_adapter_display_projection(self) -> None:
+        task = new_inbox_task(
+            "Render the verified body",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "server-display-body",
+        )
+        display = f"# {task.title}\n\n## 详情\n\n{task.detail}"
+
+        class Adapter(FakeAdapter):
+            def get_task_api_payload(self, task_slug: str) -> dict:
+                self.asserted_slug = task_slug
+                return {**task.to_dict(), "display_markdown": display}
+
+        adapter = Adapter(active=(task,))
+
+        payload = exact_task_api_payload(adapter, task.slug)
+
+        self.assertEqual(adapter.asserted_slug, task.slug)
+        self.assertEqual(payload["detail"], task.detail)
+        self.assertEqual(payload["display_markdown"], display)
+
+    def test_exact_task_payload_degrades_for_legacy_adapter(self) -> None:
+        task = new_inbox_task(
+            "Historical task",
+            datetime(2026, 8, 10, 9, tzinfo=timezone.utc),
+            "server-legacy-body",
+        )
+        payload = exact_task_api_payload(FakeAdapter(active=(task,)), task.slug)
+        self.assertEqual(payload["detail"], task.detail)
+        self.assertNotIn("display_markdown", payload)
+
     def test_reads_one_canonical_qa_fixture_for_handoff_timeline(self) -> None:
         now = datetime(2026, 8, 4, 15, 0, tzinfo=timezone.utc)
         fixture = replace(

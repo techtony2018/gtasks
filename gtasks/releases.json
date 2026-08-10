@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.87",
+  "current_version": "V0.0.88",
   "releases": [
     {
       "version": "V0.0.1",
@@ -522,6 +522,12 @@
       "date": "2026-08-09",
       "title": "Reliable local dispatcher authority acknowledgements",
       "summary": "Gives authority-backed dispatcher mutations enough time to complete canonical registration and delegation readback while preserving durable idempotent retries and fail-closed wake ordering."
+    },
+    {
+      "version": "V0.0.88",
+      "date": "2026-08-10",
+      "title": "Unified Task and System Ticket Markdown",
+      "summary": "New Tasks and System Tickets now use one safe Markdown formatter with exact canonical Ticket links, preserved user-authored details, and verified compiled-body readback."
     }
   ]
 }

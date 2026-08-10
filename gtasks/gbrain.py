@@ -67,6 +67,15 @@ from .handoff_dispatcher import (
     AgentRegistration,
     HandoffDispatcher,
 )
+from .markdown_policy import (
+    MARKDOWN_CONTRACT,
+    MarkdownContractError,
+    SystemTicketReference,
+    extract_system_ticket_slugs,
+    reference_is_explicitly_labeled_system_ticket,
+    render_system_ticket_body,
+    render_task_body,
+)
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
@@ -1127,9 +1136,17 @@ class ProjectRead:
 class SystemTicketRead:
     tickets: tuple[SystemTicket, ...]
     issues: tuple[CollectionIssue, ...] = ()
+    display_markdown: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {"root_slug": SYSTEM_TICKETS_ROOT, "tickets": [ticket.to_dict() for ticket in self.tickets], "issues": [issue.to_dict() for issue in self.issues]}
+        projections = dict(self.display_markdown)
+        tickets = []
+        for ticket in self.tickets:
+            payload = ticket.to_dict()
+            if ticket.slug in projections:
+                payload["display_markdown"] = projections[ticket.slug]
+            tickets.append(payload)
+        return {"root_slug": SYSTEM_TICKETS_ROOT, "tickets": tickets, "issues": [issue.to_dict() for issue in self.issues]}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1805,7 +1822,7 @@ def render_agent_artifact_page(
     return "\n".join(lines)
 
 
-def render_task_page(task: Task) -> str:
+def render_task_page(task: Task, *, body: str | None = None) -> str:
     links = [
         {
             "to": task.lifecycle_root,
@@ -1854,9 +1871,10 @@ def render_task_page(task: Task) -> str:
         for blocker in task.blockers
     )
 
-    lines = [
-        "---",
-        "type: task",
+    lines = ["---", "type: task"]
+    if body is not None:
+        lines.append(f"markdown_contract: {MARKDOWN_CONTRACT}")
+    lines.extend([
         f"title: {_yaml_scalar(task.title)}",
         f"status: {_yaml_scalar(task.status)}",
         f"summary: {_yaml_scalar(task.summary)}",
@@ -1926,7 +1944,7 @@ def render_task_page(task: Task) -> str:
             )
         ),
         "links:",
-    ]
+    ])
     for link in links:
         lines.extend(
             [
@@ -1935,9 +1953,12 @@ def render_task_page(task: Task) -> str:
                 f"    context: {_yaml_scalar(link['context'])}",
             ]
         )
-    lines.extend(["---", "", f"# {task.title}", ""])
-    if task.detail:
-        lines.extend([task.detail, ""])
+    if body is None:
+        lines.extend(["---", "", f"# {task.title}", ""])
+        if task.detail:
+            lines.extend([task.detail, ""])
+    else:
+        lines.extend(["---", "", body, ""])
     return "\n".join(lines)
 
 
@@ -2149,10 +2170,15 @@ def render_project_page(project: Project) -> str:
     )
 
 
-def render_system_ticket_page(ticket: SystemTicket) -> str:
+def render_system_ticket_page(
+    ticket: SystemTicket, *, body: str | None = None
+) -> str:
     """Render the dedicated ticket projection while retaining canonical task type."""
-    lines = [
-        "---", "type: task", f"title: {_yaml_scalar(ticket.title)}",
+    lines = ["---", "type: task"]
+    if body is not None:
+        lines.append(f"markdown_contract: {MARKDOWN_CONTRACT}")
+    lines.extend([
+        f"title: {_yaml_scalar(ticket.title)}",
         f"status: {_yaml_scalar(ticket.status)}", f"priority: {_yaml_scalar(ticket.priority)}",
         f"verbatim_request: {_yaml_scalar(ticket.verbatim_request)}",
         f"target_subsystem: {_yaml_scalar(ticket.target_subsystem)}",
@@ -2163,8 +2189,12 @@ def render_system_ticket_page(ticket: SystemTicket) -> str:
         f"created_at: {_yaml_scalar(ticket.created_at.isoformat() if ticket.created_at else None)}",
         f"updated_at: {_yaml_scalar(ticket.updated_at.isoformat() if ticket.updated_at else None)}",
         "links:", f"  - to: {_yaml_scalar(SYSTEM_TICKETS_ROOT)}", "    type: member_of",
-        "    context: This task is a Mission Control System Ticket.", "---", "", f"# {ticket.title}", "", ticket.verbatim_request, "",
-    ]
+        "    context: This task is a Mission Control System Ticket.", "---", "",
+    ])
+    if body is None:
+        lines.extend([f"# {ticket.title}", "", ticket.verbatim_request, ""])
+    else:
+        lines.extend([body, ""])
     return "\n".join(lines)
 
 
@@ -2467,9 +2497,11 @@ def render_agent_delegation_page(
 def _render_preserved_page(
     page: Mapping[str, Any],
     frontmatter: Mapping[str, Any],
+    *,
+    body: str | None = None,
 ) -> str:
-    body = page.get("compiled_truth")
-    if not isinstance(body, str):
+    preserved_body = page.get("compiled_truth") if body is None else body
+    if not isinstance(preserved_body, str):
         raise GBrainProtocolError("page has no preserved body content")
     # Preserve the exact canonical type that was read. GBrain intentionally
     # normalizes Markdown-backed Goals to raw `concept` rows, so their verified
@@ -2517,13 +2549,15 @@ def _render_preserved_page(
             # metrics, receipts, and history without inventing a second parser.
             rendered = json.dumps(value, ensure_ascii=False)
         lines.append(f"{key_text}: {rendered}")
-    lines.extend(["---", "", body.rstrip(), ""])
+    lines.extend(["---", "", preserved_body.rstrip(), ""])
     return "\n".join(lines)
 
 
 def _render_preserved_task_page(
     page: Mapping[str, Any],
     frontmatter: Mapping[str, Any],
+    *,
+    body: str | None = None,
 ) -> str:
     """Serialize an existing task only after fail-closed type validation."""
     if page.get("type") != "task":
@@ -2531,7 +2565,7 @@ def _render_preserved_task_page(
             "task has unexpected page type "
             f"{page.get('type') or 'missing'}; repair the task type before writing"
         )
-    return _render_preserved_page(page, frontmatter)
+    return _render_preserved_page(page, frontmatter, body=body)
 
 
 def _lifecycle_edges(
@@ -2819,6 +2853,105 @@ class GBrainAdapter:
         self._todo_child_cache_lock = Lock()
         self._artifact_create_lock = Lock()
         self._delegation_mutation_lock = Lock()
+
+    def _verified_system_ticket_references(
+        self, values: Sequence[str]
+    ) -> dict[str, SystemTicketReference | None]:
+        """Resolve only exact canonical System Ticket page/link readbacks."""
+        result: dict[str, SystemTicketReference | None] = {}
+        for slug in extract_system_ticket_slugs("\n".join(values)):
+            try:
+                page = self.runner.run("get_page", {"slug": slug})
+                links = self.runner.run("get_links", {"slug": slug})
+                if not isinstance(page, Mapping) or not isinstance(links, list):
+                    raise GBrainProtocolError(
+                        "System Ticket reference readback was not structured"
+                    )
+                ticket = SystemTicket.from_page(page, links)
+                if not any(
+                    isinstance(edge, Mapping)
+                    and edge.get("from_slug") == slug
+                    and edge.get("to_slug") == SYSTEM_TICKETS_ROOT
+                    and edge.get("link_type") == "member_of"
+                    for edge in links
+                ):
+                    raise GBrainProtocolError(
+                        "System Ticket reference has no live membership edge"
+                    )
+            except (DomainValidationError, GBrainError):
+                if reference_is_explicitly_labeled_system_ticket(slug, values):
+                    result[slug] = None
+            else:
+                result[slug] = SystemTicketReference(ticket.slug, ticket.title)
+        return result
+
+    @staticmethod
+    def _has_unified_markdown_contract(page: Mapping[str, Any]) -> bool:
+        frontmatter = page.get("frontmatter")
+        return (
+            isinstance(frontmatter, Mapping)
+            and frontmatter.get("markdown_contract") == MARKDOWN_CONTRACT
+        )
+
+    def _validated_task_display_markdown(
+        self, task: Task, page: Mapping[str, Any]
+    ) -> str | None:
+        if not self._has_unified_markdown_contract(page):
+            return None
+        try:
+            references = self._verified_system_ticket_references((task.detail,))
+            expected = render_task_body(task.title, task.detail, references)
+        except MarkdownContractError:
+            return None
+        compiled = page.get("compiled_markdown")
+        if not isinstance(compiled, str) or compiled.strip() != expected.strip():
+            return None
+        return expected
+
+    def _validated_system_ticket_display_markdown(
+        self, ticket: SystemTicket, page: Mapping[str, Any]
+    ) -> str | None:
+        if not self._has_unified_markdown_contract(page):
+            return None
+        try:
+            references = self._verified_system_ticket_references(
+                (
+                    ticket.verbatim_request,
+                    ticket.acceptance_criteria,
+                    *ticket.linked_evidence,
+                    *ticket.implementation_receipts,
+                    *ticket.qa_receipts,
+                )
+            )
+            expected = render_system_ticket_body(
+                ticket.title,
+                ticket.verbatim_request,
+                acceptance_criteria=ticket.acceptance_criteria,
+                linked_evidence=ticket.linked_evidence,
+                implementation_receipts=ticket.implementation_receipts,
+                qa_receipts=ticket.qa_receipts,
+                references=references,
+            )
+        except MarkdownContractError:
+            return None
+        compiled = page.get("compiled_markdown")
+        if not isinstance(compiled, str) or compiled.strip() != expected.strip():
+            return None
+        return expected
+
+    @staticmethod
+    def _verify_compiled_markdown_body(
+        page: Mapping[str, Any], expected_body: str, *, label: str
+    ) -> None:
+        if not GBrainAdapter._has_unified_markdown_contract(page):
+            raise GBrainProtocolError(
+                f"{label} unified Markdown contract marker did not match the write"
+            )
+        body = page.get("compiled_markdown")
+        if not isinstance(body, str) or body.strip() != expected_body.strip():
+            raise GBrainProtocolError(
+                f"{label} compiled Markdown body did not match the write"
+            )
 
     @staticmethod
     def _artifact_collection_title(slug: str) -> str:
@@ -3308,11 +3441,20 @@ class GBrainAdapter:
                 )
             existing_page = page_candidate
 
+        references: dict[str, SystemTicketReference | None] = {}
+        expected_body = ""
+        if existing_page is None:
+            references = self._verified_system_ticket_references((task.detail,))
+            expected_body = render_task_body(task.title, task.detail, references)
+
         try:
             if existing_page is None:
                 self.runner.run(
                     "put_page",
-                    {"slug": task.slug, "content": render_task_page(task)},
+                    {
+                        "slug": task.slug,
+                        "content": render_task_page(task, body=expected_body),
+                    },
                 )
             existing_pairs = {
                 (edge.get("to_slug"), edge.get("link_type"))
@@ -3352,6 +3494,10 @@ class GBrainAdapter:
             if stored.to_dict() != task.to_dict():
                 raise GBrainProtocolError(
                     "QA fixture task readback did not match the requested content"
+                )
+            if expected_body:
+                self._verify_compiled_markdown_body(
+                    page, expected_body, label="QA fixture task"
                 )
             scope_memberships = [
                 edge.get("to_slug")
@@ -5932,32 +6078,88 @@ class GBrainAdapter:
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("system tickets get_backlinks did not return a list")
         slugs = list(dict.fromkeys(str(link["from_slug"]) for link in raw_backlinks if isinstance(link, Mapping) and link.get("to_slug") == SYSTEM_TICKETS_ROOT and link.get("link_type") == "member_of" and isinstance(link.get("from_slug"), str) and str(link["from_slug"]).startswith("tasks/")))
-        def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None]:
+        def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
                 links = self.runner.run("get_links", {"slug": slug})
                 if not isinstance(page, Mapping) or not isinstance(links, list):
                     raise GBrainProtocolError("system ticket page or links were not structured")
-                return SystemTicket.from_page(page, links), None
+                ticket = SystemTicket.from_page(page, links)
+                display_markdown = self._validated_system_ticket_display_markdown(
+                    ticket, page
+                )
+                return ticket, None, display_markdown
             except (DomainValidationError, GBrainError) as exc:
-                return None, CollectionIssue(slug=slug, message=str(exc), category="system_ticket_data", impact="This System Ticket cannot be dispatched until its canonical task data is repaired.")
+                return None, CollectionIssue(slug=slug, message=str(exc), category="system_ticket_data", impact="This System Ticket cannot be dispatched until its canonical task data is repaired."), None
         tickets, issues = [], []
-        for ticket, issue in self._bounded_map(read, slugs):
-            if ticket: tickets.append(ticket)
+        projections: list[tuple[str, str]] = []
+        for ticket, issue, display_markdown in self._bounded_map(read, slugs):
+            if ticket:
+                tickets.append(ticket)
+                if display_markdown is not None:
+                    projections.append((ticket.slug, display_markdown))
             if issue: issues.append(issue)
         tickets.sort(key=lambda ticket: ((ticket.updated_at or datetime.min), ticket.title.casefold()), reverse=True)
-        return SystemTicketRead(tuple(tickets), tuple(issues))
+        return SystemTicketRead(tuple(tickets), tuple(issues), tuple(projections))
 
     def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
         root = self.runner.run("get_page", {"slug": SYSTEM_TICKETS_ROOT})
         if not isinstance(root, Mapping) or root.get("type") != "collection":
             raise GBrainProtocolError("Mission Control System Tickets root is not a canonical collection")
-        self.runner.run("put_page", {"slug": ticket.slug, "content": render_system_ticket_page(ticket)})
-        self.runner.run("add_link", {"from": ticket.slug, "to": SYSTEM_TICKETS_ROOT, "link_type":"member_of", "context":"This task is a Mission Control System Ticket.", "link_source":"gtasks"})
-        page = self.runner.run("get_page", {"slug": ticket.slug})
-        links = self.runner.run("get_links", {"slug": ticket.slug})
-        if not isinstance(page, Mapping) or not isinstance(links, list) or SystemTicket.from_page(page, links).to_dict() != ticket.to_dict():
-            raise PartialMutationError(ticket.slug, "System Ticket creation was not verified.")
+        references = self._verified_system_ticket_references(
+            (
+                ticket.verbatim_request,
+                ticket.acceptance_criteria,
+                *ticket.linked_evidence,
+                *ticket.implementation_receipts,
+                *ticket.qa_receipts,
+            )
+        )
+        expected_body = render_system_ticket_body(
+            ticket.title,
+            ticket.verbatim_request,
+            acceptance_criteria=ticket.acceptance_criteria,
+            linked_evidence=ticket.linked_evidence,
+            implementation_receipts=ticket.implementation_receipts,
+            qa_receipts=ticket.qa_receipts,
+            references=references,
+        )
+        self.runner.run(
+            "put_page",
+            {
+                "slug": ticket.slug,
+                "content": render_system_ticket_page(ticket, body=expected_body),
+            },
+        )
+        try:
+            self.runner.run("add_link", {"from": ticket.slug, "to": SYSTEM_TICKETS_ROOT, "link_type":"member_of", "context":"This task is a Mission Control System Ticket.", "link_source":"gtasks"})
+            page = self.runner.run("get_page", {"slug": ticket.slug})
+            links = self.runner.run("get_links", {"slug": ticket.slug})
+            if not isinstance(page, Mapping) or not isinstance(links, list):
+                raise GBrainProtocolError(
+                    "System Ticket creation readback was not structured"
+                )
+            if not any(
+                isinstance(edge, Mapping)
+                and edge.get("from_slug") == ticket.slug
+                and edge.get("to_slug") == SYSTEM_TICKETS_ROOT
+                and edge.get("link_type") == "member_of"
+                for edge in links
+            ):
+                raise GBrainProtocolError(
+                    "exact live System Tickets membership was not verified"
+                )
+            if SystemTicket.from_page(page, links).to_dict() != ticket.to_dict():
+                raise GBrainProtocolError(
+                    "System Ticket creation readback did not match the write"
+                )
+            self._verify_compiled_markdown_body(
+                page, expected_body, label="System Ticket"
+            )
+        except (DomainValidationError, GBrainError) as exc:
+            raise PartialMutationError(
+                ticket.slug, f"System Ticket creation was not verified: {exc}"
+            ) from exc
         return MutationReceipt(ticket.slug, True)
 
     def update_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
@@ -5971,6 +6173,27 @@ class GBrainAdapter:
         raw_frontmatter = page.get("frontmatter")
         if not isinstance(raw_frontmatter, Mapping):
             raise GBrainProtocolError("system ticket page has no frontmatter")
+        marked_unified = self._has_unified_markdown_contract(page)
+        expected_body: str | None = None
+        if marked_unified:
+            references = self._verified_system_ticket_references(
+                (
+                    ticket.verbatim_request,
+                    ticket.acceptance_criteria,
+                    *ticket.linked_evidence,
+                    *ticket.implementation_receipts,
+                    *ticket.qa_receipts,
+                )
+            )
+            expected_body = render_system_ticket_body(
+                ticket.title,
+                ticket.verbatim_request,
+                acceptance_criteria=ticket.acceptance_criteria,
+                linked_evidence=ticket.linked_evidence,
+                implementation_receipts=ticket.implementation_receipts,
+                qa_receipts=ticket.qa_receipts,
+                references=references,
+            )
         frontmatter = deepcopy(dict(raw_frontmatter))
         frontmatter.update({
             "type": "task",
@@ -5988,7 +6211,9 @@ class GBrainAdapter:
         })
         self.runner.run("put_page", {
             "slug": ticket.slug,
-            "content": _render_preserved_page(page, frontmatter),
+            "content": _render_preserved_page(
+                page, frontmatter, body=expected_body
+            ),
         })
         try:
             read_page = self.runner.run("get_page", {"slug": ticket.slug})
@@ -5998,6 +6223,10 @@ class GBrainAdapter:
             stored = SystemTicket.from_page(read_page, read_links)
             if stored.to_dict() != ticket.to_dict():
                 raise GBrainProtocolError("system ticket edit readback did not match the write")
+            if expected_body is not None:
+                self._verify_compiled_markdown_body(
+                    read_page, expected_body, label="System Ticket edit"
+                )
         except (DomainValidationError, GBrainError) as exc:
             raise PartialMutationError(
                 ticket.slug,
@@ -6218,6 +6447,20 @@ class GBrainAdapter:
         )
 
     def create_inbox(self, task: Task) -> MutationReceipt:
+        """Create a new Tony Task with only verified Ticket references."""
+        return self._create_inbox(
+            task,
+            references=self._verified_system_ticket_references((task.detail,)),
+            verify_final_task=True,
+        )
+
+    def _create_inbox(
+        self,
+        task: Task,
+        *,
+        references: Mapping[str, SystemTicketReference | None],
+        verify_final_task: bool,
+    ) -> MutationReceipt:
         if task.lifecycle_root != ACTIVE_ROOT:
             raise ValueError("Inbox task must belong to the active GTasks root")
         if task.status != "planned" or not task.inbox:
@@ -6225,9 +6468,11 @@ class GBrainAdapter:
         if task.due_day is None:
             raise ValueError("Inbox task must have a due date")
 
+        expected_body = render_task_body(task.title, task.detail, references)
+
         self.runner.run(
             "put_page",
-            {"slug": task.slug, "content": render_task_page(task)},
+            {"slug": task.slug, "content": render_task_page(task, body=expected_body)},
         )
         try:
             raw_page = self.runner.run("get_page", {"slug": task.slug})
@@ -6254,6 +6499,9 @@ class GBrainAdapter:
             )
             if actual != expected:
                 raise GBrainProtocolError("task page readback did not match the write")
+            self._verify_compiled_markdown_body(
+                raw_page, expected_body, label="Task"
+            )
         except (DomainValidationError, GBrainError) as exc:
             raise PartialMutationError(
                 task.slug,
@@ -6286,7 +6534,26 @@ class GBrainAdapter:
             lifecycle = _require_single_lifecycle_edge(task.slug, final_links)
             if lifecycle.get("to_slug") != ACTIVE_ROOT:
                 raise LifecycleIntegrityError(task.slug, [lifecycle])
-        except (GBrainError, LifecycleIntegrityError) as exc:
+            final_page = self.runner.run("get_page", {"slug": task.slug})
+            if not isinstance(final_page, Mapping):
+                raise GBrainProtocolError("final Task page readback was not structured")
+            unexpected_assignments = [
+                edge
+                for edge in final_links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task.slug
+                and edge.get("link_type") == "assigned_to"
+            ]
+            if unexpected_assignments:
+                raise GBrainProtocolError(
+                    "Tony Task ownership retained an unexpected assigned_to edge"
+                )
+            final_task = Task.from_page(final_page, edges=final_links)
+            if verify_final_task and final_task != task:
+                raise GBrainProtocolError(
+                    "final canonical Task did not match the requested domain object"
+                )
+        except (DomainValidationError, GBrainError, LifecycleIntegrityError) as exc:
             raise PartialMutationError(
                 task.slug,
                 f"Task page exists but membership readback failed: {exc}",
@@ -6295,6 +6562,7 @@ class GBrainAdapter:
         return MutationReceipt(slug=task.slug, verified=True)
 
     def create_task(self, task: Task) -> MutationReceipt:
+        references = self._verified_system_ticket_references((task.detail,))
         if task.project:
             project_page = self.runner.run("get_page", {"slug": task.project})
             project_links = self.runner.run("get_links", {"slug": task.project})
@@ -6317,7 +6585,11 @@ class GBrainAdapter:
             except DomainValidationError as exc:
                 raise ValueError("goal is not a member of Tony's Goals") from exc
 
-        receipt = self.create_inbox(task)
+        receipt = self._create_inbox(
+            task,
+            references=references,
+            verify_final_task=False,
+        )
         try:
             if task.project:
                 self.runner.run(
@@ -6395,6 +6667,11 @@ class GBrainAdapter:
                 raise GBrainProtocolError(
                     "full task page readback did not match the requested task"
                 )
+            self._verify_compiled_markdown_body(
+                stored_page,
+                render_task_body(task.title, task.detail, references),
+                label="Task",
+            )
             typed_edges = {
                 (
                     edge.get("from_slug"),
@@ -6493,19 +6770,31 @@ class GBrainAdapter:
                 raise ValueError("selected goal could not be verified")
             Goal.from_page(goal_page)
 
+        references = self._verified_system_ticket_references((task.detail,))
+        expected_body = render_task_body(task.title, task.detail, references)
+
         self.runner.run(
             "put_page",
-            {"slug": task.slug, "content": render_task_page(task)},
+            {"slug": task.slug, "content": render_task_page(task, body=expected_body)},
         )
-        preexisting_links = self.runner.run("get_links", {"slug": task.slug})
-        if not isinstance(preexisting_links, list):
-            raise GBrainProtocolError("agent task lifecycle readback was not structured")
-        preexisting_lifecycle = _lifecycle_edges(task.slug, preexisting_links)
-        if len(preexisting_lifecycle) > 1 or (
-            preexisting_lifecycle
-            and preexisting_lifecycle[0].get("to_slug") != work_root
-        ):
-            raise LifecycleIntegrityError(task.slug, preexisting_lifecycle)
+        try:
+            preexisting_links = self.runner.run("get_links", {"slug": task.slug})
+            if not isinstance(preexisting_links, list):
+                raise GBrainProtocolError("agent task lifecycle readback was not structured")
+            preexisting_lifecycle = _lifecycle_edges(task.slug, preexisting_links)
+            if len(preexisting_lifecycle) > 1 or (
+                preexisting_lifecycle
+                and preexisting_lifecycle[0].get("to_slug") != work_root
+            ):
+                raise LifecycleIntegrityError(task.slug, preexisting_lifecycle)
+        except (GBrainError, LifecycleIntegrityError) as exc:
+            raise PartialMutationError(
+                task.slug,
+                (
+                    "Agent task page was written but initial relationship "
+                    f"readback failed: {exc}"
+                ),
+            ) from exc
         descriptors = [
             {
                 "from": task.slug,
@@ -6571,6 +6860,9 @@ class GBrainAdapter:
                 raise GBrainProtocolError(
                     "agent task page readback did not match the requested task"
                 )
+            self._verify_compiled_markdown_body(
+                page, expected_body, label="Agent task"
+            )
             typed = {
                 (
                     edge.get("from_slug"),
@@ -6601,7 +6893,7 @@ class GBrainAdapter:
                 raise GBrainProtocolError(
                     "agent task retained another current task scope"
                 )
-        except (DomainValidationError, GBrainError) as exc:
+        except (DomainValidationError, GBrainError, LifecycleIntegrityError) as exc:
             raise PartialMutationError(
                 task.slug,
                 (
@@ -7211,7 +7503,9 @@ class GBrainAdapter:
                     return task
         raise ValueError("task is not a member of an approved GTasks root")
 
-    def get_task(self, task_slug: str) -> Task:
+    def _get_task_readback(
+        self, task_slug: str
+    ) -> tuple[Task, Mapping[str, Any]]:
         task_slug = self.resolve_canonical_slug(task_slug)
         page = self.runner.run("get_page", {"slug": task_slug})
         links = self.runner.run("get_links", {"slug": task_slug})
@@ -7223,7 +7517,20 @@ class GBrainAdapter:
             )
         task = Task.from_page(page, edges=links)
         self._require_task_openclaw_activation(task)
+        return task, page
+
+    def get_task(self, task_slug: str) -> Task:
+        task, _page = self._get_task_readback(task_slug)
         return task
+
+    def get_task_api_payload(self, task_slug: str) -> dict[str, Any]:
+        """Return structured authority plus an optional display-only body."""
+        task, page = self._get_task_readback(task_slug)
+        payload = task.to_dict()
+        display_markdown = self._validated_task_display_markdown(task, page)
+        if display_markdown is not None:
+            payload["display_markdown"] = display_markdown
+        return payload
 
     def edit_task(
         self,
@@ -7316,8 +7623,17 @@ class GBrainAdapter:
                 "updated_at": now.isoformat(),
             }
         )
+        marked_unified = self._has_unified_markdown_contract(raw_page)
+        expected_body: str | None = None
+        if marked_unified:
+            references = self._verified_system_ticket_references((detail.strip(),))
+            expected_body = render_task_body(
+                title.strip(), detail.strip(), references
+            )
         original_content = _render_preserved_task_page(raw_page, dict(raw_frontmatter))
-        desired_content = _render_preserved_task_page(raw_page, frontmatter)
+        desired_content = _render_preserved_task_page(
+            raw_page, frontmatter, body=expected_body
+        )
         try:
             self.runner.run("put_page", {"slug": task_slug, "content": desired_content})
             if project_slug != task.project:
@@ -7344,6 +7660,10 @@ class GBrainAdapter:
                 or stored.progress_metric != progress_metric or stored.event_progress != event_progress
             ):
                 raise GBrainProtocolError("task edit readback did not match the requested values")
+            if expected_body is not None:
+                self._verify_compiled_markdown_body(
+                    stored_page, expected_body, label="Task edit"
+                )
             return TaskEditReceipt(task_slug=task_slug, task=stored, verified=True)
         except (DomainValidationError, GBrainError) as exc:
             raise PartialMutationError(
