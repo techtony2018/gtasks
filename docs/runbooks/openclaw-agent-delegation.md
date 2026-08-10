@@ -62,6 +62,29 @@ revision as a fencing token, retries reuse the same idempotency key, expired
 holders cannot commit, and timeout/revoke paths release or supersede the lock.
 The OpenClaw Agent's own work is never locked or replaced by delegated work.
 
+## Hourly proactive reconciliation
+
+Each deployed OpenClaw Agent uses the version-controlled policy in
+`config/openclaw-agents/heartbeats.json` and checklist in
+`config/openclaw-agents/HEARTBEAT.md`. The heartbeat runs every hour in the
+Agent's existing `agent:<id>:mission-control` session, targets no external
+channel, and defers while that Agent is busy. It never creates a new chat.
+
+Heartbeat is a read-only reconciliation layer, not an alternate Dispatcher.
+It reads owned work first and eligible delegated work second, then reports a
+missing/stale handoff or newly unblocked work. It must not claim or execute a
+Task, publish an Artifact, or mutate canonical state. Those actions still
+require the authenticated Dispatcher, its execution claim, and the existing
+authority checks. A quiet hourly scan returns `HEARTBEAT_OK` and produces no
+external notification.
+
+Deploy heartbeat only for an Agent whose runtime and fixed session already
+exist. Install the canonical checklist into that Agent's workspace, merge the
+matching `heartbeat` object into its `agents.list[]` entry, validate the full
+OpenClaw configuration, restart the Gateway, and read back the exact Agent,
+interval, session, target, and checklist hash. Preparing policy for an inactive
+Agent does not authorize starting its runtime.
+
 ## Preflight and dry-run
 
 Do not run execute mode until Tony explicitly authorizes the Tammy-OC canary.
