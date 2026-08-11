@@ -49,6 +49,11 @@ class McAddTaskSourceContractTests(unittest.TestCase):
         self.assertNotIn("adapter._verified_system_ticket_references", helper)
         self.assertIn("rendered_body = compiled_body", helper)
 
+    def test_live_helper_accepts_canonical_compiled_truth_projection(self):
+        helper = HELPER_PATH.read_text(encoding="utf-8")
+        self.assertIn('compiled_body = page.get("compiled_markdown")', helper)
+        self.assertIn('compiled_body = page.get("compiled_truth")', helper)
+
 
 class McAddTaskHelperDryRunTests(unittest.TestCase):
     def _dry_run(self, *arguments: str, detail: str = DETAIL) -> dict:

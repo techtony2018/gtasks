@@ -228,6 +228,8 @@ def main() -> int:
             "Inspect and repair this slug before retrying; do not create a replacement."
         )
     compiled_body = page.get("compiled_markdown")
+    if compiled_body is None:
+        compiled_body = page.get("compiled_truth")
     if not isinstance(compiled_body, str) or not compiled_body.strip():
         raise SystemExit(
             "Task write completed but compiled Markdown body verification failed for "
