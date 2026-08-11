@@ -3788,7 +3788,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.90")
+        self.assertEqual(payload["version"], "V0.0.91")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3796,11 +3796,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.90")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.90")
+        self.assertEqual(payload["current_version"], "V0.0.91")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.91")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.91",
                 "V0.0.90",
                 "V0.0.89",
                 "V0.0.88",
@@ -6085,14 +6086,21 @@ class ArtifactApiTests(unittest.TestCase):
     def test_artifact_publication_rejects_markdown_above_artifact_limit(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
-        body = {
-            **self._publish_payload(),
-            "markdown": "x" * (256 * 1024),
-        }
-
-        status, payload, _ = harness.request(
-            "POST", "/api/artifacts", body, self._execution_headers()
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", harness.server.server_address[1], timeout=3
         )
+        connection.putrequest("POST", "/api/artifacts")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader(
+            "Content-Length", str(server_module.MAX_ARTIFACT_REQUEST_BYTES + 1)
+        )
+        for key, value in self._execution_headers().items():
+            connection.putheader(key, value)
+        connection.endheaders()
+        response = connection.getresponse()
+        status = response.status
+        payload = json.loads(response.read())
+        connection.close()
 
         self.assertEqual(status, 413)
         self.assertEqual(payload["error"], "Request body size is invalid.")

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.90",
+  "current_version": "V0.0.91",
   "releases": [
     {
       "version": "V0.0.1",
@@ -540,6 +540,12 @@
       "date": "2026-08-11",
       "title": "Bounded rich Artifact publication",
       "summary": "Allows authenticated Agent Artifact publication to carry complete evidence-rich Markdown up to a dedicated 256 KiB limit while keeping the generic 16 KiB mutation limit and rejecting oversized payloads before canonical writes."
+    },
+    {
+      "version": "V0.0.91",
+      "date": "2026-08-11",
+      "title": "Canonical Artifact timestamp reconciliation",
+      "summary": "Treats canonical updated_at as server-managed metadata during Artifact publication verification and idempotent retry, while continuing to compare every requested content and provenance field."
     }
   ]
 }

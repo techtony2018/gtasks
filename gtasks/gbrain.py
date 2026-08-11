@@ -3823,7 +3823,7 @@ class GBrainAdapter:
         if matches:
             existing_fields = matches[0].to_dict()
             incoming_fields = artifact.to_dict()
-            for field in ("slug", "created_at"):
+            for field in ("slug", "created_at", "updated_at"):
                 existing_fields.pop(field)
                 incoming_fields.pop(field)
             if existing_fields != incoming_fields:
@@ -3868,7 +3868,11 @@ class GBrainAdapter:
                 artifact.slug,
                 require_gtasks_source=True,
             )
-            if stored.to_dict() != artifact.to_dict():
+            stored_fields = stored.to_dict()
+            requested_fields = artifact.to_dict()
+            stored_fields.pop("updated_at")
+            requested_fields.pop("updated_at")
+            if stored_fields != requested_fields:
                 raise GBrainProtocolError(
                     "Artifact page readback did not match the requested content"
                 )

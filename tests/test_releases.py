@@ -27,7 +27,14 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.90")
+        self.assertEqual(__version__, "V0.0.91")
+
+    def test_v0_0_91_records_canonical_artifact_timestamp_reconciliation(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.91")
+
+        self.assertIn("canonical updated_at", release["summary"])
+        self.assertIn("server-managed metadata", release["summary"])
+        self.assertIn("idempotent retry", release["summary"])
 
     def test_v0_0_90_records_bounded_rich_artifact_publication(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.90")
@@ -406,6 +413,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.88",
                 "V0.0.89",
                 "V0.0.90",
+                "V0.0.91",
             ],
         )
 

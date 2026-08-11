@@ -62,10 +62,9 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.90. Authenticated Artifact
-publication accepts evidence-rich Markdown up to a dedicated 256 KiB limit,
-while all other JSON mutations retain the generic 16 KiB cap and oversized
-Artifact requests fail before any canonical write.
+Latest verified and deployed release: V0.0.91. Artifact publication and
+idempotent retry now treat canonical `updated_at` as server-managed metadata,
+while continuing to compare every requested content and provenance field.
 
 ### Independent UI/UX release gate
 

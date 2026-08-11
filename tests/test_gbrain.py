@@ -2925,6 +2925,42 @@ class AgentArtifactAdapterTests(unittest.TestCase):
             put_count,
         )
 
+    def test_create_artifact_accepts_canonical_updated_at_and_retries_idempotently(self) -> None:
+        original = self.artifact()
+        task_page, task_edges = authorized_artifact_task(original)
+
+        class CanonicalTimestampRunner(StatefulArtifactRunner):
+            def run(self, tool: str, params: dict) -> object:
+                result = super().run(tool, params)
+                if tool == "put_page" and params["slug"].startswith("artifacts/"):
+                    self.pages[params["slug"]]["updated_at"] = (
+                        "2026-08-11T10:30:00-07:00"
+                    )
+                return result
+
+        runner = CanonicalTimestampRunner(
+            {original.produced_for: task_page}, task_edges
+        )
+        adapter = GBrainAdapter(runner)
+        key = "tammy:value-discovery:canonical-timestamp:v1"
+
+        first = adapter.create_agent_artifact(
+            original,
+            executing_agent=original.created_by,
+            idempotency_key=key,
+        )
+        retry = adapter.create_agent_artifact(
+            self.artifact(),
+            executing_agent=original.created_by,
+            idempotency_key=key,
+        )
+
+        self.assertTrue(first.verified)
+        self.assertFalse(first.idempotent)
+        self.assertTrue(retry.verified)
+        self.assertTrue(retry.idempotent)
+        self.assertEqual(retry.artifact.slug, original.slug)
+
     def test_concurrent_same_key_publication_serializes_scan_and_write(self) -> None:
         original = self.artifact()
         task_page, task_edges = authorized_artifact_task(original)
