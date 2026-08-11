@@ -693,6 +693,7 @@ class AgentArtifact:
     git_url: str | None
     supersedes: str | None
     created_at: datetime
+    updated_at: datetime | None = None
     delegation_ref: str | None = None
 
     @classmethod
@@ -883,6 +884,10 @@ class AgentArtifact:
         created_at = _required_zoned_datetime(
             frontmatter.get("created_at"), "artifact created_at"
         )
+        updated_at = _optional_datetime(
+            frontmatter.get("updated_at") or page.get("updated_at"),
+            "artifact updated_at",
+        )
         delegation_ref = _optional_delegation_ref(
             frontmatter.get("delegation_ref")
         )
@@ -900,6 +905,7 @@ class AgentArtifact:
             git_url=git_url,
             supersedes=supersedes,
             created_at=created_at,
+            updated_at=updated_at,
             delegation_ref=delegation_ref,
         )
 
@@ -918,6 +924,7 @@ class AgentArtifact:
             "git_url": self.git_url,
             "supersedes": self.supersedes,
             "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "delegation_ref": self.delegation_ref,
         }
         return result

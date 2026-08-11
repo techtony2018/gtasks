@@ -11,7 +11,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Condition, Lock, current_thread
@@ -1016,10 +1016,18 @@ class ArtifactRead:
     artifacts: tuple[AgentArtifact, ...]
     issues: tuple[CollectionIssue, ...] = ()
     next_cursor: int | None = None
+    relation_context: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        artifacts = []
+        for artifact in self.artifacts:
+            value = artifact.to_dict()
+            contexts = self.relation_context.get(artifact.slug)
+            if contexts:
+                value["relation_context"] = list(contexts)
+            artifacts.append(value)
         return {
-            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "artifacts": artifacts,
             "issues": [issue.to_dict() for issue in self.issues],
             "next_cursor": self.next_cursor,
         }
@@ -1034,6 +1042,22 @@ class ArtifactMutationReceipt:
     def to_dict(self) -> dict[str, Any]:
         return {
             "artifact": self.artifact.to_dict(),
+            "verified": self.verified,
+            "idempotent": self.idempotent,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactReviewReferenceReceipt:
+    task_slug: str
+    artifact_slug: str
+    verified: bool
+    idempotent: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_slug": self.task_slug,
+            "artifact_slug": self.artifact_slug,
             "verified": self.verified,
             "idempotent": self.idempotent,
         }
@@ -1807,6 +1831,8 @@ def render_agent_artifact_page(
         f"delegation_ref: {_yaml_scalar(artifact.delegation_ref)}",
         f"created_at: {_yaml_scalar(artifact.created_at.isoformat())}",
     ]
+    if artifact.updated_at is not None:
+        lines.append(f"updated_at: {_yaml_scalar(artifact.updated_at.isoformat())}")
     if idempotency_key is not None:
         lines.append(f"idempotency_key: {_yaml_scalar(idempotency_key)}")
     lines.append("links:")
@@ -2852,6 +2878,7 @@ class GBrainAdapter:
         self._todo_event_cache: dict[str, TodoEvent] = {}
         self._todo_child_cache_lock = Lock()
         self._artifact_create_lock = Lock()
+        self._artifact_review_reference_lock = Lock()
         self._delegation_mutation_lock = Lock()
 
     def _verified_system_ticket_references(
@@ -2948,6 +2975,8 @@ class GBrainAdapter:
                 f"{label} unified Markdown contract marker did not match the write"
             )
         body = page.get("compiled_markdown")
+        if body is None:
+            body = page.get("compiled_truth")
         if not isinstance(body, str) or body.strip() != expected_body.strip():
             raise GBrainProtocolError(
                 f"{label} compiled Markdown body did not match the write"
@@ -3186,8 +3215,52 @@ class GBrainAdapter:
                 and str(edge["from_slug"]).startswith("artifacts/")
             )
         candidates = set(candidate_slugs)
+        relation_context: dict[str, set[str]] = {}
+        issues: list[CollectionIssue] = []
+        if task is not None:
+            backlinks = self.runner.run("get_backlinks", {"slug": task})
+            task_links = self.runner.run("get_links", {"slug": task})
+            if not isinstance(backlinks, list) or not isinstance(task_links, list):
+                raise GBrainProtocolError("Artifact task relationship reads were not lists")
+            produced = {
+                str(edge["from_slug"])
+                for edge in backlinks
+                if isinstance(edge, Mapping)
+                and edge.get("to_slug") == task
+                and edge.get("link_type") == "produced_for"
+                and isinstance(edge.get("from_slug"), str)
+            }
+            reviewed = {
+                str(edge["to_slug"])
+                for edge in task_links
+                if isinstance(edge, Mapping)
+                and edge.get("from_slug") == task
+                and edge.get("link_type") == "reviews_artifact"
+                and isinstance(edge.get("to_slug"), str)
+            }
+            for slug in sorted(reviewed - candidates):
+                issues.append(CollectionIssue(
+                    slug=slug,
+                    message=(
+                        "reviews_artifact target is not a canonical Agent Artifact "
+                        "collection member"
+                    ),
+                    category="artifact_data",
+                    impact=(
+                        "This review reference remains in GBrain but cannot be "
+                        "browsed until its Artifact membership is repaired."
+                    ),
+                ))
+            candidates &= produced | reviewed
+            for slug in candidates:
+                contexts: set[str] = set()
+                if slug in produced:
+                    contexts.add("produced_for")
+                if slug in reviewed:
+                    contexts.add("referenced_for_review")
+                if contexts:
+                    relation_context[slug] = contexts
         for target, link_type in (
-            (task, "produced_for"),
             (project, "supports_project"),
             (goal, "supports_goal"),
         ):
@@ -3224,16 +3297,98 @@ class GBrainAdapter:
                 )
 
         artifacts: list[AgentArtifact] = []
-        issues: list[CollectionIssue] = []
         for artifact, issue in self._bounded_map(read_one, sorted(candidates)):
             if artifact is not None:
                 artifacts.append(artifact)
             if issue is not None:
                 issues.append(issue)
-        artifacts.sort(key=lambda item: (item.created_at, item.slug), reverse=True)
+        artifacts.sort(
+            key=lambda item: (item.updated_at or item.created_at, item.created_at, item.slug),
+            reverse=True,
+        )
         selected = artifacts[cursor : cursor + limit]
         next_cursor = cursor + limit if cursor + limit < len(artifacts) else None
-        return ArtifactRead(tuple(selected), tuple(issues), next_cursor)
+        return ArtifactRead(
+            tuple(selected),
+            tuple(issues),
+            next_cursor,
+            {
+                artifact.slug: tuple(sorted(relation_context.get(artifact.slug, set())))
+                for artifact in selected
+                if artifact.slug in relation_context
+            },
+        )
+
+    def add_artifact_review_reference(
+        self, task_slug: str, artifact_slug: str
+    ) -> ArtifactReviewReferenceReceipt:
+        with self._artifact_review_reference_lock:
+            return self._add_artifact_review_reference_locked(
+                task_slug, artifact_slug
+            )
+
+    def _add_artifact_review_reference_locked(
+        self, task_slug: str, artifact_slug: str
+    ) -> ArtifactReviewReferenceReceipt:
+        self._require_canonical_uuid_slug(task_slug, "tasks", "review task")
+        self._require_canonical_uuid_slug(artifact_slug, "artifacts", "review Artifact")
+        self.get_task(task_slug)
+        artifact = self.get_agent_artifact(artifact_slug, require_gtasks_source=True)
+        task_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(task_links, list):
+            raise GBrainProtocolError("Artifact review task links were not a list")
+        matching = [
+            edge for edge in task_links
+            if isinstance(edge, Mapping)
+            and edge.get("from_slug") == task_slug
+            and edge.get("to_slug") == artifact.slug
+            and edge.get("link_type") == "reviews_artifact"
+        ]
+        if matching and all(edge.get("link_source") == "gtasks" for edge in matching):
+            return ArtifactReviewReferenceReceipt(task_slug, artifact.slug, True, True)
+        if matching:
+            raise GBrainProtocolError(
+                "Artifact review reference exists without the canonical gtasks source"
+            )
+        try:
+            self.runner.run(
+                "add_link",
+                {
+                    "from": task_slug,
+                    "to": artifact.slug,
+                    "link_type": "reviews_artifact",
+                    "context": "Canonical Task review reference for this Artifact.",
+                    "link_source": "gtasks",
+                },
+            )
+            self.get_task(task_slug)
+            stored = self.get_agent_artifact(artifact.slug, require_gtasks_source=True)
+            links = self.runner.run("get_links", {"slug": task_slug})
+            if not isinstance(links, list) or not any(
+                isinstance(edge, Mapping)
+                and edge.get("from_slug") == task_slug
+                and edge.get("to_slug") == artifact.slug
+                and edge.get("link_type") == "reviews_artifact"
+                and edge.get("link_source") == "gtasks"
+                for edge in links
+            ):
+                raise GBrainProtocolError("Artifact review reference was not verified")
+            artifact_links = self.runner.run("get_links", {"slug": stored.slug})
+            if not isinstance(artifact_links, list) or not any(
+                isinstance(edge, Mapping)
+                and edge.get("from_slug") == stored.slug
+                and edge.get("to_slug") == stored.produced_for
+                and edge.get("link_type") == "produced_for"
+                for edge in artifact_links
+            ):
+                raise GBrainProtocolError("Artifact produced_for provenance changed")
+        except (DomainValidationError, GBrainError, ValueError) as exc:
+            raise PartialMutationError(
+                task_slug,
+                "Artifact review reference was not fully verified. Inspect the Task and Artifact links before retrying: "
+                + str(exc),
+            ) from exc
+        return ArtifactReviewReferenceReceipt(task_slug, artifact.slug, True)
 
     @staticmethod
     def _require_canonical_uuid_slug(value: object, namespace: str, label: str) -> str:

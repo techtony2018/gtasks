@@ -632,6 +632,20 @@ assert(taskReplacement.focused, "Nested return did not restore the exact Task li
         self.assertIn("artifactProducingTaskReturn", javascript)
         self.assertIn("state.artifactExpanded", javascript)
 
+    def test_task_artifact_list_labels_explicit_review_references(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderTaskArtifacts") :
+            javascript.index("async function loadTaskArtifacts")
+        ]
+
+        self.assertIn("artifact.relation_context", renderer)
+        self.assertIn('"Linked for review"', renderer)
+        self.assertIn('"Produced by this Task"', renderer)
+        self.assertIn("task-artifact-relation", renderer)
+        self.assertIn(".task-artifact-relation", css)
+
     def test_artifact_git_links_use_the_same_explicit_commit_allowlist(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         renderer = javascript[
@@ -1596,8 +1610,8 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
     def test_static_asset_cache_keys_match_current_release(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('href="/styles.css?v=0.0.84"', html)
-        self.assertIn('src="/app.js?v=0.0.84"', html)
+        self.assertIn('href="/styles.css?v=0.0.89"', html)
+        self.assertIn('src="/app.js?v=0.0.89"', html)
 
     def test_overdue_tasks_use_canonical_day_and_red_treatment_in_today_and_calendar(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -2297,6 +2311,62 @@ assert(elements.viewSurface.children[0] === originalSurface, "task read replaced
         self.assertIn('all: count === 1 ? "task shown" : "tasks shown"', javascript)
         self.assertIn("state.allTaskSearch = input.value", renderer)
         self.assertIn("state.showAllTaskDates = toggle.checked", renderer)
+
+    def test_artifacts_and_all_tasks_use_newest_updated_order_and_all_tasks_show_status(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        task_row = javascript[
+            javascript.index("function taskRow") : javascript.index("function section")
+        ]
+        all_tasks = javascript[
+            javascript.index("function allTasksMatchingSearch") :
+            javascript.index("function renderAllTasksView")
+        ]
+        artifact_view = javascript[
+            javascript.index("function buildArtifactHierarchy") :
+            javascript.index("async function loadArtifacts")
+        ]
+
+        self.assertIn("function compareNewestUpdated", javascript)
+        self.assertIn("left.updated_at || left.created_at", javascript)
+        self.assertIn("right.updated_at || right.created_at", javascript)
+        self.assertIn("showStatus = false", task_row)
+        self.assertIn('node("span", `task-status-badge ${status}`', task_row)
+        self.assertIn("showStatus: true", all_tasks)
+        self.assertIn(".sort(compareNewestUpdated)", all_tasks)
+        self.assertIn(".sort(compareNewestUpdated)", artifact_view)
+        self.assertIn(".task-status-badge", css)
+
+        result = run_app_runtime_probe(
+            r'''
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const items = [
+  { slug: "tasks/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", title: "B", created_at: "2026-08-03T10:00:00Z", updated_at: null },
+  { slug: "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", title: "A", created_at: "2026-08-01T10:00:00Z", updated_at: "2026-08-04T10:00:00Z" },
+  { slug: "tasks/cccccccc-cccc-4ccc-8ccc-cccccccccccc", title: "C", created_at: "2026-08-04T10:00:00Z", updated_at: "2026-08-04T10:00:00Z" },
+];
+const sorted = [...items].sort(compareNewestUpdated);
+assert(sorted.map((item) => item.slug).join(",") === `${items[1].slug},${items[2].slug},${items[0].slug}`, "newest-updated order or stable title fallback is wrong");
+
+state.allTaskSearch = "";
+state.snapshot = { tasks: items.map((item, index) => ({
+  ...item,
+  summary: item.title,
+  detail: "",
+  status: index === 0 ? "blocked" : "planned",
+  priority: "normal",
+  inbox: false,
+  lifecycle_root: "collections/tonys-tasks",
+  todos: [],
+})), goals: [], task_display_scope: null };
+state.projects = [];
+assert(allTasksMatchingSearch().map((item) => item.slug).join(",") === sorted.map((item) => item.slug).join(","), "All Tasks did not use newest-updated order");
+const row = taskRow(state.snapshot.tasks[0], { displayRelevantDate: true, showStatus: true });
+const statusBadge = row.children[0].children[2].children.find((child) => child.className?.includes?.("task-status-badge"));
+assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical task status is missing");
+'''
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_inbox_task_rows_and_proposals_open_read_only_details_without_edit(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

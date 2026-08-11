@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.88",
+  "current_version": "V0.0.89",
   "releases": [
     {
       "version": "V0.0.1",
@@ -528,6 +528,12 @@
       "date": "2026-08-10",
       "title": "Unified Task and System Ticket Markdown",
       "summary": "New Tasks and System Tickets now use one safe Markdown formatter with exact canonical Ticket links, preserved user-authored details, and verified compiled-body readback."
+    },
+    {
+      "version": "V0.0.89",
+      "date": "2026-08-10",
+      "title": "Reviewed Artifacts and newest-first work views",
+      "summary": "Adds explicit review-task Artifact links, sorts Artifacts and All Tasks by newest-updated time, and shows canonical status in All Tasks."
     }
   ]
 }

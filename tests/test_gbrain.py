@@ -3134,6 +3134,248 @@ class AgentArtifactAdapterTests(unittest.TestCase):
         ]
         self.assertTrue(task_backlink_calls)
 
+    def test_task_filter_unions_typed_review_references_and_orders_by_updated_at(self) -> None:
+        task_slug = "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d"
+        direct = self.artifact(created_at=datetime(2026, 8, 2, 14, tzinfo=timezone.utc))
+        reviewed = new_agent_artifact(
+            title="Referenced review artifact",
+            artifact_kind="markdown",
+            created_by="agents/toddy",
+            produced_for="tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            markdown="# Referenced review",
+            now=datetime(2026, 8, 1, 14, tzinfo=timezone.utc),
+        )
+        markdown_only = new_agent_artifact(
+            title="Markdown-only candidate",
+            artifact_kind="markdown",
+            created_by="agents/toddy",
+            produced_for="tasks/cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            markdown="# Markdown-only candidate",
+            now=datetime(2026, 8, 5, 14, tzinfo=timezone.utc),
+        )
+        malformed = "artifacts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        direct_page = stored_artifact(direct)
+        reviewed_page = stored_artifact(reviewed)
+        reviewed_page["frontmatter"]["updated_at"] = "2026-08-04T14:00:00+00:00"
+        runner = StatefulArtifactRunner(
+            {
+                direct.slug: direct_page,
+                reviewed.slug: reviewed_page,
+                markdown_only.slug: stored_artifact(markdown_only),
+                task_slug: {
+                    "slug": task_slug,
+                    "compiled_truth": f"Review {markdown_only.slug} in Markdown only.",
+                },
+                malformed: {
+                    "slug": malformed,
+                    "type": "concept",
+                    "frontmatter": {"type": "note"},
+                    "compiled_truth": "# Not an Artifact",
+                },
+            },
+            [
+                *artifact_edges(direct),
+                *artifact_edges(reviewed),
+                *artifact_edges(markdown_only),
+                {
+                    "from_slug": task_slug,
+                    "to_slug": reviewed.slug,
+                    "link_type": "reviews_artifact",
+                },
+                {
+                    "from_slug": task_slug,
+                    "to_slug": malformed,
+                    "link_type": "reviews_artifact",
+                },
+            ],
+        )
+
+        read = GBrainAdapter(runner).list_agent_artifacts(task=task_slug)
+
+        self.assertEqual([artifact.slug for artifact in read.artifacts], [reviewed.slug, direct.slug])
+        self.assertEqual([issue.slug for issue in read.issues], [malformed])
+        self.assertNotIn(markdown_only.slug, [artifact.slug for artifact in read.artifacts])
+        relation_context = {
+            artifact["slug"]: artifact["relation_context"]
+            for artifact in read.to_dict()["artifacts"]
+        }
+        self.assertEqual(relation_context[reviewed.slug], ["referenced_for_review"])
+        self.assertEqual(relation_context[direct.slug], ["produced_for"])
+
+    def test_add_artifact_review_reference_is_idempotent_and_preserves_provenance(self) -> None:
+        artifact = self.artifact()
+        review_task = "tasks/540d2d36-4ce4-47f2-a06f-bd6ba8ae2700"
+        source_task_page, source_task_edges = authorized_artifact_task(artifact)
+        review_page = deepcopy(source_task_page)
+        review_page["slug"] = review_task
+        review_page["frontmatter"] = deepcopy(source_task_page["frontmatter"])
+        runner = StatefulArtifactRunner(
+            {
+                artifact.slug: stored_artifact(artifact),
+                artifact.produced_for: source_task_page,
+                review_task: review_page,
+            },
+            [
+                *[{**edge, "link_source": "gtasks"} for edge in artifact_edges(artifact)],
+                *source_task_edges,
+                {
+                    "from_slug": review_task,
+                    "to_slug": "collections/toddys-tasks",
+                    "link_type": "member_of",
+                },
+                {
+                    "from_slug": review_task,
+                    "to_slug": "agents/toddy",
+                    "link_type": "assigned_to",
+                },
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+
+        first = adapter.add_artifact_review_reference(review_task, artifact.slug)
+        second = adapter.add_artifact_review_reference(review_task, artifact.slug)
+
+        self.assertTrue(first.verified)
+        self.assertFalse(first.idempotent)
+        self.assertTrue(second.idempotent)
+        self.assertIn(
+            (review_task, artifact.slug, "reviews_artifact", "gtasks"),
+            {
+                (edge["from_slug"], edge["to_slug"], edge["link_type"], edge.get("link_source"))
+                for edge in runner.links
+            },
+        )
+        self.assertIn(
+            (artifact.slug, artifact.produced_for, "produced_for"),
+            {(edge["from_slug"], edge["to_slug"], edge["link_type"]) for edge in runner.links},
+        )
+
+    def test_add_artifact_review_reference_serializes_concurrent_retries(self) -> None:
+        artifact = self.artifact()
+        review_task = "tasks/540d2d36-4ce4-47f2-a06f-bd6ba8ae2700"
+        source_task_page, source_task_edges = authorized_artifact_task(artifact)
+        review_page = deepcopy(source_task_page)
+        review_page["slug"] = review_task
+        review_page["frontmatter"] = deepcopy(source_task_page["frontmatter"])
+
+        class ConcurrentReviewRunner(StatefulArtifactRunner):
+            def __init__(self, pages, links) -> None:
+                super().__init__(pages, links)
+                self.add_barrier = threading.Barrier(2)
+
+            def run(self, tool: str, params: dict) -> object:
+                if tool == "add_link" and params.get("link_type") == "reviews_artifact":
+                    try:
+                        self.add_barrier.wait(timeout=0.2)
+                    except threading.BrokenBarrierError:
+                        pass
+                return super().run(tool, params)
+
+        runner = ConcurrentReviewRunner(
+            {
+                artifact.slug: stored_artifact(artifact),
+                artifact.produced_for: source_task_page,
+                review_task: review_page,
+            },
+            [
+                *[{**edge, "link_source": "gtasks"} for edge in artifact_edges(artifact)],
+                *source_task_edges,
+                {
+                    "from_slug": review_task,
+                    "to_slug": "collections/toddys-tasks",
+                    "link_type": "member_of",
+                },
+                {
+                    "from_slug": review_task,
+                    "to_slug": "agents/toddy",
+                    "link_type": "assigned_to",
+                },
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+        start = threading.Barrier(2)
+
+        def write_reference() -> object:
+            start.wait(timeout=1)
+            return adapter.add_artifact_review_reference(review_task, artifact.slug)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            receipts = list(executor.map(lambda _index: write_reference(), range(2)))
+
+        self.assertEqual(sorted(receipt.idempotent for receipt in receipts), [False, True])
+        matching = [
+            edge for edge in runner.links
+            if edge.get("from_slug") == review_task
+            and edge.get("to_slug") == artifact.slug
+            and edge.get("link_type") == "reviews_artifact"
+        ]
+        self.assertEqual(len(matching), 1)
+
+    def test_task_filter_dedupes_direct_and_reviewed_artifact_with_stable_pagination_and_issues(self) -> None:
+        task_slug = "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d"
+        newest = self.artifact(created_at=datetime(2026, 8, 3, 14, tzinfo=timezone.utc))
+        older = new_agent_artifact(
+            title="Older reviewed Artifact",
+            artifact_kind="markdown",
+            created_by="agents/toddy",
+            produced_for="tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            markdown="# Older",
+            now=datetime(2026, 8, 1, 14, tzinfo=timezone.utc),
+        )
+        missing_a = "artifacts/11111111-1111-4111-8111-111111111111"
+        missing_b = "artifacts/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        runner = StatefulArtifactRunner(
+            {
+                newest.slug: stored_artifact(newest),
+                older.slug: stored_artifact(older),
+            },
+            [
+                *artifact_edges(newest),
+                *artifact_edges(older),
+                {
+                    "from_slug": task_slug,
+                    "to_slug": newest.slug,
+                    "link_type": "reviews_artifact",
+                },
+                {
+                    "from_slug": task_slug,
+                    "to_slug": older.slug,
+                    "link_type": "reviews_artifact",
+                },
+                {
+                    "from_slug": task_slug,
+                    "to_slug": missing_b,
+                    "link_type": "reviews_artifact",
+                },
+                {
+                    "from_slug": task_slug,
+                    "to_slug": missing_a,
+                    "link_type": "reviews_artifact",
+                },
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+
+        first = adapter.list_agent_artifacts(task=task_slug, limit=1, cursor=0)
+        second = adapter.list_agent_artifacts(task=task_slug, limit=1, cursor=1)
+
+        self.assertEqual([item.slug for item in first.artifacts], [newest.slug])
+        self.assertEqual(first.next_cursor, 1)
+        self.assertEqual(
+            first.to_dict()["artifacts"][0]["relation_context"],
+            ["produced_for", "referenced_for_review"],
+        )
+        self.assertEqual([item.slug for item in second.artifacts], [older.slug])
+        self.assertIsNone(second.next_cursor)
+        self.assertEqual(
+            [issue.slug for issue in first.issues],
+            [missing_a, missing_b],
+        )
+        self.assertEqual(
+            [issue.slug for issue in second.issues],
+            [missing_a, missing_b],
+        )
+
     def test_renderers_emit_canonical_collection_and_artifact_contracts(self) -> None:
         artifact = self.artifact()
         child = gbrain_module.render_artifact_collection_page(
@@ -8546,6 +8788,48 @@ class SystemTicketAdapterTests(unittest.TestCase):
             next(params for tool, params in runner.calls if tool == "add_link")["link_type"],
             "member_of",
         )
+
+    def test_create_ticket_accepts_unified_compiled_truth_readback(self) -> None:
+        now = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+        ticket = SystemTicket(
+            slug="tasks/system-tickets/truth-readback-a1b2c3",
+            title="Accept compiled truth",
+            status="planned",
+            verbatim_request="Treat the normalized canonical body as verified.",
+            target_subsystem="mission_control",
+            priority="normal",
+            created_at=now,
+            updated_at=now,
+        )
+        expected = render_system_ticket_body(ticket.title, ticket.verbatim_request)
+        stored = {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "compiled_truth": expected,
+            "frontmatter": {
+                "type": "task", "title": ticket.title, "status": ticket.status,
+                "markdown_contract": MARKDOWN_CONTRACT, "priority": ticket.priority,
+                "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": ticket.target_subsystem,
+                "linked_evidence": [], "implementation_receipts": [], "qa_receipts": [],
+                "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        edge = {
+            "from_slug": ticket.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner({
+            "get_page": [{"slug": SYSTEM_TICKETS_ROOT, "type": "collection"}, stored],
+            "put_page": [{"slug": ticket.slug}], "add_link": [{}], "get_links": [[edge]],
+        })
+
+        receipt = GBrainAdapter(runner).create_system_ticket(ticket)
+
+        self.assertTrue(receipt.verified)
 
     def test_create_ticket_requires_exact_live_membership_edge(self) -> None:
         now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc)

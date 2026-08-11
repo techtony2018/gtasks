@@ -228,6 +228,7 @@ class FakeAdapter:
         self.created_delegations: list[AgentDelegationLease] = []
         self.updated_delegations: list[AgentDelegationLease] = []
         self.created_artifacts: list[tuple[AgentArtifact, str]] = []
+        self.artifact_review_references: list[tuple[str, str]] = []
         self.artifact_reads: list[dict[str, object]] = []
         self.created_system_tickets: list[SystemTicket] = []
         self.updated_system_tickets: list[SystemTicket] = []
@@ -464,6 +465,23 @@ class FakeAdapter:
         self.created_system_tickets.append(ticket)
         self.system_tickets = (*self.system_tickets, ticket)
         return MutationReceipt(slug=ticket.slug, verified=True)
+
+    def add_artifact_review_reference(self, task_slug: str, artifact_slug: str):
+        idempotent = (task_slug, artifact_slug) in self.artifact_review_references
+        if not idempotent:
+            self.artifact_review_references.append((task_slug, artifact_slug))
+        return type("Receipt", (), {
+            "task_slug": task_slug,
+            "artifact_slug": artifact_slug,
+            "verified": True,
+            "idempotent": idempotent,
+            "to_dict": lambda self: {
+                "task_slug": self.task_slug,
+                "artifact_slug": self.artifact_slug,
+                "verified": self.verified,
+                "idempotent": self.idempotent,
+            },
+        })()
 
     def update_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
         self.updated_system_tickets.append(ticket)
@@ -3770,7 +3788,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.88")
+        self.assertEqual(payload["version"], "V0.0.89")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3778,11 +3796,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.88")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.88")
+        self.assertEqual(payload["current_version"], "V0.0.89")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.89")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.89",
                 "V0.0.88",
                 "V0.0.87",
                 "V0.0.86",
@@ -5819,6 +5838,7 @@ class ArtifactApiTests(unittest.TestCase):
             [artifact["slug"] for artifact in payload["artifacts"]],
             [sample_artifact().slug],
         )
+        self.assertNotIn("relation_context", payload["artifacts"][0])
         self.assertEqual(
             adapter.artifact_reads,
             [{
@@ -5831,6 +5851,30 @@ class ArtifactApiTests(unittest.TestCase):
                 "limit": 25,
             }],
         )
+
+    def test_adds_idempotent_artifact_review_reference(self) -> None:
+        task_slug = "tasks/540d2d36-4ce4-47f2-a06f-bd6ba8ae2700"
+        artifact_slug = sample_artifact().slug
+        adapter = FakeAdapter(artifacts=(sample_artifact(),))
+        harness = ServerHarness(self, adapter)
+
+        first_status, first, _ = harness.request(
+            "POST", "/api/artifact-review-references", {
+                "task_slug": task_slug, "artifact_slug": artifact_slug,
+            },
+        )
+        second_status, second, _ = harness.request(
+            "POST", "/api/artifact-review-references", {
+                "task_slug": task_slug, "artifact_slug": artifact_slug,
+            },
+        )
+
+        self.assertEqual(first_status, 201)
+        self.assertEqual(second_status, 200)
+        self.assertTrue(first["receipt"]["verified"])
+        self.assertFalse(first["receipt"]["idempotent"])
+        self.assertTrue(second["receipt"]["idempotent"])
+        self.assertEqual(adapter.artifact_review_references, [(task_slug, artifact_slug)])
 
     def test_rejects_repeated_unknown_and_out_of_range_artifact_filters(self) -> None:
         harness = ServerHarness(self, FakeAdapter())

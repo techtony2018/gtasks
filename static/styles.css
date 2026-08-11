@@ -959,11 +959,23 @@ kbd {
 }
 
 .priority-badge,
-.due-badge {
+.due-badge,
+.task-status-badge {
   border-radius: 6px;
   font-size: 10px;
   white-space: nowrap;
 }
+
+.task-status-badge {
+  padding: 3px 6px;
+  color: var(--muted);
+  background: var(--surface-muted);
+}
+
+.task-status-badge.active { color: var(--accent-dark); }
+.task-status-badge.blocked { color: var(--danger); }
+.task-status-badge.completed { color: #2d7856; }
+.task-status-badge.cancelled { color: var(--faint); }
 
 .priority-badge {
   padding: 3px 6px;
@@ -5732,6 +5744,17 @@ button:active {
   background: #07111f;
   text-align: left;
   overflow-wrap: anywhere;
+}
+
+.task-artifact-title,
+.task-artifact-relation {
+  display: block;
+}
+
+.task-artifact-relation {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .task-handoff-timeline {

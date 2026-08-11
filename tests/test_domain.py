@@ -1423,6 +1423,16 @@ class AgentArtifactContractTests(unittest.TestCase):
         self.assertEqual(artifact.title, "Family care weekly review brief")
         self.assertEqual(artifact.markdown, "# Weekly review\n\nCanonical content.")
 
+    def test_agent_artifact_serializes_optional_updated_at(self) -> None:
+        updated_at = "2026-08-03T09:30:00-07:00"
+
+        artifact = domain.AgentArtifact.from_page(
+            self.artifact_page(frontmatter={"updated_at": updated_at}), edges=[]
+        )
+
+        self.assertEqual(artifact.updated_at.isoformat(), updated_at)
+        self.assertEqual(artifact.to_dict()["updated_at"], updated_at)
+
     def test_agent_artifact_rejects_normalized_type_and_title_conflicts(self) -> None:
         raw_type_conflict = self.artifact_page(type="task")
         normalized_type_conflict = self.artifact_page(type="artifact")

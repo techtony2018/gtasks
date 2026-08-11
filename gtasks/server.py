@@ -2271,6 +2271,51 @@ def _handler_class(
 
         def do_POST(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/artifact-review-references":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) != {"task_slug", "artifact_slug"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "Artifact review references require canonical task_slug and artifact_slug.",
+                            "code": "invalid_artifact_review_reference",
+                        },
+                    )
+                    return
+                try:
+                    task_slug = _canonical_uuid_slug(payload["task_slug"], "tasks")
+                    artifact_slug = _canonical_uuid_slug(
+                        payload["artifact_slug"], "artifacts", required_version=4
+                    )
+                    with foreground_operation():
+                        receipt = adapter.add_artifact_review_reference(
+                            task_slug, artifact_slug
+                        )
+                except (DomainValidationError, TypeError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_artifact_review_reference"},
+                    )
+                    return
+                except PartialMutationError as exc:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK if receipt.idempotent else HTTPStatus.CREATED,
+                    {"receipt": receipt.to_dict()},
+                )
+                return
             if path == "/api/agent-delegations":
                 payload = self._read_json()
                 if payload is None:

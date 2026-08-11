@@ -1737,6 +1737,14 @@ function taskProjectLabel(task) {
   return verifiedProjectForTask(task)?.title || "Project unavailable";
 }
 
+function compareNewestUpdated(left, right) {
+  const leftTimestamp = String(left.updated_at || left.created_at || "");
+  const rightTimestamp = String(right.updated_at || right.created_at || "");
+  return rightTimestamp.localeCompare(leftTimestamp)
+    || String(left.title || left.summary || "").localeCompare(String(right.title || right.summary || ""))
+    || String(left.slug || "").localeCompare(String(right.slug || ""));
+}
+
 function snapshotHasProjectReferences(snapshot) {
   if (!snapshot) return false;
   const taskLists = [
@@ -1754,6 +1762,7 @@ function taskRow(task, {
   todayActions = false,
   calendarWeek = false,
   displayRelevantDate = false,
+  showStatus = false,
 } = {}) {
   const row = node("div", "task-row");
   row.setAttribute("role", "listitem");
@@ -1788,6 +1797,17 @@ function taskRow(task, {
   );
   appendTaskProgress(nextAction, task);
   const end = node("span", "task-end");
+  if (showStatus) {
+    const status = String(task.status || "unknown");
+    const statusLabel = {
+      planned: "Planned",
+      active: "In Progress",
+      blocked: "Blocked",
+      completed: "Completed",
+      cancelled: "Cancelled",
+    }[status] || "Status unavailable";
+    end.append(node("span", `task-status-badge ${status}`, statusLabel));
+  }
   end.append(node("span", `priority-badge ${task.priority}`, task.priority));
   const due = displayRelevantDate
     ? relativeTaskDisplayDate(task)
@@ -2057,11 +2077,7 @@ function allTasksMatchingSearch() {
   return state.snapshot.tasks
     .filter(taskMatchesSearch)
     .slice()
-    .sort((left, right) => {
-      const leftDay = left.scheduled_day || left.due_day || "9999-12-31";
-      const rightDay = right.scheduled_day || right.due_day || "9999-12-31";
-      return leftDay.localeCompare(rightDay) || left.title.localeCompare(right.title);
-    });
+    .sort(compareNewestUpdated);
 }
 
 function filteredAllTasks() {
@@ -2097,7 +2113,10 @@ function renderAllTaskResults(container) {
   } else {
     const list = node("div", "task-list all-tasks-list");
     list.setAttribute("role", "list");
-    visible.forEach((task) => list.append(taskRow(task, { displayRelevantDate: true })));
+    visible.forEach((task) => list.append(taskRow(task, {
+      displayRelevantDate: true,
+      showStatus: true,
+    })));
     container.append(list);
   }
   elements.viewCount.textContent = inContextCountLabel("all");
@@ -6347,7 +6366,7 @@ function artifactHierarchyKey(kind, slug, parentKey = "") {
 }
 
 function buildArtifactHierarchy() {
-  const loadedArtifacts = [...state.artifacts];
+  const loadedArtifacts = [...state.artifacts].sort(compareNewestUpdated);
   const agentSlugs = new Set(loadedArtifacts.map((artifact) => artifact.created_by));
   state.agents
     .filter((agent) => state.artifactAgentFilter === "all" || agent.slug === state.artifactAgentFilter)
@@ -6519,7 +6538,7 @@ function renderArtifactsView() {
   } else {
     const grid = node("div", "artifact-grid");
     [...state.artifacts]
-      .sort((left, right) => String(right.created_at || "").localeCompare(String(left.created_at || "")))
+      .sort(compareNewestUpdated)
       .forEach((artifact) => grid.append(artifactCard(artifact)));
     section.append(grid);
   }
@@ -6554,7 +6573,11 @@ async function loadArtifacts({ reset = false, append = false } = {}) {
     if (!response.ok) throw new Error(payload.error || "Artifacts could not be read.");
     if (requestToken !== state.artifactRequestToken) return;
     const incoming = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-    state.artifacts = append ? [...state.artifacts, ...incoming] : incoming;
+    const artifactsBySlug = new Map(
+      (append ? [...state.artifacts, ...incoming] : incoming)
+        .map((artifact) => [artifact.slug, artifact]),
+    );
+    state.artifacts = [...artifactsBySlug.values()].sort(compareNewestUpdated);
     state.artifactIssues = Array.isArray(payload.issues) ? payload.issues : [];
     state.artifactsNextCursor = payload.next_cursor ?? null;
     state.artifactsLoaded = true;
@@ -6765,7 +6788,17 @@ function renderTaskArtifacts(taskSlug) {
   }
   elements.taskArtifactsState.textContent = `${entry.artifacts.length} canonical Artifact${entry.artifacts.length === 1 ? "" : "s"}`;
   entry.artifacts.forEach((artifact) => {
-    const button = node("button", "task-artifact-row", artifact.title);
+    const relationContext = Array.isArray(artifact.relation_context)
+      ? artifact.relation_context
+      : [];
+    const relationLabels = [];
+    if (relationContext.includes("referenced_for_review")) relationLabels.push("Linked for review");
+    if (relationContext.includes("produced_for")) relationLabels.push("Produced by this Task");
+    const button = node("button", "task-artifact-row");
+    button.append(node("span", "task-artifact-title", artifact.title));
+    if (relationLabels.length) {
+      button.append(node("span", "task-artifact-relation", relationLabels.join(" · ")));
+    }
     button.type = "button";
     button.dataset.slug = artifact.slug;
     button.setAttribute("aria-label", `Open Artifact ${artifact.title}`);

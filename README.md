@@ -62,11 +62,12 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.88. New Tasks and System Tickets use
-one safe Markdown formatter with deterministic headings, clickable external
-links, verified in-app Ticket links, preserved user-authored details, and
-marker-gated compiled-body readback. Historical pages are not bulk-migrated or
-silently rewritten.
+Latest verified and deployed release: V0.0.89. Review Tasks can explicitly link
+canonical Artifacts without changing their producing Task provenance. Artifacts
+and All Tasks use deterministic newest-updated ordering, and All Tasks shows
+each Task's canonical status. The Value Discovery automation publishes the
+explicit review relationship after each report and verifies it before marking
+the daily run complete.
 
 ### Independent UI/UX release gate
 
