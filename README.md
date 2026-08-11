@@ -62,12 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.89. Review Tasks can explicitly link
-canonical Artifacts without changing their producing Task provenance. Artifacts
-and All Tasks use deterministic newest-updated ordering, and All Tasks shows
-each Task's canonical status. The Value Discovery automation publishes the
-explicit review relationship after each report and verifies it before marking
-the daily run complete.
+Latest verified and deployed release: V0.0.90. Authenticated Artifact
+publication accepts evidence-rich Markdown up to a dedicated 256 KiB limit,
+while all other JSON mutations retain the generic 16 KiB cap and oversized
+Artifact requests fail before any canonical write.
 
 ### Independent UI/UX release gate
 

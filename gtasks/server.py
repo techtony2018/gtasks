@@ -102,6 +102,7 @@ from .warnings import WarningDismissalStore
 
 
 MAX_REQUEST_BYTES = 16 * 1024
+MAX_ARTIFACT_REQUEST_BYTES = 256 * 1024
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -1584,17 +1585,19 @@ def _handler_class(
                 "surface": "task",
             }
 
-        def _read_json(self) -> dict[str, Any] | None:
+        def _read_json(
+            self, *, max_request_bytes: int = MAX_REQUEST_BYTES
+        ) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length", "0")
             try:
                 length = int(raw_length)
             except ValueError:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid Content-Length."})
                 return None
-            if length <= 0 or length > MAX_REQUEST_BYTES:
+            if length <= 0 or length > max_request_bytes:
                 self._json(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-                    if length > MAX_REQUEST_BYTES
+                    if length > max_request_bytes
                     else HTTPStatus.BAD_REQUEST,
                     {"error": "Request body size is invalid."},
                 )
@@ -3468,7 +3471,9 @@ def _handler_class(
                 self._json(HTTPStatus.OK, result.to_dict())
                 return
             if path == "/api/artifacts":
-                payload = self._read_json()
+                payload = self._read_json(
+                    max_request_bytes=MAX_ARTIFACT_REQUEST_BYTES
+                )
                 if payload is None:
                     return
                 required = {

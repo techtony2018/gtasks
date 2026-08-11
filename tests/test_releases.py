@@ -27,7 +27,14 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.89")
+        self.assertEqual(__version__, "V0.0.90")
+
+    def test_v0_0_90_records_bounded_rich_artifact_publication(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.90")
+
+        self.assertIn("evidence-rich Markdown", release["summary"])
+        self.assertIn("256 KiB", release["summary"])
+        self.assertIn("generic 16 KiB mutation limit", release["summary"])
 
     def test_v0_0_89_records_reviewed_artifacts_and_newest_first_views(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.89")
@@ -398,6 +405,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.87",
                 "V0.0.88",
                 "V0.0.89",
+                "V0.0.90",
             ],
         )
 

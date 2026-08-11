@@ -3788,7 +3788,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.89")
+        self.assertEqual(payload["version"], "V0.0.90")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3796,11 +3796,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.89")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.89")
+        self.assertEqual(payload["current_version"], "V0.0.90")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.90")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.90",
                 "V0.0.89",
                 "V0.0.88",
                 "V0.0.87",
@@ -6064,6 +6065,38 @@ class ArtifactApiTests(unittest.TestCase):
         self.assertTrue(second["receipt"]["idempotent"])
         self.assertEqual(second["artifact"]["slug"], first["artifact"]["slug"])
         self.assertEqual(len(adapter.created_artifacts), 1)
+
+    def test_artifact_publication_accepts_bounded_rich_markdown_above_generic_limit(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        body = {
+            **self._publish_payload(),
+            "markdown": "# Value Discovery\n\n" + ("evidence-backed research\n" * 1500),
+        }
+
+        status, payload, _ = harness.request(
+            "POST", "/api/artifacts", body, self._execution_headers()
+        )
+
+        self.assertEqual(status, 201)
+        self.assertTrue(payload["receipt"]["verified"])
+        self.assertEqual(len(adapter.created_artifacts), 1)
+
+    def test_artifact_publication_rejects_markdown_above_artifact_limit(self) -> None:
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter)
+        body = {
+            **self._publish_payload(),
+            "markdown": "x" * (256 * 1024),
+        }
+
+        status, payload, _ = harness.request(
+            "POST", "/api/artifacts", body, self._execution_headers()
+        )
+
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["error"], "Request body size is invalid.")
+        self.assertEqual(adapter.created_artifacts, [])
 
     def test_publish_requires_matching_execution_identity_header(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
