@@ -3250,6 +3250,51 @@ class AgentArtifactAdapterTests(unittest.TestCase):
             {(edge["from_slug"], edge["to_slug"], edge["link_type"]) for edge in runner.links},
         )
 
+    def test_add_artifact_review_reference_accepts_verified_legacy_artifact_link_sources(self) -> None:
+        artifact = self.artifact()
+        review_task = "tasks/540d2d36-4ce4-47f2-a06f-bd6ba8ae2700"
+        source_task_page, source_task_edges = authorized_artifact_task(artifact)
+        review_page = deepcopy(source_task_page)
+        review_page["slug"] = review_task
+        review_page["frontmatter"] = deepcopy(source_task_page["frontmatter"])
+        runner = StatefulArtifactRunner(
+            {
+                artifact.slug: stored_artifact(artifact),
+                artifact.produced_for: source_task_page,
+                review_task: review_page,
+            },
+            [
+                *artifact_edges(artifact),
+                *source_task_edges,
+                {
+                    "from_slug": review_task,
+                    "to_slug": "collections/toddys-tasks",
+                    "link_type": "member_of",
+                },
+                {
+                    "from_slug": review_task,
+                    "to_slug": "agents/toddy",
+                    "link_type": "assigned_to",
+                },
+            ],
+        )
+
+        receipt = GBrainAdapter(runner).add_artifact_review_reference(
+            review_task, artifact.slug
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertIn(
+            (review_task, artifact.slug, "reviews_artifact", "gtasks"),
+            {
+                (
+                    edge["from_slug"], edge["to_slug"], edge["link_type"],
+                    edge.get("link_source"),
+                )
+                for edge in runner.links
+            },
+        )
+
     def test_add_artifact_review_reference_serializes_concurrent_retries(self) -> None:
         artifact = self.artifact()
         review_task = "tasks/540d2d36-4ce4-47f2-a06f-bd6ba8ae2700"

@@ -3333,7 +3333,11 @@ class GBrainAdapter:
         self._require_canonical_uuid_slug(task_slug, "tasks", "review task")
         self._require_canonical_uuid_slug(artifact_slug, "artifacts", "review Artifact")
         self.get_task(task_slug)
-        artifact = self.get_agent_artifact(artifact_slug, require_gtasks_source=True)
+        # Review links may be added to older, already-valid Artifacts whose
+        # typed provenance predates the gtasks link_source marker.  The
+        # Artifact graph must still match its canonical page exactly; only the
+        # newly-created reviews_artifact edge is required to use gtasks.
+        artifact = self.get_agent_artifact(artifact_slug)
         task_links = self.runner.run("get_links", {"slug": task_slug})
         if not isinstance(task_links, list):
             raise GBrainProtocolError("Artifact review task links were not a list")
@@ -3362,7 +3366,7 @@ class GBrainAdapter:
                 },
             )
             self.get_task(task_slug)
-            stored = self.get_agent_artifact(artifact.slug, require_gtasks_source=True)
+            stored = self.get_agent_artifact(artifact.slug)
             links = self.runner.run("get_links", {"slug": task_slug})
             if not isinstance(links, list) or not any(
                 isinstance(edge, Mapping)
