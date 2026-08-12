@@ -1158,6 +1158,85 @@ assert(elements.detailTitle.textContent === "Loaded canonical task", `canonical 
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_select_task_reopens_busy_detail_when_same_task_read_is_still_in_flight(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/long-lived-all-tasks";
+state.snapshot = {
+  as_of: "2026-08-12",
+  tasks: [{
+    slug: taskSlug,
+    status: "planned",
+    title: "Long-lived All Tasks row",
+    summary: "Long-lived All Tasks row",
+    detail: "Projection without exact detail.",
+    priority: "normal",
+    due_day: "2026-08-12",
+    lifecycle_root: "collections/tonys-tasks",
+  }],
+  goals: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.activeView = "all";
+state.agentTasks = [];
+state.projects = [];
+render = () => {};
+renderTaskTodos = () => {};
+renderTaskArtifacts = () => {};
+renderTaskHandoffTimeline = () => {};
+loadTaskArtifacts = async () => {};
+loadTaskHandoffTimeline = async () => {};
+let reads = 0;
+let releaseRead;
+globalThis.fetch = async (url) => {
+  reads += 1;
+  assert(url === `/api/tasks/${encodeURIComponent(taskSlug)}`, `unexpected URL ${url}`);
+  return await new Promise((resolve) => {
+    releaseRead = () => resolve({
+      ok: true,
+      json: async () => ({
+        task: {
+          slug: taskSlug,
+          status: "planned",
+          title: "Loaded long-lived Task",
+          summary: "Loaded long-lived Task",
+          detail: "Verified detail after long-lived session.",
+          display_markdown: "# Loaded long-lived Task\n\nVerified detail.",
+          priority: "normal",
+          due_day: "2026-08-12",
+          lifecycle_root: "collections/tonys-tasks",
+        },
+      }),
+    });
+  });
+};
+const origin = new FakeElement("button");
+const pending = selectTask(taskSlug, null, origin);
+assert(reads === 1, `first selection did not start exactly one read: ${reads}`);
+elements.detailPanel.setAttribute("aria-hidden", "true");
+elements.detailPanel.setAttribute("aria-busy", "false");
+state.selectedSlug = null;
+state.selectedKind = null;
+
+selectTask(taskSlug, null, origin);
+
+assert(reads === 1, `same in-flight Task selection launched duplicate reads: ${reads}`);
+assert(elements.detailPanel.getAttribute("aria-hidden") === "false", "detail panel did not reopen for same in-flight Task");
+assert(elements.detailPanel.getAttribute("aria-busy") === "true", "reopened detail panel was not busy");
+assert(elements.detailTitle.textContent === "Long-lived All Tasks row", `fallback title was not preserved while busy: ${elements.detailTitle.textContent}`);
+assert(elements.taskDetailStatus.textContent === "Reading", `missing busy status: ${elements.taskDetailStatus.textContent}`);
+
+releaseRead();
+await pending;
+
+assert(elements.detailPanel.getAttribute("aria-busy") === "false", "detail panel did not finish loading");
+assert(elements.detailTitle.textContent === "Loaded long-lived Task", `wrong loaded detail: ${elements.detailTitle.textContent}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_status_success_reconciles_authoritative_task_without_full_reload(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         move_body = javascript[

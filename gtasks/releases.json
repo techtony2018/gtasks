@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.91",
+  "current_version": "V0.0.92",
   "releases": [
     {
       "version": "V0.0.1",
@@ -59,7 +59,7 @@
       "version": "V0.0.10",
       "date": "2026-07-30",
       "title": "Agent profiles and optional Board work",
-      "summary": "Agent Work now shows Toddy, Timmy, and Tammy with typed default-goal ownership and safe profile links. Board remains Tony-only by default; Show agent tasks reads the three canonical agent collections on demand, adds accessible owner and avatar badges, and keeps agent work visibly read-only and separate from Tony’s obligations."
+      "summary": "Agent Work now shows Toddy, Timmy, and Tammy with typed default-goal ownership and safe profile links. Board remains Tony-only by default; Show agent tasks reads the three canonical agent collections on demand, adds accessible owner and avatar badges, and keeps agent work visibly read-only and separate from Tony\u2019s obligations."
     },
     {
       "version": "V0.0.11",
@@ -101,13 +101,13 @@
       "version": "V0.0.17",
       "date": "2026-07-30",
       "title": "Reliable agent avatar identity",
-      "summary": "Agent avatars now preserve each profile’s canonical Agent identity after Memory Stargraph attachment verification, so avatar changes cannot make Toddy, Timmy, or Tammy disappear from Agent Work."
+      "summary": "Agent avatars now preserve each profile\u2019s canonical Agent identity after Memory Stargraph attachment verification, so avatar changes cannot make Toddy, Timmy, or Tammy disappear from Agent Work."
     },
     {
       "version": "V0.0.18",
       "date": "2026-07-30",
       "title": "Tony avatar on Board",
-      "summary": "Board cards for Tony’s personal tasks now display Tony’s canonical GBrain profile avatar, with a safe initials fallback if the profile image is unavailable."
+      "summary": "Board cards for Tony\u2019s personal tasks now display Tony\u2019s canonical GBrain profile avatar, with a safe initials fallback if the profile image is unavailable."
     },
     {
       "version": "V0.0.19",
@@ -125,7 +125,7 @@
       "version": "V0.0.21",
       "date": "2026-07-30",
       "title": "Weekly due-date view",
-      "summary": "Added Week: a read-only Monday-to-Sunday view of Tony’s active tasks grouped by their canonical GBrain due date, with previous, next, and current-week controls plus clear empty days."
+      "summary": "Added Week: a read-only Monday-to-Sunday view of Tony\u2019s active tasks grouped by their canonical GBrain due date, with previous, next, and current-week controls plus clear empty days."
     },
     {
       "version": "V0.0.22",
@@ -155,7 +155,7 @@
       "version": "V0.0.26",
       "date": "2026-07-31",
       "title": "Focused proposal review",
-      "summary": "Proposed Tasks now uses title-only rows with compact Edit, Approve, and Reject actions. The selected task’s full safe Markdown, agent and Goal context, timestamps, and matching review actions stay in More details; decision notes use a clear full-width field on desktop and mobile."
+      "summary": "Proposed Tasks now uses title-only rows with compact Edit, Approve, and Reject actions. The selected task\u2019s full safe Markdown, agent and Goal context, timestamps, and matching review actions stay in More details; decision notes use a clear full-width field on desktop and mobile."
     },
     {
       "version": "V0.0.27",
@@ -323,7 +323,7 @@
       "version": "V0.0.54",
       "date": "2026-07-31",
       "title": "Persistent agent-task Board filter",
-      "summary": "Show agent tasks now survives browser refresh with a durable local preference, while keeping the Board separate from Tony’s personal task list by default."
+      "summary": "Show agent tasks now survives browser refresh with a durable local preference, while keeping the Board separate from Tony\u2019s personal task list by default."
     },
     {
       "version": "V0.0.55",
@@ -335,7 +335,7 @@
       "version": "V0.0.56",
       "date": "2026-07-31",
       "title": "Reliable agent work recovery",
-      "summary": "Board now keeps Tony’s work visible and explains when GBrain cannot read agent work, while preserving the selected agent-task filter across refreshes."
+      "summary": "Board now keeps Tony\u2019s work visible and explains when GBrain cannot read agent work, while preserving the selected agent-task filter across refreshes."
     },
     {
       "version": "V0.0.57",
@@ -377,7 +377,7 @@
       "version": "V0.0.63",
       "date": "2026-08-01",
       "title": "Stable canonical identities",
-      "summary": "New Goals, Projects, and Tasks now use title-independent opaque IDs. The verified migration preserves readable titles, content, typed relationships, and legacy links while repairing Tony’s Goals membership without reviving the soft-deleted ERFA task."
+      "summary": "New Goals, Projects, and Tasks now use title-independent opaque IDs. The verified migration preserves readable titles, content, typed relationships, and legacy links while repairing Tony\u2019s Goals membership without reviving the soft-deleted ERFA task."
     },
     {
       "version": "V0.0.64",
@@ -546,6 +546,12 @@
       "date": "2026-08-11",
       "title": "Canonical Artifact timestamp reconciliation",
       "summary": "Treats canonical updated_at as server-managed metadata during Artifact publication verification and idempotent retry, while continuing to compare every requested content and provenance field."
+    },
+    {
+      "version": "V0.0.92",
+      "date": "2026-08-12",
+      "title": "Reliable long-lived Task detail opening",
+      "summary": "Reopens the Task detail busy panel when a same-task canonical read is still in flight after long-lived session churn, while preserving one-read coalescing and final exact GBrain reconciliation."
     }
   ]
 }

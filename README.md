@@ -62,9 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.91. Artifact publication and
-idempotent retry now treat canonical `updated_at` as server-managed metadata,
-while continuing to compare every requested content and provenance field.
+Latest verified and deployed release: V0.0.92. Task selection reopens the
+detail busy panel when a same-task canonical read is still in flight after
+long-lived session churn, while preserving one-read coalescing and final exact
+GBrain reconciliation.
 
 ### Independent UI/UX release gate
 

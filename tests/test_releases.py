@@ -27,7 +27,14 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.91")
+        self.assertEqual(__version__, "V0.0.92")
+
+    def test_v0_0_92_records_reliable_long_lived_task_detail_opening(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.92")
+
+        self.assertIn("Task detail busy panel", release["summary"])
+        self.assertIn("one-read coalescing", release["summary"])
+        self.assertIn("exact GBrain reconciliation", release["summary"])
 
     def test_v0_0_91_records_canonical_artifact_timestamp_reconciliation(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.91")
@@ -414,6 +421,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.89",
                 "V0.0.90",
                 "V0.0.91",
+                "V0.0.92",
             ],
         )
 

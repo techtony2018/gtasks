@@ -7422,6 +7422,16 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) 
     state.taskDetailReadSlug === slug &&
     state.taskDetailReadPromise
   ) {
+    const detailHidden = elements.detailPanel.getAttribute("aria-hidden") !== "false";
+    const detailNotBusy = elements.detailPanel.getAttribute("aria-busy") !== "true";
+    if (
+      detailHidden ||
+      detailNotBusy ||
+      state.selectedSlug !== slug ||
+      state.selectedKind !== "task"
+    ) {
+      openTaskDetailLoading(slug, returnFocus, fallback);
+    }
     return state.taskDetailReadPromise;
   }
   const token = state.taskDetailReadToken + 1;
