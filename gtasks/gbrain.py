@@ -7838,6 +7838,11 @@ class GBrainAdapter:
                 self._verify_compiled_markdown_body(
                     stored_page, expected_body, label="Task edit"
                 )
+            if status == "completed":
+                stored = self._reconcile_completed_task_todos(
+                    task_slug,
+                    now=now,
+                )
             return TaskEditReceipt(task_slug=task_slug, task=stored, verified=True)
         except (DomainValidationError, GBrainError) as exc:
             raise PartialMutationError(
@@ -7974,6 +7979,8 @@ class GBrainAdapter:
             raise LifecycleIntegrityError(task_slug, existing_lifecycle_edges)
 
         if task.status == status and not recovering_terminal_handoff:
+            if status == "completed":
+                task = self._reconcile_completed_task_todos(task_slug, now=now)
             return StatusMutationReceipt(
                 task_slug=task_slug,
                 status=status,
@@ -8078,6 +8085,11 @@ class GBrainAdapter:
             ):
                 raise GBrainProtocolError(
                     "status lifecycle edge readback did not match the task page"
+                )
+            if status == "completed":
+                stored_task = self._reconcile_completed_task_todos(
+                    task_slug,
+                    now=now,
                 )
 
             unrelated_edges = [
@@ -9314,6 +9326,43 @@ class GBrainAdapter:
             raise GBrainProtocolError(
                 "todo compatibility projection or parent relationships did not read back"
             )
+
+    def _reconcile_completed_task_todos(
+        self,
+        task_slug: str,
+        *,
+        now: datetime,
+    ) -> Task:
+        todos = self.list_task_todos(task_slug, limit=100).todos
+        for todo in todos:
+            if todo.status != "not_done":
+                continue
+            self.set_todo_status(
+                todo.slug,
+                status="done",
+                expected_updated_at=todo.updated_at,
+                actor=TONY_PROFILE_SLUG,
+                source="mission_control",
+                idempotency_key=f"parent-task-completed:{task_slug}",
+                now=now,
+            )
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError(
+                "completed task TODO reconciliation readback was not structured"
+            )
+        stored = Task.from_page(raw_page, edges=raw_links)
+        remaining = [
+            todo.slug
+            for todo in self.list_task_todos(task_slug, limit=100).todos
+            if todo.status == "not_done"
+        ]
+        if stored.status == "completed" and remaining:
+            raise GBrainProtocolError(
+                "completed task retained unreconciled not_done TODOs"
+            )
+        return stored
 
     def _delete_child_page(self, slug: str) -> bool:
         with self._todo_child_cache_lock:

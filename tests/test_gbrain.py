@@ -796,6 +796,11 @@ class StatefulTaskRunner:
             return deepcopy(self.page)
         if tool == "get_links":
             return deepcopy(self.links)
+        if tool == "get_backlinks":
+            slug = params["slug"]
+            return deepcopy([
+                edge for edge in self.links if edge.get("to_slug") == slug
+            ])
         if tool == "put_page":
             content = params["content"]
             lines = content.splitlines()
@@ -6695,8 +6700,17 @@ class ProposalDecisionTimelineTests(unittest.TestCase):
         final_page["frontmatter"]["updated_at"] = now.isoformat()
         runner = FakeRunner(
             {
-                "get_page": [initial_page, final_page],
-                "get_links": [[active_edge], [active_edge]],
+                "get_page": [initial_page, final_page, final_page, final_page, final_page],
+                "get_links": [
+                    [active_edge],
+                    [active_edge],
+                    [active_edge],
+                    [active_edge],
+                    [active_edge],
+                    [active_edge],
+                    [active_edge],
+                ],
+                "get_backlinks": [[], []],
                 "put_page": [{"slug": task.slug}],
             }
         )
@@ -7097,6 +7111,300 @@ class TodoAdapterTests(unittest.TestCase):
             runner.pages[task.slug]["frontmatter"]["next_action_history"],
             [{"action": "Confirm the 17:00 deployment window", "completed_at": "2026-08-01T10:04:00-07:00"}],
         )
+
+    def test_completing_parent_task_reconciles_open_child_todo(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Publish the release notes",
+            detail="This open TODO must not contradict a completed parent.",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-open",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+
+        receipt = adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:05:00-07:00"),
+        )
+        stored = next(
+            item
+            for item in adapter.list_task_todos(task.slug, limit=100).todos
+            if item.slug == todo.slug
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "completed")
+        self.assertEqual(stored.slug, todo.slug)
+        self.assertEqual(stored.status, "done")
+        self.assertEqual(
+            [event.event_type for event in stored.events],
+            ["created", "status_changed"],
+        )
+        self.assertEqual(stored.events[-1].actor, "people/tony-guan")
+        self.assertEqual(stored.events[-1].source, "mission_control")
+        self.assertEqual(stored.events[-1].before, {"status": "not_done"})
+        self.assertEqual(stored.events[-1].after, {"status": "done"})
+
+    def test_completing_parent_task_reconciles_multiple_todos_without_reopening_done_ones(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        first = adapter.create_todo(
+            task.slug,
+            text="First open item",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-first",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        second = adapter.create_todo(
+            task.slug,
+            text="Second open item",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-second",
+            now=datetime.fromisoformat("2026-08-01T10:01:00-07:00"),
+        ).todo
+        already_done = adapter.set_todo_status(
+            second.slug,
+            status="done",
+            expected_updated_at=second.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="done-second-before-parent",
+            now=datetime.fromisoformat("2026-08-01T10:02:00-07:00"),
+        ).todo
+
+        adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:05:00-07:00"),
+        )
+        todos = {
+            todo.slug: todo
+            for todo in adapter.list_task_todos(task.slug, limit=100).todos
+        }
+
+        self.assertEqual(todos[first.slug].status, "done")
+        self.assertEqual(todos[second.slug].status, "done")
+        self.assertEqual(
+            [event.event_type for event in todos[first.slug].events],
+            ["created", "status_changed"],
+        )
+        self.assertEqual(
+            [event.event_type for event in todos[second.slug].events],
+            [event.event_type for event in already_done.events],
+        )
+
+    def test_completed_parent_status_retry_does_not_duplicate_todo_events(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Reconcile exactly once",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-open",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+
+        adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:05:00-07:00"),
+        )
+        adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:06:00-07:00"),
+        )
+        stored = next(
+            item
+            for item in adapter.list_task_todos(task.slug, limit=100).todos
+            if item.slug == todo.slug
+        )
+
+        self.assertEqual(stored.slug, todo.slug)
+        self.assertEqual(stored.status, "done")
+        self.assertEqual(
+            [event.event_type for event in stored.events],
+            ["created", "status_changed"],
+        )
+
+    def test_same_status_completed_parent_repairs_historical_open_todo(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Historical leftover item",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-open",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        completed_at = datetime.fromisoformat("2026-08-01T10:05:00-07:00")
+        page = deepcopy(runner.pages[task.slug])
+        page["frontmatter"]["status"] = "completed"
+        page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        page["frontmatter"]["updated_at"] = completed_at.isoformat()
+        runner.pages[task.slug] = page
+
+        receipt = adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:06:00-07:00"),
+        )
+        stored = adapter.list_task_todos(task.slug, limit=100).todos[0]
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "completed")
+        self.assertEqual(stored.slug, todo.slug)
+        self.assertEqual(stored.status, "done")
+
+    def test_legacy_next_action_todo_is_reconciled_when_parent_completes(self) -> None:
+        runner, task = self._fixture(
+            next_action="Publish the legacy next action",
+            history=[
+                {
+                    "action": "Collect earlier evidence",
+                    "completed_at": "2026-08-01T09:30:00-07:00",
+                }
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+        adapter.migrate_legacy_next_actions(
+            task.slug,
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+
+        adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-01T10:05:00-07:00"),
+        )
+        todos = adapter.list_task_todos(task.slug, limit=100).todos
+
+        self.assertEqual({todo.status for todo in todos}, {"done"})
+        current = next(
+            todo for todo in todos if todo.text == "Publish the legacy next action"
+        )
+        self.assertEqual(
+            [event.event_type for event in current.events],
+            ["legacy_migrated", "status_changed"],
+        )
+
+    def test_full_edit_completed_parent_repairs_historical_open_todo(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Historical edit-path leftover",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="todo-open",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        completed_at = datetime.fromisoformat("2026-08-01T10:05:00-07:00")
+        page = deepcopy(runner.pages[task.slug])
+        page["frontmatter"]["status"] = "completed"
+        page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        page["frontmatter"]["updated_at"] = completed_at.isoformat()
+        runner.pages[task.slug] = page
+
+        receipt = adapter.edit_task(
+            task.slug,
+            title="Ship the edited release",
+            detail=task.detail,
+            priority=task.priority,
+            due_day=task.due_day,
+            next_action=task.next_action,
+            project_slug=task.project,
+            goal_slug="goals/11111111-1111-4111-8111-111111111111",
+            status="completed",
+            assignee_slug="tony",
+            progress_metric=task.progress_metric,
+            event_progress=task.event_progress,
+            handoff_reason="",
+            now=datetime.fromisoformat("2026-08-01T10:06:00-07:00"),
+        )
+        stored = adapter.list_task_todos(task.slug, limit=100).todos[0]
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "completed")
+        self.assertEqual(stored.slug, todo.slug)
+        self.assertEqual(stored.status, "done")
+        self.assertEqual(
+            [event.event_type for event in stored.events],
+            ["created", "status_changed"],
+        )
+
+    def test_automation_created_daily_task_completion_reconciles_child_todo(self) -> None:
+        now = datetime.fromisoformat("2026-08-12T08:00:00-07:00")
+        task = new_task(
+            title="Daily automation-created review",
+            detail="Created by the recurring Mission Control builder.",
+            priority="normal",
+            next_action="Review the daily queue",
+            due_day=now.date(),
+            project=None,
+            goal=None,
+            now=now,
+            identity="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["source"] = "mission_control_nightly_builder"
+        runner = StatefulIdentityMigrationRunner(
+            {task.slug: page},
+            [
+                {
+                    "from_slug": task.slug,
+                    "to_slug": ACTIVE_ROOT,
+                    "link_type": "member_of",
+                    "context": "Automation-created Tony task",
+                    "link_source": "gtasks",
+                }
+            ],
+        )
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug,
+            text="Finish the generated daily action",
+            detail="",
+            kind="action",
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="automation-todo",
+            now=datetime.fromisoformat("2026-08-12T08:01:00-07:00"),
+        ).todo
+
+        adapter.set_task_status(
+            task.slug,
+            "completed",
+            datetime.fromisoformat("2026-08-12T08:10:00-07:00"),
+        )
+        stored = next(
+            item
+            for item in adapter.list_task_todos(task.slug, limit=100).todos
+            if item.slug == todo.slug
+        )
+
+        self.assertEqual(stored.slug, todo.slug)
+        self.assertEqual(stored.status, "done")
+        self.assertEqual(stored.events[-1].source, "mission_control")
 
     def test_comment_mutation_reuses_verified_immutable_history(self) -> None:
         runner, task = self._fixture()

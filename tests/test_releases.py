@@ -27,7 +27,15 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.93")
+        self.assertEqual(__version__, "V0.0.94")
+
+    def test_v0_0_94_records_completed_task_todo_reconciliation(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.94")
+
+        self.assertIn("direct child TODOs", release["summary"])
+        self.assertIn("legacy next-action TODOs", release["summary"])
+        self.assertIn("same-status repair retries", release["summary"])
+        self.assertIn("full Edit saves", release["summary"])
 
     def test_v0_0_93_records_faster_open_tickets_and_multiline_todos(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.93")
@@ -430,6 +438,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.91",
                 "V0.0.92",
                 "V0.0.93",
+                "V0.0.94",
             ],
         )
 

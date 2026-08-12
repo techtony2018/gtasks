@@ -62,10 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.93. The default System Tickets view
-avoids completed-ticket hydration fan-out while preserving completed pagination,
-and TODO displays preserve user-entered newline boundaries without rewriting
-canonical content.
+Latest verified and deployed release: V0.0.94. Completing a Task reconciles its
+direct child TODOs to done with verified readback, including legacy next-action
+TODOs, same-status repair retries, full Edit saves, and automation-created daily
+tasks without duplicating TODO history events.
 
 ### Independent UI/UX release gate
 
