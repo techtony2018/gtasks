@@ -5685,7 +5685,7 @@ function todoCard(todo) {
   const heading = node("div", "task-todo-card-heading");
   const title = node("div");
   title.append(
-    node("h4", "", todo.text),
+    node("h4", "task-todo-title-copy", todo.text),
     node("span", `task-todo-status ${todo.status}`, todoStatusLabel(todo)),
   );
   const isHandoffQuestion = isActiveHandoffQuestion(todo);
@@ -5771,7 +5771,7 @@ function todoCard(todo) {
   (Array.isArray(todo.comments) ? todo.comments : []).forEach((comment) => {
     const item = node("li");
     item.append(
-      node("p", "", comment.body),
+      node("p", "task-todo-comment-copy", comment.body),
       node(
         "small",
         "",

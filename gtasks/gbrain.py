@@ -6236,7 +6236,7 @@ class GBrainAdapter:
             verified=True,
         )
 
-    def list_system_tickets(self) -> SystemTicketRead:
+    def list_system_tickets(self, *, include_completed: bool = True) -> SystemTicketRead:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": SYSTEM_TICKETS_ROOT})
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("system tickets get_backlinks did not return a list")
@@ -6244,6 +6244,17 @@ class GBrainAdapter:
         def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
+                frontmatter = (
+                    page.get("frontmatter")
+                    if isinstance(page, Mapping)
+                    else None
+                )
+                if (
+                    not include_completed
+                    and isinstance(frontmatter, Mapping)
+                    and frontmatter.get("status") == "completed"
+                ):
+                    return None, None, None
                 links = self.runner.run("get_links", {"slug": slug})
                 if not isinstance(page, Mapping) or not isinstance(links, list):
                     raise GBrainProtocolError("system ticket page or links were not structured")

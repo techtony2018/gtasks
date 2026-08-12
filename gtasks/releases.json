@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.92",
+  "current_version": "V0.0.93",
   "releases": [
     {
       "version": "V0.0.1",
@@ -552,6 +552,12 @@
       "date": "2026-08-12",
       "title": "Reliable long-lived Task detail opening",
       "summary": "Reopens the Task detail busy panel when a same-task canonical read is still in flight after long-lived session churn, while preserving one-read coalescing and final exact GBrain reconciliation."
+    },
+    {
+      "version": "V0.0.93",
+      "date": "2026-08-12",
+      "title": "Faster open System Tickets and multiline TODO display",
+      "summary": "Avoids completed-ticket hydration fan-out for the default System Tickets view while preserving completed pagination, and renders user-authored TODO text, details, and comments with newline boundaries intact."
     }
   ]
 }

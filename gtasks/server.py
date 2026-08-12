@@ -828,7 +828,7 @@ def _handler_class(
         active_read_cache.invalidate("tasks", "proposals")
 
     def invalidate_system_tickets() -> None:
-        active_read_cache.invalidate("system_tickets")
+        active_read_cache.invalidate("system_tickets", "system_tickets_all")
 
     def canonical_mapping(value: object) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -1271,10 +1271,17 @@ def _handler_class(
             force=force,
         )
 
-    def read_system_tickets(force: bool = False):
+    def read_system_tickets(
+        force: bool = False,
+        *,
+        include_completed: bool = True,
+    ):
+        cache_key = "system_tickets_all" if include_completed else "system_tickets"
         return active_read_cache.read(
-            "system_tickets",
-            lambda: adapter.list_system_tickets().to_dict(),
+            cache_key,
+            lambda: adapter.list_system_tickets(
+                include_completed=include_completed,
+            ).to_dict(),
             ttl_seconds=SYSTEM_TICKET_CACHE_SECONDS,
             force=force,
         )
@@ -2192,7 +2199,10 @@ def _handler_class(
                     if offset < 0 or limit < 1 or limit > 5:
                         raise ValueError
                     force = query.get("refresh", ["0"])[0] == "1"
-                    result = read_system_tickets(force=force)
+                    result = read_system_tickets(
+                        force=force,
+                        include_completed=(include_completed or completed_only),
+                    )
                     if result.payload is None:
                         if result.state.get("status") == "error":
                             self._json(

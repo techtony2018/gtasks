@@ -8768,6 +8768,87 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual(payload["tickets"][0]["verbatim_request"], ticket.verbatim_request)
         self.assertEqual(payload["tickets"][0]["display_markdown"], display)
 
+    def test_default_ticket_read_skips_completed_before_link_and_display_hydration(self) -> None:
+        planned = SystemTicket(
+            "tasks/system-tickets/open-read-a1b2c3",
+            "Keep open ticket fast",
+            "planned",
+            "Open ticket should remain visible.",
+            "mission_control",
+            "normal",
+        )
+        completed = SystemTicket(
+            "tasks/system-tickets/completed-read-a1b2c3",
+            "Completed ticket should not fan out",
+            "completed",
+            "Completed ticket is not needed for the default view.",
+            "mission_control",
+            "normal",
+        )
+        planned_edge = {
+            "from_slug": planned.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        completed_edge = {
+            "from_slug": completed.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        planned_page = {
+            "slug": planned.slug,
+            "type": "task",
+            "title": planned.title,
+            "compiled_markdown": render_system_ticket_body(
+                planned.title, planned.verbatim_request
+            ),
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": planned.title,
+                "status": planned.status,
+                "priority": planned.priority,
+                "verbatim_request": planned.verbatim_request,
+                "target_subsystem": planned.target_subsystem,
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        completed_page = {
+            "slug": completed.slug,
+            "type": "task",
+            "title": completed.title,
+            "compiled_markdown": render_system_ticket_body(
+                completed.title, completed.verbatim_request
+            ),
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": completed.title,
+                "status": completed.status,
+                "priority": completed.priority,
+                "verbatim_request": completed.verbatim_request,
+                "target_subsystem": completed.target_subsystem,
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[planned_edge, completed_edge]],
+                "get_page": [planned_page, completed_page],
+                "get_links": [[planned_edge]],
+            }
+        )
+
+        payload = GBrainAdapter(runner).list_system_tickets(
+            include_completed=False
+        ).to_dict()
+
+        self.assertEqual([ticket["slug"] for ticket in payload["tickets"]], [planned.slug])
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_links"],
+            [planned.slug],
+        )
+
     def test_ticket_read_omits_unmarked_or_stale_display_projection(self) -> None:
         ticket = SystemTicket(
             "tasks/system-tickets/stale-display-a1b2c3",

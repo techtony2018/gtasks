@@ -1748,6 +1748,26 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
         self.assertIn(".task-todo-list", css)
         self.assertIn(".task-todo-card", css)
 
+    def test_todo_user_authored_text_preserves_newline_boundaries(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        todo_card = javascript[
+            javascript.index("function todoCard(todo)")
+            : javascript.index("function renderTaskHandoff")
+        ]
+
+        for expected in (
+            '"task-todo-title-copy"',
+            '"task-todo-detail-copy"',
+            '"task-todo-comment-copy"',
+        ):
+            self.assertIn(expected, todo_card)
+        self.assertIn(".task-todo-title-copy", css)
+        self.assertIn(".task-todo-detail-copy", css)
+        self.assertIn(".task-todo-comment-copy", css)
+        self.assertIn("white-space: pre-wrap", css)
+        self.assertIn("overflow-wrap: anywhere", css)
+
     def test_todo_ui_calls_item_apis_and_restores_keyboard_focus(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

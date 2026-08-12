@@ -62,10 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.92. Task selection reopens the
-detail busy panel when a same-task canonical read is still in flight after
-long-lived session churn, while preserving one-read coalescing and final exact
-GBrain reconciliation.
+Latest verified and deployed release: V0.0.93. The default System Tickets view
+avoids completed-ticket hydration fan-out while preserving completed pagination,
+and TODO displays preserve user-entered newline boundaries without rewriting
+canonical content.
 
 ### Independent UI/UX release gate
 

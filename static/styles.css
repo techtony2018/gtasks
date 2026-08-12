@@ -1424,6 +1424,13 @@ body.is-resizing-detail {
   line-height: 1.45;
 }
 
+.task-todo-title-copy,
+.task-todo-detail-copy,
+.task-todo-comment-copy {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .task-todo-status {
   display: inline-flex;
   margin-top: 5px;

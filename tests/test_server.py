@@ -402,8 +402,17 @@ class FakeAdapter:
     def list_proposals(self) -> ProposalRead:
         return ProposalRead(proposals=self.proposals)
 
-    def list_system_tickets(self) -> SystemTicketRead:
-        return SystemTicketRead(tickets=self.system_tickets)
+    def list_system_tickets(
+        self,
+        *,
+        include_completed: bool = True,
+    ) -> SystemTicketRead:
+        tickets = self.system_tickets
+        if not include_completed:
+            tickets = tuple(
+                ticket for ticket in tickets if ticket.status != "completed"
+            )
+        return SystemTicketRead(tickets=tickets)
 
     def list_agent_artifacts(self, **filters) -> ArtifactRead:
         self.artifact_reads.append(filters)
@@ -3788,7 +3797,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.92")
+        self.assertEqual(payload["version"], "V0.0.93")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3796,11 +3805,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.92")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.92")
+        self.assertEqual(payload["current_version"], "V0.0.93")
+        self.assertEqual(payload["releases"][0]["version"], "V0.0.93")
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
             [
+                "V0.0.93",
                 "V0.0.92",
                 "V0.0.91",
                 "V0.0.90",
@@ -6732,11 +6742,17 @@ class SystemTicketApiTests(unittest.TestCase):
         class SlowSystemTicketAdapter(FakeAdapter):
             read_count = 0
 
-            def list_system_tickets(self) -> SystemTicketRead:
+            def list_system_tickets(
+                self,
+                *,
+                include_completed: bool = True,
+            ) -> SystemTicketRead:
                 self.read_count += 1
                 entered.set()
                 release.wait(timeout=2)
-                return super().list_system_tickets()
+                return super().list_system_tickets(
+                    include_completed=include_completed
+                )
 
         ticket = SystemTicket(
             slug="tasks/system-tickets/cache-read-a1b2c3",
@@ -6791,9 +6807,15 @@ class SystemTicketApiTests(unittest.TestCase):
         class CountingAdapter(FakeAdapter):
             read_count = 0
 
-            def list_system_tickets(self) -> SystemTicketRead:
+            def list_system_tickets(
+                self,
+                *,
+                include_completed: bool = True,
+            ) -> SystemTicketRead:
                 self.read_count += 1
-                return super().list_system_tickets()
+                return super().list_system_tickets(
+                    include_completed=include_completed
+                )
 
         adapter = CountingAdapter()
         harness = ServerHarness(self, adapter)
@@ -6829,9 +6851,15 @@ class SystemTicketApiTests(unittest.TestCase):
         class InstrumentedAdapter(FakeAdapter):
             projection_reads = 0
 
-            def list_system_tickets(self) -> SystemTicketRead:
+            def list_system_tickets(
+                self,
+                *,
+                include_completed: bool = True,
+            ) -> SystemTicketRead:
                 self.projection_reads += 1
-                return super().list_system_tickets()
+                return super().list_system_tickets(
+                    include_completed=include_completed
+                )
 
         open_tickets = tuple(
             SystemTicket(
