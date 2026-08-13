@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import hmac
 import re
+import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -51,6 +52,7 @@ from .domain import (
     PROPOSALS_ROOT,
     QA_FIXTURES_ROOT,
     SYSTEM_TICKETS_ROOT,
+    SYSTEM_TICKET_STATUSES,
     SystemTicket,
     TASK_SCOPE_ROOTS,
     Task,
@@ -6236,11 +6238,172 @@ class GBrainAdapter:
             verified=True,
         )
 
+    def _system_ticket_snapshot_path(self) -> Path:
+        configured = os.environ.get("GTASKS_READ_CACHE_FILE")
+        if configured:
+            return Path(configured).expanduser()
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "GTasks"
+            / "read-snapshots.json"
+        )
+
+    def _parse_snapshot_datetime(self, value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    def _load_verified_system_ticket_snapshot(
+        self,
+        member_slugs: Sequence[str],
+    ) -> tuple[dict[str, SystemTicket], dict[str, str]] | None:
+        try:
+            raw = json.loads(
+                self._system_ticket_snapshot_path().read_text(encoding="utf-8")
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(raw, Mapping) or raw.get("schema_version") != 1:
+            return None
+        surfaces = raw.get("surfaces")
+        if not isinstance(surfaces, Mapping):
+            return None
+        record = surfaces.get("system_tickets_all")
+        if not isinstance(record, Mapping):
+            return None
+        payload = record.get("payload")
+        if (
+            not isinstance(payload, Mapping)
+            or payload.get("root_slug") != SYSTEM_TICKETS_ROOT
+            or payload.get("issues") not in ([], ())
+        ):
+            return None
+        raw_tickets = payload.get("tickets")
+        if not isinstance(raw_tickets, list):
+            return None
+        tickets: dict[str, SystemTicket] = {}
+        display: dict[str, str] = {}
+        for item in raw_tickets:
+            if not isinstance(item, Mapping):
+                return None
+            slug = item.get("slug")
+            title = item.get("title")
+            status = item.get("status")
+            verbatim_request = item.get("verbatim_request")
+            target_subsystem = item.get("target_subsystem")
+            priority = item.get("priority")
+            acceptance_criteria = item.get("acceptance_criteria", "")
+            linked_evidence = item.get("linked_evidence", [])
+            implementation_receipts = item.get("implementation_receipts", [])
+            qa_receipts = item.get("qa_receipts", [])
+            if (
+                not isinstance(slug, str)
+                or not slug.startswith("tasks/")
+                or not isinstance(title, str)
+                or not title.strip()
+                or status not in SYSTEM_TICKET_STATUSES
+                or not isinstance(verbatim_request, str)
+                or not verbatim_request.strip()
+                or not isinstance(target_subsystem, str)
+                or not isinstance(priority, str)
+                or not isinstance(acceptance_criteria, str)
+                or not isinstance(linked_evidence, list)
+                or not isinstance(implementation_receipts, list)
+                or not isinstance(qa_receipts, list)
+                or any(not isinstance(value, str) for value in linked_evidence)
+                or any(not isinstance(value, str) for value in implementation_receipts)
+                or any(not isinstance(value, str) for value in qa_receipts)
+            ):
+                return None
+            tickets[slug] = SystemTicket(
+                slug=slug,
+                title=title.strip(),
+                status=str(status),
+                verbatim_request=verbatim_request.strip(),
+                target_subsystem=target_subsystem,
+                priority=priority,
+                acceptance_criteria=acceptance_criteria,
+                linked_evidence=tuple(linked_evidence),
+                implementation_receipts=tuple(implementation_receipts),
+                qa_receipts=tuple(qa_receipts),
+                created_at=self._parse_snapshot_datetime(item.get("created_at")),
+                updated_at=self._parse_snapshot_datetime(item.get("updated_at")),
+            )
+            markdown = item.get("display_markdown")
+            if isinstance(markdown, str):
+                display[slug] = markdown
+        if any(slug not in tickets for slug in member_slugs):
+            return None
+        return tickets, display
+
+    def _invalidate_system_ticket_snapshot_cache(self) -> None:
+        path = self._system_ticket_snapshot_path()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        surfaces = raw.get("surfaces") if isinstance(raw, Mapping) else None
+        if not isinstance(surfaces, Mapping):
+            return
+        changed = False
+        updated_surfaces = dict(surfaces)
+        for surface in ("system_tickets", "system_tickets_all"):
+            if surface in updated_surfaces:
+                updated_surfaces.pop(surface, None)
+                changed = True
+        if not changed:
+            return
+        next_payload = dict(raw)
+        next_payload["surfaces"] = updated_surfaces
+        temporary_path: str | None = None
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                os.chmod(temporary_path, 0o600)
+                json.dump(next_payload, temporary, ensure_ascii=False, separators=(",", ":"))
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+            os.chmod(path, 0o600)
+        except OSError:
+            return
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except FileNotFoundError:
+                    pass
+
     def list_system_tickets(self, *, include_completed: bool = True) -> SystemTicketRead:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": SYSTEM_TICKETS_ROOT})
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("system tickets get_backlinks did not return a list")
         slugs = list(dict.fromkeys(str(link["from_slug"]) for link in raw_backlinks if isinstance(link, Mapping) and link.get("to_slug") == SYSTEM_TICKETS_ROOT and link.get("link_type") == "member_of" and isinstance(link.get("from_slug"), str) and str(link["from_slug"]).startswith("tasks/")))
+        snapshot = self._load_verified_system_ticket_snapshot(slugs)
+        cached_tickets: dict[str, SystemTicket] = {}
+        cached_display: dict[str, str] = {}
+        if snapshot is not None:
+            cached_tickets, cached_display = snapshot
+        read_slugs = slugs
+        if cached_tickets:
+            read_slugs = [
+                slug
+                for slug in slugs
+                if cached_tickets[slug].status != "completed"
+            ]
         def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
@@ -6262,17 +6425,28 @@ class GBrainAdapter:
                 display_markdown = self._validated_system_ticket_display_markdown(
                     ticket, page
                 )
+                if not include_completed and ticket.status == "completed":
+                    return None, None, None
                 return ticket, None, display_markdown
             except (DomainValidationError, GBrainError) as exc:
                 return None, CollectionIssue(slug=slug, message=str(exc), category="system_ticket_data", impact="This System Ticket cannot be dispatched until its canonical task data is repaired."), None
         tickets, issues = [], []
         projections: list[tuple[str, str]] = []
-        for ticket, issue, display_markdown in self._bounded_map(read, slugs):
+        for ticket, issue, display_markdown in self._bounded_map(read, read_slugs):
             if ticket:
                 tickets.append(ticket)
                 if display_markdown is not None:
                     projections.append((ticket.slug, display_markdown))
             if issue: issues.append(issue)
+        if include_completed and cached_tickets:
+            hydrated = {ticket.slug for ticket in tickets}
+            for slug in slugs:
+                ticket = cached_tickets[slug]
+                if ticket.status == "completed" and slug not in hydrated:
+                    tickets.append(ticket)
+                    display_markdown = cached_display.get(slug)
+                    if display_markdown is not None:
+                        projections.append((slug, display_markdown))
         tickets.sort(key=lambda ticket: ((ticket.updated_at or datetime.min), ticket.title.casefold()), reverse=True)
         return SystemTicketRead(tuple(tickets), tuple(issues), tuple(projections))
 
@@ -6334,6 +6508,7 @@ class GBrainAdapter:
             raise PartialMutationError(
                 ticket.slug, f"System Ticket creation was not verified: {exc}"
             ) from exc
+        self._invalidate_system_ticket_snapshot_cache()
         return MutationReceipt(ticket.slug, True)
 
     def update_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
@@ -6406,6 +6581,7 @@ class GBrainAdapter:
                 ticket.slug,
                 f"System Ticket edit was not verified. Inspect this slug before retrying: {exc}",
             ) from exc
+        self._invalidate_system_ticket_snapshot_cache()
         return MutationReceipt(ticket.slug, True)
 
     def planned_system_tickets(self) -> tuple[SystemTicket, ...]:

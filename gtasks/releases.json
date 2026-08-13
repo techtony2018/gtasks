@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.94",
+  "current_version": "V0.0.95",
   "releases": [
     {
       "version": "V0.0.1",
@@ -564,6 +564,12 @@
       "date": "2026-08-12",
       "title": "Completed Task TODO reconciliation",
       "summary": "Completing a Task now reconciles its direct child TODOs to done with verified readback, including legacy next-action TODOs, same-status repair retries, full Edit saves, and automation-created daily tasks without duplicating TODO history events."
+    },
+    {
+      "version": "V0.0.95",
+      "date": "2026-08-13",
+      "title": "Reduce System Tickets refresh fan-out",
+      "summary": "Uses the last verified System Tickets snapshot as a status index so default refresh skips completed-ticket hydration, preserves completed-ticket reads when requested, and invalidates the ticket snapshots after verified ticket writes."
     }
   ]
 }

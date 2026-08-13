@@ -9009,6 +9009,54 @@ class MarkdownCreationPathTests(unittest.TestCase):
 
 
 class SystemTicketAdapterTests(unittest.TestCase):
+    def _system_ticket_page(self, ticket: SystemTicket) -> dict:
+        return {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "compiled_markdown": render_system_ticket_body(
+                ticket.title,
+                ticket.verbatim_request,
+                acceptance_criteria=ticket.acceptance_criteria,
+                implementation_receipts=ticket.implementation_receipts,
+                qa_receipts=ticket.qa_receipts,
+            ),
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": ticket.title,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": ticket.target_subsystem,
+                "acceptance_criteria": ticket.acceptance_criteria,
+                "implementation_receipts": list(ticket.implementation_receipts),
+                "qa_receipts": list(ticket.qa_receipts),
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+
+    def _write_system_ticket_snapshot(self, path: Path, tickets: tuple[SystemTicket, ...]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "surfaces": {
+                        "system_tickets_all": {
+                            "last_valid_at": 1786615358.282858,
+                            "payload": {
+                                "root_slug": SYSTEM_TICKETS_ROOT,
+                                "tickets": [ticket.to_dict() for ticket in tickets],
+                                "issues": [],
+                            },
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
     def test_reads_pre_ui_system_ticket_from_its_existing_task_detail(self) -> None:
         page = {
             "slug": "tasks/calendar-view-selected-task-highlight",
@@ -9156,6 +9204,160 @@ class SystemTicketAdapterTests(unittest.TestCase):
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
             [planned.slug],
         )
+
+    def test_default_ticket_read_uses_verified_snapshot_to_skip_completed_page_hydration(self) -> None:
+        planned = SystemTicket(
+            "tasks/system-tickets/open-fast-a1b2c3",
+            "Open ticket",
+            "planned",
+            "Return this ticket.",
+            "mission_control",
+            "normal",
+        )
+        completed = tuple(
+            SystemTicket(
+                f"tasks/system-tickets/completed-{index}",
+                f"Completed ticket {index}",
+                "completed",
+                "Do not hydrate completed tickets for the default view.",
+                "mission_control",
+                "normal",
+            )
+            for index in range(3)
+        )
+        edges = [
+            {
+                "from_slug": ticket.slug,
+                "to_slug": SYSTEM_TICKETS_ROOT,
+                "link_type": "member_of",
+            }
+            for ticket in (planned, *completed)
+        ]
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(cache_path, (planned, *completed))
+            runner = FakeRunner(
+                {
+                    "get_backlinks": [edges],
+                    "get_page": [self._system_ticket_page(planned)],
+                    "get_links": [[edges[0]]],
+                }
+            )
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                payload = GBrainAdapter(runner).list_system_tickets(
+                    include_completed=False
+                ).to_dict()
+
+        self.assertEqual([ticket["slug"] for ticket in payload["tickets"]], [planned.slug])
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [planned.slug],
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_links"],
+            [planned.slug],
+        )
+
+    def test_include_completed_ticket_read_uses_snapshot_for_completed_and_hydrates_open_only(self) -> None:
+        planned = SystemTicket(
+            "tasks/system-tickets/open-all-a1b2c3",
+            "Open ticket",
+            "active",
+            "Hydrate non-completed tickets.",
+            "mission_control",
+            "high",
+        )
+        completed = SystemTicket(
+            "tasks/system-tickets/completed-all-a1b2c3",
+            "Completed ticket",
+            "completed",
+            "Serve completed ticket from last verified snapshot.",
+            "mission_control",
+            "normal",
+        )
+        edges = [
+            {
+                "from_slug": ticket.slug,
+                "to_slug": SYSTEM_TICKETS_ROOT,
+                "link_type": "member_of",
+            }
+            for ticket in (planned, completed)
+        ]
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(cache_path, (planned, completed))
+            runner = FakeRunner(
+                {
+                    "get_backlinks": [edges],
+                    "get_page": [self._system_ticket_page(planned)],
+                    "get_links": [[edges[0]]],
+                }
+            )
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                payload = GBrainAdapter(runner).list_system_tickets(
+                    include_completed=True
+                ).to_dict()
+
+        self.assertEqual(
+            {ticket["slug"] for ticket in payload["tickets"]},
+            {planned.slug, completed.slug},
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [planned.slug],
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_links"],
+            [planned.slug],
+        )
+
+    def test_verified_system_ticket_update_invalidates_ticket_snapshot_cache(self) -> None:
+        existing = SystemTicket(
+            "tasks/system-tickets/update-cache-a1b2c3",
+            "Update ticket",
+            "planned",
+            "Update this ticket.",
+            "mission_control",
+            "normal",
+        )
+        updated = replace(
+            existing,
+            status="active",
+            implementation_receipts=("implementation started",),
+        )
+        edge = {
+            "from_slug": existing.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(cache_path, (existing,))
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache["surfaces"]["system_tickets"] = cache["surfaces"][
+                "system_tickets_all"
+            ]
+            cache["surfaces"]["tasks"] = {"payload": {"unrelated": True}}
+            cache_path.write_text(json.dumps(cache), encoding="utf-8")
+            runner = FakeRunner(
+                {
+                    "get_page": [
+                        self._system_ticket_page(existing),
+                        self._system_ticket_page(updated),
+                    ],
+                    "get_links": [[edge], [edge]],
+                    "put_page": [{}],
+                }
+            )
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                receipt = GBrainAdapter(runner).update_system_ticket(updated)
+
+            stored = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(receipt.verified)
+        self.assertNotIn("system_tickets", stored["surfaces"])
+        self.assertNotIn("system_tickets_all", stored["surfaces"])
+        self.assertIn("tasks", stored["surfaces"])
 
     def test_ticket_read_omits_unmarked_or_stale_display_projection(self) -> None:
         ticket = SystemTicket(
