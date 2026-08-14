@@ -743,6 +743,7 @@ def build_fixture_server(
         ical_reader=adapter.calendar_reader,
         calendar_preferences=CalendarPreferences(calendar_preferences_path),
         handoff_store=SyntheticClaimHandoffStore(handoff_store, claim),
+        delegation_lock_path=runtime_directory / "agent-delegations.lock",
     )
     production_handler = server.RequestHandlerClass
 

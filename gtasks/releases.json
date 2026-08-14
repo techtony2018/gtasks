@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.96",
+  "current_version": "V0.0.97",
   "releases": [
     {
       "version": "V0.0.1",
@@ -576,6 +576,12 @@
       "date": "2026-08-13",
       "title": "Command Confirmation Sweep",
       "summary": "Adds a local Command Confirmation Sweep after explicit Task completion is saved and read back from GBrain."
+    },
+    {
+      "version": "V0.0.97",
+      "date": "2026-08-13",
+      "title": "Settings view for completion celebration",
+      "summary": "Moves the Completion celebration Full/Reduced/Off preference from About into a dedicated Settings view opened from the footer control group after About."
     }
   ]
 }

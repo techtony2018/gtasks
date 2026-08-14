@@ -1473,8 +1473,83 @@ assert(state.completionCelebrations[0].mode === "reduced", "prefers-reduced-moti
         self.assertIn('"/api/releases"', javascript)
         self.assertIn("openAboutDialog", javascript)
         self.assertIn("closeAboutDialog", javascript)
+        self.assertIn("function setAppShellModalIsolation(isModal)", javascript)
+        self.assertIn('elements.appShell.setAttribute("aria-hidden", isModal ? "true" : "false")', javascript)
+        self.assertIn("elements.appShell.inert = isModal", javascript)
+        self.assertIn("elements.aboutClose.focus();\n    setAppShellModalIsolation(true);", javascript)
+        self.assertIn("if (elements.aboutDialog.open) setAppShellModalIsolation(true);", javascript)
         self.assertIn('event.key === "Escape"', javascript)
         self.assertIn("release-history", javascript)
+        about_dialog = html[html.index('id="about-dialog"') : html.index('<div class="toast', html.index('id="about-dialog"'))]
+        self.assertNotIn('id="completion-celebration-preference"', about_dialog)
+
+    def test_settings_view_follows_info_button_and_owns_completion_preference(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        footer = html[html.index('<div class="mission-art-footer">'):html.index('</main>')]
+        logs_button = footer.index('id="logs-button"')
+        about_button = footer.index('id="about-button"')
+        settings_button = footer.index('id="settings-button"')
+        self.assertLess(logs_button, about_button)
+        self.assertLess(about_button, settings_button)
+        self.assertIn('aria-label="Settings"', footer)
+        self.assertIn('data-tooltip="Settings"', footer)
+        self.assertEqual(html.count('id="completion-celebration-preference"'), 0)
+        self.assertEqual(javascript.count('select.id = "completion-celebration-preference"'), 1)
+        self.assertIn('settings: {', javascript)
+        self.assertIn('title: "Settings"', javascript)
+        self.assertIn('function renderSettingsView()', javascript)
+        self.assertIn('elements.settingsButton.addEventListener("click", () => setView("settings"))', javascript)
+        self.assertIn('setCompletionCelebrationPreference(select.value)', javascript)
+        self.assertIn('elements.settingsButton.classList.toggle("is-active", settingsActive)', javascript)
+        self.assertIn('elements.settingsButton.setAttribute("aria-current", settingsActive ? "page" : "false")', javascript)
+        self.assertIn('elements.settingsButton.setAttribute("aria-pressed", settingsActive ? "true" : "false")', javascript)
+
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+FakeElement.prototype.addEventListener = function(name, callback) {
+  this.events = this.events || {};
+  this.events[name] = callback;
+};
+let stored = "reduced";
+window.localStorage = {
+  getItem: (key) => key === COMPLETION_CELEBRATION_PREFERENCE_KEY ? stored : null,
+  setItem: (key, value) => { if (key === COMPLETION_CELEBRATION_PREFERENCE_KEY) stored = value; },
+};
+const view = renderSettingsView();
+const find = (element, predicate) => {
+  if (predicate(element)) return element;
+  for (const child of element.children || []) {
+    const match = find(child, predicate);
+    if (match) return match;
+  }
+  return null;
+};
+const select = find(view, (element) => element.id === "completion-celebration-preference");
+assert(select, "Settings view did not render the completion preference");
+assert(select.value === "reduced", `stored preference was reset: ${select.value}`);
+select.value = "off";
+select.events.change();
+assert(stored === "off", `changed preference was not persisted: ${stored}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        isolation_result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const appShell = elements.appShell;
+setAppShellModalIsolation(true);
+assert(appShell.inert === true, "app shell was not inert while a modal is open");
+assert(appShell.getAttribute("aria-hidden") === "true", "app shell stayed exposed to assistive tech");
+setAppShellModalIsolation(false);
+assert(appShell.inert === false, "app shell stayed inert after modal close");
+assert(appShell.getAttribute("aria-hidden") === "false", "app shell stayed hidden after modal close");
+"""
+        )
+        self.assertEqual(isolation_result.returncode, 0, isolation_result.stderr)
 
     def test_sidebar_icons_match_primary_control_size_and_version_moves_to_artwork(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

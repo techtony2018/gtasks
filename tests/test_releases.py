@@ -27,7 +27,14 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.96")
+        self.assertEqual(__version__, "V0.0.97")
+
+    def test_v0_0_97_records_completion_preference_settings_view(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.97")
+
+        self.assertIn("Settings view", release["title"])
+        self.assertIn("Completion celebration", release["summary"])
+        self.assertIn("dedicated Settings view", release["summary"])
 
     def test_v0_0_96_records_verified_completion_celebration(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.96")
@@ -455,6 +462,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.94",
                 "V0.0.95",
                 "V0.0.96",
+                "V0.0.97",
             ],
         )
 

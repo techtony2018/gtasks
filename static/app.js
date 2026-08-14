@@ -802,6 +802,9 @@ const viewMeta = {
     emptyTitle: "No completed tasks yet",
     emptyCopy: "Completed tasks keep their identity and history when they move to the completed collection.",
   },
+  settings: {
+    title: "Settings",
+  },
 };
 
 const elements = {
@@ -1064,6 +1067,7 @@ const elements = {
   completionCelebrationRegion: document.querySelector("#completion-celebration-region"),
   toast: document.querySelector("#toast"),
   aboutButton: document.querySelector("#about-button"),
+  settingsButton: document.querySelector("#settings-button"),
   sidebarVersion: document.querySelector("#sidebar-version"),
   aboutDialog: document.querySelector("#about-dialog"),
   aboutClose: document.querySelector("#about-close"),
@@ -1238,8 +1242,11 @@ function setCompletionCelebrationPreference(value) {
   } catch (_) {
     // The current page session can continue even when local storage is unavailable.
   }
-  if (elements.completionCelebrationPreference) {
-    elements.completionCelebrationPreference.value = preference;
+  const control =
+    elements.completionCelebrationPreference ||
+    document.querySelector("#completion-celebration-preference");
+  if (control) {
+    control.value = preference;
   }
 }
 
@@ -1397,15 +1404,23 @@ async function loadReleases() {
 
 function openAboutDialog() {
   state.aboutReturnFocus = document.activeElement;
-  if (elements.completionCelebrationPreference) {
-    elements.completionCelebrationPreference.value = completionCelebrationStoredPreference();
-  }
   elements.aboutDialog.showModal();
-  window.setTimeout(() => elements.aboutClose.focus(), 0);
+  window.setTimeout(() => {
+    elements.aboutClose.focus();
+    setAppShellModalIsolation(true);
+    window.requestAnimationFrame(() => {
+      if (elements.aboutDialog.open) setAppShellModalIsolation(true);
+    });
+  }, 0);
 }
 
 function closeAboutDialog() {
   elements.aboutDialog.close();
+}
+
+function setAppShellModalIsolation(isModal) {
+  elements.appShell.inert = isModal;
+  elements.appShell.setAttribute("aria-hidden", isModal ? "true" : "false");
 }
 
 function componentLabel(component) {
@@ -1571,7 +1586,13 @@ function openLogsDialog() {
   state.logsReturnFocus = document.activeElement;
   elements.logsDialog.showModal();
   loadOperationalLogs();
-  window.setTimeout(() => elements.logsClose.focus(), 0);
+  window.setTimeout(() => {
+    elements.logsClose.focus();
+    setAppShellModalIsolation(true);
+    window.requestAnimationFrame(() => {
+      if (elements.logsDialog.open) setAppShellModalIsolation(true);
+    });
+  }, 0);
 }
 
 function closeLogsDialog() {
@@ -1797,6 +1818,10 @@ function renderNavigation() {
     button.classList.toggle("is-active", view === state.activeView);
     button.setAttribute("aria-current", view === state.activeView ? "page" : "false");
   });
+  const settingsActive = state.activeView === "settings";
+  elements.settingsButton.classList.toggle("is-active", settingsActive);
+  elements.settingsButton.setAttribute("aria-current", settingsActive ? "page" : "false");
+  elements.settingsButton.setAttribute("aria-pressed", settingsActive ? "true" : "false");
 }
 
 function inContextCountLabel(view) {
@@ -5362,6 +5387,8 @@ function render() {
     : !state.snapshot
     ? view === "system-tickets"
       ? renderSystemTicketsView()
+      : view === "settings"
+        ? renderSettingsView()
       : renderTaskSurfaceLoading(view)
     : view === "today"
       ? renderToday()
@@ -5379,6 +5406,8 @@ function render() {
         ? renderProjectsView()
       : view === "goals"
         ? renderGoalsView()
+      : view === "settings"
+        ? renderSettingsView()
         : renderListView(view);
   const attention = view === "inbox" ? renderNeedsAttention() : null;
   const proposals = view === "inbox" ? renderProposedWork() : null;
@@ -5403,6 +5432,54 @@ function render() {
     elements.dateLabel.textContent = "Waiting for verified task data";
   }
   syncMobileDetailModalState();
+}
+
+function renderSettingsView() {
+  const section = node("section", "settings-view");
+  const heading = node("div", "projects-view-heading");
+  const copy = node("div");
+  copy.append(
+    node("h2", "", "Settings"),
+    node("p", "", "Local Mission Control display preferences. These controls do not mutate GBrain."),
+  );
+  heading.append(copy);
+  section.append(heading);
+
+  const card = node("article", "settings-card");
+  const label = node("label", "settings-field");
+  const labelText = node("span", "settings-label", "Completion celebration");
+  const select = document.createElement("select");
+  select.id = "completion-celebration-preference";
+  select.setAttribute("aria-describedby", "completion-celebration-help");
+  [
+    ["full", "Full Command Confirmation Sweep"],
+    ["reduced", "Reduced confirmation"],
+    ["off", "Off"],
+  ].forEach(([value, text]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    select.append(option);
+  });
+  select.value = completionCelebrationStoredPreference();
+  select.addEventListener("change", () => {
+    setCompletionCelebrationPreference(select.value);
+  });
+  label.append(labelText, select);
+  const help = node(
+    "p",
+    "settings-help",
+    "Local browser preference only. Mission Control celebrates after a completed Task is saved and read back from GBrain.",
+  );
+  help.id = "completion-celebration-help";
+  card.append(label, help);
+  section.append(card);
+  window.requestAnimationFrame(() => {
+    if (state.activeView === "settings" && document.activeElement === document.body) {
+      select.focus({ preventScroll: true });
+    }
+  });
+  return section;
 }
 
 function renderSystemTicketsView() {
@@ -9055,11 +9132,10 @@ elements.boardStatusRetry.addEventListener("click", () => {
   if (move?.phase === "error") moveBoardTask(move.taskSlug, move.status);
 });
 elements.aboutButton.addEventListener("click", openAboutDialog);
+elements.settingsButton.addEventListener("click", () => setView("settings"));
 elements.aboutClose.addEventListener("click", closeAboutDialog);
-elements.completionCelebrationPreference.addEventListener("change", () => {
-  setCompletionCelebrationPreference(elements.completionCelebrationPreference.value);
-});
 elements.aboutDialog.addEventListener("close", () => {
+  if (!elements.logsDialog.open) setAppShellModalIsolation(false);
   if (state.aboutReturnFocus instanceof HTMLElement) {
     state.aboutReturnFocus.focus();
   }
@@ -9092,6 +9168,7 @@ elements.logsFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();
 });
 elements.logsDialog.addEventListener("close", () => {
+  if (!elements.aboutDialog.open) setAppShellModalIsolation(false);
   if (state.logsReturnFocus instanceof HTMLElement) {
     state.logsReturnFocus.focus();
   }
