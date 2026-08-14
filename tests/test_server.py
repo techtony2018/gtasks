@@ -825,6 +825,7 @@ class FakeAdapter:
             priority=payload["priority"],
             due_day=payload["due_day"],
             status=payload["status"],
+            parent=payload.get("parent_slug", existing.parent),
             progress_metric=payload["progress_metric"],
             event_progress=payload["event_progress"],
             updated_at=payload["now"],
@@ -4655,6 +4656,44 @@ class FullTaskCreationApiTests(unittest.TestCase):
                 self.assertEqual(payload["task"]["owner_agent"], agent_slug)
                 harness.close()
 
+    def test_creates_agent_task_with_parent_relationship(self) -> None:
+        adapter = FakeAdapter(
+            agents=(
+                AgentProfile(
+                    slug="agents/tammy",
+                    name="Tammy",
+                    title="Tammy",
+                    summary="",
+                    work_root="collections/tammys-tasks",
+                    default_goal_slugs=(),
+                ),
+            )
+        )
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "Run the scheduled Value Discovery brief",
+                "detail": "",
+                "priority": "normal",
+                "initial_todo": "",
+                "due_day": "2026-08-14",
+                "project_slug": None,
+                "goal_slug": None,
+                "progress_metric": None,
+                "assignee_slug": "agents/tammy",
+                "parent_slug": "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1",
+            },
+        )
+
+        self.assertEqual(status, 201)
+        task, stored_agent = adapter.created_agent_tasks[0]
+        self.assertEqual(stored_agent, "agents/tammy")
+        self.assertEqual(task.parent, "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1")
+        self.assertEqual(payload["task"]["parent"], "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1")
+
     def test_rejects_unknown_agent_assignment_without_writing(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
@@ -5456,6 +5495,63 @@ class TaskProgressMetricApiTests(unittest.TestCase):
         self.assertIn("Set Current to 2 or higher", payload["error"])
         self.assertEqual(adapter.active[0].progress_metric.current, 10)
         self.assertEqual(adapter.active[0].progress_metric.target, 30)
+
+    def test_full_edit_can_set_task_parent_relationship(self) -> None:
+        now = datetime.fromisoformat("2026-08-14T07:05:00-07:00")
+        task = replace(
+            new_task(
+                title="Tammy Value Discovery scheduled run",
+                due_day=date(2026, 8, 14),
+                now=now,
+                identity="parent01",
+            ),
+            slug="tasks/19b90b4d-9311-4d1d-ab52-96f15528897f",
+            lifecycle_root="collections/tammys-tasks",
+            owner_agent="agents/tammy",
+            status="blocked",
+        )
+        adapter = FakeAdapter(
+            active=(task,),
+            agents=(
+                AgentProfile(
+                    slug="agents/tammy",
+                    name="Tammy",
+                    title="Tammy",
+                    summary="",
+                    work_root="collections/tammys-tasks",
+                    default_goal_slugs=(),
+                ),
+            ),
+        )
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            f"/api/tasks/{task.slug.replace('/', '%2F')}",
+            {
+                "title": task.title,
+                "detail": task.detail,
+                "priority": task.priority,
+                "due_day": "2026-08-14",
+                "project_slug": None,
+                "goal_slug": None,
+                "status": "active",
+                "assignee_slug": "agents/tammy",
+                "progress_metric": None,
+                "handoff_reason": "",
+                "parent_slug": "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1",
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["receipt"]["task"]["parent"],
+            "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1",
+        )
+        self.assertEqual(
+            adapter.active[0].parent,
+            "tasks/967dcf01-b06e-4aa5-bbef-a2b9d6b668b1",
+        )
 
     def test_full_edit_preserves_verified_receipts_and_updates_manual_baseline(self) -> None:
         from gtasks.job_application_binding import JOB_APPLIED_BOUND_TASK_SLUG

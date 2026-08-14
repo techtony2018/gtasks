@@ -610,6 +610,21 @@ def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
     return result
 
 
+def _parent_slug_from_request(
+    payload: dict[str, Any],
+    *,
+    task_slug: str | None = None,
+) -> str | None:
+    raw_parent = payload.get("parent_slug")
+    if raw_parent in (None, ""):
+        return None
+    if not isinstance(raw_parent, str) or not raw_parent.startswith("tasks/"):
+        raise DomainValidationError("parent_slug must be a task slug or null")
+    if task_slug is not None and raw_parent == task_slug:
+        raise DomainValidationError("task cannot be its own parent")
+    return raw_parent
+
+
 def exact_task_api_payload(adapter: GBrainAdapter, task_slug: str) -> dict[str, Any]:
     """Expose an optional display projection without changing Task authority."""
     projector = getattr(adapter, "get_task_api_payload", None)
@@ -4414,6 +4429,7 @@ def _handler_class(
                     "initial_todo",
                     "project_slug",
                     "goal_slug",
+                    "parent_slug",
                     "progress_metric",
                     "assignee_slug",
                 }
@@ -4469,6 +4485,7 @@ def _handler_class(
                             task_slug=None,
                         )
                     )
+                    parent_slug = _parent_slug_from_request(payload)
                     task = new_task(
                         title=payload.get("title", ""),
                         detail=payload.get("detail", ""),
@@ -4482,6 +4499,7 @@ def _handler_class(
                         now=now,
                         identity=identity_factory(),
                     )
+                    task = replace(task, parent=parent_slug)
                     if assignee_slug != "tony":
                         task = replace(
                             task,
@@ -4599,6 +4617,7 @@ def _handler_class(
                 "initial_todo",
                 "project_slug",
                 "goal_slug",
+                "parent_slug",
                 "progress_metric",
                 "assignee_slug",
             }
@@ -4628,6 +4647,7 @@ def _handler_class(
                     )
                     project_slug = payload.get("project_slug") or None
                     goal_slug = payload.get("goal_slug") or None
+                    parent_slug = _parent_slug_from_request(payload)
                     assignee_slug = payload.get("assignee_slug", "tony")
                     available_agents = {
                         agent.slug: agent.work_root
@@ -4650,6 +4670,7 @@ def _handler_class(
                         now=now,
                         identity=identity_factory(),
                     )
+                    task = replace(task, parent=parent_slug)
                     if assignee_slug == "tony":
                         receipt = adapter.create_task(task)
                     else:
@@ -5286,7 +5307,7 @@ def _handler_class(
                     return
                 allowed = {
                     "title", "detail", "priority", "due_day",
-                    "project_slug", "goal_slug", "status", "assignee_slug",
+                    "project_slug", "goal_slug", "parent_slug", "status", "assignee_slug",
                     "progress_metric", "progress_metric_revision", "handoff_reason", "complete_when_target_reached",
                 }
                 if set(payload) - allowed:
@@ -5391,6 +5412,7 @@ def _handler_class(
                         next_action=current.next_action,
                         project_slug=payload.get("project_slug") or None,
                         goal_slug=payload.get("goal_slug") or None,
+                        parent_slug=_parent_slug_from_request(payload, task_slug=task_slug),
                         status=requested_status,
                         assignee_slug=payload.get("assignee_slug", "tony"),
                         progress_metric=progress_metric, event_progress=event_progress,

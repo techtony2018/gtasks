@@ -7175,6 +7175,16 @@ class GBrainAdapter:
                     "link_source": "gtasks",
                 }
             )
+        if task.parent:
+            descriptors.append(
+                {
+                    "from": task.slug,
+                    "to": task.parent,
+                    "link_type": "child_of",
+                    "context": "GTasks parent task.",
+                    "link_source": "gtasks",
+                }
+            )
         if task.goal:
             descriptors.append(
                 {
@@ -7893,6 +7903,7 @@ class GBrainAdapter:
         next_action: str,
         project_slug: str | None,
         goal_slug: str | None,
+        parent_slug: str | None,
         status: str,
         assignee_slug: str,
         progress_metric: ProgressMetric | None,
@@ -7945,11 +7956,31 @@ class GBrainAdapter:
             approved_goals = {goal.slug for goal in self.list_goals().goals}
             if goal_slug is not None and goal_slug not in approved_goals:
                 raise ValueError("goal is not a member of Tony's Goals")
+        if parent_slug is not None and parent_slug == task_slug:
+            raise ValueError("task cannot be its own parent")
 
         raw_frontmatter = raw_page.get("frontmatter")
         if not isinstance(raw_frontmatter, Mapping):
             raise GBrainProtocolError("task page has no frontmatter")
         frontmatter = deepcopy(dict(raw_frontmatter))
+        raw_frontmatter_links = frontmatter.get("links")
+        if raw_frontmatter_links is None:
+            raw_frontmatter_links = []
+        if not isinstance(raw_frontmatter_links, list):
+            raise GBrainProtocolError("task frontmatter links must be a list")
+        retained_links = [
+            link
+            for link in raw_frontmatter_links
+            if not (isinstance(link, Mapping) and link.get("type") == "child_of")
+        ]
+        if parent_slug:
+            retained_links.append(
+                {
+                    "to": parent_slug,
+                    "type": "child_of",
+                    "context": "GTasks parent task.",
+                }
+            )
         normalized_next_action = next_action.strip()
         desired_next_action_history = _history_after_next_action_change(
             task,
@@ -7968,6 +7999,7 @@ class GBrainAdapter:
                 "next_action_history": [
                     entry.to_dict() for entry in desired_next_action_history
                 ],
+                "links": retained_links,
                 "progress_metric": progress_metric.to_dict() if progress_metric else None,
                 "event_progress": event_progress.to_dict() if event_progress else None,
                 "updated_at": now.isoformat(),
@@ -7986,6 +8018,27 @@ class GBrainAdapter:
         )
         try:
             self.runner.run("put_page", {"slug": task_slug, "content": desired_content})
+            if parent_slug != task.parent:
+                if parent_slug:
+                    self.runner.run(
+                        "add_link",
+                        {
+                            "from": task_slug,
+                            "to": parent_slug,
+                            "link_type": "child_of",
+                            "context": "GTasks parent task.",
+                            "link_source": "gtasks",
+                        },
+                    )
+                if task.parent:
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": task_slug,
+                            "to": task.parent,
+                            "link_type": "child_of",
+                        },
+                    )
             if project_slug != task.project:
                 self.set_task_project(task_slug, project_slug)
             if goal_slug != task.goal:
@@ -8005,6 +8058,7 @@ class GBrainAdapter:
                 or stored.next_action != normalized_next_action
                 or stored.next_action_history != desired_next_action_history
                 or stored.project != project_slug
+                or stored.parent != parent_slug
                 or stored.goal != goal_slug or stored.status != status
                 or stored.owner_agent != (None if assignee_slug == "tony" else assignee_slug)
                 or stored.progress_metric != progress_metric or stored.event_progress != event_progress

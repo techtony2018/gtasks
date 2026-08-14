@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.97",
+  "current_version": "V0.0.98",
   "releases": [
     {
       "version": "V0.0.1",
@@ -582,6 +582,12 @@
       "date": "2026-08-13",
       "title": "Settings view for completion celebration",
       "summary": "Moves the Completion celebration Full/Reduced/Off preference from About into a dedicated Settings view opened from the footer control group after About."
+    },
+    {
+      "version": "V0.0.98",
+      "date": "2026-08-14",
+      "title": "Task parent relationship mutation",
+      "summary": "Adds verified parent_slug support to Mission Control task creation and full edit so Agent daily-run tasks can publish and read back canonical child_of relationships without raw graph writes."
     }
   ]
 }
