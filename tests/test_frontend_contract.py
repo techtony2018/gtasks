@@ -1249,6 +1249,160 @@ assert(elements.detailTitle.textContent === "Loaded long-lived Task", `wrong loa
         self.assertNotIn("await loadTasks()", move_body)
         self.assertIn("rebuildDerivedTaskViews", javascript)
 
+    def test_verified_completion_transition_announces_command_confirmation_sweep(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.setTimeout = () => 1;
+Date.now = () => 100000;
+render = () => {};
+selectTask = (slug) => { state.selectedKind = "task"; state.selectedSlug = slug; };
+state.snapshot = {
+  as_of: "2026-08-13",
+  tasks: [{ slug: "tasks/complete-me", title: "Finish the canonical loop", status: "active" }],
+  views: { inbox: [], today: [], completed: [], blocked: [] },
+  goals: [],
+  projects: [],
+};
+state.selectedKind = "task";
+state.selectedSlug = "tasks/complete-me";
+const calls = [];
+globalThis.fetch = async (endpoint, options) => {
+  calls.push({ endpoint, body: JSON.parse(options.body) });
+  return { ok: true, json: async () => ({ receipt: { verified: true, task: {
+    slug: "tasks/complete-me",
+    title: "Finish the canonical loop",
+    status: "completed",
+  } } }) };
+};
+await moveBoardTask("tasks/complete-me", "completed");
+assert(calls.length === 1, `expected one canonical status write, got ${calls.length}`);
+assert(calls[0].body.status === "completed", "completion write not requested");
+assert(Array.isArray(state.completionCelebrations), "completion celebration queue missing");
+assert(state.completionCelebrations.length === 1, `expected one celebration, got ${state.completionCelebrations?.length}`);
+assert(state.completionCelebrations[0].message === "Mission accomplished — Finish the canonical loop", state.completionCelebrations[0].message);
+assert(elements.completionCelebrationRegion?.children.length === 1, "aria-live celebration region was not rendered");
+assert(document.activeElement !== elements.completionCelebrationRegion, "celebration stole focus");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_completion_celebration_suppresses_stale_failed_same_status_and_off_preference(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.setTimeout = () => 1;
+render = () => {};
+selectTask = (slug) => { state.selectedKind = "task"; state.selectedSlug = slug; };
+state.snapshot = {
+  as_of: "2026-08-13",
+  tasks: [{ slug: "tasks/quiet", title: "Quiet Task", status: "completed" }],
+  views: { inbox: [], today: [], completed: [], blocked: [] },
+  goals: [],
+  projects: [],
+};
+globalThis.fetch = async () => {
+  throw new Error("same-status completion should not write");
+};
+await moveBoardTask("tasks/quiet", "completed");
+assert(!state.completionCelebrations?.length, "same-status completion celebrated");
+
+state.snapshot.tasks = [{ slug: "tasks/background", title: "Background Task", status: "active" }];
+reconcileVerifiedTask({ slug: "tasks/background", title: "Background Task", status: "completed" });
+assert(!state.completionCelebrations?.length, "passive reconciliation celebrated");
+
+state.snapshot.tasks = [{ slug: "tasks/fail", title: "Failed Task", status: "active" }];
+globalThis.fetch = async () => ({
+  ok: false,
+  json: async () => ({ error: "canonical write failed", code: "partial_write", slug: "tasks/fail" }),
+});
+await moveBoardTask("tasks/fail", "completed");
+assert(!state.completionCelebrations?.length, "failed write celebrated");
+
+window.localStorage = { getItem: () => "off", setItem() {} };
+state.boardMove = null;
+state.snapshot.tasks = [{ slug: "tasks/off", title: "Off Task", status: "active" }];
+globalThis.fetch = async () => ({ ok: true, json: async () => ({ receipt: { verified: true, task: {
+  slug: "tasks/off",
+  title: "Off Task",
+  status: "completed",
+} } }) });
+await moveBoardTask("tasks/off", "completed");
+assert(!state.completionCelebrations?.length, "off preference celebrated");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_edit_completion_celebrates_only_after_verified_same_slug_readback(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.setTimeout = () => 1;
+render = () => {};
+selectTask = (slug) => { state.selectedKind = "task"; state.selectedSlug = slug; };
+loadTasks = async () => {};
+loadAgentWork = async () => {};
+state.snapshot = {
+  as_of: "2026-08-13",
+  tasks: [{ slug: "tasks/edit-complete", title: "Edit Complete", status: "active" }],
+  views: { inbox: [], today: [], completed: [], blocked: [] },
+  goals: [],
+  projects: [],
+};
+state.taskEditorMode = "edit";
+state.taskEditorSourceSlug = "tasks/edit-complete";
+elements.taskEditorDialog.close = () => { elements.taskEditorDialog.open = false; };
+elements.taskEditorTitle.value = "Edit Complete";
+elements.taskEditorDetail.value = "";
+elements.taskEditorPriority.value = "normal";
+elements.taskEditorDue.value = "";
+elements.taskEditorProject.value = "";
+elements.taskEditorGoal.value = "";
+elements.taskEditorStatus.value = "completed";
+elements.taskEditorAssignee.value = "tony";
+elements.taskEditorHandoffReason.value = "";
+elements.taskTrackMetric.checked = false;
+globalThis.fetch = async (endpoint, options) => {
+  assert(endpoint === "/api/tasks/tasks%2Fedit-complete", endpoint);
+  assert(options.method === "PATCH", options.method);
+  const body = JSON.parse(options.body);
+  assert(body.status === "completed", "edit did not request completed status");
+  return { ok: true, json: async () => ({ receipt: { verified: true, task: {
+    slug: "tasks/edit-complete",
+    title: "Edit Complete",
+    status: "completed",
+  } } }) };
+};
+await submitTaskEditor({ preventDefault() {} });
+assert(state.completionCelebrations.length === 1, `expected edit completion celebration, got ${state.completionCelebrations.length}`);
+assert(state.completionCelebrations[0].message === "Mission accomplished — Edit Complete", state.completionCelebrations[0].message);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_completion_celebration_respects_reduced_motion_and_full_cooldown(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.setTimeout = () => 1;
+let now = 100000;
+Date.now = () => now;
+window.matchMedia = () => ({ matches: false });
+recordCompletionCelebration({ slug: "tasks/one", title: "One", status: "completed" });
+now += 1000;
+recordCompletionCelebration({ slug: "tasks/two", title: "Two", status: "completed" });
+assert(state.completionCelebrations[1].mode === "full", "first celebration did not use full mode");
+assert(state.completionCelebrations[0].mode === "reduced", "rapid second celebration did not use reduced stacked mode");
+
+state.completionCelebrations = [];
+window.matchMedia = () => ({ matches: true });
+now += 10000;
+recordCompletionCelebration({ slug: "tasks/reduced", title: "Reduced", status: "completed" });
+assert(state.completionCelebrations[0].mode === "reduced", "prefers-reduced-motion did not force reduced mode");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_goal_details_explain_bidirectional_links_and_explicit_repair(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -1797,6 +1951,7 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
         result = run_app_runtime_probe(
             r"""
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
+window.setTimeout = () => 1;
 const form = new FakeElement("form");
 const button = new FakeElement("button");
 button.textContent = "Save & Complete Task";
@@ -1877,6 +2032,8 @@ const task = findTaskBySlug("tasks/parent");
 assert(task.status === "completed", `task status=${task.status}`);
 assert(task.todos[0].status === "done", `todo status=${task.todos[0].status}`);
 assert(button.disabled === false, "button stayed disabled");
+assert(state.completionCelebrations.length === 1, `expected TODO completion celebration, got ${state.completionCelebrations.length}`);
+assert(state.completionCelebrations[0].message === "Mission accomplished — Parent Task", state.completionCelebrations[0].message);
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)

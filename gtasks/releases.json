@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.95",
+  "current_version": "V0.0.96",
   "releases": [
     {
       "version": "V0.0.1",
@@ -570,6 +570,12 @@
       "date": "2026-08-13",
       "title": "Reduce System Tickets refresh fan-out",
       "summary": "Uses the last verified System Tickets snapshot as a status index so default refresh skips completed-ticket hydration, preserves completed-ticket reads when requested, and invalidates the ticket snapshots after verified ticket writes."
+    },
+    {
+      "version": "V0.0.96",
+      "date": "2026-08-13",
+      "title": "Command Confirmation Sweep",
+      "summary": "Adds a local Command Confirmation Sweep after explicit Task completion is saved and read back from GBrain."
     }
   ]
 }

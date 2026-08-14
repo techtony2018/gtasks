@@ -926,12 +926,24 @@
           </div>
           <button class="icon-button" id="about-close" type="button" aria-label="Close About">×</button>
         </header>
+        <section class="about-preferences" aria-labelledby="completion-celebration-preference-label">
+          <label id="completion-celebration-preference-label" for="completion-celebration-preference">
+            Completion celebration
+          </label>
+          <select id="completion-celebration-preference">
+            <option value="full">Full Command Confirmation Sweep</option>
+            <option value="reduced">Reduced confirmation</option>
+            <option value="off">Off</option>
+          </select>
+          <p>Local browser preference only. Mission Control celebrates after a completed Task is saved and read back from GBrain.</p>
+        </section>
         <div class="release-history" id="release-history" tabindex="0">
           <p class="release-loading">Loading release history…</p>
         </div>
       </div>
     </dialog>
 
+    <div class="completion-celebration-region is-hidden" id="completion-celebration-region" role="status" aria-live="polite" aria-atomic="true"></div>
     <div class="toast is-hidden" id="toast" role="status" aria-live="polite"></div>
   </body>
 </html>

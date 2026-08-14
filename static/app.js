@@ -289,10 +289,13 @@ function renderSafeMarkdown(container, value, systemTicketReference = null) {
 
 const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
 const AGENT_TASKS_PREFERENCE_COOKIE = "mission-control-show-agent-tasks";
+const COMPLETION_CELEBRATION_PREFERENCE_KEY = "mission-control.completion-celebration";
 const DETAIL_WIDTH_PREFERENCE_KEY = "mission-control.detail-panel-width";
 const DETAIL_WIDTH_DEFAULT = 344;
 const DETAIL_WIDTH_MIN = 292;
 const DETAIL_WIDTH_MAX = 720;
+const COMPLETION_CELEBRATION_COOLDOWN_MS = 8000;
+const COMPLETION_CELEBRATION_MAX_VISIBLE = 3;
 
 const state = {
   snapshot: null,
@@ -342,6 +345,9 @@ const state = {
   hudTooltip: null,
   hudTooltipTarget: null,
   boardMove: null,
+  completionCelebrations: [],
+  completionCelebrationLastFullAt: 0,
+  completionCelebrationSequence: 0,
   loading: true,
   releases: null,
   aboutReturnFocus: null,
@@ -1054,6 +1060,8 @@ const elements = {
   goalCompletedTasks: document.querySelector("#goal-completed-tasks"),
   goalGbrainLink: document.querySelector("#goal-gbrain-link"),
   goalDetailSlug: document.querySelector("#goal-detail-slug"),
+  completionCelebrationPreference: document.querySelector("#completion-celebration-preference"),
+  completionCelebrationRegion: document.querySelector("#completion-celebration-region"),
   toast: document.querySelector("#toast"),
   aboutButton: document.querySelector("#about-button"),
   sidebarVersion: document.querySelector("#sidebar-version"),
@@ -1213,6 +1221,113 @@ function taskUiStatus(task) {
   return task.status;
 }
 
+function completionCelebrationStoredPreference() {
+  try {
+    const value = window.localStorage.getItem(COMPLETION_CELEBRATION_PREFERENCE_KEY);
+    if (["full", "reduced", "off"].includes(value)) return value;
+  } catch (_) {
+    // Browser-local preferences are optional and must not affect canonical Task writes.
+  }
+  return "full";
+}
+
+function setCompletionCelebrationPreference(value) {
+  const preference = ["full", "reduced", "off"].includes(value) ? value : "full";
+  try {
+    window.localStorage.setItem(COMPLETION_CELEBRATION_PREFERENCE_KEY, preference);
+  } catch (_) {
+    // The current page session can continue even when local storage is unavailable.
+  }
+  if (elements.completionCelebrationPreference) {
+    elements.completionCelebrationPreference.value = preference;
+  }
+}
+
+function completionCelebrationMode() {
+  const preference = completionCelebrationStoredPreference();
+  if (preference === "off") return "off";
+  const reducedMotion = Boolean(
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches,
+  );
+  if (preference === "reduced" || reducedMotion) return "reduced";
+  return "full";
+}
+
+function renderCompletionCelebrations() {
+  const region = elements.completionCelebrationRegion;
+  if (!region) return;
+  region.replaceChildren();
+  if (!state.completionCelebrations.length) {
+    region.classList.add("is-hidden");
+    region.textContent = "";
+    return;
+  }
+  region.classList.remove("is-hidden");
+  const list = node("div", "completion-celebration-stack");
+  state.completionCelebrations.forEach((celebration) => {
+    const card = node("article", `completion-celebration-card is-${celebration.mode}`);
+    const scan = node("span", "completion-celebration-scan");
+    scan.setAttribute("aria-hidden", "true");
+    const icon = node("span", "completion-celebration-icon", "✓");
+    icon.setAttribute("aria-hidden", "true");
+    const copy = node("span", "completion-celebration-copy", celebration.message);
+    card.append(scan, icon, copy);
+    list.append(card);
+  });
+  region.append(list);
+}
+
+function clearCompletionCelebration(sequence) {
+  state.completionCelebrations = state.completionCelebrations.filter(
+    (celebration) => celebration.sequence !== sequence,
+  );
+  renderCompletionCelebrations();
+}
+
+function recordCompletionCelebration(task, { bulkCount = 1 } = {}) {
+  const mode = completionCelebrationMode();
+  if (mode === "off") return;
+  const now = Date.now();
+  const canUseFull =
+    mode === "full" &&
+    now - state.completionCelebrationLastFullAt >= COMPLETION_CELEBRATION_COOLDOWN_MS;
+  const visualMode = canUseFull ? "full" : "reduced";
+  if (canUseFull) state.completionCelebrationLastFullAt = now;
+  state.completionCelebrationSequence += 1;
+  const title = task?.title || task?.summary || task?.slug || "Task";
+  const message = bulkCount > 1
+    ? `Mission accomplished — ${bulkCount} tasks completed`
+    : `Mission accomplished — ${title}`;
+  const celebration = {
+    sequence: state.completionCelebrationSequence,
+    taskSlug: task.slug,
+    mode: visualMode,
+    message,
+    createdAt: now,
+  };
+  state.completionCelebrations = [
+    celebration,
+    ...state.completionCelebrations,
+  ].slice(0, COMPLETION_CELEBRATION_MAX_VISIBLE);
+  renderCompletionCelebrations();
+  window.setTimeout(
+    () => clearCompletionCelebration(celebration.sequence),
+    visualMode === "full" ? 5200 : 3600,
+  );
+}
+
+function maybeCelebrateVerifiedTaskCompletion(previousTask, verifiedTask, { requestedStatus } = {}) {
+  if (
+    !previousTask ||
+    !verifiedTask ||
+    previousTask.slug !== verifiedTask.slug ||
+    previousTask.status === "completed" ||
+    requestedStatus !== "completed" ||
+    verifiedTask.status !== "completed"
+  ) return;
+  recordCompletionCelebration(verifiedTask);
+}
+
 function showToast(message) {
   elements.toast.classList.remove(
     "mutation-status", "is-pending", "is-success", "is-error",
@@ -1282,6 +1397,9 @@ async function loadReleases() {
 
 function openAboutDialog() {
   state.aboutReturnFocus = document.activeElement;
+  if (elements.completionCelebrationPreference) {
+    elements.completionCelebrationPreference.value = completionCelebrationStoredPreference();
+  }
   elements.aboutDialog.showModal();
   window.setTimeout(() => elements.aboutClose.focus(), 0);
 }
@@ -6128,6 +6246,9 @@ async function performTodoEditAction(todo, text, detail, submit, action = "save"
   setTodoEditActionPending(submit, true);
   if (submit) submit.textContent = "Saving…";
   try {
+    const previousTask = flags.completingTask
+      ? { ...findTaskBySlug(todo.parent_task) }
+      : null;
     const updated = await todoMutation(`/api/todos/${encodeURIComponent(todo.slug)}`, "PATCH", {
       text,
       detail,
@@ -6158,7 +6279,11 @@ async function performTodoEditAction(todo, text, detail, submit, action = "save"
       flags.done = true;
     }
     if (flags.completingTask) {
-      const receipt = await requestTaskStatus(todo.parent_task, "completed");
+      const receipt = await requestTaskStatus(
+        todo.parent_task,
+        "completed",
+        { completionPreviousTask: previousTask },
+      );
       const current = findTaskBySlug(todo.parent_task);
       reconcileVerifiedTask(mergeVerifiedTodoIntoTask(receipt.task, verifiedTodo));
       if (current?.slug === state.selectedSlug || receipt.task.slug === state.selectedSlug) {
@@ -7932,7 +8057,7 @@ async function saveTaskGoal() {
   }
 }
 
-async function requestTaskStatus(taskSlug, status) {
+async function requestTaskStatus(taskSlug, status, { completionPreviousTask = null } = {}) {
   const response = await fetch(
     `/api/tasks/${encodeURIComponent(taskSlug)}/status`,
     {
@@ -7959,6 +8084,9 @@ async function requestTaskStatus(taskSlug, status) {
     error.slug = taskSlug;
     throw error;
   }
+  maybeCelebrateVerifiedTaskCompletion(completionPreviousTask, result.receipt.task, {
+    requestedStatus: status,
+  });
   return result.receipt;
 }
 
@@ -7985,8 +8113,12 @@ async function moveBoardTask(taskSlug, status) {
   state.boardMove = move;
   render();
   try {
+    const previousTask = { ...task };
     const receipt = await requestTaskStatus(taskSlug, status);
     reconcileVerifiedTask(receipt.task);
+    maybeCelebrateVerifiedTaskCompletion(previousTask, receipt.task, {
+      requestedStatus: status,
+    });
     state.boardMove = null;
     render();
     if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
@@ -8018,6 +8150,9 @@ async function saveTaskStatus() {
     if (currentTask?.status === status) return;
     const receipt = await requestTaskStatus(taskSlug, status);
     reconcileVerifiedTask(receipt.task);
+    maybeCelebrateVerifiedTaskCompletion(currentTask, receipt.task, {
+      requestedStatus: status,
+    });
     selectTask(taskSlug);
     showToast(`Status saved as ${status} in GBrain.`);
   } catch (error) {
@@ -8543,6 +8678,9 @@ async function submitTaskEditor(event) {
       ? "Creating duplicate Task in GBrain…"
       : "Creating Task in GBrain…";
   try {
+    const previousTask = state.taskEditorMode === "edit"
+      ? findTaskBySlug(state.taskEditorSourceSlug)
+      : null;
     const payload = {
       title: elements.taskEditorTitle.value,
       detail: elements.taskEditorDetail.value,
@@ -8598,6 +8736,11 @@ async function submitTaskEditor(event) {
       error.code = result.code;
       error.slug = result.slug;
       throw error;
+    }
+    if (state.taskEditorMode === "edit") {
+      maybeCelebrateVerifiedTaskCompletion(previousTask, savedTask, {
+        requestedStatus: payload.status,
+      });
     }
     elements.taskEditorDialog.close();
     if (savedTask.owner_agent) {
@@ -8913,6 +9056,9 @@ elements.boardStatusRetry.addEventListener("click", () => {
 });
 elements.aboutButton.addEventListener("click", openAboutDialog);
 elements.aboutClose.addEventListener("click", closeAboutDialog);
+elements.completionCelebrationPreference.addEventListener("change", () => {
+  setCompletionCelebrationPreference(elements.completionCelebrationPreference.value);
+});
 elements.aboutDialog.addEventListener("close", () => {
   if (state.aboutReturnFocus instanceof HTMLElement) {
     state.aboutReturnFocus.focus();

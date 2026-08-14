@@ -27,7 +27,14 @@ class ReleaseCatalogTests(unittest.TestCase):
     def test_runtime_version_is_the_latest_catalog_entry(self) -> None:
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
-        self.assertEqual(__version__, "V0.0.95")
+        self.assertEqual(__version__, "V0.0.96")
+
+    def test_v0_0_96_records_verified_completion_celebration(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.96")
+
+        self.assertIn("Command Confirmation Sweep", release["title"])
+        self.assertIn("explicit Task completion", release["summary"])
+        self.assertIn("read back from GBrain", release["summary"])
 
     def test_v0_0_95_records_system_ticket_refresh_fanout_reduction(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.95")
@@ -447,6 +454,7 @@ class ReleaseCatalogTests(unittest.TestCase):
                 "V0.0.93",
                 "V0.0.94",
                 "V0.0.95",
+                "V0.0.96",
             ],
         )
 
