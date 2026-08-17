@@ -4409,6 +4409,52 @@ def _handler_class(
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error":str(exc), "code":"gbrain_unavailable"}); return
                 invalidate_system_tickets()
                 self._json(HTTPStatus.CREATED, {"ticket": ticket.to_dict(), "receipt": receipt.to_dict()}); return
+            if path == "/api/tasks/archive-completed-boundary":
+                payload = self._read_json()
+                if payload is None:
+                    return
+                if set(payload) - {"task_slugs"}:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "archive request contains unsupported fields.",
+                            "code": "invalid_archive_request",
+                        },
+                    )
+                    return
+                raw_slugs = payload.get("task_slugs")
+                task_slugs: tuple[str, ...] | None
+                if raw_slugs is None:
+                    task_slugs = None
+                elif isinstance(raw_slugs, list) and all(
+                    isinstance(slug, str) and slug.startswith("tasks/")
+                    for slug in raw_slugs
+                ):
+                    task_slugs = tuple(raw_slugs)
+                else:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {
+                            "error": "task_slugs must be a list of canonical task slugs.",
+                            "code": "invalid_archive_request",
+                        },
+                    )
+                    return
+                try:
+                    receipt = adapter.archive_due_completed_tony_tasks(
+                        clock(),
+                        task_slugs=task_slugs,
+                    )
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                if receipt.archived_slugs:
+                    invalidate_snapshot()
+                self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
+                return
             duplicate_prefix = "/api/tasks/"
             duplicate_suffix = "/duplicate"
             if (

@@ -3860,6 +3860,201 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
 
 
 class LifecycleRepairTests(unittest.TestCase):
+    def test_archives_completed_tony_task_after_next_monday_boundary(self) -> None:
+        completed_at = datetime.fromisoformat("2026-08-12T15:30:00-07:00")
+        now = datetime.fromisoformat("2026-08-17T00:05:00-07:00")
+        task = replace(
+            new_inbox_task("Archive after Monday", completed_at, "archive01"),
+            status="completed",
+            completed_at=completed_at,
+        )
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["status"] = "completed"
+        initial_page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        initial_page["frontmatter"]["captured_via"] = "manual"
+        other_edge = {
+            "from_slug": task.slug,
+            "to_slug": "goals/keep-history",
+            "link_type": "advances_goal",
+        }
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        completed_edge = {
+            "from_slug": task.slug,
+            "to_slug": COMPLETED_ROOT,
+            "link_type": "member_of",
+        }
+        archived_page = deepcopy(initial_page)
+        archived_page["frontmatter"]["links"] = [
+            {"to": COMPLETED_ROOT, "type": "member_of"}
+        ]
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, archived_page],
+                "get_links": [[active_edge, other_edge], [completed_edge, other_edge]],
+                "put_page": [{"slug": task.slug}],
+                "add_link": [completed_edge],
+                "remove_link": [{"removed": True}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).archive_due_completed_tony_tasks(
+            now,
+            task_slugs=[task.slug],
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.archived_slugs, (task.slug,))
+        self.assertEqual(receipt.skipped_slugs, ())
+        self.assertEqual(receipt.issue_count, 0)
+        self.assertIn(
+            (
+                "add_link",
+                {
+                    "from": task.slug,
+                    "to": COMPLETED_ROOT,
+                    "link_type": "member_of",
+                    "context": "Mission Control completed-task archive boundary.",
+                    "link_source": "gtasks",
+                },
+            ),
+            runner.calls,
+        )
+        self.assertIn(
+            (
+                "remove_link",
+                {
+                    "from": task.slug,
+                    "to": ACTIVE_ROOT,
+                    "link_type": "member_of",
+                },
+            ),
+            runner.calls,
+        )
+        written = next(
+            params["content"]
+            for tool, params in runner.calls
+            if tool == "put_page"
+        )
+        self.assertIn(COMPLETED_ROOT, written)
+        self.assertIn('captured_via: "manual"', written)
+        self.assertIn(completed_at.isoformat(), written)
+
+    def test_archive_boundary_skips_completed_task_before_next_monday(self) -> None:
+        completed_at = datetime.fromisoformat("2026-08-12T15:30:00-07:00")
+        now = datetime.fromisoformat("2026-08-16T23:59:00-07:00")
+        task = replace(
+            new_inbox_task("Not due yet", completed_at, "archive02"),
+            status="completed",
+            completed_at=completed_at,
+        )
+        page = stored_page(task)
+        page["frontmatter"]["status"] = "completed"
+        page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [page],
+                "get_links": [[active_edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).archive_due_completed_tony_tasks(
+            now,
+            task_slugs=[task.slug],
+        )
+
+        self.assertEqual(receipt.archived_slugs, ())
+        self.assertEqual(receipt.skipped_slugs, (task.slug,))
+        self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
+        self.assertNotIn("remove_link", [tool for tool, _params in runner.calls])
+
+    def test_archive_boundary_is_idempotent_for_already_archived_task(self) -> None:
+        completed_at = datetime.fromisoformat("2026-08-12T15:30:00-07:00")
+        now = datetime.fromisoformat("2026-08-17T00:05:00-07:00")
+        task = replace(
+            new_inbox_task("Already archived", completed_at, "archive03"),
+            status="completed",
+            lifecycle_root=COMPLETED_ROOT,
+            completed_at=completed_at,
+        )
+        page = stored_page(task)
+        page["frontmatter"]["status"] = "completed"
+        page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        page["frontmatter"]["links"] = [{"to": COMPLETED_ROOT, "type": "member_of"}]
+        completed_edge = {
+            "from_slug": task.slug,
+            "to_slug": COMPLETED_ROOT,
+            "link_type": "member_of",
+        }
+        runner = FakeRunner(
+            {
+                "get_page": [page],
+                "get_links": [[completed_edge]],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).archive_due_completed_tony_tasks(
+            now,
+            task_slugs=[task.slug],
+        )
+
+        self.assertEqual(receipt.archived_slugs, ())
+        self.assertEqual(receipt.skipped_slugs, (task.slug,))
+        self.assertTrue(receipt.verified)
+        self.assertNotIn("put_page", [tool for tool, _params in runner.calls])
+
+    def test_archive_boundary_reports_partial_readback_without_success(self) -> None:
+        completed_at = datetime.fromisoformat("2026-08-12T15:30:00-07:00")
+        now = datetime.fromisoformat("2026-08-17T00:05:00-07:00")
+        task = replace(
+            new_inbox_task("Partial archive", completed_at, "archive04"),
+            status="completed",
+            completed_at=completed_at,
+        )
+        initial_page = stored_page(task)
+        initial_page["frontmatter"]["status"] = "completed"
+        initial_page["frontmatter"]["completed_at"] = completed_at.isoformat()
+        active_edge = {
+            "from_slug": task.slug,
+            "to_slug": ACTIVE_ROOT,
+            "link_type": "member_of",
+        }
+        completed_edge = {
+            "from_slug": task.slug,
+            "to_slug": COMPLETED_ROOT,
+            "link_type": "member_of",
+        }
+        unverified_page = deepcopy(initial_page)
+        runner = FakeRunner(
+            {
+                "get_page": [initial_page, unverified_page],
+                "get_links": [[active_edge], [active_edge, completed_edge]],
+                "put_page": [{"slug": task.slug}],
+                "add_link": [completed_edge],
+                "remove_link": [{"removed": True}],
+            }
+        )
+
+        receipt = GBrainAdapter(runner).archive_due_completed_tony_tasks(
+            now,
+            task_slugs=[task.slug],
+        )
+
+        self.assertFalse(receipt.verified)
+        self.assertEqual(receipt.archived_slugs, ())
+        self.assertEqual(receipt.skipped_slugs, ())
+        self.assertEqual(receipt.issue_count, 1)
+        self.assertEqual(receipt.issues[0].slug, task.slug)
+        self.assertIn("not verified", receipt.issues[0].impact)
+
     def test_repairs_unambiguous_legacy_active_membership_with_readback(self) -> None:
         task = new_inbox_task(
             "Repair active membership",

@@ -44,6 +44,7 @@ from gtasks.gbrain import (
     AgentWorkRead,
     CollectionIssue,
     CollectionRead,
+    CompletedArchiveReceipt,
     GoalLinkReceipt,
     GoalDeletionReceipt,
     GoalMutationReceipt,
@@ -250,6 +251,7 @@ class FakeAdapter:
         self.handoff_questions: set[str] = set()
         self.todos: dict[str, dict] = {}
         self.membership_repairs: list[str] = []
+        self.completed_archives: list[tuple[datetime, tuple[str, ...] | None]] = []
         self.created_projects: list[Project] = []
         self.updated_projects: list[str] = []
         self.project_assignments: list[tuple[str, str | None]] = []
@@ -782,6 +784,19 @@ class FakeAdapter:
     def repair_active_membership(self, task_slug: str) -> MembershipRepairReceipt:
         self.membership_repairs.append(task_slug)
         return MembershipRepairReceipt(task_slug=task_slug, verified=True)
+
+    def archive_due_completed_tony_tasks(
+        self,
+        now: datetime,
+        *,
+        task_slugs: tuple[str, ...] | None = None,
+    ) -> CompletedArchiveReceipt:
+        self.completed_archives.append((now, task_slugs))
+        return CompletedArchiveReceipt(
+            archived_slugs=task_slugs or (),
+            skipped_slugs=(),
+            verified=True,
+        )
 
     def set_task_progress_metric(
         self,
@@ -3798,7 +3813,7 @@ class HealthApiTests(unittest.TestCase):
                 "collections/tammys-tasks",
             ],
         )
-        self.assertEqual(payload["version"], "V0.0.97")
+        self.assertEqual(payload["version"], server_module.release_payload()["current_version"])
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
@@ -3806,109 +3821,12 @@ class HealthApiTests(unittest.TestCase):
         status, payload, _ = harness.request("GET", "/api/releases")
 
         self.assertEqual(status, 200)
-        self.assertEqual(payload["current_version"], "V0.0.97")
-        self.assertEqual(payload["releases"][0]["version"], "V0.0.97")
+        expected = server_module.release_payload()
+        self.assertEqual(payload["current_version"], expected["current_version"])
+        self.assertEqual(payload["releases"][0]["version"], expected["current_version"])
         self.assertEqual(
             [release["version"] for release in payload["releases"]],
-            [
-                "V0.0.97",
-                "V0.0.96",
-                "V0.0.95",
-                "V0.0.94",
-                "V0.0.93",
-                "V0.0.92",
-                "V0.0.91",
-                "V0.0.90",
-                "V0.0.89",
-                "V0.0.88",
-                "V0.0.87",
-                "V0.0.86",
-                "V0.0.85",
-                "V0.0.84",
-                "V0.0.83",
-                "V0.0.82",
-                "V0.0.81",
-                "V0.0.80",
-                "V0.0.79",
-                "V0.0.78",
-                "V0.0.77",
-                "V0.0.76",
-                "V0.0.75",
-                "V0.0.74",
-                "V0.0.73",
-                "V0.0.72",
-                "V0.0.71",
-                "V0.0.70",
-                "V0.0.69",
-                "V0.0.68",
-                "V0.0.67",
-                "V0.0.66",
-                "V0.0.65",
-                "V0.0.64",
-                "V0.0.63",
-                "V0.0.62",
-                "V0.0.61",
-                "V0.0.60",
-                "V0.0.59",
-                "V0.0.58",
-                "V0.0.57",
-                "V0.0.56",
-                "V0.0.55",
-                "V0.0.54",
-                "V0.0.53",
-                "V0.0.52",
-                "V0.0.51",
-                "V0.0.50",
-                "V0.0.49",
-                "V0.0.48",
-                "V0.0.47",
-                "V0.0.46",
-                "V0.0.45",
-                "V0.0.44",
-                "V0.0.43",
-                "V0.0.42",
-                "V0.0.41",
-                "V0.0.40",
-                "V0.0.39",
-                "V0.0.38",
-                "V0.0.37",
-                "V0.0.36",
-                "V0.0.35",
-                "V0.0.34",
-                "V0.0.33",
-                "V0.0.32",
-                "V0.0.31",
-                "V0.0.30",
-                "V0.0.29",
-                "V0.0.28",
-                "V0.0.27",
-                "V0.0.26",
-                "V0.0.25",
-                "V0.0.24",
-                "V0.0.23",
-                "V0.0.22",
-                "V0.0.21",
-                "V0.0.20",
-                "V0.0.19",
-                "V0.0.18",
-                "V0.0.17",
-                "V0.0.16",
-                "V0.0.15",
-                "V0.0.14",
-                "V0.0.13",
-                "V0.0.12",
-                "V0.0.11",
-                "V0.0.10",
-                "V0.0.9",
-                "V0.0.8",
-                "V0.0.7",
-                "V0.0.6",
-                "V0.0.5",
-                "V0.0.4",
-                "V0.0.3",
-                "V0.0.2",
-                "V0.0.1",
-            ],
+            [release["version"] for release in expected["releases"]],
         )
 
 
@@ -6453,6 +6371,28 @@ class ProjectApiTests(unittest.TestCase):
 
 
 class TaskRelationshipRepairApiTests(unittest.TestCase):
+    def test_archive_completed_boundary_runs_explicit_lifecycle_repair(self) -> None:
+        now = datetime(2026, 8, 17, 0, 5, tzinfo=timezone.utc)
+        adapter = FakeAdapter()
+        harness = ServerHarness(self, adapter, clock=lambda: now)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks/archive-completed-boundary",
+            {"task_slugs": ["tasks/due-a", "tasks/due-b"]},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            adapter.completed_archives,
+            [(now, ("tasks/due-a", "tasks/due-b"))],
+        )
+        self.assertEqual(
+            payload["receipt"]["archived_slugs"],
+            ["tasks/due-a", "tasks/due-b"],
+        )
+        self.assertTrue(payload["receipt"]["verified"])
+
     def test_repairs_an_unambiguous_active_membership(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)

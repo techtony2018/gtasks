@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Lock, current_thread
 from time import monotonic, sleep, time
@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from .domain import (
     ACTIVE_ROOT,
@@ -1114,6 +1115,26 @@ class MembershipRepairReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return {"task_slug": self.task_slug, "verified": self.verified}
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedArchiveReceipt:
+    archived_slugs: tuple[str, ...]
+    skipped_slugs: tuple[str, ...]
+    issues: tuple[CollectionIssue, ...] = ()
+    verified: bool = True
+
+    @property
+    def issue_count(self) -> int:
+        return len(self.issues)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "archived_slugs": list(self.archived_slugs),
+            "skipped_slugs": list(self.skipped_slugs),
+            "issues": [issue.to_dict() for issue in self.issues],
+            "verified": self.verified,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -2618,6 +2639,32 @@ def _require_single_lifecycle_edge(
     if len(edges) != 1:
         raise LifecycleIntegrityError(task_slug, edges)
     return edges[0]
+
+
+def _parse_required_archive_completed_at(frontmatter: Mapping[str, Any]) -> datetime:
+    raw_completed_at = frontmatter.get("completed_at")
+    if not isinstance(raw_completed_at, str) or not raw_completed_at.strip():
+        raise ValueError("completed task is missing completed_at")
+    try:
+        completed_at = datetime.fromisoformat(raw_completed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("completed_at is not a valid timestamp") from exc
+    if completed_at.tzinfo is None:
+        raise ValueError("completed_at must include a timezone")
+    return completed_at
+
+
+def _completed_archive_boundary_reached(
+    completed_at: datetime,
+    now: datetime,
+) -> bool:
+    local_tz = ZoneInfo("America/Los_Angeles")
+    completed_day = completed_at.astimezone(local_tz).date()
+    days_until_next_monday = (7 - completed_day.weekday()) % 7
+    if days_until_next_monday == 0:
+        days_until_next_monday = 7
+    archive_boundary = completed_day + timedelta(days=days_until_next_monday)
+    return now.astimezone(local_tz).date() >= archive_boundary
 
 
 def _visible_warning(
@@ -7855,6 +7902,199 @@ class GBrainAdapter:
 
         return MembershipRepairReceipt(task_slug=task_slug, verified=True)
 
+    def archive_due_completed_tony_tasks(
+        self,
+        now: datetime,
+        *,
+        task_slugs: Sequence[str] | None = None,
+    ) -> CompletedArchiveReceipt:
+        """Move completed Tony tasks from active to completed root after boundary.
+
+        Completion itself intentionally keeps a task in Tony's active root so it can
+        remain visible through the current week. This operation is the explicit
+        lifecycle/archive boundary: after the next Monday in Tony's timezone, a
+        completed Tony task is moved to the completed root with add-before-remove
+        relationship ordering and exact readback.
+        """
+        if now.tzinfo is None:
+            raise ValueError("archive boundary time must include a timezone")
+        if task_slugs is None:
+            active_read = self.list_collection_tasks(ACTIVE_ROOT)
+            task_slugs = tuple(task.slug for task in active_read.tasks)
+
+        archived: list[str] = []
+        skipped: list[str] = []
+        issues: list[CollectionIssue] = []
+        for task_slug in tuple(task_slugs):
+            try:
+                outcome = self._archive_due_completed_tony_task(task_slug, now)
+            except (DomainValidationError, GBrainError, ValueError) as exc:
+                issues.append(
+                    CollectionIssue(
+                        slug=task_slug,
+                        message=(
+                            "Completed task archive boundary repair failed: "
+                            + str(exc)
+                        ),
+                        severity="error",
+                        task_visible=False,
+                        category="lifecycle_archive",
+                        impact=(
+                            "The task was not verified as safely archived; inspect "
+                            "the canonical page and member_of links before retrying."
+                        ),
+                        repair_action="archive_due_completed_tony_tasks",
+                    )
+                )
+                continue
+            if outcome == "archived":
+                archived.append(task_slug)
+            else:
+                skipped.append(task_slug)
+        return CompletedArchiveReceipt(
+            archived_slugs=tuple(archived),
+            skipped_slugs=tuple(skipped),
+            issues=tuple(issues),
+            verified=not issues,
+        )
+
+    def _archive_due_completed_tony_task(
+        self,
+        task_slug: str,
+        now: datetime,
+    ) -> str:
+        raw_page = self.runner.run("get_page", {"slug": task_slug})
+        raw_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_page, Mapping) or not isinstance(raw_links, list):
+            raise GBrainProtocolError("archive readback was not structured")
+        if raw_page.get("type") != "task":
+            raise ValueError(
+                f"task has unexpected page type {raw_page.get('type') or 'missing'}; "
+                "repair the task type before archiving"
+            )
+        raw_frontmatter = raw_page.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise ValueError("task is not eligible for archive without frontmatter")
+        status = raw_frontmatter.get("status")
+        if status != "completed":
+            return "skipped"
+        completed_at = _parse_required_archive_completed_at(raw_frontmatter)
+        if not _completed_archive_boundary_reached(completed_at, now):
+            return "skipped"
+
+        lifecycle_edges = _lifecycle_edges(task_slug, raw_links)
+        lifecycle_roots = [
+            str(edge.get("to_slug"))
+            for edge in lifecycle_edges
+            if isinstance(edge.get("to_slug"), str)
+        ]
+        has_active = ACTIVE_ROOT in lifecycle_roots
+        has_completed = COMPLETED_ROOT in lifecycle_roots
+        unexpected_roots = [
+            root
+            for root in lifecycle_roots
+            if root not in {ACTIVE_ROOT, COMPLETED_ROOT}
+        ]
+        if unexpected_roots:
+            raise LifecycleIntegrityError(task_slug, lifecycle_edges)
+        if not has_active and has_completed and len(lifecycle_edges) == 1:
+            return "skipped"
+        if not has_active:
+            raise LifecycleIntegrityError(task_slug, lifecycle_edges)
+
+        raw_frontmatter_links = raw_frontmatter.get("links")
+        if not isinstance(raw_frontmatter_links, list):
+            raise GBrainProtocolError("task frontmatter links must be a list")
+        retained_links = [
+            deepcopy(dict(link))
+            for link in raw_frontmatter_links
+            if not (
+                isinstance(link, Mapping)
+                and link.get("type") == "member_of"
+                and link.get("to") in TASK_SCOPE_ROOTS
+            )
+        ]
+        retained_links.append(
+            {
+                "to": COMPLETED_ROOT,
+                "type": "member_of",
+                "context": "Mission Control completed-task archive boundary.",
+            }
+        )
+        desired_frontmatter = deepcopy(dict(raw_frontmatter))
+        desired_frontmatter["type"] = "task"
+        desired_frontmatter["links"] = retained_links
+        desired_content = _render_preserved_task_page(raw_page, desired_frontmatter)
+
+        existing_unrelated = [
+            link
+            for link in raw_links
+            if isinstance(link, Mapping)
+            and not (
+                link.get("from_slug") == task_slug
+                and link.get("link_type") == "member_of"
+                and link.get("to_slug") in TASK_SCOPE_ROOTS
+            )
+        ]
+        self.runner.run("put_page", {"slug": task_slug, "content": desired_content})
+        if not has_completed:
+            self.runner.run(
+                "add_link",
+                {
+                    "from": task_slug,
+                    "to": COMPLETED_ROOT,
+                    "link_type": "member_of",
+                    "context": "Mission Control completed-task archive boundary.",
+                    "link_source": "gtasks",
+                },
+            )
+        self.runner.run(
+            "remove_link",
+            {
+                "from": task_slug,
+                "to": ACTIVE_ROOT,
+                "link_type": "member_of",
+            },
+        )
+
+        stored_page = self.runner.run("get_page", {"slug": task_slug})
+        stored_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(stored_page, Mapping) or not isinstance(stored_links, list):
+            raise GBrainProtocolError("archive readback was not structured")
+        if stored_page.get("type") != "task":
+            raise GBrainProtocolError(
+                "archive write changed the canonical page type away from task"
+            )
+        stored_task = Task.from_page(stored_page, edges=stored_links)
+        if (
+            stored_task.status != "completed"
+            or stored_task.lifecycle_root != COMPLETED_ROOT
+            or stored_task.completed_at != completed_at
+        ):
+            raise GBrainProtocolError(
+                "archive page readback did not match the requested lifecycle"
+            )
+        verified_lifecycle = _lifecycle_edges(task_slug, stored_links)
+        if (
+            len(verified_lifecycle) != 1
+            or verified_lifecycle[0].get("to_slug") != COMPLETED_ROOT
+        ):
+            raise GBrainProtocolError(
+                "archive lifecycle edge readback did not match the task page"
+            )
+        for expected in existing_unrelated:
+            if not any(
+                isinstance(actual, Mapping)
+                and actual.get("from_slug") == expected.get("from_slug")
+                and actual.get("to_slug") == expected.get("to_slug")
+                and actual.get("link_type") == expected.get("link_type")
+                for actual in stored_links
+            ):
+                raise GBrainProtocolError(
+                    "an unrelated task relationship was missing after archive"
+                )
+        return "archived"
+
     def _approved_task(self, task_slug: str) -> Task:
         for root_slug in (ACTIVE_ROOT, COMPLETED_ROOT):
             result = self.list_collection_tasks(root_slug)
@@ -7903,13 +8143,13 @@ class GBrainAdapter:
         next_action: str,
         project_slug: str | None,
         goal_slug: str | None,
-        parent_slug: str | None,
         status: str,
         assignee_slug: str,
         progress_metric: ProgressMetric | None,
         event_progress: EventProgress | None,
         handoff_reason: str,
         now: datetime,
+        parent_slug: str | None = None,
     ) -> TaskEditReceipt:
         """Apply the full detail form through verified canonical mutations.
 
