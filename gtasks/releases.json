@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.99",
+  "current_version": "V0.0.100",
   "releases": [
     {
       "version": "V0.0.1",
@@ -594,6 +594,12 @@
       "date": "2026-08-17",
       "title": "Completed task archive boundary",
       "summary": "Adds an explicit verified archive-boundary repair path that moves completed Tony Tasks from Tony's active root to Tony's completed root after the next Monday in America/Los_Angeles, preserving task content and unrelated relationships with exact page/link readback and partial-failure reporting."
+    },
+    {
+      "version": "V0.0.100",
+      "date": "2026-08-17",
+      "title": "Bounded long-open refresh scheduling",
+      "summary": "Prevents stale background refresh snapshots from rearming an expired zero-delay auto-refresh loop, preserving the bounded one-second surface poll and the normal 30-minute refresh cadence after long-open tabs."
     }
   ]
 }

@@ -28,6 +28,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
 
+    def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.100")
+
+        self.assertIn("Bounded long-open refresh scheduling", release["title"])
+        self.assertIn("zero-delay auto-refresh loop", release["summary"])
+        self.assertIn("30-minute refresh cadence", release["summary"])
+
     def test_v0_0_99_records_completed_task_archive_boundary(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.99")
 

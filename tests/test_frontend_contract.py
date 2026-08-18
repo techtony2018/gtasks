@@ -3348,6 +3348,146 @@ assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical 
         self.assertIn("state.refreshDeferred", javascript)
         self.assertIn("scheduleAutoRefresh", javascript)
 
+    def test_stale_refreshing_snapshot_never_rearms_an_overdue_zero_delay_refresh(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const now = 1787024471458;
+const delays = [];
+let renderCount = 0;
+Date.now = () => now;
+document.hidden = false;
+window.setTimeout = (_callback, delay) => {
+  delays.push(delay);
+  return delays.length;
+};
+window.clearTimeout = () => {};
+render = () => { renderCount += 1; };
+state.activeView = "board";
+state.snapshot = {
+  as_of: "2026-08-17",
+  tasks: [],
+  goals: [],
+  projects: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.projectsLoaded = true;
+state.autoRefreshDueAt = now - 26482161;
+state.autoRefreshTimer = null;
+state.taskSurfacePollTimer = null;
+globalThis.fetch = async (url) => {
+  assert(url === "/api/tasks?refresh=1", `unexpected URL ${url}`);
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...state.snapshot,
+      read_state: {
+        surface: "tasks",
+        status: "refreshing",
+        refreshing: true,
+        stale: true,
+        last_valid_at: now / 1000,
+        error: null,
+      },
+    }),
+  };
+};
+
+await performTaskLoad("automatic");
+
+assert(renderCount === 1, `one completed read should render once, got ${renderCount}`);
+assert(
+  state.autoRefreshDueAt === now + AUTO_REFRESH_INTERVAL_MS,
+  `overdue deadline was not advanced: ${state.autoRefreshDueAt - now}`,
+);
+assert(
+  delays.includes(AUTO_REFRESH_INTERVAL_MS),
+  `next automatic refresh was not bounded to the configured interval: ${delays}`,
+);
+assert(!delays.includes(0), `stale refresh rearmed the runaway zero-delay loop: ${delays}`);
+assert(delays.includes(1000), `bounded stale-surface poll was not preserved: ${delays}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_repeated_stale_refresh_poll_soak_keeps_timers_and_renders_bounded(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const now = 1787024471458;
+const delays = [];
+let renderCount = 0;
+let fetchCount = 0;
+Date.now = () => now;
+document.hidden = false;
+window.setTimeout = (_callback, delay) => {
+  delays.push(delay);
+  return delays.length;
+};
+window.clearTimeout = () => {};
+render = () => { renderCount += 1; };
+state.activeView = "board";
+state.snapshot = {
+  as_of: "2026-08-17",
+  tasks: [],
+  goals: [],
+  projects: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.projectsLoaded = true;
+state.autoRefreshDueAt = now - 26482161;
+state.autoRefreshTimer = null;
+state.taskSurfacePollTimer = null;
+globalThis.fetch = async (url) => {
+  assert(url === "/api/tasks", `unexpected URL ${url}`);
+  fetchCount += 1;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...state.snapshot,
+      read_state: {
+        surface: "tasks",
+        status: "refreshing",
+        refreshing: true,
+        stale: true,
+        last_valid_at: now / 1000,
+        error: null,
+      },
+    }),
+  };
+};
+
+const cycles = 120;
+for (let cycle = 0; cycle < cycles; cycle += 1) {
+  state.taskSurfacePollTimer = null;
+  await performTaskLoad("poll");
+}
+
+const automaticDelays = delays.filter((delay) => delay === AUTO_REFRESH_INTERVAL_MS);
+const surfacePollDelays = delays.filter((delay) => delay === 1000);
+assert(fetchCount === cycles, `expected ${cycles} reads, got ${fetchCount}`);
+assert(renderCount === cycles, `expected one render per read, got ${renderCount}`);
+assert(
+  automaticDelays.length === cycles,
+  `automatic timers were not one-per-cycle and bounded: ${automaticDelays.length}`,
+);
+assert(
+  surfacePollDelays.length === cycles,
+  `surface poll timers were not one-per-cycle and bounded: ${surfacePollDelays.length}`,
+);
+assert(!delays.includes(0), `soak reintroduced a zero-delay timer: ${delays}`);
+assert(
+  delays.length === cycles * 2,
+  `unexpected timer growth during soak: ${delays.length}`,
+);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_projects_have_durable_create_and_separate_assignment_flows(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

@@ -62,10 +62,11 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified and deployed release: V0.0.94. Completing a Task reconciles its
-direct child TODOs to done with verified readback, including legacy next-action
-TODOs, same-status repair retries, full Edit saves, and automation-created daily
-tasks without duplicating TODO history events.
+Latest candidate release: V0.0.100. Long-open tabs now recover an expired
+automatic-refresh deadline by scheduling the next normal 30-minute refresh,
+while stale GBrain snapshots continue to use the existing bounded one-second
+surface poll. This prevents a stale/refreshing snapshot from entering a 0ms
+render loop without hiding freshness or changing canonical GBrain data.
 
 ### Independent UI/UX release gate
 

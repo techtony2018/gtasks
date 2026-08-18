@@ -8348,8 +8348,13 @@ function activeViewUsesTaskSnapshot() {
 
 function scheduleAutoRefresh({ reset = false } = {}) {
   clearAutoRefreshTimer();
-  if (reset || state.autoRefreshDueAt === null) {
-    state.autoRefreshDueAt = Date.now() + AUTO_REFRESH_INTERVAL_MS;
+  const now = Date.now();
+  if (
+    reset ||
+    state.autoRefreshDueAt === null ||
+    state.autoRefreshDueAt <= now
+  ) {
+    state.autoRefreshDueAt = now + AUTO_REFRESH_INTERVAL_MS;
   }
   if (document.hidden) {
     updateAutoRefreshLabel(
@@ -8358,7 +8363,7 @@ function scheduleAutoRefresh({ reset = false } = {}) {
     return;
   }
   updateAutoRefreshLabel();
-  const delay = Math.max(0, state.autoRefreshDueAt - Date.now());
+  const delay = Math.max(0, state.autoRefreshDueAt - now);
   state.autoRefreshTimer = window.setTimeout(async () => {
     state.autoRefreshTimer = null;
     if (document.hidden) {
