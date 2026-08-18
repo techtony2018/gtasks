@@ -35,6 +35,13 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("zero-delay auto-refresh loop", release["summary"])
         self.assertIn("30-minute refresh cadence", release["summary"])
 
+    def test_v0_0_101_records_bounded_task_detail_read_recovery(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.101")
+
+        self.assertIn("Bounded Task detail recovery", release["title"])
+        self.assertIn("15-second", release["summary"])
+        self.assertIn("without reloading Mission Control", release["summary"])
+
     def test_v0_0_99_records_completed_task_archive_boundary(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.99")
 

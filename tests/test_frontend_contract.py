@@ -60,7 +60,7 @@ const window = {
   localStorage: { getItem: () => null, setItem() {} },
   matchMedia: () => ({ matches: false }),
   requestAnimationFrame: (callback) => callback(),
-  setTimeout: (callback) => callback(),
+  setTimeout: (callback, delay = 0) => Number(delay) >= 10000 ? 1 : callback(),
   clearTimeout() {},
 };
 const CSS = { escape: (value) => String(value).replace(/[^A-Za-z0-9_-]/g, "_") };
@@ -1237,6 +1237,177 @@ assert(elements.detailTitle.textContent === "Loaded long-lived Task", `wrong loa
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_task_detail_read_timeout_is_bounded_and_retries_without_page_refresh(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const taskSlug = "tasks/bounded-detail-read";
+state.snapshot = {
+  as_of: "2026-08-18",
+  tasks: [{
+    slug: taskSlug,
+    status: "planned",
+    title: "Bounded canonical detail",
+    summary: "Bounded canonical detail",
+    detail: "Projected fallback",
+    priority: "normal",
+    due_day: "2026-08-18",
+    lifecycle_root: "collections/tonys-tasks",
+  }],
+  goals: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.agentTasks = [];
+state.projects = [];
+render = () => {};
+renderTaskTodos = () => {};
+renderTaskArtifacts = () => {};
+renderTaskHandoffTimeline = () => {};
+loadTaskArtifacts = async () => {};
+loadTaskHandoffTimeline = async () => {};
+
+let timerId = 0;
+const timers = new Map();
+window.setTimeout = (callback, delay) => {
+  timerId += 1;
+  timers.set(timerId, { callback, delay });
+  return timerId;
+};
+window.clearTimeout = (id) => timers.delete(id);
+let reads = 0;
+let aborted = 0;
+globalThis.fetch = async (url, options = {}) => {
+  reads += 1;
+  assert(url === `/api/tasks/${encodeURIComponent(taskSlug)}`, `unexpected URL ${url}`);
+  return await new Promise((resolve, reject) => {
+    options.signal?.addEventListener("abort", () => {
+      aborted += 1;
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      reject(error);
+    }, { once: true });
+  });
+};
+
+const origin = new FakeElement("button");
+const pending = selectTask(taskSlug, null, origin);
+assert(reads === 1, `selection launched ${reads} reads`);
+const watchdog = Array.from(timers.values()).find(({ delay }) => delay === TASK_DETAIL_READ_TIMEOUT_MS);
+assert(watchdog, "canonical detail watchdog was not armed");
+watchdog.callback();
+await pending;
+
+assert(aborted === 1, `watchdog did not abort the hung read: ${aborted}`);
+assert(elements.detailPanel.getAttribute("aria-hidden") === "false", "timeout closed the detail surface");
+assert(elements.detailPanel.getAttribute("aria-busy") === "false", "timeout left detail busy");
+assert(elements.taskDetailStatus.textContent === "Read timed out", `wrong timeout status: ${elements.taskDetailStatus.textContent}`);
+assert(elements.detailCopy.children.some((child) => String(child.textContent || "").includes("without reloading Mission Control")), "timeout recovery copy was not actionable");
+assert(elements.taskDetailRetry.getAttribute("aria-hidden") === "false", "retry control was not exposed");
+
+globalThis.fetch = async () => {
+  reads += 1;
+  return {
+    ok: true,
+    json: async () => ({
+      task: {
+        slug: taskSlug,
+        status: "planned",
+        title: "Recovered canonical detail",
+        summary: "Recovered canonical detail",
+        detail: "Verified after retry",
+        display_markdown: "# Recovered canonical detail\n\nVerified after retry",
+        priority: "normal",
+        due_day: "2026-08-18",
+        lifecycle_root: "collections/tonys-tasks",
+      },
+    }),
+  };
+};
+const retry = retryTaskDetailRead();
+await retry;
+assert(reads === 2, `retry did not launch exactly one new read: ${reads}`);
+assert(elements.detailTitle.textContent === "Recovered canonical detail", `retry did not reconcile: ${elements.detailTitle.textContent}`);
+assert(elements.detailPanel.getAttribute("aria-busy") === "false", "retry did not finish canonical reconciliation");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_switching_or_closing_task_detail_cancels_only_the_obsolete_read(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const firstSlug = "tasks/first-hung-detail";
+const secondSlug = "tasks/second-canonical-detail";
+state.snapshot = {
+  as_of: "2026-08-18",
+  tasks: [
+    { slug: firstSlug, status: "planned", title: "First", detail: "", lifecycle_root: "collections/tonys-tasks" },
+    { slug: secondSlug, status: "planned", title: "Second", detail: "", lifecycle_root: "collections/tonys-tasks" },
+  ],
+  goals: [],
+  views: { blocked: [], completed: [] },
+  today: { in_progress: [], todays_actions: [], overdue: [] },
+};
+state.agentTasks = [];
+state.projects = [];
+render = () => {};
+renderTaskTodos = () => {};
+renderTaskArtifacts = () => {};
+renderTaskHandoffTimeline = () => {};
+loadTaskArtifacts = async () => {};
+loadTaskHandoffTimeline = async () => {};
+window.setTimeout = () => 1;
+window.clearTimeout = () => {};
+let firstAborted = 0;
+globalThis.fetch = async (url, options = {}) => {
+  if (url.includes(encodeURIComponent(firstSlug))) {
+    return await new Promise((resolve, reject) => {
+      options.signal?.addEventListener("abort", () => {
+        firstAborted += 1;
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    });
+  }
+  return {
+    ok: true,
+    json: async () => ({ task: {
+      slug: secondSlug,
+      status: "planned",
+      title: "Second verified",
+      detail: "Verified second task",
+      display_markdown: "Verified second task",
+      lifecycle_root: "collections/tonys-tasks",
+    } }),
+  };
+};
+const firstPending = selectTask(firstSlug);
+const secondPending = selectTask(secondSlug);
+assert(firstAborted === 1, `switch did not cancel obsolete read: ${firstAborted}`);
+await secondPending;
+await firstPending;
+assert(state.selectedSlug === secondSlug, `obsolete read changed selection: ${state.selectedSlug}`);
+assert(elements.detailTitle.textContent === "Second verified", "obsolete read overwrote verified detail");
+
+globalThis.fetch = async (url, options = {}) => await new Promise((resolve, reject) => {
+  options.signal?.addEventListener("abort", () => {
+    const error = new Error("aborted");
+    error.name = "AbortError";
+    reject(error);
+  }, { once: true });
+});
+const closePending = selectTask(firstSlug);
+closeDetails();
+assert(state.taskDetailReadController === null, "closing did not cancel and clear the active detail read");
+await closePending;
+assert(elements.detailPanel.getAttribute("aria-hidden") === "true", "cancelled read reopened a closed detail surface");
+assert(state.selectedSlug === null && state.selectedKind === null, "closing left a selected task behind");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_status_success_reconciles_authoritative_task_without_full_reload(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         move_body = javascript[
@@ -1743,7 +1914,7 @@ assert(appShell.getAttribute("aria-hidden") === "false", "app shell stayed hidde
         card = javascript[
             javascript.index("function agentBoardCard") : javascript.index("function updateBoardStatus")
         ]
-        self.assertIn("selectTask(task.slug, task)", card)
+        self.assertIn("selectTask(task.slug, task, button)", card)
         self.assertIn("function selectTask(\n  slug,\n  taskFallback = null", javascript)
         self.assertIn("const knownTask = findTaskBySlug(slug)", javascript)
         self.assertIn("const task = knownTask || taskFallback", javascript)
@@ -1900,6 +2071,72 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
         self.assertIn('document.querySelectorAll(".task-row-open")', close_details)
         self.assertIn("candidate.dataset.slug === anchor.slug", close_details)
         self.assertIn("detailFocusReturnTarget(anchor)?.focus({ preventScroll: true })", close_details)
+
+    def test_board_and_goal_task_details_restore_exact_origin_after_rerender(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        board_card = javascript[
+            javascript.index("function boardCard")
+            : javascript.index("function ownerBadge")
+        ]
+        goal_links = javascript[
+            javascript.index("function goalTaskLinks")
+            : javascript.index("function renderGoalRelationshipTasks")
+        ]
+        close_details = javascript[
+            javascript.index("function closeDetails")
+            : javascript.index("async function saveTaskGoal")
+        ]
+
+        self.assertIn("button.dataset.slug = task.slug", board_card)
+        self.assertIn(
+            'button.addEventListener("click", () => selectTask(task.slug, null, button))',
+            board_card,
+        )
+        self.assertIn("button.dataset.slug = task.slug", goal_links)
+        self.assertIn("selectTask(task.slug, null, button)", goal_links)
+        self.assertIn("state.goalTaskReturn", goal_links)
+        self.assertIn('state.selectedKind === "goal"', goal_links)
+        self.assertIn('document.querySelectorAll(".board-card-open")', close_details)
+        self.assertIn('document.querySelectorAll(".goal-task-link")', close_details)
+        self.assertIn('state.selectedKind === "task"', close_details)
+        self.assertIn("selectGoal(goalTaskReturn.goalSlug)", close_details)
+        self.assertIn("candidate.dataset.slug === goalTaskReturn.taskSlug", close_details)
+
+        probe = r'''
+const slug = "tasks/focus-origin";
+for (const selector of [".board-card-open", ".goal-task-link"]) {
+  const replacement = new FakeElement("button");
+  replacement.dataset.slug = slug;
+  document.querySelectorAll = (candidate) => candidate === selector ? [replacement] : [];
+  const resolved = detailFocusReturnTarget({ element: new FakeElement("button"), slug });
+  if (resolved !== replacement) throw new Error(`missing exact rerender target for ${selector}`);
+}
+const parentAnchor = { element: new FakeElement("button"), slug: "goals/parent" };
+const returnedTask = new FakeElement("button");
+returnedTask.dataset.slug = slug;
+document.querySelectorAll = (candidate) => candidate === ".goal-task-link" ? [returnedTask] : [];
+state.selectedKind = "task";
+state.selectedSlug = slug;
+state.detailReturnFocus = { element: new FakeElement("button"), slug };
+state.goalTaskReturn = {
+  goalSlug: "goals/parent",
+  taskSlug: slug,
+  element: state.detailReturnFocus.element,
+  detailReturnFocus: parentAnchor,
+};
+selectGoal = (goalSlug) => {
+  state.selectedKind = "goal";
+  state.selectedSlug = goalSlug;
+};
+closeDetails();
+if (state.selectedKind !== "goal" || state.selectedSlug !== "goals/parent") {
+  throw new Error("Goal parent detail was not restored");
+}
+if (!returnedTask.focused) throw new Error("Goal Task origin did not regain focus");
+if (state.detailReturnFocus !== parentAnchor) throw new Error("outer Goal return anchor was not preserved");
+'''
+        result = run_app_runtime_probe(probe)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_proposal_decision_notes_are_not_styled_as_completed_actions(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

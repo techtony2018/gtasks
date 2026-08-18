@@ -1,5 +1,6 @@
 const AUTO_REFRESH_MINUTES = 30;
 const AUTO_REFRESH_INTERVAL_MS = AUTO_REFRESH_MINUTES * 60 * 1000;
+const TASK_DETAIL_READ_TIMEOUT_MS = 15 * 1000;
 const MEMORY_STARGRAPH_ORIGIN = "http://127.0.0.1:8788";
 const HANDOFF_EVENT_PAGE_SIZE = 50;
 const MISSING_LINKED_TASK_ERROR = "Linked Task could not be read from canonical or Agent work.";
@@ -307,6 +308,8 @@ const state = {
   systemTicketMarkdownReturn: null,
   artifactTaskReturn: null,
   artifactProducingTaskReturn: null,
+  goalTaskReturn: null,
+  goalTaskFocusSlug: null,
   showCompletedTodos: false,
   allTaskSearch: "",
   showAllTaskDates: false,
@@ -360,6 +363,8 @@ const state = {
   taskDetailReadSlug: null,
   taskDetailReadPromise: null,
   taskDetailReadToken: 0,
+  taskDetailReadController: null,
+  taskDetailReadWatchdogTimer: null,
   taskSurfacePollTimer: null,
   autoRefreshTimer: null,
   autoRefreshDueAt: null,
@@ -1025,6 +1030,7 @@ const elements = {
   taskProgressBinding: document.querySelector("#task-progress-binding"),
   detailTitle: document.querySelector("#detail-title"),
   detailCopy: document.querySelector("#detail-copy"),
+  taskDetailRetry: document.querySelector("#task-detail-retry"),
   proposalDetailMeta: document.querySelector("#proposal-detail-meta"),
   proposalDecisionHistory: document.querySelector("#proposal-decision-history"),
   proposalDecisionTimeline: document.querySelector("#proposal-decision-timeline"),
@@ -2673,11 +2679,12 @@ function renderMonthCalendar() {
     cell.append(node("span", "", String(day.getDate())));
     state.snapshot.tasks.filter((task) => task.due_day === key && !["completed", "cancelled"].includes(task.status)).forEach((task) => {
       const taskButton = node("button", "month-task", task.title || task.summary);
+      taskButton.dataset.slug = task.slug;
       taskButton.classList.toggle("is-overdue-task", isOverdueExecutable(task));
       taskButton.classList.toggle("is-selected", state.selectedSlug === task.slug);
       taskButton.setAttribute("aria-current", state.selectedSlug === task.slug ? "true" : "false");
       taskButton.setAttribute("aria-description", todoSummary(task));
-      taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug)); cell.append(taskButton);
+      taskButton.type = "button"; taskButton.addEventListener("click", () => selectTask(task.slug, null, taskButton)); cell.append(taskButton);
     });
     icalEventsForDay(key).forEach((event) => cell.append(calendarEventItem(event, key)));
     grid.append(cell);
@@ -2731,6 +2738,7 @@ function boardCard(task) {
   card.classList.toggle("is-selected", state.selectedSlug === task.slug);
   const button = node("button", "board-card-open");
   button.type = "button";
+  button.dataset.slug = task.slug;
   const isSaving =
     state.boardMove?.phase === "saving" &&
     state.boardMove.taskSlug === task.slug;
@@ -2758,7 +2766,7 @@ function boardCard(task) {
     node("span", `due-badge ${relativeDue(task).className}`, relativeDue(task).label),
   );
   appendTaskProgress(button, task);
-  button.addEventListener("click", () => selectTask(task.slug));
+  button.addEventListener("click", () => selectTask(task.slug, null, button));
 
   const moveControl = node("label", "board-card-move");
   moveControl.append(node("span", "", "Move to"));
@@ -2839,6 +2847,7 @@ function agentBoardCard(task) {
   card.classList.toggle("is-selected", state.selectedSlug === task.slug);
   const button = node("button", "board-card-open");
   button.type = "button";
+  button.dataset.slug = task.slug;
   const isSaving =
     state.boardMove?.phase === "saving" &&
     state.boardMove.taskSlug === task.slug;
@@ -2866,7 +2875,7 @@ function agentBoardCard(task) {
   // Agent work can be refreshed independently of the Board. Keep the exact
   // canonical card payload as a selection fallback so a mobile tap cannot be
   // lost if a read finishes between render and click.
-  button.addEventListener("click", () => selectTask(task.slug, task));
+  button.addEventListener("click", () => selectTask(task.slug, task, button));
 
   const moveControl = node("label", "board-card-move");
   moveControl.append(node("span", "", "Move to"));
@@ -4801,9 +4810,10 @@ function renderNeedsAttention() {
       actions.append(repair);
     }
     if (task) {
-      const open = node("button", "secondary-button", "Open task");
+      const open = node("button", "secondary-button attention-task-open", "Open task");
       open.type = "button";
-      open.addEventListener("click", () => selectTask(task.slug));
+      open.dataset.slug = task.slug;
+      open.addEventListener("click", () => selectTask(task.slug, null, open));
       actions.append(open);
     } else {
       const inspect = node("a", "secondary-button", "Inspect in GBrain");
@@ -7580,6 +7590,8 @@ function openTaskDetailLoading(slug, returnFocus = null, fallback = null) {
   elements.taskDuplicateButton.classList.add("is-hidden");
   elements.taskOwner.classList.add("is-hidden");
   elements.detailTitle.textContent = fallback?.title || fallback?.summary || "Reading canonical Task…";
+  elements.taskDetailRetry.classList.add("is-hidden");
+  elements.taskDetailRetry.setAttribute("aria-hidden", "true");
   renderSafeMarkdown(
     elements.detailCopy,
     fallback?.detail || "Mission Control accepted the selection and is reading the exact canonical Task from GBrain.",
@@ -7607,16 +7619,69 @@ function openTaskDetailLoading(slug, returnFocus = null, fallback = null) {
   });
 }
 
-async function readExactTaskForDetail(slug) {
+async function readExactTaskForDetail(slug, signal) {
   const response = await fetch(`/api/tasks/${encodeURIComponent(slug)}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
+    signal,
   });
   const payload = await response.json();
   if (!response.ok || payload?.task?.slug !== slug) {
     throw new Error(payload?.error || "Canonical Task could not be read.");
   }
   return payload.task;
+}
+
+function cancelTaskDetailRead({ invalidate = false } = {}) {
+  if (state.taskDetailReadWatchdogTimer !== null) {
+    window.clearTimeout(state.taskDetailReadWatchdogTimer);
+    state.taskDetailReadWatchdogTimer = null;
+  }
+  if (state.taskDetailReadController) {
+    state.taskDetailReadController.abort();
+    state.taskDetailReadController = null;
+  }
+  if (invalidate) {
+    state.taskDetailReadToken += 1;
+    state.taskDetailReadSlug = null;
+    state.taskDetailReadPromise = null;
+  }
+}
+
+function showTaskDetailReadFailure(error, { timedOut = false, fallback = null } = {}) {
+  const heading = timedOut ? "Read timed out" : "Read failed";
+  const recovery = timedOut
+    ? "Canonical Task read timed out. Try again without reloading Mission Control."
+    : `${error?.message || "Canonical Task could not be read."} Try again without reloading Mission Control.`;
+  if (fallback) {
+    selectTask(fallback.slug, fallback, state.detailReturnFocus?.element || null, {
+      exactHydrated: true,
+    });
+    const alert = node("p", "mission-status-hud form-error", recovery);
+    alert.setAttribute("role", "alert");
+    elements.detailCopy.append(alert);
+  } else {
+    elements.detailPanel.setAttribute("aria-busy", "false");
+    elements.detailTitle.textContent = "Task detail unavailable";
+    renderSafeMarkdown(elements.detailCopy, recovery);
+  }
+  elements.taskDetailStatus.textContent = heading;
+  elements.taskDetailRetry.classList.remove("is-hidden");
+  elements.taskDetailRetry.setAttribute("aria-hidden", "false");
+  render();
+}
+
+function retryTaskDetailRead() {
+  if (state.selectedKind !== "task" || !state.selectedSlug) {
+    return Promise.resolve(null);
+  }
+  const slug = state.selectedSlug;
+  const fallback = findTaskBySlug(slug);
+  return selectTaskWithCanonicalRead(
+    slug,
+    state.detailReturnFocus?.element || null,
+    fallback,
+  );
 }
 
 function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) {
@@ -7636,13 +7701,28 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) 
     }
     return state.taskDetailReadPromise;
   }
+  if (state.taskDetailReadPromise) {
+    cancelTaskDetailRead({ invalidate: true });
+  }
   const token = state.taskDetailReadToken + 1;
   state.taskDetailReadToken = token;
   state.taskDetailReadSlug = slug;
   openTaskDetailLoading(slug, returnFocus, fallback);
+  const controller = new AbortController();
+  let timedOut = false;
+  state.taskDetailReadController = controller;
+  state.taskDetailReadWatchdogTimer = window.setTimeout(() => {
+    if (
+      state.taskDetailReadToken === token &&
+      state.taskDetailReadController === controller
+    ) {
+      timedOut = true;
+      controller.abort();
+    }
+  }, TASK_DETAIL_READ_TIMEOUT_MS);
   state.taskDetailReadPromise = (async () => {
     try {
-      const task = await readExactTaskForDetail(slug);
+      const task = await readExactTaskForDetail(slug, controller.signal);
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
         return null;
       }
@@ -7652,22 +7732,17 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) 
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
         return null;
       }
-      if (fallback) {
-        selectTask(slug, fallback, returnFocus, { exactHydrated: true });
-        elements.taskDetailStatus.textContent = "Read failed";
-      } else {
-        elements.detailPanel.setAttribute("aria-busy", "false");
-        elements.taskDetailStatus.textContent = "Read failed";
-        elements.detailTitle.textContent = "Task detail unavailable";
-        renderSafeMarkdown(
-          elements.detailCopy,
-          `${error.message || "Canonical Task could not be read."} Use Refresh, then try opening this Task again.`,
-        );
-      }
-      render();
+      showTaskDetailReadFailure(error, { timedOut, fallback });
       return null;
     } finally {
       if (state.taskDetailReadToken === token) {
+        if (state.taskDetailReadWatchdogTimer !== null) {
+          window.clearTimeout(state.taskDetailReadWatchdogTimer);
+          state.taskDetailReadWatchdogTimer = null;
+        }
+        if (state.taskDetailReadController === controller) {
+          state.taskDetailReadController = null;
+        }
         state.taskDetailReadSlug = null;
         state.taskDetailReadPromise = null;
       }
@@ -7699,6 +7774,8 @@ function selectTask(
   state.selectedKind = "task";
   prepareDetailPanelWidth("task");
   elements.detailPanel.setAttribute("aria-busy", "false");
+  elements.taskDetailRetry.classList.add("is-hidden");
+  elements.taskDetailRetry.setAttribute("aria-hidden", "true");
   state.showCompletedTodos = false;
   setTodoAddOpen(false, { focus: false });
   elements.detailPanel.setAttribute("aria-hidden", "false");
@@ -7815,11 +7892,22 @@ function goalTaskLinks(container, tasks, emptyCopy) {
   tasks.forEach((task) => {
     const button = node("button", "goal-task-link");
     button.type = "button";
+    button.dataset.slug = task.slug;
     button.append(
       node("span", "", task.title || task.summary),
       node("span", "", relativeDue(task).label),
     );
-    button.addEventListener("click", () => selectTask(task.slug));
+    button.addEventListener("click", () => {
+      state.goalTaskReturn = state.selectedKind === "goal"
+        ? {
+          goalSlug: state.selectedSlug,
+          taskSlug: task.slug,
+          element: button,
+          detailReturnFocus: state.detailReturnFocus,
+        }
+        : null;
+      selectTask(task.slug, null, button);
+    });
     container.append(button);
   });
 }
@@ -7888,12 +7976,27 @@ async function hydrateGoalRelationships(goal) {
     }
     if (state.selectedKind !== "goal" || state.selectedSlug !== goal.slug) return;
     renderGoalRelationshipTasks(goal, result.task_slugs);
+    restorePendingGoalTaskFocus({ clear: true });
   } catch (error) {
     if (state.selectedKind !== "goal" || state.selectedSlug !== goal.slug) return;
     elements.goalRelationshipNotice.textContent =
       `Could not verify reciprocal goal links. ${error.message}`;
     elements.goalRelationshipNotice.classList.remove("is-hidden");
+    restorePendingGoalTaskFocus({ clear: true });
   }
+}
+
+function restorePendingGoalTaskFocus({ clear = false } = {}) {
+  const taskSlug = state.goalTaskFocusSlug;
+  if (!taskSlug) return;
+  window.requestAnimationFrame(() => {
+    const target = Array.from(document.querySelectorAll(".goal-task-link"))
+      .find((candidate) => candidate.dataset.slug === taskSlug);
+    (target || elements.goalDetailTitle).focus({ preventScroll: true });
+    if (clear && state.goalTaskFocusSlug === taskSlug) {
+      state.goalTaskFocusSlug = null;
+    }
+  });
 }
 
 function selectGoal(slug, returnFocus = undefined) {
@@ -7964,6 +8067,9 @@ function selectGoal(slug, returnFocus = undefined) {
 }
 
 function closeDetails() {
+  if (state.taskDetailReadPromise) {
+    cancelTaskDetailRead({ invalidate: true });
+  }
   const systemTicketMarkdownReturn = state.selectedKind === "system-ticket"
     ? state.systemTicketMarkdownReturn
     : null;
@@ -7984,6 +8090,21 @@ function closeDetails() {
     }
     state.systemTicketMarkdownReturn = null;
     state.detailReturnFocus = systemTicketMarkdownReturn.detailReturnFocus;
+  }
+  const goalTaskReturn = state.selectedKind === "task"
+    ? state.goalTaskReturn
+    : null;
+  if (goalTaskReturn?.taskSlug === state.selectedSlug) {
+    state.goalTaskReturn = null;
+    state.goalTaskFocusSlug = goalTaskReturn.taskSlug;
+    selectGoal(goalTaskReturn.goalSlug);
+    state.detailReturnFocus = goalTaskReturn.detailReturnFocus;
+    window.requestAnimationFrame(() => {
+      const target = Array.from(document.querySelectorAll(".goal-task-link"))
+        .find((candidate) => candidate.dataset.slug === goalTaskReturn.taskSlug);
+      (target || elements.goalDetailTitle).focus({ preventScroll: true });
+    });
+    return;
   }
   const producingTaskReturn = state.selectedKind === "task"
     ? state.artifactProducingTaskReturn
@@ -8021,6 +8142,8 @@ function closeDetails() {
   const returnFocus = state.detailReturnFocus;
   state.artifactTaskReturn = null;
   state.artifactProducingTaskReturn = null;
+  state.goalTaskReturn = null;
+  state.goalTaskFocusSlug = null;
   state.detailReturnFocus = null;
   state.selectedSlug = null;
   state.selectedKind = null;
@@ -8068,6 +8191,11 @@ function detailFocusReturnTarget(anchor) {
   const matchingOrigin = [
     ...document.querySelectorAll(".proposal-card"),
     ...document.querySelectorAll(".task-row-open"),
+    ...document.querySelectorAll(".board-card-open"),
+    ...document.querySelectorAll(".month-task"),
+    ...document.querySelectorAll(".goal-task-link"),
+    ...document.querySelectorAll(".inline-task-link"),
+    ...document.querySelectorAll(".attention-task-open"),
     ...document.querySelectorAll(".project-card-open"),
     ...document.querySelectorAll(".goal-card"),
     ...document.querySelectorAll(".artifact-card"),
@@ -8982,6 +9110,7 @@ elements.showAgentTasks.addEventListener("change", () => {
   setAgentTasksVisible(elements.showAgentTasks.checked);
 });
 elements.detailClose.addEventListener("click", closeDetails);
+elements.taskDetailRetry.addEventListener("click", retryTaskDetailRead);
 elements.artifactDetailClose.addEventListener("click", closeDetails);
 elements.goalDetailClose.addEventListener("click", closeDetails);
 elements.projectDetailClose.addEventListener("click", closeDetails);

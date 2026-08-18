@@ -62,11 +62,11 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.100. Long-open tabs now recover an expired
-automatic-refresh deadline by scheduling the next normal 30-minute refresh,
-while stale GBrain snapshots continue to use the existing bounded one-second
-surface poll. This prevents a stale/refreshing snapshot from entering a 0ms
-render loop without hiding freshness or changing canonical GBrain data.
+Latest candidate release: V0.0.101. Task detail reads now have a 15-second
+watchdog, cancel obsolete work when Tony switches Tasks or closes the detail
+surface, and expose an in-place retry without reloading Mission Control. The
+busy/error state stays bounded while exact same-slug GBrain reconciliation and
+stale-response suppression remain authoritative.
 
 ### Independent UI/UX release gate
 

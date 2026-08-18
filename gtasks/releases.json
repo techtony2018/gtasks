@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.100",
+  "current_version": "V0.0.101",
   "releases": [
     {
       "version": "V0.0.1",
@@ -600,6 +600,12 @@
       "date": "2026-08-17",
       "title": "Bounded long-open refresh scheduling",
       "summary": "Prevents stale background refresh snapshots from rearming an expired zero-delay auto-refresh loop, preserving the bounded one-second surface poll and the normal 30-minute refresh cadence after long-open tabs."
+    },
+    {
+      "version": "V0.0.101",
+      "date": "2026-08-18",
+      "title": "Bounded Task detail recovery",
+      "summary": "Task details now bound each exact GBrain read to a 15-second watchdog, cancel obsolete reads on Task switches or close, and offer an in-place retry without reloading Mission Control while preserving stale-response suppression and canonical reconciliation."
     }
   ]
 }
