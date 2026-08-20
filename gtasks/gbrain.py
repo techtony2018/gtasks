@@ -2342,8 +2342,17 @@ def _agent_delegation_from_page(
         "links",
     }
     stored_fields = frozenset(frontmatter)
+    # Stargraph's canonical page projection may add transport provenance
+    # fields when a page has been ingested through MCP. They are not part of
+    # the delegation contract and must not make an otherwise valid lease
+    # unreadable. Keep the allow-list narrow so unknown semantic fields still
+    # fail closed.
+    ingestion_metadata_fields = frozenset(
+        {"source_kind", "ingested_via", "ingested_at"}
+    )
+    contract_fields = stored_fields - ingestion_metadata_fields
     projected_fields = frozenset(expected_fields - {"type", "title"})
-    if page.get("type") != "agent_delegation_lease" or stored_fields not in {
+    if page.get("type") != "agent_delegation_lease" or contract_fields not in {
         frozenset(expected_fields),
         projected_fields,
     }:

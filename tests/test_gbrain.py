@@ -1025,6 +1025,25 @@ class AgentDelegationAdapterTests(unittest.TestCase):
         self.assertTrue(receipt.verified)
         self.assertEqual(adapter.list_agent_delegations(), (lease,))
 
+    def test_live_gbrain_readback_accepts_ingestion_metadata(self) -> None:
+        runner = self._runner()
+        adapter = self._adapter(runner)
+        lease = self._lease()
+        adapter.create_agent_delegation(lease)
+
+        # The live Stargraph page projection annotates canonical pages with
+        # ingestion provenance. These fields are transport metadata, not part
+        # of the delegation contract, and must not invalidate readback.
+        runner.pages[self.SLUG]["frontmatter"].update(
+            {
+                "source_kind": "mcp:put_page",
+                "ingested_via": "mcp:put_page",
+                "ingested_at": "2026-08-10T00:36:23.075Z",
+            }
+        )
+
+        self.assertEqual(adapter.list_agent_delegations(), (lease,))
+
     def test_delegation_readback_rejects_conflicting_top_level_metadata(self) -> None:
         runner = self._runner()
         adapter = self._adapter(runner)

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.101",
+  "current_version": "V0.0.102",
   "releases": [
     {
       "version": "V0.0.1",
@@ -606,6 +606,12 @@
       "date": "2026-08-18",
       "title": "Bounded Task detail recovery",
       "summary": "Task details now bound each exact GBrain read to a 15-second watchdog, cancel obsolete reads on Task switches or close, and offer an in-place retry without reloading Mission Control while preserving stale-response suppression and canonical reconciliation."
+    },
+    {
+      "version": "V0.0.102",
+      "date": "2026-08-19",
+      "title": "Canonical delegation readback compatibility",
+      "summary": "Accepts Stargraph ingestion provenance metadata while preserving strict delegation contract validation, restoring Tammy-to-Tammy-OC authority enumeration and handoff preflight."
     }
   ]
 }
