@@ -62,11 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.101. Task detail reads now have a 15-second
-watchdog, cancel obsolete work when Tony switches Tasks or closes the detail
-surface, and expose an in-place retry without reloading Mission Control. The
-busy/error state stays bounded while exact same-slug GBrain reconciliation and
-stale-response suppression remain authoritative.
+Latest candidate release: V0.0.103. Mission Control now starts through a
+dedicated authenticated GBrain remote-MCP thin client, keeping canonical task
+reads and updates on the required remote transport without reusing the local
+engine configuration.
 
 ### Independent UI/UX release gate
 
@@ -179,6 +178,13 @@ The manager runs this checkout directly from `/Users/tony/work/gtasks`; it
 does not vendor another copy of GTasks or introduce a task database. The
 machine-readable registration contract is
 [`dashboard-integration.json`](dashboard-integration.json).
+
+The dashboard launcher uses a dedicated remote-MCP thin-client home at
+`/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote`.
+Its checked-in launcher validates the owner-only runtime config and credential
+files before starting Mission Control; secrets remain outside the repository.
+The canonical `~/.gbrain` local-engine configuration is not reused or
+overwritten.
 
 ## Canonical task scope
 

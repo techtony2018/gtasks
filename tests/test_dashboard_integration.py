@@ -8,6 +8,9 @@ CANONICAL_RUNTIME_ROOT = Path("/Users/tony/work/gtasks")
 HANDOFF_STATE_ROOT = Path(
     "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks"
 )
+REMOTE_GBRAIN_ROOT = Path(
+    "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote"
+)
 
 
 class DashboardIntegrationTests(unittest.TestCase):
@@ -34,7 +37,7 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertEqual(
             contract["command"],
             [
-                "python3",
+                str(PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh"),
                 "-m",
                 "gtasks.server",
                 "--host",
@@ -50,8 +53,36 @@ class DashboardIntegrationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(contract["canonical_store"], "gbrain")
+        self.assertEqual(
+            contract["remote_mcp"],
+            {
+                "transport": "oauth_client_credentials",
+                "gbrain_home": str(REMOTE_GBRAIN_ROOT),
+                "config": str(REMOTE_GBRAIN_ROOT / ".gbrain/config.json"),
+                "credentials": str(REMOTE_GBRAIN_ROOT / "credentials.env"),
+                "credentials_mode": "0600",
+                "credential_contents": "private_runtime_only",
+            },
+        )
         self.assertFalse(contract["vendored_copy"])
         self.assertEqual(contract["managed_actions"], ["start", "stop", "restart"])
+
+    def test_dashboard_launcher_requires_remote_mcp_runtime_without_secrets(self) -> None:
+        launcher = (
+            PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(f"export GBRAIN_HOME={REMOTE_GBRAIN_ROOT}", launcher)
+        self.assertIn(
+            f"GBRAIN_CREDENTIALS_FILE={REMOTE_GBRAIN_ROOT / 'credentials.env'}",
+            launcher,
+        )
+        self.assertIn("GBRAIN_REMOTE_CLIENT_SECRET", launcher)
+        self.assertNotIn('local path="$1"', launcher)
+        self.assertIn("/usr/bin/stat -f '%Lp'", launcher)
+        self.assertIn("exec /opt/homebrew/opt/python@3.12/libexec/bin/python3", launcher)
+        self.assertNotRegex(launcher, r"gbrain_cl_[0-9a-f]+")
+        self.assertNotIn("oauth_client_secret", launcher)
 
     def test_contract_declares_private_handoff_runtime_paths_without_secrets(self) -> None:
         contract = json.loads(

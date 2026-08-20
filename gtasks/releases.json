@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.102",
+  "current_version": "V0.0.103",
   "releases": [
     {
       "version": "V0.0.1",
@@ -612,6 +612,12 @@
       "date": "2026-08-19",
       "title": "Canonical delegation readback compatibility",
       "summary": "Accepts Stargraph ingestion provenance metadata while preserving strict delegation contract validation, restoring Tammy-to-Tammy-OC authority enumeration and handoff preflight."
+    },
+    {
+      "version": "V0.0.103",
+      "date": "2026-08-20",
+      "title": "Remote MCP task updates",
+      "summary": "Runs Mission Control through a dedicated authenticated GBrain remote-MCP thin client so canonical task reads and updates no longer depend on an unavailable local config."
     }
   ]
 }

@@ -12,7 +12,7 @@
   "version_source": "/api/health#version",
   "working_directory": "/Users/tony/work/gtasks",
   "command": [
-    "python3",
+    "/Users/tony/work/gtasks/scripts/automation/start_gtasks_dashboard.zsh",
     "-m",
     "gtasks.server",
     "--host",
@@ -44,6 +44,14 @@
   "handoff_dispatcher": {
     "store": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher.sqlite3",
     "credentials": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/handoff-dispatcher-credentials.json",
+    "credentials_mode": "0600",
+    "credential_contents": "private_runtime_only"
+  },
+  "remote_mcp": {
+    "transport": "oauth_client_credentials",
+    "gbrain_home": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote",
+    "config": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote/.gbrain/config.json",
+    "credentials": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote/credentials.env",
     "credentials_mode": "0600",
     "credential_contents": "private_runtime_only"
   },
