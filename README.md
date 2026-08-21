@@ -62,10 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.103. Mission Control now starts through a
-dedicated authenticated GBrain remote-MCP thin client, keeping canonical task
-reads and updates on the required remote transport without reusing the local
-engine configuration.
+Latest candidate release: V0.0.104. Direct Mission Control GBrain adapter calls
+now reuse the dashboard-declared remote MCP runtime config when the user-level
+GBrain config has no `remote_mcp` block, preserving private credentials and
+fail-closed permission checks.
 
 ### Independent UI/UX release gate
 

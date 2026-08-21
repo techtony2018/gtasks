@@ -10350,6 +10350,243 @@ class SubprocessRunnerTests(unittest.TestCase):
             ["Bearer token-one", "Bearer token-one"],
         )
 
+    @patch("gtasks.gbrain.urlopen")
+    def test_remote_http_runner_honors_explicit_config_file_env(self, open_url) -> None:
+        class Response:
+            headers = {"Content-Type": "application/json"}
+            status = 200
+
+            def __init__(self, payload: object) -> None:
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        def respond(request, **_kwargs):
+            if request.full_url.endswith("/.well-known/oauth-authorization-server"):
+                return Response({"token_endpoint": "https://brain.test/token"})
+            if request.full_url == "https://brain.test/token":
+                return Response({"access_token": "token-env", "expires_in": 3600})
+            return Response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "one",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({"slug": "tasks/from-env"}),
+                            }
+                        ]
+                    },
+                }
+            )
+
+        open_url.side_effect = respond
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "issuer_url": "https://brain.test",
+                            "mcp_url": "https://brain.test/mcp",
+                            "oauth_client_id": "client-env",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "GBRAIN_CONFIG_FILE": str(config_path),
+                    "GBRAIN_REMOTE_CLIENT_SECRET": "secret-env",
+                },
+                clear=False,
+            ):
+                result = RemoteHttpCommandRunner().run(
+                    "get_page", {"slug": "tasks/from-env"}
+                )
+
+        self.assertEqual(result, {"slug": "tasks/from-env"})
+
+    @patch("gtasks.gbrain.urlopen")
+    def test_remote_http_runner_falls_back_to_dashboard_runtime_config(self, open_url) -> None:
+        class Response:
+            status = 200
+
+            def __init__(self, payload: object, content_type: str = "application/json") -> None:
+                self.payload = payload
+                self.headers = {"Content-Type": content_type}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                if isinstance(self.payload, str):
+                    return self.payload.encode("utf-8")
+                return json.dumps(self.payload).encode("utf-8")
+
+        seen_auth: list[str | None] = []
+
+        def respond(request, **_kwargs):
+            seen_auth.append(request.headers.get("Authorization"))
+            if request.full_url.endswith("/.well-known/oauth-authorization-server"):
+                return Response({"token_endpoint": "https://brain.test/token"})
+            if request.full_url == "https://brain.test/token":
+                return Response({"access_token": "token-dashboard", "expires_in": 3600})
+            return Response(
+                "data: "
+                + json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "one",
+                        "result": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({"slug": "tasks/dashboard"}),
+                                }
+                            ]
+                        },
+                    }
+                )
+                + "\n\n",
+                "text/event-stream",
+            )
+
+        open_url.side_effect = respond
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            local_config = home / ".gbrain" / "config.json"
+            local_config.parent.mkdir(parents=True)
+            local_config.write_text(
+                json.dumps({"engine": "pglite", "database_path": "local"}),
+                encoding="utf-8",
+            )
+            remote_config = root / "state" / "gtasks-remote" / ".gbrain" / "config.json"
+            remote_config.parent.mkdir(parents=True)
+            remote_config.write_text(
+                json.dumps(
+                    {
+                        "engine": "remote",
+                        "remote_mcp": {
+                            "issuer_url": "https://brain.test",
+                            "mcp_url": "https://brain.test/mcp",
+                            "oauth_client_id": "client-dashboard",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            credentials = root / "state" / "gtasks-remote" / "credentials.env"
+            credentials.write_text(
+                "GBRAIN_REMOTE_CLIENT_SECRET=secret-dashboard\n",
+                encoding="utf-8",
+            )
+            os.chmod(credentials, 0o600)
+            (root / "dashboard-integration.json").write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "config": str(remote_config),
+                            "credentials": str(credentials),
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(
+                    os.environ,
+                    {
+                        "HOME": str(home),
+                        "GBRAIN_REMOTE_CLIENT_SECRET": "",
+                    },
+                    clear=False,
+                ):
+                    os.environ.pop("GBRAIN_HOME", None)
+                    os.environ.pop("GBRAIN_CONFIG_FILE", None)
+                    result = RemoteHttpCommandRunner().run(
+                        "get_page", {"slug": "tasks/dashboard"}
+                    )
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(result, {"slug": "tasks/dashboard"})
+        self.assertIn("Bearer token-dashboard", seen_auth)
+
+    def test_remote_http_runner_rejects_dashboard_secret_with_wrong_mode(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            local_config = home / ".gbrain" / "config.json"
+            local_config.parent.mkdir(parents=True)
+            local_config.write_text(
+                json.dumps({"engine": "pglite", "database_path": "local"}),
+                encoding="utf-8",
+            )
+            remote_config = root / "state" / "gtasks-remote" / ".gbrain" / "config.json"
+            remote_config.parent.mkdir(parents=True)
+            remote_config.write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "issuer_url": "https://brain.test",
+                            "mcp_url": "https://brain.test/mcp",
+                            "oauth_client_id": "client-dashboard",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            credentials = root / "state" / "gtasks-remote" / "credentials.env"
+            credentials.write_text(
+                "GBRAIN_REMOTE_CLIENT_SECRET=secret-dashboard\n",
+                encoding="utf-8",
+            )
+            os.chmod(credentials, 0o644)
+            (root / "dashboard-integration.json").write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "config": str(remote_config),
+                            "credentials": str(credentials),
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                    os.environ.pop("GBRAIN_HOME", None)
+                    os.environ.pop("GBRAIN_CONFIG_FILE", None)
+                    os.environ.pop("GBRAIN_REMOTE_CLIENT_SECRET", None)
+                    with self.assertRaisesRegex(
+                        GBrainCommandError,
+                        "permissions are invalid",
+                    ):
+                        RemoteHttpCommandRunner().run(
+                            "get_page", {"slug": "tasks/dashboard"}
+                        )
+            finally:
+                os.chdir(previous_cwd)
+
     @patch("gtasks.gbrain.subprocess.run")
     def test_retries_one_read_after_serialized_oauth_refresh_failure(self, run) -> None:
         run.side_effect = [

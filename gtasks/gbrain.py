@@ -771,6 +771,8 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
     ) -> None:
         super().__init__(timeout_seconds=timeout_seconds)
         self._config_path = config_path or self._default_config_path()
+        self._allow_dashboard_fallback = config_path is None
+        self._credentials_path: Path | None = None
         self._token_lock = Lock()
         self._token: str | None = None
         self._token_expires_at = 0.0
@@ -778,18 +780,84 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
 
     @staticmethod
     def _default_config_path() -> Path:
+        configured_path = os.environ.get("GBRAIN_CONFIG_FILE")
+        if configured_path:
+            return Path(configured_path).expanduser()
         configured_home = os.environ.get("GBRAIN_HOME")
         base = Path(configured_home).expanduser() if configured_home else Path.home()
         return base / ".gbrain" / "config.json"
 
-    def _remote_config(self) -> dict[str, str]:
+    @staticmethod
+    def _dashboard_remote_runtime_paths() -> tuple[Path, Path | None] | None:
+        for candidate_root in (Path.cwd(), *Path.cwd().parents):
+            contract_path = candidate_root / "dashboard-integration.json"
+            try:
+                contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                continue
+            remote = contract.get("remote_mcp") if isinstance(contract, Mapping) else None
+            if not isinstance(remote, Mapping):
+                continue
+            config = remote.get("config")
+            credentials = remote.get("credentials")
+            if not isinstance(config, str) or not config.strip():
+                continue
+            credentials_path = (
+                Path(credentials).expanduser()
+                if isinstance(credentials, str) and credentials.strip()
+                else None
+            )
+            return Path(config).expanduser(), credentials_path
+        return None
+
+    @staticmethod
+    def _read_remote_secret_from_file(path: Path) -> str | None:
         try:
-            raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+            mode = path.stat().st_mode & 0o777
+            if mode != 0o600:
+                raise GBrainCommandError(
+                    "GBrain remote client secret permissions are invalid"
+                )
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.startswith("GBRAIN_REMOTE_CLIENT_SECRET="):
+                    continue
+                value = line.split("=", 1)[1].strip()
+                if value:
+                    return value
+        except GBrainCommandError:
+            raise
+        except OSError as exc:
+            raise GBrainCommandError(
+                "GBrain remote client secret is unavailable"
+            ) from exc
+        return None
+
+    def _remote_config(self) -> dict[str, str]:
+        config_path = self._config_path
+        credentials_path = self._credentials_path
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
             raise GBrainCommandError("GBrain remote config is unavailable") from exc
         remote = raw.get("remote_mcp") if isinstance(raw, Mapping) else None
         if not isinstance(remote, Mapping):
-            raise GBrainCommandError("GBrain remote_mcp config is unavailable")
+            fallback = (
+                self._dashboard_remote_runtime_paths()
+                if self._allow_dashboard_fallback
+                else None
+            )
+            if fallback is None:
+                raise GBrainCommandError("GBrain remote_mcp config is unavailable")
+            config_path, credentials_path = fallback
+            try:
+                raw = json.loads(config_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+                raise GBrainCommandError("GBrain remote config is unavailable") from exc
+            remote = raw.get("remote_mcp") if isinstance(raw, Mapping) else None
+            if not isinstance(remote, Mapping):
+                raise GBrainCommandError("GBrain remote_mcp config is unavailable")
+            self._config_path = config_path
+            self._credentials_path = credentials_path
         result: dict[str, str] = {}
         for field in ("issuer_url", "mcp_url", "oauth_client_id"):
             value = remote.get(field)
@@ -799,6 +867,8 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
         secret = os.environ.get("GBRAIN_REMOTE_CLIENT_SECRET") or remote.get(
             "oauth_client_secret"
         )
+        if (not isinstance(secret, str) or not secret) and credentials_path is not None:
+            secret = self._read_remote_secret_from_file(credentials_path)
         if not isinstance(secret, str) or not secret:
             raise GBrainCommandError("GBrain remote client secret is unavailable")
         result["oauth_client_secret"] = secret
