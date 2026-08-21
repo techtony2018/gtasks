@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.104",
+  "current_version": "V0.0.105",
   "releases": [
     {
       "version": "V0.0.1",
@@ -624,6 +624,12 @@
       "date": "2026-08-20",
       "title": "Direct GBrain runtime config fallback",
       "summary": "Lets direct Mission Control GBrain adapter calls reuse the dashboard-declared remote MCP runtime config and private credential file when the user-level ~/.gbrain config has no remote_mcp block, preserving fail-closed permission checks."
+    },
+    {
+      "version": "V0.0.105",
+      "date": "2026-08-21",
+      "title": "Focused Board and Agent coordination controls",
+      "summary": "Adds a configurable Board-first landing view, a session-scoped Board date window, a centered completion confirmation, resilient OpenClaw roster readback, and a durable fail-closed Buzz coordination outbox."
     }
   ]
 }

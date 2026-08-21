@@ -3839,8 +3839,9 @@ body.is-resizing-detail {
 
 .completion-celebration-region {
   position: fixed;
-  top: 24px;
-  right: 24px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 35;
   width: min(430px, calc(100vw - 48px));
   pointer-events: none;
@@ -3944,6 +3945,30 @@ body.is-resizing-detail {
   border-radius: 14px;
   background: rgba(2, 8, 22, 0.58);
 }
+
+.board-date-window-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(2, 8, 22, 0.58);
+}
+
+.board-date-window-field {
+  display: grid;
+  gap: 5px;
+  min-width: min(320px, 100%);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.board-date-window-field select { width: 100%; }
+.board-date-window-summary { margin: 0 0 7px; color: var(--muted); font-size: 11px; }
 
 .settings-field {
   display: grid;
@@ -5176,10 +5201,7 @@ a {
 
 @media (max-width: 760px) {
   .completion-celebration-region {
-    top: 12px;
-    right: 12px;
-    left: 12px;
-    width: auto;
+    width: min(354px, calc(100vw - 36px));
   }
 
   .brand-emblem,

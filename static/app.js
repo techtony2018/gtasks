@@ -291,6 +291,11 @@ function renderSafeMarkdown(container, value, systemTicketReference = null) {
 const AGENT_TASKS_PREFERENCE_KEY = "mission-control.show-agent-tasks";
 const AGENT_TASKS_PREFERENCE_COOKIE = "mission-control-show-agent-tasks";
 const COMPLETION_CELEBRATION_PREFERENCE_KEY = "mission-control.completion-celebration";
+const DEFAULT_LANDING_VIEW_PREFERENCE_KEY = "mission-control.default-landing-view";
+const DEFAULT_LANDING_VIEW = "board";
+const BOARD_DATE_WINDOW_SESSION_KEY = "mission-control.board-date-window";
+const BOARD_DATE_WINDOW_DEFAULT_DAYS = 14;
+const BOARD_DATE_WINDOW_VALUES = new Set(["14", "30", "all"]);
 const DETAIL_WIDTH_PREFERENCE_KEY = "mission-control.detail-panel-width";
 const DETAIL_WIDTH_DEFAULT = 344;
 const DETAIL_WIDTH_MIN = 292;
@@ -298,9 +303,70 @@ const DETAIL_WIDTH_MAX = 720;
 const COMPLETION_CELEBRATION_COOLDOWN_MS = 8000;
 const COMPLETION_CELEBRATION_MAX_VISIBLE = 3;
 
+const LANDING_VIEW_VALUES = new Set([
+  "today", "week", "board", "inbox", "agent-work", "artifacts", "blocked",
+  "completed", "all", "projects", "goals", "system-tickets",
+]);
+
+function storedDefaultLandingView() {
+  try {
+    const saved = window.localStorage.getItem(DEFAULT_LANDING_VIEW_PREFERENCE_KEY);
+    return LANDING_VIEW_VALUES.has(saved) ? saved : DEFAULT_LANDING_VIEW;
+  } catch (_) {
+    return DEFAULT_LANDING_VIEW;
+  }
+}
+
+function setDefaultLandingView(value) {
+  const view = LANDING_VIEW_VALUES.has(value) ? value : DEFAULT_LANDING_VIEW;
+  try {
+    window.localStorage.setItem(DEFAULT_LANDING_VIEW_PREFERENCE_KEY, view);
+  } catch (_) {
+    // This display preference never reaches GBrain.
+  }
+  return view;
+}
+
+function explicitViewFromLocation(locationLike = window.location) {
+  try {
+    const params = new URLSearchParams(locationLike?.search || "");
+    const queryView = params.get("view");
+    if (LANDING_VIEW_VALUES.has(queryView)) return queryView;
+    const hashView = String(locationLike?.hash || "").match(/^#view=([a-z-]+)$/)?.[1];
+    if (LANDING_VIEW_VALUES.has(hashView)) return hashView;
+  } catch (_) {
+    // Invalid browser location state falls through to the stored preference.
+  }
+  return null;
+}
+
+function resolveInitialView(locationLike = window.location) {
+  // Explicit route and deep-link selection wins over the local landing preference.
+  return explicitViewFromLocation(locationLike) || storedDefaultLandingView();
+}
+
+function readBoardDateWindowPreference() {
+  try {
+    const value = window.sessionStorage?.getItem(BOARD_DATE_WINDOW_SESSION_KEY);
+    return BOARD_DATE_WINDOW_VALUES.has(value) ? value : "14";
+  } catch (_) {
+    return "14";
+  }
+}
+
+function setBoardDateWindowPreference(value) {
+  const windowValue = BOARD_DATE_WINDOW_VALUES.has(value) ? value : "14";
+  state.boardDateWindow = windowValue;
+  try {
+    window.sessionStorage?.setItem(BOARD_DATE_WINDOW_SESSION_KEY, windowValue);
+  } catch (_) {
+    // A session-only view filter never mutates canonical Task data.
+  }
+}
+
 const state = {
   snapshot: null,
-  activeView: "today",
+  activeView: "board",
   selectedSlug: null,
   selectedKind: null,
   detailReturnFocus: null,
@@ -348,6 +414,7 @@ const state = {
   hudTooltip: null,
   hudTooltipTarget: null,
   boardMove: null,
+  boardDateWindow: readBoardDateWindowPreference(),
   completionCelebrations: [],
   completionCelebrationLastFullAt: 0,
   completionCelebrationSequence: 0,
@@ -394,6 +461,8 @@ const state = {
   delegationsLoading: false,
   delegationsError: "",
   agentTasks: [],
+  agentProfileIssues: [],
+  agentWorkIssues: [],
   agentIssues: [],
   agentWorkLoaded: false,
   agentWorkLoading: false,
@@ -448,6 +517,20 @@ const state = {
     correlation_id: "",
   },
 };
+
+function syncAgentIssues() {
+  const seen = new Set();
+  state.agentIssues = [
+    ...state.agentProfileIssues,
+    ...state.agentWorkIssues,
+  ].filter((issue) => {
+    const identity = issue?.fingerprint ||
+      `${issue?.slug || ""}:${issue?.category || ""}:${issue?.message || ""}:${issue?.impact || ""}`;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
 
 function setHudTooltip(element, text) {
   if (!element) return;
@@ -811,6 +894,8 @@ const viewMeta = {
     title: "Settings",
   },
 };
+
+state.activeView = resolveInitialView();
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
@@ -2947,6 +3032,60 @@ function agentWorkUnavailableMessage() {
     : "";
 }
 
+function boardTaskIsVisible(task, asOf = state.snapshot?.as_of) {
+  if (!task || !asOf || state.boardDateWindow === "all") return Boolean(task);
+  if (task.status === "active" || task.status === "blocked") return true;
+  const relevantDay = task.scheduled_day || task.due_day;
+  // Undated actionable tasks stay visible rather than disappearing silently.
+  if (!relevantDay) return true;
+  const days = Number.parseInt(state.boardDateWindow, 10) || BOARD_DATE_WINDOW_DEFAULT_DAYS;
+  const center = parseDay(asOf);
+  const start = new Date(center.getFullYear(), center.getMonth(), center.getDate() - days);
+  const end = new Date(center.getFullYear(), center.getMonth(), center.getDate() + days);
+  return relevantDay >= isoDay(start) && relevantDay <= isoDay(end);
+}
+
+function boardDateWindowSummary(allTasks, visibleTasks) {
+  const hidden = Math.max(0, allTasks.length - visibleTasks.length);
+  if (state.boardDateWindow === "all") {
+    return `${visibleTasks.length} shown · all dates`;
+  }
+  const days = Number.parseInt(state.boardDateWindow, 10) || BOARD_DATE_WINDOW_DEFAULT_DAYS;
+  return `${visibleTasks.length} shown · ${hidden} outside ±${days} days hidden · active, blocked, and undated remain visible`;
+}
+
+function renderBoardDateWindowControl(allTasks, visibleTasks) {
+  const toolbar = node("div", "board-date-window-toolbar");
+  const label = node("label", "board-date-window-field");
+  label.append(node("span", "", "Date range"));
+  const select = document.createElement("select");
+  select.id = "board-date-window";
+  select.setAttribute("aria-label", "Board task date range");
+  [
+    ["14", "Two weeks before and after today"],
+    ["30", "Thirty days before and after today"],
+    ["all", "All dates"],
+  ].forEach(([value, text]) => {
+    const option = node("option", "", text);
+    option.value = value;
+    select.append(option);
+  });
+  select.value = state.boardDateWindow;
+  select.addEventListener("change", () => {
+    setBoardDateWindowPreference(select.value);
+    render();
+  });
+  label.append(select);
+  const reset = node("button", "secondary-button board-date-window-reset", "Reset");
+  reset.type = "button";
+  reset.addEventListener("click", () => {
+    setBoardDateWindowPreference("14");
+    render();
+  });
+  toolbar.append(label, reset, node("p", "board-date-window-summary", boardDateWindowSummary(allTasks, visibleTasks)));
+  return toolbar;
+}
+
 function renderBoard() {
   const wrapper = node("section", "agent-board-wrapper");
   if (state.showAgentTasks) {
@@ -2967,10 +3106,13 @@ function renderBoard() {
       ),
     );
   }
+  const allTonyTasks = state.snapshot.tasks;
+  const visibleTonyTasks = allTonyTasks.filter((task) => boardTaskIsVisible(task));
+  wrapper.append(renderBoardDateWindowControl(allTonyTasks, visibleTonyTasks));
   const board = node("section", "board-grid");
   board.setAttribute("aria-label", "Task status board");
   boardColumns.forEach((definition) => {
-    const tasks = state.snapshot.tasks.filter((task) =>
+    const tasks = visibleTonyTasks.filter((task) =>
       taskUiStatus(task) === definition.status);
     const agentTasks = state.showAgentTasks
       ? state.agentTasks.filter(
@@ -4138,6 +4280,10 @@ async function loadAgents() {
         throw new Error(payload.error || "Agent profiles could not be read.");
       }
       state.agents = Array.isArray(payload.agents) ? payload.agents : [];
+      state.agentProfileIssues = Array.isArray(payload.issues)
+        ? payload.issues
+        : [];
+      syncAgentIssues();
       state.agentsLoaded = true;
       await loadAgentDelegations();
       render();
@@ -4190,7 +4336,10 @@ function loadAgentWork() {
         throw new Error(payload.error || "Agent work could not be read.");
       }
       state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
-      state.agentIssues = Array.isArray(payload.issues) ? payload.issues : [];
+      state.agentWorkIssues = Array.isArray(payload.issues)
+        ? payload.issues
+        : [];
+      syncAgentIssues();
       state.agentWorkLoaded = true;
     } catch (error) {
       state.agentWorkError = error.message || "Agent work could not be read.";
@@ -5483,7 +5632,35 @@ function renderSettingsView() {
   );
   help.id = "completion-celebration-help";
   card.append(label, help);
-  section.append(card);
+  const landingCard = node("article", "settings-card");
+  const landingLabel = node("label", "settings-field");
+  landingLabel.append(node("span", "settings-label", "Default landing page"));
+  const landingSelect = document.createElement("select");
+  landingSelect.id = "default-landing-view-preference";
+  landingSelect.setAttribute("aria-describedby", "default-landing-view-help");
+  [
+    ["board", "Board"], ["today", "Today"], ["week", "Calendar"],
+    ["inbox", "Inbox"], ["agent-work", "Agents"], ["artifacts", "Artifacts"],
+    ["blocked", "Blocked"], ["completed", "Completed"], ["all", "All Tasks"],
+    ["projects", "Projects"], ["goals", "Goals"],
+  ].forEach(([value, text]) => {
+    const option = node("option", "", text);
+    option.value = value;
+    landingSelect.append(option);
+  });
+  landingSelect.value = storedDefaultLandingView();
+  landingSelect.addEventListener("change", () => {
+    landingSelect.value = setDefaultLandingView(landingSelect.value);
+  });
+  landingLabel.append(landingSelect);
+  const landingHelp = node(
+    "p",
+    "settings-help",
+    "Used only when Mission Control opens without an explicit view route. Bookmarks and sidebar navigation always win.",
+  );
+  landingHelp.id = "default-landing-view-help";
+  landingCard.append(landingLabel, landingHelp);
+  section.append(card, landingCard);
   window.requestAnimationFrame(() => {
     if (state.activeView === "settings" && document.activeElement === document.body) {
       select.focus({ preventScroll: true });

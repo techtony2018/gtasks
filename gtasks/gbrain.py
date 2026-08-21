@@ -3008,6 +3008,7 @@ class GBrainAdapter:
         self._artifact_create_lock = Lock()
         self._artifact_review_reference_lock = Lock()
         self._delegation_mutation_lock = Lock()
+        self._last_verified_openclaw_profiles: tuple[AgentProfile, ...] = ()
 
     def _verified_system_ticket_references(
         self, values: Sequence[str]
@@ -5247,16 +5248,22 @@ class GBrainAdapter:
                 for activation in self._activated_openclaw_profiles()
             )
         except (DomainValidationError, GBrainError, ValueError) as exc:
+            activated_openclaw = self._last_verified_openclaw_profiles
             issues.append(
                 CollectionIssue(
                     slug="system/openclaw-profile-activation",
                     message=str(exc),
                     category="openclaw_activation",
-                    impact="Existing Codex Agents remain available; OpenClaw activation could not be read.",
+                    impact=(
+                        "Last verified OpenClaw profiles remain visible while activation readback recovers."
+                        if activated_openclaw
+                        else "Existing Codex Agents remain available; OpenClaw activation could not be read."
+                    ),
                 )
             )
         else:
-            agents.extend(activated_openclaw)
+            self._last_verified_openclaw_profiles = activated_openclaw
+        agents.extend(activated_openclaw)
         return AgentRead(agents=tuple(agents), issues=tuple(issues))
 
     def set_agent_avatar(self, agent_slug: str, served_url: str) -> AgentProfile:

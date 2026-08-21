@@ -88,6 +88,50 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_default_landing_view_is_local_board_first_and_preserves_explicit_routes(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('const DEFAULT_LANDING_VIEW_PREFERENCE_KEY = "mission-control.default-landing-view";', javascript)
+        self.assertIn('const DEFAULT_LANDING_VIEW = "board";', javascript)
+        self.assertIn("function resolveInitialView", javascript)
+        self.assertIn("function setDefaultLandingView", javascript)
+        self.assertIn('landingSelect.id = "default-landing-view-preference"', javascript)
+        self.assertIn("Explicit route and deep-link selection wins", javascript)
+
+    def test_board_default_window_is_two_weeks_each_side_and_keeps_actionable_undated_tasks(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('const BOARD_DATE_WINDOW_SESSION_KEY = "mission-control.board-date-window";', javascript)
+        self.assertIn("function boardTaskIsVisible", javascript)
+        self.assertIn("function boardDateWindowSummary", javascript)
+        self.assertIn("const BOARD_DATE_WINDOW_DEFAULT_DAYS = 14;", javascript)
+        self.assertIn('task.status === "active" || task.status === "blocked"', javascript)
+        self.assertIn("Undated actionable tasks stay visible", javascript)
+        self.assertIn('id = "board-date-window"', javascript)
+
+    def test_completion_celebration_hud_is_centered_without_becoming_modal(self) -> None:
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        region = css[
+            css.index(".completion-celebration-region {"):
+            css.index(".completion-celebration-stack {")
+        ]
+        self.assertIn("top: 50%;", region)
+        self.assertIn("left: 50%;", region)
+        self.assertIn("transform: translate(-50%, -50%);", region)
+        self.assertIn("pointer-events: none;", region)
+
+    def test_agent_profile_and_work_issues_are_merged_without_dropping_activation_attention(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("agentProfileIssues: []", javascript)
+        self.assertIn("agentWorkIssues: []", javascript)
+        self.assertIn("function syncAgentIssues()", javascript)
+        self.assertIn("state.agentProfileIssues = Array.isArray(payload.issues)", javascript)
+        self.assertIn("state.agentWorkIssues = Array.isArray(payload.issues)", javascript)
+        self.assertNotIn(
+            "state.agentIssues = Array.isArray(payload.issues) ? payload.issues : [];",
+            javascript,
+        )
+
     def test_system_ticket_markdown_routes_are_safe_and_render_inside_mission_control(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

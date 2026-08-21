@@ -5625,6 +5625,37 @@ class AgentReadTests(unittest.TestCase):
         self.assertEqual(read.issues[0].category, "openclaw_activation")
         self.assertIn("Existing Codex Agents remain available", read.issues[0].impact)
 
+    def test_activation_outage_retains_last_verified_openclaw_roster_without_duplicates(self) -> None:
+        pages, links = openclaw_anchor_fixture()
+
+        class RecoveringProfiles:
+            def __init__(self) -> None:
+                self.failed = False
+
+            def active_projection(self) -> dict:
+                if self.failed:
+                    raise GBrainCommandError("temporary activation projection outage")
+                return deepcopy(activated_openclaw_projection())
+
+        profiles = RecoveringProfiles()
+        adapter = GBrainAdapter(
+            ActivatedOpenClawRunner(pages, links),
+            openclaw_profiles=profiles,
+        )
+        first = adapter.list_agent_profiles()
+        profiles.failed = True
+        second = adapter.list_agent_profiles()
+
+        self.assertEqual(len(first.agents), 6)
+        self.assertEqual(len(second.agents), 6)
+        self.assertEqual(len({profile.slug for profile in second.agents}), 6)
+        self.assertEqual(
+            {profile.slug for profile in second.agents if profile.runtime == "openclaw"},
+            {"agents/tammy-oc", "agents/timmy-oc", "agents/toddy-oc"},
+        )
+        self.assertEqual(len(second.issues), 1)
+        self.assertIn("Last verified OpenClaw profiles remain visible", second.issues[0].impact)
+
     def test_tampered_route_collection_or_staged_mapping_returns_no_partial_oc_roster(
         self,
     ) -> None:

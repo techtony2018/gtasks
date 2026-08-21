@@ -1982,6 +1982,22 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(first.to_dict()["registration_ref"], expected_ref)
         self.assertEqual(dataclasses.asdict(page.events[0])["registration_ref"], expected_ref)
 
+    def test_actionable_record_invokes_optional_buzz_sink_once_after_durable_outbox(self) -> None:
+        observed = []
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            coordination_sink=lambda task_change, record: observed.append(
+                (task_change.canonical_event_id, record.handoff_id, self.store.get(record.handoff_id).status)
+            ),
+        )
+
+        first = dispatcher.record(change(), now=NOW)
+        second = dispatcher.record(change(), now=NOW)
+
+        self.assertEqual(first.handoff_id, second.handoff_id)
+        self.assertEqual(observed, [("events/100", first.handoff_id, "queued")])
+
     def test_idempotency_includes_canonical_version_and_event_id(self) -> None:
         first = self.record(canonical_event_id="events/shared", canonical_version="42")
         second = self.record(canonical_event_id="events/shared", canonical_version="43")

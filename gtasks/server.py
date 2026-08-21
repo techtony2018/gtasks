@@ -88,6 +88,7 @@ from .handoff_dispatcher import (
     HandoffOwnershipError,
 )
 from .local_handoff_dispatcher import CLAIM_SCHEMA_VERSION
+from .buzz_coordination import BuzzCoordinationOutbox, build_handoff_coordination_sink
 from .operational_logs import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -488,6 +489,12 @@ def build_runtime_handoff_event_bridge(
         if registration.route in approved_routes
     )
     delegation_reader = getattr(adapter, "list_agent_delegations", lambda: ())
+    buzz_outbox_dir = os.environ.get("MISSION_CONTROL_BUZZ_OUTBOX_DIR", "").strip()
+    coordination_sink = (
+        build_handoff_coordination_sink(BuzzCoordinationOutbox(Path(buzz_outbox_dir)))
+        if buzz_outbox_dir
+        else None
+    )
     return CanonicalHandoffEventBridge(
         HandoffDispatcher(
             store,
@@ -496,6 +503,7 @@ def build_runtime_handoff_event_bridge(
             owned_work_snapshot=lambda executor: _canonical_executor_priority_snapshot(
                 adapter, executor
             ),
+            coordination_sink=coordination_sink,
         )
     )
 

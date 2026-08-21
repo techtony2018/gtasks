@@ -3498,6 +3498,7 @@ class HandoffDispatcher:
         ) = None,
         owned_work_ready: Callable[[str], bool] | None = None,
         owned_work_snapshot: Callable[[str], tuple[bool, str]] | None = None,
+        coordination_sink: Callable[[ActionableChange, HandoffRecord], None] | None = None,
         execution_claim_seconds: int = DEFAULT_EXECUTION_CLAIM_SECONDS,
     ) -> None:
         if (
@@ -3513,6 +3514,9 @@ class HandoffDispatcher:
         self._delegations = delegations
         self._owned_work_ready = owned_work_ready or (lambda _executor: False)
         self._owned_work_snapshot = owned_work_snapshot
+        self._coordination_sink = coordination_sink
+        self._coordination_emitted: set[str] = set()
+        self._coordination_lock = threading.Lock()
         self.execution_claim_seconds = execution_claim_seconds
 
     def _read_delegations(self) -> tuple[AgentDelegationLease, ...]:
@@ -3630,13 +3634,19 @@ class HandoffDispatcher:
                     else now + timedelta(seconds=self.execution_claim_seconds)
                 ),
             )
-        return self.store.record(
+        record = self.store.record(
             change,
             classification,
             now=now,
             registration_id=registration_id,
             execution_request=execution_request,
         )
+        if self._coordination_sink is not None and classification.actionable:
+            with self._coordination_lock:
+                if record.handoff_id not in self._coordination_emitted:
+                    self._coordination_sink(change, record)
+                    self._coordination_emitted.add(record.handoff_id)
+        return record
 
 
 HandoffStore = DurableHandoffStore
