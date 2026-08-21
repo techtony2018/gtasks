@@ -5,6 +5,7 @@ export GBRAIN_HOME=/Users/tony/.codex/services/all-things-codex-dashboard/state/
 GBRAIN_CONFIG_FILE="$GBRAIN_HOME/.gbrain/config.json"
 GBRAIN_CREDENTIALS_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote/credentials.env
 PROVISION_TOKEN_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/openclaw-profile-activation/provision.token
+BUZZ_ENV_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/buzz.env
 
 require_owner_file() {
   local file_path="$1"
@@ -21,6 +22,7 @@ require_owner_file() {
 require_owner_file "$GBRAIN_CONFIG_FILE"
 require_owner_file "$GBRAIN_CREDENTIALS_FILE"
 require_owner_file "$PROVISION_TOKEN_FILE"
+require_owner_file "$BUZZ_ENV_FILE"
 
 /opt/homebrew/opt/python@3.12/libexec/bin/python3 - "$GBRAIN_CONFIG_FILE" <<'PY'
 import json
@@ -45,5 +47,19 @@ export GBRAIN_REMOTE_CLIENT_SECRET="$(
 
 export MEMORY_STARGRAPH_URL=http://127.0.0.1:8788
 export MEMORY_STARGRAPH_OC_PROVISION_TOKEN="$(<"$PROVISION_TOKEN_FILE")"
+export PATH="/Users/tony/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+set -a
+source "$BUZZ_ENV_FILE"
+set +a
+
+[[ -n "${BUZZ_PRIVATE_KEY:-}" && -n "${BUZZ_RELAY_URL:-}" ]] || {
+  print -u2 -- "Mission Control Buzz runtime credentials are unavailable"
+  exit 70
+}
+[[ -n "${MISSION_CONTROL_BUZZ_OUTBOX_DIR:-}" ]] || {
+  print -u2 -- "Mission Control Buzz outbox is unavailable"
+  exit 70
+}
 
 exec /opt/homebrew/opt/python@3.12/libexec/bin/python3 "$@"

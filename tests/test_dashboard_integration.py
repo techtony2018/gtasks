@@ -8,6 +8,8 @@ CANONICAL_RUNTIME_ROOT = Path("/Users/tony/work/gtasks")
 HANDOFF_STATE_ROOT = Path(
     "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks"
 )
+BUZZ_ENV_FILE = HANDOFF_STATE_ROOT / "buzz.env"
+BUZZ_OUTBOX_ROOT = HANDOFF_STATE_ROOT / "buzz-outbox"
 REMOTE_GBRAIN_ROOT = Path(
     "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote"
 )
@@ -83,6 +85,45 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertIn("exec /opt/homebrew/opt/python@3.12/libexec/bin/python3", launcher)
         self.assertNotRegex(launcher, r"gbrain_cl_[0-9a-f]+")
         self.assertNotIn("oauth_client_secret", launcher)
+
+    def test_dashboard_launcher_requires_private_buzz_runtime_and_outbox(self) -> None:
+        launcher = (
+            PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(f"BUZZ_ENV_FILE={BUZZ_ENV_FILE}", launcher)
+        self.assertIn('require_owner_file "$BUZZ_ENV_FILE"', launcher)
+        self.assertIn('source "$BUZZ_ENV_FILE"', launcher)
+        self.assertIn('"${BUZZ_PRIVATE_KEY:-}"', launcher)
+        self.assertIn('"${BUZZ_RELAY_URL:-}"', launcher)
+        self.assertIn('"${MISSION_CONTROL_BUZZ_OUTBOX_DIR:-}"', launcher)
+        self.assertIn('/Users/tony/.local/bin', launcher)
+        self.assertNotIn("BUZZ_AUTH_TAG:-", launcher)
+
+    def test_contract_declares_private_buzz_runtime_without_secrets(self) -> None:
+        contract = json.loads(
+            (PROJECT_ROOT / "dashboard-integration.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            contract["buzz_coordination"],
+            {
+                "env": str(BUZZ_ENV_FILE),
+                "env_mode": "0600",
+                "credential_contents": "private_runtime_only",
+                "outbox": str(BUZZ_OUTBOX_ROOT),
+                "outbox_mode": "0700",
+                "required_env": [
+                    "BUZZ_RELAY_URL",
+                    "BUZZ_PRIVATE_KEY",
+                    "MISSION_CONTROL_BUZZ_OUTBOX_DIR",
+                ],
+                "optional_env": ["BUZZ_AUTH_TAG"],
+            },
+        )
+        rendered = json.dumps(contract)
+        self.assertNotIn("BUZZ_PRIVATE_KEY=", rendered)
+        self.assertNotIn("BUZZ_AUTH_TAG=", rendered)
 
     def test_contract_declares_private_handoff_runtime_paths_without_secrets(self) -> None:
         contract = json.loads(

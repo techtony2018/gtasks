@@ -62,10 +62,10 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.105. Mission Control now supports a Board-first
-landing preference, a rolling Board date window, centered completion feedback,
-resilient OpenClaw roster readback, and a durable fail-closed Buzz coordination
-outbox that requires a positive acceptance receipt.
+Latest candidate release: V0.0.106. Mission Control now activates the Buzz
+coordination bridge through the dashboard-managed, owner-only runtime while
+retaining a durable fail-closed outbox and requiring a positive acceptance
+receipt before delivery is recorded.
 
 ### Independent UI/UX release gate
 

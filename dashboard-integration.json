@@ -55,6 +55,21 @@
     "credentials_mode": "0600",
     "credential_contents": "private_runtime_only"
   },
+  "buzz_coordination": {
+    "env": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/buzz.env",
+    "env_mode": "0600",
+    "credential_contents": "private_runtime_only",
+    "outbox": "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/buzz-outbox",
+    "outbox_mode": "0700",
+    "required_env": [
+      "BUZZ_RELAY_URL",
+      "BUZZ_PRIVATE_KEY",
+      "MISSION_CONTROL_BUZZ_OUTBOX_DIR"
+    ],
+    "optional_env": [
+      "BUZZ_AUTH_TAG"
+    ]
+  },
   "canonical_store": "gbrain",
   "vendored_copy": false,
   "summary": "Manages the Mission Control process while GBrain remains the canonical task and goal store."

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.105",
+  "current_version": "V0.0.106",
   "releases": [
     {
       "version": "V0.0.1",
@@ -630,6 +630,12 @@
       "date": "2026-08-21",
       "title": "Focused Board and Agent coordination controls",
       "summary": "Adds a configurable Board-first landing view, a session-scoped Board date window, a centered completion confirmation, resilient OpenClaw roster readback, and a durable fail-closed Buzz coordination outbox."
+    },
+    {
+      "version": "V0.0.106",
+      "date": "2026-08-21",
+      "title": "Buzz bridge runtime activation",
+      "summary": "Activated the dashboard-managed Buzz coordination bridge with owner-only runtime credentials, a durable private outbox, fail-closed startup validation, and a verified accepted delivery receipt while keeping GBrain canonical."
     }
   ]
 }
