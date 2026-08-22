@@ -9600,8 +9600,13 @@ class SystemTicketAdapterTests(unittest.TestCase):
             stored = json.loads(cache_path.read_text(encoding="utf-8"))
 
         self.assertTrue(receipt.verified)
-        self.assertNotIn("system_tickets", stored["surfaces"])
-        self.assertNotIn("system_tickets_all", stored["surfaces"])
+        self.assertIn("system_tickets_all", stored["surfaces"])
+        refreshed = stored["surfaces"]["system_tickets_all"]["payload"]["tickets"]
+        self.assertEqual(
+            [item["slug"] for item in refreshed],
+            [updated.slug],
+        )
+        self.assertEqual(refreshed[0]["status"], updated.status)
         self.assertIn("tasks", stored["surfaces"])
 
     def test_ticket_read_omits_unmarked_or_stale_display_projection(self) -> None:

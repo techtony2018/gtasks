@@ -6474,7 +6474,12 @@ class GBrainAdapter:
             return None
         return tickets, display
 
-    def _invalidate_system_ticket_snapshot_cache(self) -> None:
+    def _invalidate_system_ticket_snapshot_cache(
+        self,
+        ticket: SystemTicket | None = None,
+        *,
+        display_markdown: str | None = None,
+    ) -> None:
         path = self._system_ticket_snapshot_path()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -6485,10 +6490,29 @@ class GBrainAdapter:
             return
         changed = False
         updated_surfaces = dict(surfaces)
-        for surface in ("system_tickets", "system_tickets_all"):
-            if surface in updated_surfaces:
-                updated_surfaces.pop(surface, None)
-                changed = True
+        if "system_tickets" in updated_surfaces:
+            updated_surfaces.pop("system_tickets", None)
+            changed = True
+        if ticket is not None:
+            record = updated_surfaces.get("system_tickets_all")
+            payload = record.get("payload") if isinstance(record, Mapping) else None
+            raw_tickets = payload.get("tickets") if isinstance(payload, Mapping) else None
+            if isinstance(record, Mapping) and isinstance(payload, Mapping) and isinstance(raw_tickets, list):
+                replacement = ticket.to_dict()
+                if display_markdown is not None:
+                    replacement["display_markdown"] = display_markdown
+                next_tickets = [
+                    replacement if isinstance(item, Mapping) and item.get("slug") == ticket.slug else item
+                    for item in raw_tickets
+                ]
+                if next_tickets != raw_tickets:
+                    next_payload = dict(payload)
+                    next_payload["tickets"] = next_tickets
+                    next_record = dict(record)
+                    next_record["payload"] = next_payload
+                    next_record["last_valid_at"] = time()
+                    updated_surfaces["system_tickets_all"] = next_record
+                    changed = True
         if not changed:
             return
         next_payload = dict(raw)
@@ -6714,7 +6738,10 @@ class GBrainAdapter:
                 ticket.slug,
                 f"System Ticket edit was not verified. Inspect this slug before retrying: {exc}",
             ) from exc
-        self._invalidate_system_ticket_snapshot_cache()
+        self._invalidate_system_ticket_snapshot_cache(
+            ticket,
+            display_markdown=expected_body,
+        )
         return MutationReceipt(ticket.slug, True)
 
     def planned_system_tickets(self) -> tuple[SystemTicket, ...]:
