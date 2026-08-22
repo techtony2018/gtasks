@@ -788,9 +788,30 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
         return base / ".gbrain" / "config.json"
 
     @staticmethod
-    def _dashboard_remote_runtime_paths() -> tuple[Path, Path | None] | None:
+    def _dashboard_integration_paths() -> tuple[Path, ...]:
+        paths: list[Path] = []
         for candidate_root in (Path.cwd(), *Path.cwd().parents):
-            contract_path = candidate_root / "dashboard-integration.json"
+            paths.append(candidate_root / "dashboard-integration.json")
+        try:
+            module_path = Path(__file__).resolve()
+        except OSError:
+            module_path = Path(__file__)
+        for candidate_root in module_path.parents:
+            paths.append(candidate_root / "dashboard-integration.json")
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return tuple(unique)
+
+    @staticmethod
+    def _dashboard_remote_runtime_paths() -> tuple[Path, Path | None] | None:
+        for contract_path in RemoteHttpCommandRunner._dashboard_integration_paths():
             try:
                 contract = json.loads(contract_path.read_text(encoding="utf-8"))
             except (FileNotFoundError, OSError, json.JSONDecodeError):

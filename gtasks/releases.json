@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.107",
+  "current_version": "V0.0.108",
   "releases": [
     {
       "version": "V0.0.1",
@@ -642,6 +642,12 @@
       "date": "2026-08-22",
       "title": "System Tickets canonical refresh fan-out repair",
       "summary": "Preserve verified System Ticket snapshots across mutations and avoid rehydrating completed tickets on direct refresh."
+    },
+    {
+      "version": "V0.0.108",
+      "date": "2026-08-22",
+      "title": "Module-root GBrain runtime fallback",
+      "summary": "Allows Mission Control GBrain adapter calls launched outside the repository, including Tammy automations, to reuse the dashboard-declared remote MCP runtime config and private credential file instead of falling back to the user's local PGlite graph."
     }
   ]
 }
