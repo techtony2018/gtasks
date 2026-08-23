@@ -491,6 +491,35 @@ active row. An operator investigating `recovery_required` must
 reconcile the fixed target session and canonical Task first, then use the
 recorded checkpoint/hand-back evidence rather than launching the target again.
 
+## Codex-only Goal execution canary
+
+Goal-derived work runs only inside the dashboard-managed Mission Control
+runtime. Configure it through the supported service environment boundary:
+
+```text
+MISSION_CONTROL_GOAL_EXECUTION_MODE=off|shadow|canary
+MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL=goals/<uuid>
+```
+
+Missing mode defaults to `shadow`; `canary` fails closed without one canonical
+Goal slug. OpenClaw is excluded from this rollout. The planner may create or
+adopt one automatic Task for the canary Goal only after it verifies one Codex
+owner, at most one active supporting Project, available WIP capacity, and the
+existing registered fixed thread. It never infers identity from prose and
+never creates a new Codex thread.
+
+Before activation, require the deterministic derivation receipt, one typed
+Agent work-root membership, one `assigned_to`, one `advances_goal`, and exact
+canonical readback of the same Task slug. Delivery reuses the handoff outbox,
+version idempotency, acknowledgements, and immutable Timeline evidence already
+defined by this runbook. Repeated planner runs must adopt the same Task and
+must not enqueue another handoff for the same canonical version.
+
+If any Task, relationship, route, acknowledgement, or WIP invariant cannot be
+verified, switch back to `shadow`, keep the same Task and durable evidence, and
+record the exact system-repair blocker. Do not delete the Task, fabricate a
+receipt, or silently redirect it to Tony or an OpenClaw Agent.
+
 ## Rollback
 
 Rollback restores the previous verified release, not a partially reviewed

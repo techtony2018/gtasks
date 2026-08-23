@@ -76,10 +76,30 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.106. Mission Control now activates the Buzz
-coordination bridge through the dashboard-managed, owner-only runtime while
-retaining a durable fail-closed outbox and requiring a positive acceptance
-receipt before delivery is recorded.
+Latest candidate release: V0.0.111. Mission Control now evaluates bounded,
+risk-tiered Goal-derived work for Codex Agents, records deterministic canonical
+receipts, and exposes the verified state in Agents plus Goal and Project
+details. The first rollout is one-Goal work-in-progress through the existing
+fixed-thread handoff path; OpenClaw is excluded.
+
+### Codex Goal execution controls
+
+Goal execution is owned by the dashboard-managed Mission Control runtime. Its
+supported runtime controls are:
+
+```text
+MISSION_CONTROL_GOAL_EXECUTION_MODE=off|shadow|canary
+MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL=goals/<uuid>
+```
+
+`shadow` is the default and performs no canonical mutation. `canary` requires
+one exact Goal slug and may create or adopt at most one automatic Task for that
+Goal after canonical eligibility, WIP, identity, and fixed-route checks pass.
+Every create, activation, and handoff requires exact canonical readback and a
+deterministic derivation receipt. OpenClaw is excluded from this rollout. If a
+canary cannot verify its Task or delivery path, switch back to `shadow`, retain
+the canonical Task and receipts, and repair the named blocker instead of
+creating a replacement.
 
 ### Independent UI/UX release gate
 

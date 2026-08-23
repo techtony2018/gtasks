@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.110",
+  "current_version": "V0.0.111",
   "releases": [
     {
       "version": "V0.0.1",
@@ -660,6 +660,12 @@
       "date": "2026-08-23",
       "title": "Reliable Goal readback",
       "summary": "Goal creation and editing now verify the exact canonical Goal by slug before updating the interface, so stale task refreshes no longer make a successful Goal write look failed."
+    },
+    {
+      "version": "V0.0.111",
+      "date": "2026-08-23",
+      "title": "Codex-only Goal execution canary",
+      "summary": "Adds risk-tiered Codex-only Goal-derived work planning with deterministic receipts, one-Goal work-in-progress, shadow and canary controls, exact canonical readback, and fixed-thread delivery; OpenClaw remains excluded."
     }
   ]
 }

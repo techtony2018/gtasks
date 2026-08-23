@@ -28,6 +28,33 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertEqual(CURRENT_RELEASE["version"], RELEASES[-1]["version"])
         self.assertEqual(__version__, CURRENT_RELEASE["version"])
 
+    def test_v0_0_111_records_codex_only_goal_execution_canary(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.111")
+
+        self.assertIn("Codex-only Goal execution canary", release["title"])
+        for contract in (
+            "risk-tiered",
+            "one-Goal work-in-progress",
+            "shadow and canary controls",
+            "exact canonical readback",
+            "OpenClaw remains excluded",
+        ):
+            self.assertIn(contract, release["summary"])
+
+        documentation = "\n".join(
+            path.read_text(encoding="utf-8") for path in (README, RUNBOOK)
+        )
+        for contract in (
+            "MISSION_CONTROL_GOAL_EXECUTION_MODE",
+            "MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL",
+            "dashboard-managed Mission Control runtime",
+            "OpenClaw is excluded",
+            "one automatic Task",
+            "exact canonical readback",
+            "switch back to `shadow`",
+        ):
+            self.assertIn(contract, documentation)
+
     def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.100")
 
