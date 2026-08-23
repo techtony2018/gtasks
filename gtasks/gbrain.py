@@ -31,6 +31,7 @@ from .domain import (
     ARTIFACT_BY_COLLECTION,
     AGENT_RUNTIME_BY_SLUG,
     EXISTING_CODEX_ARTIFACT_AGENT_SCOPES,
+    EXISTING_CODEX_AGENT_SLUGS,
     AGENT_SCOPES,
     EXISTING_CODEX_AGENT_SCOPES,
     AGENT_WORK_ROOTS,
@@ -44,6 +45,7 @@ from .domain import (
     EventProgress,
     GOALS_ROOT,
     Goal,
+    GoalDerivationReceipt,
     LIFECYCLE_ROOTS,
     NextActionHistoryEntry,
     PROJECTS_ROOT,
@@ -64,6 +66,11 @@ from .domain import (
     new_task,
 )
 from .handoff import TaskHandoff
+from .goal_execution import (
+    GoalExecutionCandidate,
+    GoalExecutionSnapshot,
+    derived_task_slug,
+)
 from .delegation import AgentDelegationLease, DelegationState, lease_state_at
 from .handoff_dispatcher import (
     ActionableChange,
@@ -176,6 +183,17 @@ def is_page_not_found_error(exc: GBrainCommandError) -> bool:
 
 class GBrainProtocolError(GBrainError):
     pass
+
+
+class CanonicalRootError(GBrainError):
+    """Required canonical Goal execution authority could not be verified."""
+
+    def __init__(self, roots: Sequence[str]) -> None:
+        self.roots = tuple(sorted(dict.fromkeys(str(root) for root in roots)))
+        super().__init__(
+            "Goal execution canonical authority is unavailable for: "
+            + ", ".join(self.roots)
+        )
 
 
 class ArtifactIdempotencyConflict(ValueError):
@@ -3036,6 +3054,8 @@ class GBrainAdapter:
         self._artifact_create_lock = Lock()
         self._artifact_review_reference_lock = Lock()
         self._delegation_mutation_lock = Lock()
+        self._goal_execution_locks_guard = Lock()
+        self._goal_execution_locks: dict[str, Lock] = {}
         self._last_verified_openclaw_profiles: tuple[AgentProfile, ...] = ()
 
     def _verified_system_ticket_references(
@@ -7333,6 +7353,341 @@ class GBrainAdapter:
                 ),
             ) from exc
         return receipt
+
+    def read_goal_execution_snapshot(
+        self,
+        route_health: Mapping[str, bool],
+    ) -> GoalExecutionSnapshot:
+        """Read one fail-closed, Codex-only planning snapshot from GBrain."""
+        goals = self.list_goals()
+        projects = self.list_projects()
+        profiles = self.list_agent_profiles()
+        required_roots = {
+            issue.slug
+            for issue in (*goals.issues, *projects.issues)
+            if issue.category == "canonical_root_data"
+            and issue.slug in {GOALS_ROOT, PROJECTS_ROOT}
+        }
+        if required_roots:
+            raise CanonicalRootError(tuple(required_roots))
+        codex_profiles = tuple(
+            profile for profile in profiles.agents if profile.runtime == "codex"
+        )
+        profiles_by_slug = {profile.slug: profile for profile in codex_profiles}
+        required_roots.update(
+            slug
+            for slug in EXISTING_CODEX_AGENT_SLUGS
+            if slug not in profiles_by_slug
+        )
+        required_roots.update(
+            issue.slug
+            for issue in profiles.issues
+            if issue.slug in EXISTING_CODEX_AGENT_SLUGS
+        )
+        if required_roots:
+            raise CanonicalRootError(tuple(required_roots))
+
+        work = self.list_agent_work(include_todos=False)
+        codex_roots = {profile.work_root for profile in codex_profiles}
+        unsafe_work_roots = {
+            issue.owner_agent or issue.slug
+            for issue in work.issues
+            if issue.owner_agent in profiles_by_slug or issue.slug in codex_roots
+        }
+        if unsafe_work_roots:
+            raise CanonicalRootError(tuple(unsafe_work_roots))
+
+        tasks_by_slug: dict[str, Task] = {}
+        for item in work.tasks:
+            slug = item.get("slug")
+            owner = item.get("owner_agent")
+            if not isinstance(slug, str) or owner not in profiles_by_slug:
+                continue
+            task = self.get_task(slug)
+            if task.owner_agent != owner or task.lifecycle_root not in codex_roots:
+                raise CanonicalRootError((str(owner),))
+            tasks_by_slug.setdefault(task.slug, task)
+        return GoalExecutionSnapshot(
+            goals=tuple(goals.goals),
+            projects=tuple(projects.projects),
+            agents=tuple(codex_profiles),
+            tasks=tuple(tasks_by_slug.values()),
+            route_health=dict(route_health),
+        )
+
+    def _goal_execution_lock(self, fingerprint: str) -> Lock:
+        with self._goal_execution_locks_guard:
+            return self._goal_execution_locks.setdefault(fingerprint, Lock())
+
+    @staticmethod
+    def _derived_task_from_candidate(
+        candidate: GoalExecutionCandidate,
+        agent: AgentProfile,
+        now: datetime,
+    ) -> Task:
+        derivation = GoalDerivationReceipt.from_value(
+            {
+                "planner_version": "goal-execution-v1",
+                "fingerprint": candidate.fingerprint,
+                "action_kind": candidate.action_kind,
+                "authority_class": "auto_eligible",
+                "goal_slug": candidate.goal_slug,
+                "project_slug": candidate.project_slug,
+                "expected_evidence": candidate.expected_evidence,
+            }
+        )
+        task = new_task(
+            title=candidate.title,
+            detail=candidate.detail,
+            now=now,
+            identity=candidate.fingerprint,
+            next_action="Publish the verified internal progress brief and one bounded next step.",
+            project=candidate.project_slug,
+            goal=candidate.goal_slug,
+        )
+        return replace(
+            task,
+            slug=derived_task_slug(candidate.fingerprint),
+            lifecycle_root=agent.work_root,
+            owner_agent=agent.slug,
+            goal_derivation=derivation,
+        )
+
+    @staticmethod
+    def _derived_task_matches(
+        actual: Task,
+        expected: Task,
+    ) -> bool:
+        return (
+            actual.slug == expected.slug
+            and actual.title == expected.title
+            and actual.summary == expected.summary
+            and actual.detail == expected.detail
+            and actual.status in {"planned", "active", "blocked", "completed"}
+            and actual.priority == expected.priority
+            and actual.next_action == expected.next_action
+            and actual.inbox == expected.inbox
+            and actual.lifecycle_root == expected.lifecycle_root
+            and actual.owner_agent == expected.owner_agent
+            and actual.project == expected.project
+            and actual.goal == expected.goal
+            and actual.goal_derivation == expected.goal_derivation
+        )
+
+    @staticmethod
+    def _derived_task_edges(task: Task) -> tuple[dict[str, str], ...]:
+        descriptors = [
+            {
+                "from": task.slug,
+                "to": task.lifecycle_root,
+                "link_type": "member_of",
+                "context": "Canonical agent work collection membership.",
+                "link_source": "gtasks",
+            },
+            {
+                "from": task.slug,
+                "to": str(task.owner_agent),
+                "link_type": "assigned_to",
+                "context": "Tony explicitly assigned this work to the agent.",
+                "link_source": "gtasks",
+            },
+            {
+                "from": task.slug,
+                "to": str(task.goal),
+                "link_type": "advances_goal",
+                "context": "This agent task advances the linked Tony goal.",
+                "link_source": "gtasks",
+            },
+        ]
+        if task.project:
+            descriptors.append(
+                {
+                    "from": task.slug,
+                    "to": task.project,
+                    "link_type": "member_of",
+                    "context": "GTasks project membership.",
+                    "link_source": "gtasks",
+                }
+            )
+        return tuple(descriptors)
+
+    def _adopt_existing_derived_task(
+        self,
+        expected: Task,
+        page: Mapping[str, Any],
+    ) -> TaskEditReceipt:
+        try:
+            links = self.runner.run("get_links", {"slug": expected.slug})
+            if not isinstance(links, list):
+                raise GBrainProtocolError("derived task links were not a list")
+            expected_descriptors = self._derived_task_edges(expected)
+            expected_keys = {
+                (item["from"], item["to"], item["link_type"])
+                for item in expected_descriptors
+            }
+            reciprocal_key = (expected.goal, expected.slug, "advanced_by")
+            actual_keys = {
+                (
+                    str(edge.get("from_slug")),
+                    str(edge.get("to_slug")),
+                    str(edge.get("link_type")),
+                )
+                for edge in links
+                if isinstance(edge, Mapping)
+            }
+            relevant = {
+                key
+                for key in actual_keys
+                if key[0] == expected.slug
+                and (
+                    key[2] in {"assigned_to", "advances_goal"}
+                    or key[1] in TASK_SCOPE_ROOTS
+                    or key[1].startswith("projects/")
+                )
+            }
+            if not relevant.issubset(expected_keys):
+                raise GBrainProtocolError(
+                    "existing deterministic slug has conflicting typed relationships"
+                )
+            completed_links = list(links)
+            for descriptor in expected_descriptors:
+                key = (
+                    descriptor["from"],
+                    descriptor["to"],
+                    descriptor["link_type"],
+                )
+                if key not in actual_keys:
+                    completed_links.append(
+                        {
+                            "from_slug": descriptor["from"],
+                            "to_slug": descriptor["to"],
+                            "link_type": descriptor["link_type"],
+                            "context": descriptor["context"],
+                            "link_source": descriptor["link_source"],
+                        }
+                    )
+            actual = Task.from_page(page, edges=completed_links)
+            if not self._derived_task_matches(actual, expected):
+                raise GBrainProtocolError(
+                    "existing deterministic slug does not match its derivation receipt"
+                )
+        except (DomainValidationError, GBrainError, ValueError) as exc:
+            raise PartialMutationError(
+                expected.slug,
+                "Derived Agent task cannot be safely adopted; no change was made. "
+                + str(exc),
+            ) from exc
+
+        try:
+            for descriptor in expected_descriptors:
+                key = (
+                    descriptor["from"],
+                    descriptor["to"],
+                    descriptor["link_type"],
+                )
+                if key not in actual_keys:
+                    self.runner.run("add_link", descriptor)
+            goal_links = self.runner.run("get_links", {"slug": str(expected.goal)})
+            if not isinstance(goal_links, list):
+                raise GBrainProtocolError("derived task reciprocal links were not a list")
+            reciprocal_keys = {
+                (
+                    str(edge.get("from_slug")),
+                    str(edge.get("to_slug")),
+                    str(edge.get("link_type")),
+                )
+                for edge in goal_links
+                if isinstance(edge, Mapping)
+            }
+            if reciprocal_key not in reciprocal_keys:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": str(expected.goal),
+                        "to": expected.slug,
+                        "link_type": "advanced_by",
+                        "context": "This goal is advanced by the assigned agent task.",
+                        "link_source": "gtasks",
+                    },
+                )
+            stored = self.get_task(expected.slug)
+            stored_links = self.runner.run("get_links", {"slug": expected.slug})
+            stored_goal_links = self.runner.run(
+                "get_links", {"slug": str(expected.goal)}
+            )
+            if not isinstance(stored_links, list) or not isinstance(
+                stored_goal_links, list
+            ):
+                raise GBrainProtocolError("derived task readback was not structured")
+            stored_keys = {
+                (
+                    str(edge.get("from_slug")),
+                    str(edge.get("to_slug")),
+                    str(edge.get("link_type")),
+                )
+                for edge in (*stored_links, *stored_goal_links)
+                if isinstance(edge, Mapping)
+            }
+            if not expected_keys.issubset(stored_keys) or reciprocal_key not in stored_keys:
+                raise GBrainProtocolError(
+                    "derived task relationships were not fully verified"
+                )
+            if not self._derived_task_matches(stored, expected):
+                raise GBrainProtocolError("derived task readback changed during adoption")
+            return TaskEditReceipt(expected.slug, stored, True)
+        except (DomainValidationError, GBrainError, ValueError) as exc:
+            raise PartialMutationError(
+                expected.slug,
+                "Derived Agent task partial write was not fully verified. " + str(exc),
+            ) from exc
+
+    def create_or_adopt_derived_agent_task(
+        self,
+        candidate: GoalExecutionCandidate,
+        now: datetime,
+    ) -> TaskEditReceipt:
+        """Create once or safely resume one deterministic Goal-derived task."""
+        if not isinstance(candidate, GoalExecutionCandidate):
+            raise TypeError("candidate must be a GoalExecutionCandidate")
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("derived task creation time must include a timezone")
+        with self._goal_execution_lock(candidate.fingerprint):
+            profiles = self.list_agent_profiles()
+            agent = next(
+                (
+                    profile
+                    for profile in profiles.agents
+                    if profile.slug == candidate.agent_slug
+                    and profile.runtime == "codex"
+                ),
+                None,
+            )
+            if agent is None:
+                raise CanonicalRootError((candidate.agent_slug,))
+            expected = self._derived_task_from_candidate(candidate, agent, now)
+            try:
+                existing_page = self.runner.run(
+                    "get_page", {"slug": expected.slug}
+                )
+            except GBrainCommandError as exc:
+                if not is_page_not_found_error(exc):
+                    raise
+            else:
+                if not isinstance(existing_page, Mapping):
+                    raise PartialMutationError(
+                        expected.slug,
+                        "Derived Agent task readback was not structured; no change was made.",
+                    )
+                return self._adopt_existing_derived_task(expected, existing_page)
+
+            self.create_agent_task(expected, agent.slug)
+            stored = self.get_task(expected.slug)
+            if not self._derived_task_matches(stored, expected):
+                raise PartialMutationError(
+                    expected.slug,
+                    "Derived Agent task creation readback did not match the candidate.",
+                )
+            return TaskEditReceipt(expected.slug, stored, True)
 
     def create_agent_task(
         self,

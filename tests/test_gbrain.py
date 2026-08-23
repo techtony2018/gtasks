@@ -51,17 +51,28 @@ from gtasks.handoff_dispatcher import (
 from gtasks.gbrain import (
     GBrainAdapter,
     CanonicalHandoffEventBridge,
+    AgentRead,
     AgentWorkRead,
+    CanonicalRootError,
+    CollectionIssue,
     GBrainCommandError,
     GBrainProtocolError,
     GoalLinkReceipt,
+    GoalRead,
     NextActionMutationReceipt,
     PartialMutationError,
     ProposalRead,
+    ProjectRead,
     RemoteHttpCommandRunner,
     LifecycleIntegrityError,
     SubprocessCommandRunner,
     _render_preserved_page,
+)
+from gtasks.goal_execution import (
+    GoalExecutionCandidate,
+    GoalExecutionPlanner,
+    GoalExecutionSnapshot,
+    derived_task_slug,
 )
 from gtasks.delegation import AgentDelegationLease, DelegationState
 
@@ -947,6 +958,356 @@ class StatefulIdentityMigrationRunner:
             ]
             return {"slug": slug, "deleted": True}
         raise AssertionError(f"unexpected tool: {tool}")
+
+
+class GoalExecutionStateRunner(StatefulIdentityMigrationRunner):
+    """Remote-MCP-shaped in-memory runner for Goal execution mutations."""
+
+    def run(self, tool: str, params: dict) -> object:
+        if tool == "list_pages":
+            self.calls.append((tool, deepcopy(params)))
+            requested_type = params.get("type")
+            return {
+                "pages": [
+                    deepcopy(page)
+                    for page in self.pages.values()
+                    if requested_type is None or page.get("type") == requested_type
+                ]
+            }
+        return super().run(tool, params)
+
+
+class GoalExecutionAdapterTests(unittest.TestCase):
+    GOAL = "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
+    PROJECT = "projects/97b3214e-53d3-5506-beb1-0705816484f9"
+    AGENT = "agents/timmy"
+    WORK_ROOT = "collections/timmys-tasks"
+    NOW = datetime(2026, 8, 23, 16, 0, tzinfo=timezone.utc)
+
+    def _goal(self) -> domain.Goal:
+        return domain.Goal(
+            slug=self.GOAL,
+            title="Civic: Help California be better through political action",
+            status="planned",
+            outcome="Help California be better through political action.",
+            success_criteria="Maintain evidence-backed civic progress.",
+            target_day=date(2026, 12, 31),
+            strategy="Choose one bounded next step from current evidence.",
+            review_cadence="weekly",
+            constraints="No external action without Tony approval.",
+        )
+
+    def _project(self) -> domain.Project:
+        return domain.Project(
+            slug=self.PROJECT,
+            title="ERFA PAC",
+            status="active",
+            summary="Maintain an internal evidence and next-action ledger.",
+            supporting_goal_slugs=(self.GOAL,),
+        )
+
+    def _agent(self, *, runtime: str = "codex", slug: str | None = None) -> AgentProfile:
+        agent_slug = slug or self.AGENT
+        work_roots = {
+            "agents/tammy": "collections/tammys-tasks",
+            "agents/timmy": self.WORK_ROOT,
+            "agents/toddy": "collections/toddys-tasks",
+            "agents/timmy-oc": "collections/timmy-oc-tasks",
+        }
+        return AgentProfile(
+            slug=agent_slug,
+            name="Timmy" if agent_slug == self.AGENT else "Timmy-OC",
+            title="Agent Timmy",
+            summary="Civic and systems research.",
+            work_root=work_roots[agent_slug],
+            default_goal_slugs=(self.GOAL,),
+            runtime=runtime,
+        )
+
+    def _candidate(self) -> GoalExecutionCandidate:
+        decision = GoalExecutionPlanner().plan(
+            GoalExecutionSnapshot(
+                goals=(self._goal(),),
+                projects=(self._project(),),
+                agents=(self._agent(),),
+                tasks=(),
+                route_health={self.AGENT: True},
+            )
+        ).decisions[0]
+        self.assertEqual(decision.reason, "auto_eligible")
+        assert decision.candidate is not None
+        return decision.candidate
+
+    def _runner(self) -> GoalExecutionStateRunner:
+        pages = {
+            GOALS_ROOT: {
+                "slug": GOALS_ROOT,
+                "type": "collection",
+                "title": "Tony's Goals",
+                "frontmatter": {},
+                "compiled_truth": "# Tony's Goals",
+            },
+            PROJECTS_ROOT: stored_projects_root(),
+            self.WORK_ROOT: {
+                "slug": self.WORK_ROOT,
+                "type": "collection",
+                "title": "Timmy Tasks",
+                "frontmatter": {},
+                "compiled_truth": "# Timmy Tasks",
+            },
+            self.AGENT: {
+                "slug": self.AGENT,
+                "type": "agent",
+                "title": "Agent Timmy",
+                "compiled_truth": "Civic and systems research.",
+                "frontmatter": {
+                    "runtime": "codex",
+                    "work_root": self.WORK_ROOT,
+                },
+            },
+            self.GOAL: stored_goal(self.GOAL, self._goal().title),
+            self.PROJECT: stored_project(self._project()),
+        }
+        links = [
+            {
+                "from_slug": self.GOAL,
+                "to_slug": GOALS_ROOT,
+                "link_type": "member_of",
+                "link_source": "gtasks",
+            },
+            {
+                "from_slug": self.PROJECT,
+                "to_slug": PROJECTS_ROOT,
+                "link_type": "member_of",
+                "link_source": "gtasks",
+            },
+            {
+                "from_slug": self.PROJECT,
+                "to_slug": self.GOAL,
+                "link_type": "supports_goal",
+                "link_source": "gtasks",
+            },
+            {
+                "from_slug": self.AGENT,
+                "to_slug": self.GOAL,
+                "link_type": "default_agent_for",
+                "link_source": "gtasks",
+            },
+        ]
+        return GoalExecutionStateRunner(pages, links)
+
+    def test_snapshot_reads_only_verified_canonical_roots_and_codex_profiles(self) -> None:
+        adapter = GBrainAdapter(self._runner())
+        open_task = replace(
+            new_task(
+                title="Existing internal work",
+                detail="Bounded read-only work.",
+                now=self.NOW,
+                identity="existing-agent-work",
+            ),
+            lifecycle_root=self.WORK_ROOT,
+            owner_agent=self.AGENT,
+        )
+        adapter.list_goals = lambda: GoalRead((self._goal(),), ())
+        adapter.list_projects = lambda: ProjectRead((self._project(),), ())
+        adapter.list_agent_profiles = lambda: AgentRead(
+            (
+                self._agent(slug="agents/tammy"),
+                self._agent(),
+                self._agent(slug="agents/toddy"),
+                self._agent(runtime="openclaw", slug="agents/timmy-oc"),
+            ),
+            (),
+        )
+        adapter.list_agent_work = lambda **_kwargs: AgentWorkRead(
+            (open_task.to_dict(),), (), (self.WORK_ROOT,)
+        )
+        adapter.get_task = lambda slug: open_task if slug == open_task.slug else None
+
+        snapshot = adapter.read_goal_execution_snapshot({self.AGENT: True})
+
+        self.assertEqual(snapshot.goals, (self._goal(),))
+        self.assertEqual(snapshot.projects, (self._project(),))
+        self.assertEqual(
+            [profile.slug for profile in snapshot.agents],
+            ["agents/tammy", self.AGENT, "agents/toddy"],
+        )
+        self.assertEqual(snapshot.tasks, (open_task,))
+
+    def test_snapshot_fails_closed_when_goals_root_is_missing(self) -> None:
+        runner = self._runner()
+        adapter = GBrainAdapter(runner)
+        adapter.list_goals = lambda: GoalRead(
+            (),
+            (
+                CollectionIssue(
+                    slug=GOALS_ROOT,
+                    message="page_not_found",
+                    category="canonical_root_data",
+                ),
+            ),
+        )
+
+        with self.assertRaises(CanonicalRootError) as raised:
+            adapter.read_goal_execution_snapshot({self.AGENT: True})
+
+        self.assertEqual(raised.exception.roots, (GOALS_ROOT,))
+        self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
+
+    def test_create_derived_task_writes_planned_then_verifies_all_edges(self) -> None:
+        runner = self._runner()
+        candidate = self._candidate()
+
+        receipt = GBrainAdapter(runner).create_or_adopt_derived_agent_task(
+            candidate,
+            self.NOW,
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.task.status, "planned")
+        self.assertEqual(receipt.task.slug, derived_task_slug(candidate.fingerprint))
+        self.assertEqual(
+            receipt.task.goal_derivation.fingerprint,
+            candidate.fingerprint,
+        )
+        typed_edges = {
+            (edge["from_slug"], edge["to_slug"], edge["link_type"])
+            for edge in runner.links
+        }
+        self.assertTrue(
+            {
+                (receipt.task.slug, self.WORK_ROOT, "member_of"),
+                (receipt.task.slug, self.AGENT, "assigned_to"),
+                (receipt.task.slug, self.GOAL, "advances_goal"),
+                (receipt.task.slug, self.PROJECT, "member_of"),
+                (self.GOAL, receipt.task.slug, "advanced_by"),
+            }.issubset(typed_edges)
+        )
+
+    def test_create_derived_task_adopts_exact_same_slug_after_partial_write(self) -> None:
+        runner = self._runner()
+        adapter = GBrainAdapter(runner)
+        candidate = self._candidate()
+        first = adapter.create_or_adopt_derived_agent_task(candidate, self.NOW)
+        runner.links = [
+            edge
+            for edge in runner.links
+            if not (
+                edge.get("from_slug") == first.task_slug
+                and edge.get("link_type") == "assigned_to"
+            )
+        ]
+        runner.calls.clear()
+
+        adopted = adapter.create_or_adopt_derived_agent_task(candidate, self.NOW)
+
+        self.assertEqual(adopted.task_slug, first.task_slug)
+        self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
+        add_calls = [params for tool, params in runner.calls if tool == "add_link"]
+        self.assertEqual(
+            add_calls,
+            [
+                {
+                    "from": first.task_slug,
+                    "to": self.AGENT,
+                    "link_type": "assigned_to",
+                    "context": "Tony explicitly assigned this work to the agent.",
+                    "link_source": "gtasks",
+                }
+            ],
+        )
+
+    def test_create_derived_task_rejects_existing_same_slug_with_other_receipt(self) -> None:
+        runner = self._runner()
+        adapter = GBrainAdapter(runner)
+        candidate = self._candidate()
+        first = adapter.create_or_adopt_derived_agent_task(candidate, self.NOW)
+        runner.pages[first.task_slug]["frontmatter"]["goal_derivation"][
+            "fingerprint"
+        ] = "b" * 64
+        runner.calls.clear()
+
+        with self.assertRaises(PartialMutationError):
+            adapter.create_or_adopt_derived_agent_task(candidate, self.NOW)
+
+        self.assertFalse(
+            any(
+                tool in {"put_page", "add_link", "remove_link"}
+                for tool, _ in runner.calls
+            )
+        )
+
+    def test_create_derived_task_never_links_tony_or_proposed_roots(self) -> None:
+        runner = self._runner()
+        receipt = GBrainAdapter(runner).create_or_adopt_derived_agent_task(
+            self._candidate(),
+            self.NOW,
+        )
+
+        forbidden = {ACTIVE_ROOT, PROPOSALS_ROOT, "collections/tonys-tasks"}
+        task_edges = [
+            edge for edge in runner.links if edge.get("from_slug") == receipt.task_slug
+        ]
+        self.assertFalse(
+            forbidden.intersection(
+                str(edge.get("to_slug")) for edge in task_edges
+            )
+        )
+        self.assertFalse(
+            forbidden.intersection(
+                str(link.get("to"))
+                for link in runner.pages[receipt.task_slug]["frontmatter"]["links"]
+            )
+        )
+
+    def test_create_derived_task_concurrent_retries_write_one_page(self) -> None:
+        runner = self._runner()
+        adapter = GBrainAdapter(runner)
+        candidate = self._candidate()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            receipts = tuple(
+                pool.map(
+                    lambda _index: adapter.create_or_adopt_derived_agent_task(
+                        candidate,
+                        self.NOW,
+                    ),
+                    range(2),
+                )
+            )
+
+        self.assertEqual(
+            {receipt.task_slug for receipt in receipts},
+            {derived_task_slug(candidate.fingerprint)},
+        )
+        self.assertEqual(
+            sum(
+                1
+                for tool, params in runner.calls
+                if tool == "put_page"
+                and params.get("slug") == derived_task_slug(candidate.fingerprint)
+            ),
+            1,
+        )
+
+    def test_create_derived_task_restart_adopts_original_creation_time(self) -> None:
+        runner = self._runner()
+        candidate = self._candidate()
+        first = GBrainAdapter(runner).create_or_adopt_derived_agent_task(
+            candidate,
+            self.NOW,
+        )
+        runner.calls.clear()
+
+        adopted = GBrainAdapter(runner).create_or_adopt_derived_agent_task(
+            candidate,
+            self.NOW + timedelta(days=1),
+        )
+
+        self.assertEqual(adopted.task_slug, first.task_slug)
+        self.assertEqual(adopted.task.created_at, first.task.created_at)
+        self.assertEqual(adopted.task.due_day, first.task.due_day)
+        self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
 
 
 class AgentDelegationAdapterTests(unittest.TestCase):
