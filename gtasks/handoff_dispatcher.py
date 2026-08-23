@@ -1874,6 +1874,11 @@ class DurableHandoffStore:
         now = _require_utc(now, "now")
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
+        # A dispatcher can lose the claim response before it durably saves the
+        # lease capability. Recover expired leases at the next authenticated
+        # claim boundary so that this handoff does not depend on an unrelated
+        # out-of-process Guardian tick before the same worker can retry it.
+        self.reconcile_expired_leases(now=now)
         identity_values = (
             expected_agent_slug,
             expected_registration_ref,

@@ -3033,6 +3033,33 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(recovered, 1)
         self.assertEqual(self.store.get(record.handoff_id).status, "retrying")
 
+    def test_claim_recovers_an_expired_lease_before_retrying_delivery(self) -> None:
+        record = self.record()
+        first = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=5)
+
+        retried = self.store.claim(
+            REGISTRATION_ID,
+            now=NOW + timedelta(seconds=6),
+            lease_seconds=30,
+        )
+
+        self.assertEqual(retried.handoff_id, record.handoff_id)
+        self.assertEqual(retried.status, "leased")
+        self.assertEqual(retried.lease_generation, first.lease_generation + 1)
+        event_types = [
+            event.event_type
+            for event in self.store.query_events(limit=50, after_sequence=0).events
+        ]
+        self.assertEqual(
+            event_types,
+            [
+                "handoff_queued",
+                "handoff_leased",
+                "lease_expired",
+                "handoff_leased",
+            ],
+        )
+
     def test_store_file_is_created_and_read_back_private(self) -> None:
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
