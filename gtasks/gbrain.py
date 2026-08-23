@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Lock, current_thread
 from time import monotonic, sleep, time
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
@@ -66,11 +66,6 @@ from .domain import (
     new_task,
 )
 from .handoff import TaskHandoff
-from .goal_execution import (
-    GoalExecutionCandidate,
-    GoalExecutionSnapshot,
-    derived_task_slug,
-)
 from .delegation import AgentDelegationLease, DelegationState, lease_state_at
 from .handoff_dispatcher import (
     ActionableChange,
@@ -86,6 +81,9 @@ from .markdown_policy import (
     render_system_ticket_body,
     render_task_body,
 )
+
+if TYPE_CHECKING:
+    from .goal_execution import GoalExecutionCandidate, GoalExecutionSnapshot
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
@@ -7359,6 +7357,8 @@ class GBrainAdapter:
         route_health: Mapping[str, bool],
     ) -> GoalExecutionSnapshot:
         """Read one fail-closed, Codex-only planning snapshot from GBrain."""
+        from .goal_execution import GoalExecutionSnapshot
+
         goals = self.list_goals()
         projects = self.list_projects()
         profiles = self.list_agent_profiles()
@@ -7425,6 +7425,8 @@ class GBrainAdapter:
         agent: AgentProfile,
         now: datetime,
     ) -> Task:
+        from .goal_execution import derived_task_slug
+
         derivation = GoalDerivationReceipt.from_value(
             {
                 "planner_version": "goal-execution-v1",
@@ -7647,6 +7649,8 @@ class GBrainAdapter:
         now: datetime,
     ) -> TaskEditReceipt:
         """Create once or safely resume one deterministic Goal-derived task."""
+        from .goal_execution import GoalExecutionCandidate
+
         if not isinstance(candidate, GoalExecutionCandidate):
             raise TypeError("candidate must be a GoalExecutionCandidate")
         if not isinstance(now, datetime) or now.tzinfo is None:

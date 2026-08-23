@@ -1,13 +1,23 @@
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
-from gtasks.domain import AgentProfile, Goal, Project, new_task
+from gtasks.domain import (
+    AgentProfile,
+    Goal,
+    GoalDerivationReceipt,
+    Project,
+    new_task,
+)
 from gtasks.goal_execution import (
+    GoalExecutionEngine,
     GoalExecutionPlanner,
     GoalExecutionSnapshot,
     derived_task_slug,
 )
+from gtasks.gbrain import PartialMutationError, StatusMutationReceipt, TaskEditReceipt
+from gtasks.handoff_dispatcher import AgentRegistration
 
 
 GOAL = "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
@@ -264,6 +274,232 @@ class GoalExecutionPlannerTests(unittest.TestCase):
             [decision.reason for decision in plan.decisions],
             ["goal_terminal", "goal_terminal"],
         )
+
+
+class GoalExecutionEngineTests(unittest.TestCase):
+    class Adapter:
+        def __init__(self, *, tasks=(), activation_error: Exception | None = None):
+            self.tasks = list(tasks)
+            self.activation_error = activation_error
+            self.calls: list[tuple[str, object]] = []
+
+        def read_goal_execution_snapshot(self, route_health):
+            self.calls.append(("snapshot", dict(route_health)))
+            return snapshot(tasks=tuple(self.tasks), route_health=dict(route_health))
+
+        def create_or_adopt_derived_agent_task(self, candidate, now):
+            self.calls.append(("create", candidate.fingerprint))
+            existing = next(
+                (
+                    item
+                    for item in self.tasks
+                    if item.goal_derivation is not None
+                    and item.goal_derivation.fingerprint == candidate.fingerprint
+                ),
+                None,
+            )
+            if existing is None:
+                base = new_task(
+                    title=candidate.title,
+                    detail=candidate.detail,
+                    now=now,
+                    identity=candidate.fingerprint,
+                    next_action="Publish the verified internal progress brief and one bounded next step.",
+                    project=candidate.project_slug,
+                    goal=candidate.goal_slug,
+                )
+                existing = replace(
+                    base,
+                    slug=derived_task_slug(candidate.fingerprint),
+                    lifecycle_root=WORK_ROOT,
+                    owner_agent=AGENT,
+                    goal_derivation=GoalDerivationReceipt(
+                        planner_version="goal-execution-v1",
+                        fingerprint=candidate.fingerprint,
+                        action_kind=candidate.action_kind,
+                        authority_class="auto_eligible",
+                        goal_slug=candidate.goal_slug,
+                        project_slug=candidate.project_slug,
+                        expected_evidence=candidate.expected_evidence,
+                    ),
+                )
+                self.tasks.append(existing)
+            return TaskEditReceipt(existing.slug, existing, True)
+
+        def set_task_status(self, task_slug, status, now):
+            self.calls.append(("status", (task_slug, status)))
+            if self.activation_error is not None:
+                raise self.activation_error
+            task = next(item for item in self.tasks if item.slug == task_slug)
+            task = replace(task, status=status, updated_at=now)
+            self.tasks = [task if item.slug == task_slug else item for item in self.tasks]
+            return StatusMutationReceipt(
+                task_slug=task.slug,
+                status=task.status,
+                lifecycle_root=task.lifecycle_root,
+                completed_at=task.completed_at,
+                task=task,
+                verified=True,
+            )
+
+    class Bridge:
+        def __init__(self, *, status: str = "queued", verified: bool = True):
+            self.dispatcher = SimpleNamespace(
+                registrations=(
+                    AgentRegistration(
+                        registration_id="private-registration-timmy",
+                        agent_slug=AGENT,
+                        route="hosts/timmy",
+                        verified=verified,
+                    ),
+                )
+            )
+            self.status = status
+            self.calls: list[tuple[dict, dict, dict]] = []
+
+        def after_verified_mutation(self, before, after, receipt, now):
+            self.calls.append((before, after, receipt))
+            return SimpleNamespace(
+                handoff_id="handoffs/goal-execution-canary",
+                status=self.status,
+                reason="delivery failed" if self.status == "dead_letter" else "queued",
+            )
+
+    def engine(self, adapter=None, bridge=None):
+        return GoalExecutionEngine(
+            adapter=adapter or self.Adapter(),
+            bridge=bridge or self.Bridge(),
+            mode="canary",
+            canary_goal_slug=GOAL,
+        )
+
+    def test_run_once_creates_planned_reads_back_activates_and_dispatches(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+
+        result = self.engine(adapter, bridge).run_once(NOW)
+
+        self.assertEqual(
+            [name for name, _value in adapter.calls],
+            ["snapshot", "create", "status"],
+        )
+        self.assertEqual(len(bridge.calls), 1)
+        before, after, receipt = bridge.calls[0]
+        self.assertEqual(before["status"], "planned")
+        self.assertEqual(after["status"], "active")
+        self.assertTrue(receipt["verified"])
+        self.assertEqual(receipt["mutation_kind"], "task_status")
+        self.assertEqual(result.task_slug, adapter.tasks[0].slug)
+        self.assertEqual(result.task_status, "active")
+        self.assertEqual(result.handoff_id, "handoffs/goal-execution-canary")
+        self.assertEqual(result.public_reason, "activated")
+
+    def test_run_once_does_not_activate_when_route_is_unhealthy(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge(verified=False)
+
+        result = self.engine(adapter, bridge).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "route_unavailable")
+        self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
+        self.assertEqual(bridge.calls, [])
+
+    def test_run_once_does_not_create_when_wip_is_full(self) -> None:
+        adapter = self.Adapter(
+            tasks=(
+                agent_task(
+                    slug_identity="other-active",
+                    goal_slug=OTHER_GOAL,
+                    status="active",
+                ),
+            )
+        )
+
+        result = self.engine(adapter, self.Bridge()).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "wip_full")
+        self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
+
+    def test_repeat_run_adopts_same_task_and_does_not_redeliver(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        engine = self.engine(adapter, bridge)
+
+        first = engine.run_once(NOW)
+        second = engine.run_once(NOW)
+
+        self.assertEqual(first.task_slug, second.task_slug)
+        self.assertEqual(
+            [name for name, _value in adapter.calls].count("status"),
+            1,
+        )
+        self.assertEqual(len(bridge.calls), 1)
+        self.assertEqual(first.handoff_id, "handoffs/goal-execution-canary")
+
+    def test_activation_partial_write_returns_attention_without_success(self) -> None:
+        adapter = self.Adapter(
+            activation_error=PartialMutationError(
+                "tasks/goal-canary",
+                "status readback failed",
+            )
+        )
+
+        result = self.engine(adapter, self.Bridge()).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "system_repair_required")
+        self.assertTrue(result.task_slug.startswith("tasks/"))
+        self.assertIsNone(result.handoff_id)
+
+    def test_dispatch_failure_keeps_verified_active_task_and_reports_recovery(self) -> None:
+        adapter = self.Adapter()
+
+        result = self.engine(adapter, self.Bridge(status="dead_letter")).run_once(NOW)
+
+        self.assertEqual(adapter.tasks[0].status, "active")
+        self.assertEqual(result.task_status, "active")
+        self.assertEqual(result.public_reason, "handoff_needs_repair")
+        self.assertEqual(result.handoff_status, "dead_letter")
+
+    def test_route_health_rejects_duplicate_or_foreign_route_ambiguity(self) -> None:
+        bridge = self.Bridge()
+        bridge.dispatcher.registrations = (
+            AgentRegistration(
+                registration_id="timmy-one",
+                agent_slug=AGENT,
+                route="hosts/shared",
+                verified=True,
+            ),
+            AgentRegistration(
+                registration_id="timmy-two",
+                agent_slug=AGENT,
+                route="hosts/timmy-two",
+                verified=True,
+            ),
+            AgentRegistration(
+                registration_id="tammy-shared",
+                agent_slug="agents/tammy",
+                route="hosts/shared",
+                verified=True,
+            ),
+        )
+
+        health = self.engine(self.Adapter(), bridge).route_health()
+
+        self.assertFalse(health[AGENT])
+        self.assertFalse(health["agents/tammy"])
+
+    def test_shadow_mode_returns_plan_without_mutation(self) -> None:
+        adapter = self.Adapter()
+        engine = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=self.Bridge(),
+            mode="shadow",
+        )
+
+        result = engine.run_once(NOW)
+
+        self.assertEqual(result.public_reason, "shadow")
+        self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
 
 
 if __name__ == "__main__":

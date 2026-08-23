@@ -6,9 +6,11 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Mapping
+from datetime import datetime
+from typing import Any, Mapping, Protocol
 
 from .domain import AgentProfile, Goal, Project, Task
+from .gbrain import PartialMutationError
 
 
 PLANNER_VERSION = "goal-execution-v1"
@@ -281,4 +283,296 @@ class GoalExecutionPlanner:
         return GoalExecutionPlan(
             planner_version=PLANNER_VERSION,
             decisions=tuple(decisions),
+        )
+
+
+class GoalExecutionAdapter(Protocol):
+    def read_goal_execution_snapshot(
+        self, route_health: Mapping[str, bool]
+    ) -> GoalExecutionSnapshot: ...
+
+    def create_or_adopt_derived_agent_task(
+        self, candidate: GoalExecutionCandidate, now: datetime
+    ) -> Any: ...
+
+    def set_task_status(self, task_slug: str, status: str, now: datetime) -> Any: ...
+
+
+class GoalExecutionBridge(Protocol):
+    dispatcher: Any
+
+    def after_verified_mutation(
+        self, before: object, after: object, receipt: object, now: datetime
+    ) -> Any: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GoalExecutionRun:
+    mode: str
+    ran_at: datetime
+    planner_version: str
+    decisions: tuple[GoalExecutionDecision, ...]
+    public_reason: str
+    task_slug: str | None = None
+    task_title: str | None = None
+    task_status: str | None = None
+    agent_slug: str | None = None
+    handoff_id: str | None = None
+    handoff_status: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "ran_at": self.ran_at.isoformat(),
+            "planner_version": self.planner_version,
+            "decisions": [decision.to_dict() for decision in self.decisions],
+            "public_reason": self.public_reason,
+            "task": (
+                {
+                    "slug": self.task_slug,
+                    "title": self.task_title,
+                    "status": self.task_status,
+                    "agent_slug": self.agent_slug,
+                }
+                if self.task_slug is not None
+                else None
+            ),
+            "handoff": (
+                {
+                    "id": self.handoff_id,
+                    "status": self.handoff_status,
+                }
+                if self.handoff_id is not None
+                else None
+            ),
+        }
+
+    @classmethod
+    def from_plan(
+        cls,
+        plan: GoalExecutionPlan,
+        *,
+        mode: str,
+        ran_at: datetime,
+        goal_slug: str | None = None,
+    ) -> "GoalExecutionRun":
+        selected = next(
+            (
+                decision
+                for decision in plan.decisions
+                if goal_slug is None or decision.goal_slug == goal_slug
+            ),
+            None,
+        )
+        if mode == "off":
+            reason = "off"
+        elif mode == "shadow":
+            reason = "shadow"
+        elif selected is not None:
+            reason = selected.reason
+        else:
+            reason = "no_eligible_work"
+        return cls(
+            mode=mode,
+            ran_at=ran_at,
+            planner_version=plan.planner_version,
+            decisions=plan.decisions,
+            public_reason=reason,
+            task_slug=selected.existing_task_slug if selected else None,
+        )
+
+    @classmethod
+    def for_task(
+        cls,
+        plan: GoalExecutionPlan,
+        *,
+        mode: str,
+        ran_at: datetime,
+        task: Task,
+        public_reason: str,
+        handoff: object | None = None,
+    ) -> "GoalExecutionRun":
+        return cls(
+            mode=mode,
+            ran_at=ran_at,
+            planner_version=plan.planner_version,
+            decisions=plan.decisions,
+            public_reason=public_reason,
+            task_slug=task.slug,
+            task_title=task.title,
+            task_status=task.status,
+            agent_slug=task.owner_agent,
+            handoff_id=(
+                str(getattr(handoff, "handoff_id"))
+                if handoff is not None and getattr(handoff, "handoff_id", None)
+                else None
+            ),
+            handoff_status=(
+                str(getattr(handoff, "status"))
+                if handoff is not None and getattr(handoff, "status", None)
+                else None
+            ),
+        )
+
+
+class GoalExecutionEngine:
+    """Activate at most one configured Goal through a verified fixed route."""
+
+    _HANDOFF_ACCEPTED = frozenset(
+        {
+            "queued",
+            "leased",
+            "received",
+            "execution_started",
+            "active",
+            "actively_executing",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        adapter: GoalExecutionAdapter,
+        bridge: GoalExecutionBridge,
+        planner: GoalExecutionPlanner | None = None,
+        mode: str = "shadow",
+        canary_goal_slug: str | None = None,
+    ) -> None:
+        if mode not in {"off", "shadow", "canary"}:
+            raise ValueError("goal execution mode must be off, shadow, or canary")
+        if mode == "canary" and (
+            not isinstance(canary_goal_slug, str)
+            or not _is_canonical_goal_slug(canary_goal_slug)
+        ):
+            raise ValueError("canary mode requires one canonical Goal slug")
+        self.adapter = adapter
+        self.bridge = bridge
+        self.planner = planner or GoalExecutionPlanner()
+        self.mode = mode
+        self.canary_goal_slug = canary_goal_slug
+
+    def route_health(self) -> dict[str, bool]:
+        registrations = tuple(
+            getattr(getattr(self.bridge, "dispatcher", None), "registrations", ())
+        )
+        agent_slugs = {
+            str(registration.agent_slug)
+            for registration in registrations
+            if isinstance(getattr(registration, "agent_slug", None), str)
+        }
+        route_agents: dict[str, set[str]] = {}
+        for registration in registrations:
+            if not getattr(registration, "verified", False):
+                continue
+            agent_slug = getattr(registration, "agent_slug", None)
+            route = getattr(registration, "route", None)
+            if isinstance(agent_slug, str) and isinstance(route, str):
+                route_agents.setdefault(route, set()).add(agent_slug)
+        health: dict[str, bool] = {}
+        for agent_slug in agent_slugs:
+            matches = tuple(
+                registration
+                for registration in registrations
+                if getattr(registration, "verified", False)
+                and getattr(registration, "agent_slug", None) == agent_slug
+                and isinstance(getattr(registration, "route", None), str)
+            )
+            health[agent_slug] = (
+                len(matches) == 1
+                and len(route_agents.get(str(matches[0].route), set())) == 1
+            )
+        return health
+
+    def run_once(self, now: datetime) -> GoalExecutionRun:
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("Goal execution run time must include a timezone")
+        route_health = self.route_health()
+        snapshot = self.adapter.read_goal_execution_snapshot(route_health)
+        plan = self.planner.plan(snapshot)
+        if self.mode != "canary":
+            return GoalExecutionRun.from_plan(
+                plan,
+                mode=self.mode,
+                ran_at=now,
+                goal_slug=self.canary_goal_slug,
+            )
+        eligible = next(
+            (
+                value
+                for value in plan.decisions
+                if value.reason == "auto_eligible"
+                and value.goal_slug == self.canary_goal_slug
+            ),
+            None,
+        )
+        if eligible is None or eligible.candidate is None:
+            return GoalExecutionRun.from_plan(
+                plan,
+                mode=self.mode,
+                ran_at=now,
+                goal_slug=self.canary_goal_slug,
+            )
+        try:
+            planned = self.adapter.create_or_adopt_derived_agent_task(
+                eligible.candidate,
+                now,
+            ).task
+        except PartialMutationError:
+            return GoalExecutionRun(
+                mode=self.mode,
+                ran_at=now,
+                planner_version=plan.planner_version,
+                decisions=plan.decisions,
+                public_reason="system_repair_required",
+                task_slug=derived_task_slug(eligible.candidate.fingerprint),
+                agent_slug=eligible.candidate.agent_slug,
+            )
+        if planned.status != "planned":
+            return GoalExecutionRun.for_task(
+                plan,
+                mode=self.mode,
+                ran_at=now,
+                task=planned,
+                public_reason="adopted",
+            )
+        try:
+            activated = self.adapter.set_task_status(planned.slug, "active", now)
+        except PartialMutationError:
+            return GoalExecutionRun.for_task(
+                plan,
+                mode=self.mode,
+                ran_at=now,
+                task=planned,
+                public_reason="system_repair_required",
+            )
+        if activated.verified is not True or activated.task.status != "active":
+            return GoalExecutionRun.for_task(
+                plan,
+                mode=self.mode,
+                ran_at=now,
+                task=activated.task,
+                public_reason="system_repair_required",
+            )
+        handoff = self.bridge.after_verified_mutation(
+            planned.to_dict(),
+            activated.task.to_dict(),
+            {
+                **activated.to_dict(),
+                "mutation_kind": "task_status",
+                "verified": True,
+            },
+            now,
+        )
+        reason = (
+            "activated"
+            if getattr(handoff, "status", None) in self._HANDOFF_ACCEPTED
+            else "handoff_needs_repair"
+        )
+        return GoalExecutionRun.for_task(
+            plan,
+            mode=self.mode,
+            ran_at=now,
+            task=activated.task,
+            public_reason=reason,
+            handoff=handoff,
         )
