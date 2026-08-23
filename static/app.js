@@ -468,6 +468,11 @@ const state = {
   agentWorkLoading: false,
   agentWorkLoadPromise: null,
   agentWorkError: "",
+  goalExecution: null,
+  goalExecutionLoaded: false,
+  goalExecutionLoading: false,
+  goalExecutionLoadPromise: null,
+  goalExecutionError: "",
   showAgentTasks: readAgentTasksPreference(),
   proposals: [],
   proposalIssues: [],
@@ -1044,6 +1049,7 @@ const elements = {
   projectDetailClose: document.querySelector("#project-detail-close"),
   projectDetailTitle: document.querySelector("#project-detail-title"),
   projectDetailSummary: document.querySelector("#project-detail-summary"),
+  projectDetailExecution: document.querySelector("#project-detail-execution"),
   projectDetailCreated: document.querySelector("#project-detail-created"),
   projectDetailUpdated: document.querySelector("#project-detail-updated"),
   projectDetailGoals: document.querySelector("#project-detail-goals"),
@@ -1139,6 +1145,7 @@ const elements = {
   goalDetailStatus: document.querySelector("#goal-detail-status"),
   goalDetailTitle: document.querySelector("#goal-detail-title"),
   goalDetailOutcome: document.querySelector("#goal-detail-outcome"),
+  goalDetailExecution: document.querySelector("#goal-detail-execution"),
   goalDefaultAgent: document.querySelector("#goal-default-agent"),
   goalDefaultAgentAvatar: document.querySelector("#goal-default-agent-avatar"),
   goalDefaultAgentName: document.querySelector("#goal-default-agent-name"),
@@ -3950,6 +3957,311 @@ function renderDelegationControls(agent) {
   return section;
 }
 
+const GOAL_EXECUTION_ATTENTION_REASONS = new Set([
+  "owner_missing",
+  "owner_ambiguous",
+  "project_ambiguous",
+  "route_unavailable",
+  "system_repair_required",
+  "handoff_needs_repair",
+]);
+
+function goalExecutionTask(decision) {
+  const slug = decision?.task_slug || null;
+  if (!slug) return null;
+  return findTaskBySlug(slug);
+}
+
+function goalExecutionAgent(decision) {
+  const task = goalExecutionTask(decision);
+  const lastTask = state.goalExecution?.last_run?.task;
+  const agentSlug = task?.owner_agent || task?.owner?.slug || (
+    lastTask?.slug === decision?.task_slug ? lastTask.agent_slug : null
+  );
+  if (agentSlug) {
+    return state.agents.find((agent) => agent.slug === agentSlug) || null;
+  }
+  const owners = state.agents.filter((agent) =>
+    Array.isArray(agent.default_goal_slugs) &&
+    agent.default_goal_slugs.includes(decision?.goal_slug));
+  return owners.length === 1 ? owners[0] : null;
+}
+
+function goalExecutionProject(decision) {
+  const task = goalExecutionTask(decision);
+  if (task?.project) {
+    return state.projects.find((project) => project.slug === task.project) || null;
+  }
+  const projects = state.projects.filter((project) =>
+    project.status === "active" &&
+    Array.isArray(project.supporting_goal_slugs) &&
+    project.supporting_goal_slugs.includes(decision?.goal_slug));
+  return projects.length === 1 ? projects[0] : null;
+}
+
+function goalExecutionState(decision) {
+  if (state.goalExecution?.last_error) return "Needs attention";
+  if (!decision) return "Ready";
+  const reason = decision.reason;
+  if (GOAL_EXECUTION_ATTENTION_REASONS.has(reason)) return "Needs attention";
+  if (reason === "wip_full" || reason === "goal_paused") return "Blocked";
+  const task = goalExecutionTask(decision);
+  const lastTask = state.goalExecution?.last_run?.task;
+  const handoff = state.goalExecution?.last_run?.handoff;
+  if (lastTask?.slug === decision?.task_slug) {
+    if (["queued", "leased"].includes(handoff?.status)) return "Delivering";
+    if (["received", "acknowledged", "processing", "agent_working", "actively_executing"].includes(handoff?.status)) {
+      return "Executing";
+    }
+    if (lastTask?.status === "blocked") return "Blocked";
+    if (lastTask?.status === "active") return "Executing";
+  }
+  if (task?.status === "blocked") return "Blocked";
+  if (task?.status === "active") return "Executing";
+  return "Ready";
+}
+
+function goalExecutionReasonCopy(decision) {
+  if (!decision) {
+    return "No owned Goal is currently eligible for bounded automatic work.";
+  }
+  const reason = decision.reason;
+  const copy = {
+    auto_eligible: "One bounded internal review is eligible; no external action is authorized.",
+    duplicate: "A canonical task already represents this Goal work.",
+    wip_full: "The assigned Agent is already at the automatic work-in-progress limit.",
+    route_unavailable: "The verified fixed Agent route needs system repair.",
+    owner_missing: "This Goal needs one verified default Codex Agent.",
+    owner_ambiguous: "This Goal has more than one default Agent and needs attention.",
+    project_ambiguous: "More than one active Project supports this Goal.",
+    runtime_not_allowed: "Automatic execution is limited to Codex Agents in this rollout.",
+    legacy_alias_suppressed: "Legacy Goal aliases are read-only and cannot derive work.",
+    goal_paused: "This Goal is paused.",
+    goal_terminal: "This Goal is already terminal.",
+    system_repair_required: "Canonical task state needs safe system reconciliation.",
+    handoff_needs_repair: "The canonical task is active, but verified delivery needs repair.",
+    activated: "The canonical task is active and entering the fixed Agent handoff.",
+    shadow: "Shadow mode evaluates safe work without creating or activating a task.",
+    off: "Automatic Goal execution is off.",
+    no_eligible_work: "No bounded automatic work is currently eligible.",
+  };
+  return copy[reason] || "Waiting for the next verified Goal execution readback.";
+}
+
+function goalExecutionButton(label, className, slug, activate, originKey = "") {
+  const button = node("button", `goal-execution-link ${className}`, label);
+  button.type = "button";
+  button.dataset.slug = slug;
+  if (originKey) button.dataset.goalExecutionOrigin = originKey;
+  button.addEventListener("click", () => activate(button));
+  return button;
+}
+
+function goalExecutionRow(decision, preferredAgent = null, originKey = "surface") {
+  const item = node("li", "goal-execution-row");
+  const agent = preferredAgent || goalExecutionAgent(decision);
+  const goal = state.snapshot?.goals.find((value) => value.slug === decision?.goal_slug) || null;
+  const project = goalExecutionProject(decision);
+  const task = goalExecutionTask(decision);
+  const stateLabel = goalExecutionState(decision);
+  const summary = node("div", "goal-execution-summary");
+  if (agent) {
+    summary.append(goalExecutionButton(agent.name, "agent", agent.slug, () => openAgentProfile(agent)));
+  } else {
+    summary.append(node("span", "goal-execution-unavailable", "Agent unavailable"));
+  }
+  summary.append(document.createTextNode(" — "));
+  if (goal) {
+    summary.append(goalExecutionButton(
+      goal.title,
+      "goal",
+      goal.slug,
+      (origin) => selectGoal(goal.slug, origin),
+      `${originKey}:goal:${goal.slug}`,
+    ));
+  } else {
+    summary.append(node("span", "goal-execution-unavailable", "Goal unavailable"));
+  }
+  if (project) {
+    summary.append(
+      document.createTextNode(" — "),
+      goalExecutionButton(
+        project.title,
+        "project",
+        project.slug,
+        (origin) => selectProject(project.slug, origin),
+        `${originKey}:project:${project.slug}`,
+      ),
+    );
+  }
+  summary.append(document.createTextNode(" — "), node("strong", `goal-execution-state is-${stateLabel.toLowerCase().replace(" ", "-")}`, stateLabel));
+  const detail = node("p", "goal-execution-copy");
+  if (task) {
+    const taskLink = taskDetailLink(task, task.title || task.summary || "Open canonical Task");
+    taskLink.dataset.goalExecutionOrigin = originKey;
+    detail.append(taskLink, document.createTextNode(" · "));
+  }
+  detail.append(document.createTextNode(goalExecutionReasonCopy(decision)));
+  item.append(summary, detail);
+  return item;
+}
+
+function goalExecutionRows(decisions) {
+  const rows = [];
+  const used = new Set();
+  state.agents
+    .filter((agent) => agent.runtime !== "openclaw")
+    .forEach((agent) => {
+      const decision = decisions.find((candidate, index) => {
+        if (used.has(index)) return false;
+        const match = goalExecutionAgent(candidate)?.slug === agent.slug ||
+          agent.default_goal_slugs?.includes(candidate.goal_slug);
+        if (match) used.add(index);
+        return match;
+      }) || null;
+      rows.push(goalExecutionRow(
+        decision,
+        agent,
+        `surface:${agent.slug}:${decision?.goal_slug || "none"}`,
+      ));
+    });
+  decisions.forEach((decision, index) => {
+    if (!used.has(index)) rows.push(goalExecutionRow(
+      decision,
+      null,
+      `surface:unassigned:${decision.goal_slug}`,
+    ));
+  });
+  return rows;
+}
+
+function goalExecutionDecisionForAgent(agent) {
+  const decisions = Array.isArray(state.goalExecution?.last_run?.decisions)
+    ? state.goalExecution.last_run.decisions
+    : [];
+  return decisions.find((decision) =>
+    goalExecutionAgent(decision)?.slug === agent.slug ||
+    agent.default_goal_slugs?.includes(decision.goal_slug)) || null;
+}
+
+function renderAgentGoalExecution(agent) {
+  const compact = node("div", "agent-goal-execution-compact");
+  const decision = goalExecutionDecisionForAgent(agent);
+  compact.append(
+    node("span", "agent-work-kind", "Goal execution"),
+    node("strong", `goal-execution-state is-${goalExecutionState(decision).toLowerCase().replace(" ", "-")}`, goalExecutionState(decision)),
+  );
+  const task = goalExecutionTask(decision);
+  if (task) {
+    const taskLink = taskDetailLink(task, task.title || task.summary || "Open canonical Task");
+    taskLink.dataset.goalExecutionOrigin = `card:${agent.slug}:${decision?.goal_slug || "none"}`;
+    compact.append(taskLink);
+  } else {
+    compact.append(node("span", "goal-execution-copy", goalExecutionReasonCopy(decision)));
+  }
+  return compact;
+}
+
+function renderGoalExecutionSurface() {
+  const section = node("section", "goal-execution-surface");
+  section.id = "agent-goal-execution";
+  section.setAttribute("aria-labelledby", "agent-goal-execution-heading");
+  const heading = node("h3", "", "Goal execution");
+  heading.id = "agent-goal-execution-heading";
+  const status = node("p", "goal-execution-read-state");
+  status.id = "agent-goal-execution-state";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  const list = node("ol", "goal-execution-list");
+  list.id = "agent-goal-execution-list";
+  const lastRun = state.goalExecution?.last_run;
+  if (state.goalExecutionLoading && !state.goalExecution) {
+    status.textContent = "Reading Goal execution…";
+  } else if (state.goalExecutionError && state.goalExecution) {
+    status.textContent = "Last verified Goal execution remains visible; refresh failed.";
+  } else if (state.goalExecutionError) {
+    status.textContent = "Goal execution is temporarily unavailable.";
+    const retry = node("button", "secondary-button goal-execution-retry", "Try again");
+    retry.type = "button";
+    retry.addEventListener("click", () => void loadGoalExecution({ force: true }));
+    section.append(heading, status, retry, list);
+    return section;
+  } else if (state.goalExecutionLoading) {
+    status.textContent = "Refreshing Goal execution; last verified state remains visible.";
+  } else if (!lastRun) {
+    status.textContent = state.goalExecution?.mode === "off"
+      ? "Automatic Goal execution is off."
+      : "Waiting for the first bounded Goal execution readback.";
+  } else {
+    status.textContent = `Last verified ${new Date(lastRun.ran_at).toLocaleString()} · ${state.goalExecution.mode}`;
+  }
+  const decisions = Array.isArray(lastRun?.decisions) ? lastRun.decisions : [];
+  goalExecutionRows(decisions).forEach((row) => list.append(row));
+  if (!list.children.length) {
+    list.append(node("li", "goal-execution-empty", "No bounded Goal-derived work is currently visible."));
+  }
+  section.append(heading, status, list);
+  return section;
+}
+
+function renderGoalExecutionDetail(container, { goalSlug = null, projectSlug = null } = {}) {
+  if (!container) return;
+  const decisions = Array.isArray(state.goalExecution?.last_run?.decisions)
+    ? state.goalExecution.last_run.decisions
+    : [];
+  const scoped = decisions.filter((decision) => {
+    if (goalSlug) return decision.goal_slug === goalSlug;
+    if (!projectSlug) return false;
+    return goalExecutionProject(decision)?.slug === projectSlug;
+  });
+  const heading = node("h3", "", "Goal execution");
+  const list = node("ol", "goal-execution-list compact");
+  scoped.forEach((decision) => list.append(goalExecutionRow(
+    decision,
+    null,
+    `detail:${goalSlug || projectSlug}:${decision.goal_slug}`,
+  )));
+  if (!scoped.length) {
+    list.append(node("li", "goal-execution-empty", state.goalExecutionLoading
+      ? "Reading Goal execution…"
+      : "No derived execution state is linked here yet."));
+  }
+  container.replaceChildren(heading, list);
+}
+
+async function loadGoalExecution({ force = false } = {}) {
+  if (state.goalExecutionLoadPromise && !force) return state.goalExecutionLoadPromise;
+  state.goalExecutionLoading = true;
+  state.goalExecutionError = "";
+  if (state.activeView === "agent-work") render();
+  state.goalExecutionLoadPromise = (async () => {
+    try {
+      const response = await fetch("/api/goal-execution", {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Goal execution could not be read.");
+      state.goalExecution = payload;
+      state.goalExecutionLoaded = true;
+    } catch (error) {
+      state.goalExecutionError = error.message || "Goal execution could not be read.";
+    } finally {
+      state.goalExecutionLoading = false;
+      if (state.activeView === "agent-work") render();
+      if (state.selectedKind === "goal") {
+        renderGoalExecutionDetail(elements.goalDetailExecution, { goalSlug: state.selectedSlug });
+      } else if (state.selectedKind === "project") {
+        renderGoalExecutionDetail(elements.projectDetailExecution, { projectSlug: state.selectedSlug });
+      }
+    }
+    return state.goalExecution;
+  })().finally(() => {
+    state.goalExecutionLoadPromise = null;
+  });
+  return state.goalExecutionLoadPromise;
+}
+
 function renderAgentWorkView({ historyOpen = false } = {}) {
   const wrapper = node("section", "agent-work-view");
   if (!state.agents.length) {
@@ -3960,7 +4272,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
         "No verified GBrain agent profiles are available.",
       ),
     );
-    wrapper.append(renderSystemHandoffAttention(), renderUnifiedHandoffHistory({ historyOpen }));
+    wrapper.append(renderGoalExecutionSurface(), renderSystemHandoffAttention(), renderUnifiedHandoffHistory({ historyOpen }));
     return wrapper;
   }
   const grid = node("div", "agent-profile-grid");
@@ -4039,6 +4351,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       goalList,
       workSummary,
       delegatedSummary,
+      ...(agent.runtime === "openclaw" ? [] : [renderAgentGoalExecution(agent)]),
       renderAgentHandoffStatus(agent),
     );
     if (agent.runtime === "openclaw" || OPENCLAW_PAIR_BY_SOURCE[agent.slug]) {
@@ -4053,7 +4366,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     }
     grid.append(card);
   });
-  wrapper.append(grid);
+  wrapper.append(grid, renderGoalExecutionSurface());
   wrapper.append(renderSystemHandoffAttention(), renderUnifiedHandoffHistory({ historyOpen }));
   return wrapper;
 }
@@ -4215,7 +4528,7 @@ function selectProject(slug, returnFocus = undefined) {
   if (!project) return;
   if (returnFocus !== undefined) {
     state.detailReturnFocus = returnFocus
-      ? { element: returnFocus, slug }
+      ? detailReturnFocusAnchor(returnFocus, slug)
       : null;
   }
   state.selectedSlug = slug;
@@ -4233,6 +4546,7 @@ function selectProject(slug, returnFocus = undefined) {
   elements.projectDetailStatus.textContent = project.status;
   elements.projectDetailTitle.textContent = project.title;
   renderSafeMarkdown(elements.projectDetailSummary, project.summary);
+  renderGoalExecutionDetail(elements.projectDetailExecution, { projectSlug: project.slug });
   elements.projectDetailCreated.textContent = project.created_at
     ? new Date(project.created_at).toLocaleString()
     : "Not recorded";
@@ -5533,6 +5847,9 @@ function isHandoffTaskOrigin(element) {
 
 function detailReturnFocusAnchor(element, slug) {
   const anchor = { element, slug };
+  if (element?.dataset?.goalExecutionOrigin) {
+    anchor.goalExecutionOrigin = element.dataset.goalExecutionOrigin;
+  }
   const handoffOrigin = isHandoffTaskOrigin(element);
   if (handoffOrigin) {
     anchor.handoffTask = true;
@@ -5672,6 +5989,11 @@ function render() {
     }).format(date);
   } else {
     elements.dateLabel.textContent = "Waiting for verified task data";
+  }
+  if (state.selectedKind === "goal") {
+    renderGoalExecutionDetail(elements.goalDetailExecution, { goalSlug: state.selectedSlug });
+  } else if (state.selectedKind === "project") {
+    renderGoalExecutionDetail(elements.projectDetailExecution, { projectSlug: state.selectedSlug });
   }
   syncMobileDetailModalState();
 }
@@ -8264,7 +8586,7 @@ function selectGoal(slug, returnFocus = undefined) {
   if (!goal) return;
   if (returnFocus !== undefined) {
     state.detailReturnFocus = returnFocus
-      ? { element: returnFocus, slug }
+      ? detailReturnFocusAnchor(returnFocus, slug)
       : null;
   }
   state.selectedSlug = slug;
@@ -8287,6 +8609,7 @@ function selectGoal(slug, returnFocus = undefined) {
   elements.goalActionError.classList.add("is-hidden");
   elements.goalDetailTitle.textContent = goal.title;
   renderSafeMarkdown(elements.goalDetailOutcome, goal.outcome || "");
+  renderGoalExecutionDetail(elements.goalDetailExecution, { goalSlug: goal.slug });
   const defaultAgent = state.agents.find((agent) =>
     agent.default_goal_slugs.includes(goal.slug));
   elements.goalDefaultAgent.classList.toggle("is-hidden", !defaultAgent);
@@ -8438,6 +8761,12 @@ function restoreMarkdownSystemTicketReferenceFocus(returnContext) {
 function detailFocusReturnTarget(anchor) {
   if (!anchor) return null;
   if (anchor.element?.isConnected) return anchor.element;
+  if (anchor.goalExecutionOrigin) {
+    const exactGoalExecutionOrigin = document.querySelector(
+      `[data-goal-execution-origin="${CSS.escape(anchor.goalExecutionOrigin)}"]`,
+    );
+    if (exactGoalExecutionOrigin) return exactGoalExecutionOrigin;
+  }
   if (anchor.handoffTask) {
     const taskLinks = Array.from(document.querySelectorAll(".handoff-event-task"))
       .filter((candidate) => candidate.dataset.slug === anchor.slug);
@@ -8669,6 +8998,12 @@ function setView(view) {
   }
   if (view === "agent-work" && !state.agentsLoaded && !state.agentsLoading) {
     void loadAgents();
+  }
+  if (view === "agent-work" && !state.projectsLoaded && !state.projectsLoading) {
+    void loadProjects();
+  }
+  if (view === "agent-work" && !state.goalExecutionLoaded && !state.goalExecutionLoading) {
+    void loadGoalExecution();
   }
   if (view === "week" && !state.icalConnectionLoaded && !state.icalConnectionLoading) {
     void loadCalendarConnectionState();
@@ -9365,6 +9700,7 @@ elements.refreshButton.addEventListener("click", () => {
   if (state.activeView === "agent-work" || state.handoffLogEvents.length) {
     void loadHandoffLog({ reset: true });
   }
+  void loadGoalExecution({ force: true });
 });
 elements.showAgentTasks.addEventListener("change", () => {
   setAgentTasksVisible(elements.showAgentTasks.checked);
@@ -9621,6 +9957,7 @@ bindHudTooltipEvents();
 initializeDetailPanelResize();
 initializeMobileDetailSheet();
 loadReleases();
+loadGoalExecution();
 loadAgentWork();
 loadCalendarConnectionState();
 loadTasks({ reason: "initial" });

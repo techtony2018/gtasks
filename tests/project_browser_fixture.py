@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +12,7 @@ from gtasks.domain import (
     COMPLETED_ROOT,
     AgentArtifact,
     AgentProfile,
+    Goal,
     Project,
     new_inbox_task,
 )
@@ -67,6 +68,55 @@ class SyntheticCalendarReader:
         return {"status": "not_determined"}
 
 
+class GoalExecutionFixtureScheduler:
+    """Read-only, source-blind Goal execution states for browser QA."""
+
+    def __init__(self, *, scenario: str, now: datetime, task_slug: str) -> None:
+        self.scenario = scenario
+        self.now = now
+        self.task_slug = task_slug
+        self.wakes: list[str] = []
+
+    def wake(self, reason: str) -> None:
+        self.wakes.append(reason)
+
+    def status(self) -> dict:
+        reason = {
+            "shadow": "auto_eligible",
+            "wip_full": "wip_full",
+            "route_unavailable": "route_unavailable",
+            "duplicate": "duplicate",
+            "active": "duplicate",
+            "root_loss": "owner_missing",
+        }.get(self.scenario, "auto_eligible")
+        active = self.scenario == "active"
+        return {
+            "mode": "shadow" if not active else "canary",
+            "planner_version": "goal-execution-v1",
+            "running": True,
+            "last_error": "CanonicalRootError" if self.scenario == "root_loss" else None,
+            "next_run_in_seconds": 30,
+            "last_run": {
+                "mode": "shadow" if not active else "canary",
+                "ran_at": self.now.isoformat(),
+                "planner_version": "goal-execution-v1",
+                "public_reason": "activated" if active else "shadow",
+                "decisions": [{
+                    "goal_slug": "goals/11111111-1111-4111-8111-111111111111",
+                    "reason": reason,
+                    "task_slug": self.task_slug if self.scenario in {"duplicate", "active"} else None,
+                }],
+                "task": ({
+                    "slug": self.task_slug,
+                    "title": "Isolated project task",
+                    "status": "active",
+                    "agent_slug": "agents/tammy",
+                } if active else None),
+                "handoff": ({"status": "received"} if active else None),
+            },
+        }
+
+
 class IsolatedProjectAdapter:
     def __init__(
         self,
@@ -77,13 +127,31 @@ class IsolatedProjectAdapter:
         self.read_cache_path = read_cache_path
         self.fixture_now: datetime | None = None
         self.delegation_scenario = "inactive"
+        goal_slug = "goals/11111111-1111-4111-8111-111111111111"
+        project_slug = "projects/22222222-2222-4222-8222-222222222222"
         self.task = replace(new_inbox_task(
             "Isolated project task",
             datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
             "fixture1",
-        ), owner_agent="agents/tammy")
-        self.projects: tuple[Project, ...] = ()
-        self.goals = ()
+        ), owner_agent="agents/tammy", goal=goal_slug, project=project_slug)
+        self.projects: tuple[Project, ...] = (Project(
+            slug=project_slug,
+            title="Isolated Civic Project",
+            status="active",
+            summary="Synthetic browser QA Project.",
+            supporting_goal_slugs=(goal_slug,),
+        ),)
+        self.goals = (Goal(
+            slug=goal_slug,
+            title="Civic: Isolated Goal",
+            status="active",
+            outcome="Verify bounded local Goal execution UI.",
+            success_criteria="The read-only fixture is accessible and contained.",
+            target_day=date(2026, 12, 31),
+            strategy="Use source-blind browser fixtures.",
+            review_cadence="weekly",
+            constraints="No external writes.",
+        ),)
         self.agents = (
             AgentProfile(
                 slug="agents/tammy",
@@ -91,7 +159,7 @@ class IsolatedProjectAdapter:
                 title="Agent Tammy",
                 summary="Synthetic browser QA agent.",
                 work_root="collections/tammys-tasks",
-                default_goal_slugs=(),
+                default_goal_slugs=(goal_slug,),
                 avatar_value="TA",
             ),
             AgentProfile(
@@ -158,6 +226,11 @@ class IsolatedProjectAdapter:
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         tasks = (self.task,) if root_slug == ACTIVE_ROOT else ()
         return CollectionRead(root_slug=root_slug, tasks=tasks)
+
+    def get_task(self, task_slug: str):
+        if task_slug != self.task.slug:
+            raise ValueError("unknown isolated task")
+        return self.task
 
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
@@ -680,6 +753,7 @@ def build_fixture_server(
     *,
     port: int = 4182,
     delegation_scenario: str = "inactive",
+    goal_execution_scenario: str = "shadow",
 ):
     """Build a source-blind QA server with synthetic, runtime-local state only.
 
@@ -712,6 +786,11 @@ def build_fixture_server(
         retention_days=30,
     )
     _seed_handoff_events(handoff_store, adapter, now=fixture_now)
+    goal_execution_scheduler = GoalExecutionFixtureScheduler(
+        scenario=goal_execution_scenario,
+        now=fixture_now,
+        task_slug=adapter.task.slug,
+    )
     server = build_server(
         host="127.0.0.1",
         port=port,
@@ -743,6 +822,7 @@ def build_fixture_server(
         ical_reader=adapter.calendar_reader,
         calendar_preferences=CalendarPreferences(calendar_preferences_path),
         handoff_store=SyntheticClaimHandoffStore(handoff_store, claim),
+        goal_execution_scheduler=goal_execution_scheduler,
         delegation_lock_path=runtime_directory / "agent-delegations.lock",
     )
     production_handler = server.RequestHandlerClass
@@ -782,12 +862,16 @@ if __name__ == "__main__":
     scenario = os.environ.get(
         "MISSION_CONTROL_QA_DELEGATION_SCENARIO", "inactive"
     )
+    goal_execution_scenario = os.environ.get(
+        "MISSION_CONTROL_QA_GOAL_EXECUTION_SCENARIO", "shadow"
+    )
     port = int(os.environ.get("MISSION_CONTROL_QA_PORT", "4182"))
     with TemporaryDirectory() as directory:
         server, _adapter = build_fixture_server(
             Path(directory),
             port=port,
             delegation_scenario=scenario,
+            goal_execution_scenario=goal_execution_scenario,
         )
         print(
             f"Synthetic QA fixture: http://127.0.0.1:{port} "

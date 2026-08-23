@@ -88,6 +88,106 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_goal_execution_stays_inside_agents_and_goal_project_details(self) -> None:
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="goal-detail-execution"', html)
+        self.assertIn('id="project-detail-execution"', html)
+        self.assertNotIn('data-view="goal-execution"', html)
+        self.assertIn("function renderGoalExecutionSurface", javascript)
+        self.assertIn("function renderAgentGoalExecution", javascript)
+        self.assertIn('agent.runtime === "openclaw" ? [] : [renderAgentGoalExecution(agent)]', javascript)
+        self.assertIn('section.id = "agent-goal-execution"', javascript)
+        self.assertIn('heading.id = "agent-goal-execution-heading"', javascript)
+        self.assertIn('status.id = "agent-goal-execution-state"', javascript)
+        self.assertIn('status.setAttribute("role", "status")', javascript)
+        self.assertIn('status.setAttribute("aria-live", "polite")', javascript)
+        self.assertIn('list.id = "agent-goal-execution-list"', javascript)
+        for state_label in (
+            "Ready",
+            "Delivering",
+            "Executing",
+            "Blocked",
+            "Needs attention",
+        ):
+            self.assertIn(state_label, javascript)
+        self.assertIn('fetch("/api/goal-execution"', javascript)
+        self.assertIn("state.goalExecution", javascript)
+        self.assertIn("state.goalExecutionError", javascript)
+        self.assertIn("state.goalExecutionLoading", javascript)
+        self.assertIn("renderGoalExecutionDetail", javascript)
+        self.assertIn("goalExecutionOrigin", javascript)
+        self.assertIn("data-goal-execution-origin", javascript)
+        self.assertIn(
+            'function goalExecutionButton(label, className, slug, activate, originKey = "")',
+            javascript,
+        )
+        self.assertIn("button.dataset.goalExecutionOrigin = originKey", javascript)
+        self.assertGreaterEqual(
+            javascript.count("detailReturnFocusAnchor(returnFocus, slug)"),
+            4,
+        )
+        self.assertIn("selectGoal", javascript)
+        self.assertIn("selectProject", javascript)
+        self.assertIn("selectTask", javascript)
+        self.assertNotIn("fixed-thread", javascript[javascript.index("function renderGoalExecutionSurface") : javascript.index("async function loadGoalExecution")])
+        self.assertIn(".goal-execution-surface", stylesheet)
+        self.assertIn("overflow-wrap: anywhere", stylesheet[stylesheet.index(".goal-execution-surface") :])
+
+    def test_goal_execution_fixture_is_get_only_and_source_blind(self) -> None:
+        fixture = (PROJECT_ROOT / "tests" / "project_browser_fixture.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("class GoalExecutionFixtureScheduler", fixture)
+        self.assertIn('"mode": "shadow"', fixture)
+        self.assertIn('"public_reason": "activated" if active else "shadow"', fixture)
+        self.assertIn("goal_execution_scheduler=goal_execution_scheduler", fixture)
+        self.assertIn('"external_mutation_count": adapter.external_mutation_count', fixture)
+
+    def test_goal_execution_runtime_maps_public_states_and_keeps_last_valid_on_error(self) -> None:
+        probe = r'''
+function assert(condition, message) { if (!condition) throw new Error(message); }
+const goalSlug = "goals/11111111-1111-4111-8111-111111111111";
+const taskSlug = "tasks/22222222-2222-4222-8222-222222222222";
+state.snapshot = {
+  as_of: "2026-08-23",
+  goals: [{ slug: goalSlug, title: "Civic: Verified Goal" }],
+  tasks: [{ slug: taskSlug, title: "Review Civic progress", status: "active", owner_agent: "agents/timmy", project: null }],
+};
+state.agents = [{ slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] }];
+state.projects = [];
+state.goalExecution = {
+  mode: "canary",
+  last_error: null,
+  last_run: {
+    ran_at: "2026-08-23T12:00:00Z",
+    public_reason: "activated",
+    task: { slug: taskSlug, status: "active", agent_slug: "agents/timmy" },
+    handoff: { status: "queued" },
+    decisions: [{ goal_slug: goalSlug, reason: "auto_eligible", task_slug: taskSlug }],
+  },
+};
+const decision = state.goalExecution.last_run.decisions[0];
+assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
+state.goalExecution.last_run.handoff.status = "received";
+assert(goalExecutionState(decision) === "Executing", "received handoff was not Executing");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "wip_full", task_slug: null }) === "Blocked", "WIP was not Blocked");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "route_unavailable", task_slug: null }) === "Needs attention", "route failure was not Needs attention");
+state.goalExecution.last_run.task = null;
+state.goalExecution.last_run.handoff = null;
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "auto_eligible", task_slug: null }) === "Ready", "eligible work was not Ready");
+const previous = state.goalExecution;
+globalThis.fetch = async () => ({ ok: false, json: async () => ({ error: "fixture unavailable" }) });
+await loadGoalExecution({ force: true });
+assert(state.goalExecution === previous, "failed refresh replaced last-valid Goal execution");
+assert(state.goalExecutionError === "fixture unavailable", "failed refresh was not disclosed");
+'''
+        result = run_app_runtime_probe(probe)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_default_landing_view_is_local_board_first_and_preserves_explicit_routes(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
 

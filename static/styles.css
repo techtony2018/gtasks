@@ -2457,6 +2457,128 @@ body.is-resizing-detail {
 .agent-goal-editor h3,
 .agent-goal-editor p { margin: 0; }
 
+.goal-execution-surface,
+.goal-execution-detail {
+  min-width: 0;
+  border: 1px solid rgba(92, 206, 255, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(3, 16, 35, 0.94), rgba(4, 27, 47, 0.76));
+  box-shadow: inset 0 0 22px rgba(44, 176, 255, 0.06);
+  padding: 12px;
+}
+
+.goal-execution-surface {
+  margin-top: 12px;
+}
+
+.goal-execution-detail {
+  margin: 12px 0;
+}
+
+.goal-execution-surface h3,
+.goal-execution-detail h3,
+.goal-execution-read-state,
+.goal-execution-copy {
+  margin: 0;
+}
+
+.goal-execution-read-state,
+.goal-execution-copy,
+.goal-execution-empty {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-list {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 9px 0 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.goal-execution-row {
+  min-width: 0;
+  border-top: 1px solid rgba(119, 207, 255, 0.12);
+  padding-top: 7px;
+}
+
+.goal-execution-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-link {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #bdeeff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 4px 6px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-link:hover,
+.goal-execution-link:focus-visible {
+  background: rgba(55, 194, 255, 0.13);
+  outline: 2px solid rgba(103, 218, 255, 0.8);
+  outline-offset: 1px;
+}
+
+.goal-execution-copy .inline-task-link {
+  min-height: 32px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-state {
+  color: #d9f5ff;
+  white-space: nowrap;
+}
+
+.goal-execution-state.is-blocked,
+.goal-execution-state.is-needs-attention {
+  color: #ffb9ba;
+}
+
+.goal-execution-state.is-delivering,
+.goal-execution-state.is-executing {
+  color: #8fffd1;
+}
+
+.goal-execution-unavailable {
+  color: var(--muted);
+}
+
+.goal-execution-retry {
+  margin-top: 8px;
+}
+
+.agent-goal-execution-compact {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border-top: 1px solid rgba(119, 207, 255, 0.12);
+  padding-top: 9px;
+}
+
+.agent-goal-execution-compact .inline-task-link,
+.agent-goal-execution-compact .goal-execution-copy {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .agent-profile-goal-list { display: grid; gap: 6px; }
 
 .agent-profile-goal-row {
