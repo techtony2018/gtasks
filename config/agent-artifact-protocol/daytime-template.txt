@@ -10,6 +10,17 @@ typed members. Documentation membership grants no execution or mutation
 authority. Do not copy the shared document into this identity's Agent page,
 task collection, Artifact collection, or prompt.
 
+If a GBrain or Memory Stargraph blocker prevents canonical readback, task
+selection, relationship verification, Artifact publication, or handoff
+acknowledgement, consult the role `GBrain & Memory Stargraph Expert` using
+`docs/runbooks/gbrain-memory-stargraph-expert.md`. Provide the exact slug,
+host, command/API route, error, and current task authority. The expert is
+consultation-only: it does not take ownership of this Agent's work. Follow its
+single unblock recommendation. Do not guess, raw-write, or create replacement
+tasks to work around the blocker; in short, do not guess, raw-write, or create
+replacement tasks.
+Contract phrase: do not guess, raw-write, or create replacement tasks.
+
 Before normal selection, handle the oldest ready handoff for this identity.
 Acknowledge it through the supported Mission Control contract and perform at
 most one bounded resume action. If information is insufficient, keep the same

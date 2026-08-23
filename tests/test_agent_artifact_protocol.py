@@ -6,7 +6,9 @@ from string import Template
 
 
 ROOT = Path(__file__).resolve().parents[1]
+README = ROOT / "README.md"
 RUNBOOK = ROOT / "docs" / "runbooks" / "agent-artifact-publication.md"
+GBRAIN_EXPERT_RUNBOOK = ROOT / "docs" / "runbooks" / "gbrain-memory-stargraph-expert.md"
 PROTOCOL_ROOT = ROOT / "config" / "agent-artifact-protocol"
 
 
@@ -86,6 +88,64 @@ class AgentArtifactPublicationProtocolTests(unittest.TestCase):
                     self.assertNotRegex(rendered, r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
                     self.assertNotIn("target_thread_id", rendered)
                     self.assertNotIn("Bearer ", rendered)
+
+    def test_gbrain_memory_stargraph_expert_role_is_defined(self) -> None:
+        text = GBRAIN_EXPERT_RUNBOOK.read_text(encoding="utf-8")
+
+        for required in (
+            "# GBrain & Memory Stargraph Expert",
+            "consultation-only role",
+            "does not take ownership",
+            "canonical GBrain readback outranks Mission Control projections",
+            "direct page/link/backlink reads",
+            "remote MCP",
+            "dashboard-managed Memory Stargraph",
+            "local and .85",
+            "no raw GBrain writes",
+            "return one unblock recommendation",
+        ):
+            self.assertIn(required, text)
+
+    def test_gbrain_memory_stargraph_expert_is_registered_as_shared_role(self) -> None:
+        shared = json.loads(
+            (PROTOCOL_ROOT / "shared-documentation.json").read_text(encoding="utf-8")
+        )
+        roles = shared.get("consultation_roles")
+        self.assertIsInstance(roles, list)
+        expert = next(
+            (
+                role
+                for role in roles
+                if role.get("key") == "gbrain-memory-stargraph-expert"
+            ),
+            None,
+        )
+        self.assertIsNotNone(expert)
+        self.assertEqual(expert["name"], "GBrain & Memory Stargraph Expert")
+        self.assertEqual(
+            expert["runbook"], "docs/runbooks/gbrain-memory-stargraph-expert.md"
+        )
+        self.assertIn("consultation-only", expert["authority"])
+
+        readme = README.read_text(encoding="utf-8")
+        self.assertIn("GBrain & Memory Stargraph Expert", readme)
+        self.assertIn("consultation-only", readme)
+        self.assertIn("do not guess, raw-write, or create replacement tasks", readme)
+
+    def test_all_agent_prompts_route_gbrain_blockers_to_expert(self) -> None:
+        for template_name in ("daytime-template.txt", "nighttime-template.txt"):
+            with self.subTest(template=template_name):
+                template = (PROTOCOL_ROOT / template_name).read_text(encoding="utf-8")
+                self.assertIn("GBrain & Memory Stargraph Expert", template)
+                self.assertIn("GBrain or Memory Stargraph blocker", template)
+                self.assertIn("consult the role", template)
+                self.assertIn("do not guess, raw-write, or create replacement tasks", template)
+
+        for rendered_path in sorted((PROTOCOL_ROOT / "rendered").glob("*.txt")):
+            with self.subTest(rendered=rendered_path.name):
+                rendered = rendered_path.read_text(encoding="utf-8")
+                self.assertIn("GBrain & Memory Stargraph Expert", rendered)
+                self.assertIn("GBrain or Memory Stargraph blocker", rendered)
 
     def test_verifier_readback_preserves_schedule_and_target_thread(self) -> None:
         from scripts.verify_agent_artifact_protocol import render, verify_automation

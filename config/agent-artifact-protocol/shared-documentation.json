@@ -9,6 +9,14 @@
   "source_evidence_base_commit": "4d3cd4d02825970b5e318098320884821ca1ddbd",
   "last_verified_date": "2026-08-04",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
+  "consultation_roles": [
+    {
+      "key": "gbrain-memory-stargraph-expert",
+      "name": "GBrain & Memory Stargraph Expert",
+      "runbook": "docs/runbooks/gbrain-memory-stargraph-expert.md",
+      "authority": "consultation-only; diagnoses GBrain, remote MCP, typed-relationship, sync, and Memory Stargraph blockers without taking ownership or bypassing the caller's authority boundary"
+    }
+  ],
   "cross_host_readback": {
     "verified_at": "2026-08-04T20:05:37-07:00",
     "agents": [

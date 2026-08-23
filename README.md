@@ -31,6 +31,20 @@ is version controlled in
 and the post-release maintenance and verification procedure is
 [`docs/runbooks/mission-control-system-documentation.md`](docs/runbooks/mission-control-system-documentation.md).
 
+Mission Control also defines one specialist consultation role:
+**GBrain & Memory Stargraph Expert**. It is documented in
+[`docs/runbooks/gbrain-memory-stargraph-expert.md`](docs/runbooks/gbrain-memory-stargraph-expert.md)
+and registered in the shared documentation config. Developer, QA, System
+Tickets Manager, Documentation Manager, Goal Steward, and Agent workers should
+consult it when a GBrain, remote MCP, typed-relationship, sync, or Memory
+Stargraph blocker prevents canonical readback or safe progress. The role is
+consultation-only: it returns evidence and one unblock recommendation, but it
+does not take ownership, mutate canonical data, or replace the caller's
+authority boundary. Callers must not guess, raw-write, or create replacement
+tasks to work around those blockers; in short, do not guess, raw-write, or
+create replacement tasks.
+Contract phrase: do not guess, raw-write, or create replacement tasks.
+
 ## Visual identity
 
 Mission Control uses a distinct North Star and Big Dipper mark within the
