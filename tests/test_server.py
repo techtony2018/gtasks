@@ -3112,6 +3112,75 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         )
         self.assertNotIn(self.REGISTRATION, repr(store.recovery_registration_ids))
 
+    def test_runtime_wake_authorization_uses_internal_lease_identity_without_double_hash(self) -> None:
+        registrations = self._runtime_registrations()
+        private_path = Path(self.harness.runtime_directory.name) / "runtime-wake-hash.sqlite3"
+        store = DurableHandoffStore(str(private_path))
+        self.addCleanup(store.close)
+        dispatcher = HandoffDispatcher(store, registrations=registrations)
+        record = dispatcher.record(
+            ActionableChange(
+                task_slug=self.TASK,
+                canonical_event_id="events/runtime-wake-hash",
+                canonical_version="42",
+                trigger="answer_received",
+                assigned_to=(self.registration.agent_slug,),
+                route=self.registration.route,
+                summary="A verified answer is ready.",
+                occurred_at=self.NOW,
+                correlation_id="correlation-runtime-wake-hash",
+            ),
+            now=self.NOW,
+        )
+        adapter = self.MutableRuntimeAdapter(
+            {"agents/tammy": "hosts/tammy", "agents/timmy": "hosts/timmy"},
+            {
+                registration.agent_slug: registration.reference
+                for registration in registrations
+            },
+        )
+        harness = self._runtime_route_harness(
+            store=store,
+            dispatcher=dispatcher,
+            adapter=adapter,
+        )
+        status, claim, _ = harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {
+                "registration_id": self.REGISTRATION,
+                "wait_seconds": 0,
+                "lease_seconds": 30,
+            },
+            self._auth(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(claim["registration_ref"], registrations[0].reference)
+        self.assertNotIn(self.REGISTRATION, json.dumps(claim))
+
+        wake_status, wake, _ = harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/wake",
+            {"wake_token": f"wake/{record.idempotency_key}"},
+            self._lease_headers(claim),
+        )
+
+        self.assertEqual(wake_status, 200)
+        self.assertEqual(wake["status"], "leased")
+        self.assertTrue(wake["wake_authorized"])
+        self.assertEqual(store.get(record.handoff_id).status, "leased")
+        self.assertEqual(
+            [
+                (event.event_type, event.status)
+                for event in store.query_events(limit=20, after_sequence=0).events
+            ],
+            [
+                ("handoff_queued", "queued"),
+                ("handoff_leased", "leased"),
+                ("wake_authorized", "leased"),
+            ],
+        )
+
     def test_recover_validates_leased_and_reconciles_crash_window_generation(self) -> None:
         record = self._record(event="events/recover-leased")
         _status, claim, _ = self._claim()

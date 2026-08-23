@@ -3202,6 +3202,12 @@ class RunForeverTests(unittest.TestCase):
                         lease_generation=4,
                     )
 
+                def authorize_wake(inner_self, claim, *, wake_token):
+                    events.append(
+                        f"authorize:{claim['status']}:{claim['lease_generation']}"
+                    )
+                    return super().authorize_wake(claim, wake_token=wake_token)
+
                 def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
                     events.append(f"ack:{status}:{claim['status']}:{claim['lease_generation']}")
                     return super().ack(
@@ -3230,6 +3236,7 @@ class RunForeverTests(unittest.TestCase):
                 events,
                 [
                     "recover:leased:3",
+                    "authorize:leased:4",
                     "ack:received:leased:4",
                     "launch:received:4",
                 ],

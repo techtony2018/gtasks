@@ -1424,9 +1424,12 @@ def _handler_class(
                 canonical = registrations.get(identity.agent_slug)
                 if (
                     canonical is None
-                    or not hmac.compare_digest(
-                        hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
-                        identity.registration_id,
+                    or not (
+                        hmac.compare_digest(registration_id, identity.registration_id)
+                        or hmac.compare_digest(
+                            hashlib.sha256(registration_id.encode("utf-8")).hexdigest(),
+                            identity.registration_id,
+                        )
                     )
                 ):
                     raise _HandoffIdentityMismatch(

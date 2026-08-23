@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.115",
+  "current_version": "V0.0.116",
   "releases": [
     {
       "version": "V0.0.1",
@@ -690,6 +690,12 @@
       "date": "2026-08-23",
       "title": "Recovered leased wake receipt",
       "summary": "Receipts recovered leased Agent handoffs before opening any gated launch, including pre-grant start_requesting recovery, so stale local wake evidence cannot bypass the central received-state fence."
+    },
+    {
+      "version": "V0.0.116",
+      "date": "2026-08-23",
+      "title": "Handoff wake identity normalization",
+      "summary": "Accepts both raw dispatcher registrations and already-normalized lease identities during canonical route validation so recovered leased handoffs can authorize wake without double-hashing."
     }
   ]
 }
