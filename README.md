@@ -76,11 +76,12 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.111. Mission Control now evaluates bounded,
-risk-tiered Goal-derived work for Codex Agents, records deterministic canonical
-receipts, and exposes the verified state in Agents plus Goal and Project
-details. The first rollout is one-Goal work-in-progress through the existing
-fixed-thread handoff path; OpenClaw is excluded.
+Latest candidate release: V0.0.112. Mission Control now recognizes each exact
+verified Agent registration after the dispatcher validates an approved shared
+host-route group, so paired Codex and OpenClaw identities do not make the Codex
+route look unavailable. Duplicate registrations for one Agent still fail
+closed, verified GBrain delegation ingestion metadata remains readable, and
+OpenClaw remains excluded from Goal execution.
 
 ### Codex Goal execution controls
 

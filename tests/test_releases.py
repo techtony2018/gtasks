@@ -55,6 +55,18 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, documentation)
 
+    def test_v0_0_112_records_approved_paired_route_health(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.112")
+
+        self.assertIn("Approved paired Agent routes", release["title"])
+        for contract in (
+            "verified registration",
+            "Codex and OpenClaw",
+            "OpenClaw remains excluded",
+            "delegation",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.100")
 

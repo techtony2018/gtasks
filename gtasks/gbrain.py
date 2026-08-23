@@ -2462,7 +2462,7 @@ def _agent_delegation_from_page(
     # unreadable. Keep the allow-list narrow so unknown semantic fields still
     # fail closed.
     ingestion_metadata_fields = frozenset(
-        {"source_kind", "ingested_via", "ingested_at"}
+        {"source_kind", "ingested_via", "ingested_at", "created"}
     )
     contract_fields = stored_fields - ingestion_metadata_fields
     projected_fields = frozenset(expected_fields - {"type", "title"})

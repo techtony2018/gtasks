@@ -472,7 +472,29 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.public_reason, "handoff_needs_repair")
         self.assertEqual(result.handoff_status, "dead_letter")
 
-    def test_route_health_rejects_duplicate_or_foreign_route_ambiguity(self) -> None:
+    def test_route_health_accepts_approved_codex_openclaw_route_pair(self) -> None:
+        bridge = self.Bridge()
+        bridge.dispatcher.registrations = (
+            AgentRegistration(
+                registration_id="timmy-codex",
+                agent_slug=AGENT,
+                route="hosts/timmy",
+                verified=True,
+            ),
+            AgentRegistration(
+                registration_id="timmy-openclaw",
+                agent_slug="agents/timmy-oc",
+                route="hosts/timmy",
+                verified=True,
+            ),
+        )
+
+        health = self.engine(self.Adapter(), bridge).route_health()
+
+        self.assertTrue(health[AGENT])
+        self.assertTrue(health["agents/timmy-oc"])
+
+    def test_route_health_rejects_duplicate_registration_for_one_agent(self) -> None:
         bridge = self.Bridge()
         bridge.dispatcher.registrations = (
             AgentRegistration(
@@ -498,7 +520,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         health = self.engine(self.Adapter(), bridge).route_health()
 
         self.assertFalse(health[AGENT])
-        self.assertFalse(health["agents/tammy"])
+        self.assertTrue(health["agents/tammy"])
 
     def test_shadow_mode_returns_plan_without_mutation(self) -> None:
         adapter = self.Adapter()

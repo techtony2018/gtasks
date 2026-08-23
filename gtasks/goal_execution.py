@@ -471,14 +471,6 @@ class GoalExecutionEngine:
             for registration in registrations
             if isinstance(getattr(registration, "agent_slug", None), str)
         }
-        route_agents: dict[str, set[str]] = {}
-        for registration in registrations:
-            if not getattr(registration, "verified", False):
-                continue
-            agent_slug = getattr(registration, "agent_slug", None)
-            route = getattr(registration, "route", None)
-            if isinstance(agent_slug, str) and isinstance(route, str):
-                route_agents.setdefault(route, set()).add(agent_slug)
         health: dict[str, bool] = {}
         for agent_slug in agent_slugs:
             matches = tuple(
@@ -487,11 +479,9 @@ class GoalExecutionEngine:
                 if getattr(registration, "verified", False)
                 and getattr(registration, "agent_slug", None) == agent_slug
                 and isinstance(getattr(registration, "route", None), str)
+                and bool(getattr(registration, "route", "").strip())
             )
-            health[agent_slug] = (
-                len(matches) == 1
-                and len(route_agents.get(str(matches[0].route), set())) == 1
-            )
+            health[agent_slug] = len(matches) == 1
         return health
 
     def run_once(self, now: datetime) -> GoalExecutionRun:

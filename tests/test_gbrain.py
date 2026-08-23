@@ -1400,6 +1400,7 @@ class AgentDelegationAdapterTests(unittest.TestCase):
                 "source_kind": "mcp:put_page",
                 "ingested_via": "mcp:put_page",
                 "ingested_at": "2026-08-10T00:36:23.075Z",
+                "created": "2026-08-10T00:36:23.075Z",
             }
         )
 

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.111",
+  "current_version": "V0.0.112",
   "releases": [
     {
       "version": "V0.0.1",
@@ -666,6 +666,12 @@
       "date": "2026-08-23",
       "title": "Codex-only Goal execution canary",
       "summary": "Adds risk-tiered Codex-only Goal-derived work planning with deterministic receipts, one-Goal work-in-progress, shadow and canary controls, exact canonical readback, and fixed-thread delivery; OpenClaw remains excluded."
+    },
+    {
+      "version": "V0.0.112",
+      "date": "2026-08-23",
+      "title": "Approved paired Agent routes",
+      "summary": "Treats each exact verified registration as routable after the dispatcher validates approved Codex and OpenClaw host-route groups, accepts verified GBrain delegation ingestion metadata, while duplicate per-Agent registrations still fail closed and OpenClaw remains excluded from Goal execution."
     }
   ]
 }
