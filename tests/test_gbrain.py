@@ -2044,6 +2044,47 @@ class CanonicalIdentityMigrationTests(unittest.TestCase):
 
 
 class CollectionReadTests(unittest.TestCase):
+    def test_empty_canonical_roots_surface_actionable_integrity_issues(self) -> None:
+        roots = (ACTIVE_ROOT, COMPLETED_ROOT, GOALS_ROOT, PROJECTS_ROOT)
+        for root in roots:
+            with self.subTest(root=root):
+                runner = FakeRunner(
+                    {
+                        "get_backlinks": [[]],
+                        "get_page": [
+                            {
+                                "slug": root,
+                                "type": "collection",
+                                "title": root,
+                            }
+                        ],
+                    }
+                )
+                adapter = GBrainAdapter(runner)
+                result = (
+                    adapter.list_goals()
+                    if root == GOALS_ROOT
+                    else adapter.list_projects()
+                    if root == PROJECTS_ROOT
+                    else adapter.list_collection_tasks(root)
+                )
+                self.assertEqual(result.issues[0].category, "canonical_root_data")
+                self.assertIn("zero verified member_of backlinks", result.issues[0].message)
+
+    def test_missing_canonical_root_does_not_become_a_successful_empty_surface(self) -> None:
+        runner = FakeRunner(
+            {
+                "get_backlinks": [[]],
+                "get_page": [GBrainCommandError("page_not_found")],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual(result.tasks, ())
+        self.assertEqual(result.issues[0].category, "canonical_root_data")
+        self.assertIn("could not be read", result.issues[0].message)
+
     def test_loads_only_direct_member_backlinks_from_the_approved_root(self) -> None:
         task = new_inbox_task(
             "Real task",

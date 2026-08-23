@@ -5026,6 +5026,45 @@ function renderNeedsAttention() {
   return details;
 }
 
+function renderCanonicalRootIssues() {
+  const issues = [
+    ...(state.snapshot?.issues || []),
+    ...state.projectIssues,
+  ].filter((issue) => issue.category === "canonical_root_data");
+  const seen = new Set();
+  const unique = issues.filter((issue) => {
+    const key = `${issue.slug}:${issue.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!unique.length) return null;
+  const section = node("section", "needs-attention canonical-root-issues");
+  section.append(
+    node("h2", "", "Canonical data needs attention"),
+    node(
+      "p",
+      "attention-intro",
+      "Mission Control is withholding an empty view until the verified GBrain root and typed membership links are restored.",
+    ),
+  );
+  const list = node("div", "attention-list");
+  unique.forEach((issue) => {
+    const item = node("article", "attention-item");
+    item.append(
+      node("h3", "", issue.slug || "Canonical root"),
+      node("p", "", issue.message || "A required canonical root could not be verified."),
+      node("p", "attention-impact", issue.impact || "Refresh the canonical root and retry."),
+    );
+    if (issue.repair_action) {
+      item.append(node("p", "attention-repair", issue.repair_action));
+    }
+    list.append(item);
+  });
+  section.append(list);
+  return section;
+}
+
 function updateWarningDismissal(fingerprint, dismissed) {
   const update = (issues) =>
     (issues || []).map((issue) =>
@@ -5541,7 +5580,22 @@ function render() {
   // lockstep with state rather than relying on the previous DOM value.
   elements.showAgentTasks.checked = state.showAgentTasks;
   const view = state.activeView;
-  const content = view === "artifacts"
+  const canonicalRootIssueViews = new Set([
+    "today",
+    "all",
+    "completed",
+    "goals",
+    "projects",
+    "board",
+    "week",
+    "blocked",
+  ]);
+  const canonicalRootIssues = canonicalRootIssueViews.has(view)
+    ? renderCanonicalRootIssues()
+    : null;
+  const content = canonicalRootIssues
+    ? document.createDocumentFragment()
+    : view === "artifacts"
     ? renderArtifactsView()
     : !state.snapshot
     ? view === "system-tickets"
@@ -5572,6 +5626,7 @@ function render() {
   const proposals = view === "inbox" ? renderProposedWork() : null;
   elements.viewSurface.replaceChildren(
     ...[
+      ...(canonicalRootIssues ? [canonicalRootIssues] : []),
       ...(attention ? [attention] : []),
       ...(proposals ? [proposals] : []),
       content,

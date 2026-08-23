@@ -3289,6 +3289,16 @@ assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical 
         self.assertIn("elements.viewCount.textContent", javascript)
         self.assertIn('"system-tickets": state.systemTickets.length + (', javascript)
 
+    def test_canonical_root_issues_are_visible_outside_inbox_empty_states(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function renderCanonicalRootIssues()", javascript)
+        self.assertIn('issue.category === "canonical_root_data"', javascript)
+        self.assertIn("Mission Control is withholding an empty view", javascript)
+        render = javascript[javascript.index("function render()") :]
+        self.assertIn("renderCanonicalRootIssues()", render)
+        self.assertIn('"system-tickets"', render)
+        self.assertIn('"projects"', render)
+
     def test_first_view_cards_keep_long_detail_in_the_detail_panel(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")

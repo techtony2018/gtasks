@@ -4787,10 +4787,54 @@ class GBrainAdapter:
         with ThreadPoolExecutor(max_workers=min(8, len(values))) as executor:
             return list(executor.map(function, values))
 
+    def _empty_collection_root_issue(
+        self,
+        root_slug: str,
+        *,
+        raw_backlinks: list[object] | None = None,
+    ) -> CollectionIssue:
+        """Return an actionable issue instead of a false successful empty root.
+
+        A missing/empty canonical root is different from a valid empty projection.
+        Only this bounded empty-root path performs the root page read, so healthy
+        populated collections retain their existing fan-out and latency profile.
+        """
+        try:
+            page = self.runner.run("get_page", {"slug": root_slug})
+            if not isinstance(page, Mapping) or page.get("slug") != root_slug:
+                raise GBrainProtocolError("canonical root page readback was not structured")
+            if page.get("type") != "collection":
+                raise DomainValidationError("canonical root is not a collection page")
+            message = (
+                f"Canonical root {root_slug} has zero verified member_of backlinks."
+            )
+        except (DomainValidationError, GBrainError) as exc:
+            message = f"Canonical root {root_slug} could not be read: {exc}"
+        return CollectionIssue(
+            slug=root_slug,
+            message=message,
+            category="canonical_root_data",
+            impact=(
+                "Mission Control is withholding this empty surface until the canonical "
+                "root page and typed membership backlinks are restored."
+            ),
+            repair_action=(
+                "Refresh the canonical GBrain root and restore its typed member_of "
+                "links; do not create replacement records from the dashboard."
+            ),
+        )
+
     def list_collection_tasks(self, root_slug: str) -> CollectionRead:
         if root_slug not in APPROVED_ROOTS:
             raise ValueError("collection root is not approved for GTasks")
-        raw_backlinks = self.runner.run("get_backlinks", {"slug": root_slug})
+        try:
+            raw_backlinks = self.runner.run("get_backlinks", {"slug": root_slug})
+        except GBrainError:
+            return CollectionRead(
+                root_slug=root_slug,
+                tasks=(),
+                issues=(self._empty_collection_root_issue(root_slug),),
+            )
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("get_backlinks did not return a list")
 
@@ -4807,6 +4851,20 @@ class GBrainAdapter:
                     member_slugs[str(backlink["from_slug"])] = False
                 elif link_type in {"", None}:
                     member_slugs.setdefault(str(backlink["from_slug"]), True)
+
+        if not member_slugs and root_slug in {ACTIVE_ROOT, COMPLETED_ROOT}:
+            return CollectionRead(
+                root_slug=root_slug,
+                tasks=(),
+                issues=(
+                    self._empty_collection_root_issue(
+                        root_slug,
+                        raw_backlinks=raw_backlinks,
+                    ),
+                ),
+            )
+        if not member_slugs:
+            return CollectionRead(root_slug=root_slug, tasks=(), issues=())
 
         def read_task(
             item: tuple[str, bool],
@@ -6045,7 +6103,10 @@ class GBrainAdapter:
         )
 
     def list_goals(self) -> GoalRead:
-        raw_backlinks = self.runner.run("get_backlinks", {"slug": GOALS_ROOT})
+        try:
+            raw_backlinks = self.runner.run("get_backlinks", {"slug": GOALS_ROOT})
+        except GBrainError:
+            return GoalRead(goals=(), issues=(self._empty_collection_root_issue(GOALS_ROOT),))
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("goals get_backlinks did not return a list")
         goal_slugs = [
@@ -6056,6 +6117,9 @@ class GBrainAdapter:
             and isinstance(backlink.get("from_slug"), str)
             and str(backlink["from_slug"]).startswith("goals/")
         ]
+        goal_slugs = list(dict.fromkeys(goal_slugs))
+        if not goal_slugs:
+            return GoalRead(goals=(), issues=(self._empty_collection_root_issue(GOALS_ROOT, raw_backlinks=raw_backlinks),))
 
         def read_goal(slug: str) -> tuple[Goal | None, CollectionIssue | None]:
             try:
@@ -6782,7 +6846,10 @@ class GBrainAdapter:
         ))
 
     def list_projects(self) -> ProjectRead:
-        raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})
+        try:
+            raw_backlinks = self.runner.run("get_backlinks", {"slug": PROJECTS_ROOT})
+        except GBrainError:
+            return ProjectRead(projects=(), issues=(self._empty_collection_root_issue(PROJECTS_ROOT),))
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("projects get_backlinks did not return a list")
         project_slugs = list(
@@ -6796,6 +6863,8 @@ class GBrainAdapter:
                 and str(backlink["from_slug"]).startswith("projects/")
             )
         )
+        if not project_slugs:
+            return ProjectRead(projects=(), issues=(self._empty_collection_root_issue(PROJECTS_ROOT, raw_backlinks=raw_backlinks),))
         def read_project(
             slug: str,
         ) -> tuple[Project | None, CollectionIssue | None]:

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.108",
+  "current_version": "V0.0.109",
   "releases": [
     {
       "version": "V0.0.1",
@@ -648,6 +648,12 @@
       "date": "2026-08-22",
       "title": "Module-root GBrain runtime fallback",
       "summary": "Allows Mission Control GBrain adapter calls launched outside the repository, including Tammy automations, to reuse the dashboard-declared remote MCP runtime config and private credential file instead of falling back to the user's local PGlite graph."
+    },
+    {
+      "version": "V0.0.109",
+      "date": "2026-08-23",
+      "title": "Canonical Tony root integrity surfaces",
+      "summary": "Protect Mission Control from false empty states when Tony task, goal, or project roots lose canonical membership readback."
     }
   ]
 }
