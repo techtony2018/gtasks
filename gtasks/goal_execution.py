@@ -7,6 +7,8 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from threading import Condition, Thread
+from time import monotonic
 from typing import Any, Mapping, Protocol
 
 from .domain import AgentProfile, Goal, Project, Task
@@ -321,11 +323,23 @@ class GoalExecutionRun:
     handoff_status: str | None = None
 
     def to_dict(self) -> dict[str, object]:
+        public_decisions = []
+        for decision in self.decisions:
+            task_slug = decision.existing_task_slug
+            if task_slug is None and decision.candidate is not None:
+                task_slug = derived_task_slug(decision.candidate.fingerprint)
+            public_decisions.append(
+                {
+                    "goal_slug": decision.goal_slug,
+                    "reason": decision.reason,
+                    "task_slug": task_slug,
+                }
+            )
         return {
             "mode": self.mode,
             "ran_at": self.ran_at.isoformat(),
             "planner_version": self.planner_version,
-            "decisions": [decision.to_dict() for decision in self.decisions],
+            "decisions": public_decisions,
             "public_reason": self.public_reason,
             "task": (
                 {
@@ -338,11 +352,8 @@ class GoalExecutionRun:
                 else None
             ),
             "handoff": (
-                {
-                    "id": self.handoff_id,
-                    "status": self.handoff_status,
-                }
-                if self.handoff_id is not None
+                {"status": self.handoff_status}
+                if self.handoff_status is not None
                 else None
             ),
         }
@@ -486,6 +497,12 @@ class GoalExecutionEngine:
     def run_once(self, now: datetime) -> GoalExecutionRun:
         if not isinstance(now, datetime) or now.tzinfo is None:
             raise ValueError("Goal execution run time must include a timezone")
+        if self.mode == "off":
+            return GoalExecutionRun.from_plan(
+                GoalExecutionPlan(PLANNER_VERSION, ()),
+                mode=self.mode,
+                ran_at=now,
+            )
         route_health = self.route_health()
         snapshot = self.adapter.read_goal_execution_snapshot(route_health)
         plan = self.planner.plan(snapshot)
@@ -576,3 +593,141 @@ class GoalExecutionEngine:
             public_reason=reason,
             handoff=handoff,
         )
+
+
+class GoalExecutionScheduler:
+    """One coalescing worker with bounded retry and reconciliation intervals."""
+
+    def __init__(
+        self,
+        engine: GoalExecutionEngine,
+        *,
+        clock: Any | None = None,
+        monotonic_clock: Any | None = None,
+        minimum_interval_seconds: float = 30,
+        reconcile_interval_seconds: float = 1800,
+    ) -> None:
+        if minimum_interval_seconds < 30:
+            raise ValueError("Goal execution minimum interval must be at least 30 seconds")
+        if not (
+            minimum_interval_seconds <= reconcile_interval_seconds <= 1800
+        ):
+            raise ValueError(
+                "Goal execution reconciliation interval must be bounded by 30 minutes"
+            )
+        self.engine = engine
+        self.minimum_interval_seconds = minimum_interval_seconds
+        self.reconcile_interval_seconds = reconcile_interval_seconds
+        self._clock = clock or (lambda: datetime.now().astimezone())
+        self._monotonic = monotonic_clock or monotonic
+        self._condition = Condition()
+        self._thread: Thread | None = None
+        self._stopping = False
+        self._pending = True
+        self._last_started_mono: float | None = None
+        self._next_reconcile_mono = self._monotonic()
+        self._last_run: dict[str, object] | None = None
+        self._last_error: str | None = None
+
+    @property
+    def is_running(self) -> bool:
+        with self._condition:
+            return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        with self._condition:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stopping = False
+            self._pending = True
+            self._thread = Thread(
+                target=self._loop,
+                name="mission-control-goal-execution",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def wake(self, reason: str) -> None:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("Goal execution wake reason is required")
+        with self._condition:
+            self._pending = True
+            self._condition.notify_all()
+
+    def stop(self, timeout_seconds: float = 5) -> None:
+        with self._condition:
+            self._stopping = True
+            thread = self._thread
+            self._condition.notify_all()
+        if thread is not None:
+            thread.join(timeout=timeout_seconds)
+            if thread.is_alive():
+                raise RuntimeError("Goal execution scheduler did not stop")
+        with self._condition:
+            self._thread = None
+
+    def status(self) -> dict[str, object]:
+        with self._condition:
+            now = self._monotonic()
+            if self._last_started_mono is None:
+                next_in = 0.0
+            elif self._pending:
+                next_in = max(
+                    0.0,
+                    self.minimum_interval_seconds
+                    - (now - self._last_started_mono),
+                )
+            else:
+                next_in = max(0.0, self._next_reconcile_mono - now)
+            return {
+                "mode": self.engine.mode,
+                "planner_version": PLANNER_VERSION,
+                "running": self._thread is not None and self._thread.is_alive(),
+                "last_run": dict(self._last_run) if self._last_run else None,
+                "last_error": self._last_error,
+                "next_run_in_seconds": round(next_in, 3),
+            }
+
+    def _loop(self) -> None:
+        while True:
+            with self._condition:
+                while True:
+                    if self._stopping:
+                        return
+                    now = self._monotonic()
+                    minimum_due = (
+                        self._last_started_mono is None
+                        or now - self._last_started_mono
+                        >= self.minimum_interval_seconds
+                    )
+                    reconcile_due = now >= self._next_reconcile_mono
+                    if minimum_due and (self._pending or reconcile_due):
+                        self._pending = False
+                        self._last_started_mono = now
+                        self._next_reconcile_mono = (
+                            now + self.reconcile_interval_seconds
+                        )
+                        break
+                    waits = [max(0.01, self._next_reconcile_mono - now)]
+                    if self._pending and self._last_started_mono is not None:
+                        waits.append(
+                            max(
+                                0.01,
+                                self.minimum_interval_seconds
+                                - (now - self._last_started_mono),
+                            )
+                        )
+                    self._condition.wait(timeout=min(waits))
+            try:
+                result = self.engine.run_once(self._clock())
+                rendered = result.to_dict()
+                if not isinstance(rendered, Mapping):
+                    raise TypeError("Goal execution run did not return a mapping")
+            except Exception as exc:
+                with self._condition:
+                    self._last_error = type(exc).__name__
+                    self._pending = True
+            else:
+                with self._condition:
+                    self._last_run = dict(rendered)
+                    self._last_error = None

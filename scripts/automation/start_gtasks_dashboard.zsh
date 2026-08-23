@@ -62,4 +62,21 @@ set +a
   exit 70
 }
 
+MISSION_CONTROL_GOAL_EXECUTION_MODE="${MISSION_CONTROL_GOAL_EXECUTION_MODE:-shadow}"
+case "$MISSION_CONTROL_GOAL_EXECUTION_MODE" in
+  off|shadow|canary) ;;
+  *)
+    print -u2 -- "Mission Control Goal execution mode is invalid"
+    exit 70
+    ;;
+esac
+if [[ "$MISSION_CONTROL_GOAL_EXECUTION_MODE" = "canary" ]]; then
+  [[ "${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}" =~ '^goals/[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' ]] || {
+    print -u2 -- "Mission Control canary mode requires one canonical Goal slug"
+    exit 70
+  }
+fi
+export MISSION_CONTROL_GOAL_EXECUTION_MODE
+export MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL="${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}"
+
 exec /opt/homebrew/opt/python@3.12/libexec/bin/python3 "$@"

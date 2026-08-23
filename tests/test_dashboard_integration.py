@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -99,6 +100,26 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertIn('"${MISSION_CONTROL_BUZZ_OUTBOX_DIR:-}"', launcher)
         self.assertIn('/Users/tony/.local/bin', launcher)
         self.assertNotIn("BUZZ_AUTH_TAG:-", launcher)
+
+    def test_dashboard_launcher_defaults_goal_execution_to_shadow_and_fails_closed(self) -> None:
+        launcher = (
+            PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'MISSION_CONTROL_GOAL_EXECUTION_MODE="${MISSION_CONTROL_GOAL_EXECUTION_MODE:-shadow}"',
+            launcher,
+        )
+        self.assertIn("off|shadow|canary", launcher)
+        self.assertIn("MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL", launcher)
+        self.assertIn("canary mode requires one canonical Goal slug", launcher)
+        completed = subprocess.run(
+            ["zsh", "-n", str(PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
     def test_contract_declares_private_buzz_runtime_without_secrets(self) -> None:
         contract = json.loads(

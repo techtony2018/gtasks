@@ -937,6 +937,7 @@ class ServerHarness:
         handoff_registration_validator=None,
         handoff_waiter=None,
         handoff_event_bridge=None,
+        goal_execution_scheduler=None,
         clock=None,
         delegation_lock_path: Path | None = None,
     ) -> None:
@@ -995,6 +996,7 @@ class ServerHarness:
             handoff_registration_validator=handoff_registration_validator,
             handoff_waiter=handoff_waiter,
             handoff_event_bridge=handoff_event_bridge,
+            goal_execution_scheduler=goal_execution_scheduler,
             delegation_lock_path=(
                 delegation_lock_path
                 or runtime_path / "agent-delegations.lock"
@@ -1182,6 +1184,9 @@ class HandoffRuntimeConstructionTests(unittest.TestCase):
         self.assertIs(captured.get("adapter"), adapter)
         bridge = captured.get("handoff_event_bridge")
         self.assertIsNotNone(bridge)
+        scheduler = captured.get("goal_execution_scheduler")
+        self.assertIsNotNone(scheduler)
+        self.assertFalse(scheduler.is_running)
         expected_reads = {
             (
                 agent,
@@ -4391,6 +4396,62 @@ class GoalRelationshipApiTests(unittest.TestCase):
 
 
 class GoalMutationApiTests(unittest.TestCase):
+    class GoalExecutionScheduler:
+        def __init__(self) -> None:
+            self.wakes: list[str] = []
+
+        def status(self):
+            return {
+                "mode": "shadow",
+                "planner_version": "goal-execution-v1",
+                "running": True,
+                "last_run": None,
+                "last_error": None,
+                "next_run_in_seconds": 30,
+            }
+
+        def wake(self, reason: str) -> None:
+            self.wakes.append(reason)
+
+    def test_reads_goal_execution_scheduler_status_without_running_planner(self) -> None:
+        scheduler = self.GoalExecutionScheduler()
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            goal_execution_scheduler=scheduler,
+        )
+
+        status, payload, _ = harness.request("GET", "/api/goal-execution")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["mode"], "shadow")
+        self.assertEqual(payload["planner_version"], "goal-execution-v1")
+        self.assertEqual(scheduler.wakes, [])
+
+    def test_verified_goal_creation_wakes_goal_execution_scheduler(self) -> None:
+        scheduler = self.GoalExecutionScheduler()
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            goal_execution_scheduler=scheduler,
+        )
+
+        status, _payload, _ = harness.request(
+            "POST",
+            "/api/goals",
+            {
+                "title": "Launch the pilot",
+                "outcome": "The pilot is live.",
+                "success_criteria": "Ten users complete the workflow.",
+                "strategy": "Ship one validated slice each week.",
+                "review_cadence": "weekly",
+                "constraints": "No customer data leaves the local system.",
+            },
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(scheduler.wakes, ["goal_created"])
+
     def test_reads_exact_goal_by_slug_after_creation(self) -> None:
         goal = sample_goal()
         harness = ServerHarness(self, FakeAdapter(goals=(goal,)))
@@ -4875,6 +4936,23 @@ class GoalLinkApiTests(unittest.TestCase):
 
 
 class TaskStatusApiTests(unittest.TestCase):
+    def test_verified_status_change_wakes_goal_execution_scheduler(self) -> None:
+        scheduler = GoalMutationApiTests.GoalExecutionScheduler()
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            goal_execution_scheduler=scheduler,
+        )
+
+        status, _payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/status",
+            {"status": "active"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(scheduler.wakes, ["task_status"])
+
     def test_updates_a_task_status_with_the_server_local_clock(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)

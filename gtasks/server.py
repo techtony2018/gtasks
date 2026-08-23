@@ -69,6 +69,7 @@ from .gbrain import (
     TONY_PROFILE_SLUG,
     ConcurrentAgentDelegationUpdateError,
 )
+from .goal_execution import GoalExecutionEngine, GoalExecutionScheduler
 from .delegation import (
     AgentDelegationLease,
     DelegationState,
@@ -796,6 +797,7 @@ def _handler_class(
     | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
+    goal_execution_scheduler: GoalExecutionScheduler | None = None,
     delegation_lock_path: Path | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
@@ -815,6 +817,7 @@ def _handler_class(
     )
     active_handoff_waiter = handoff_waiter or time.sleep
     active_handoff_event_bridge = handoff_event_bridge
+    active_goal_execution_scheduler = goal_execution_scheduler
     active_delegation_lock = AgentDelegationMutationLock(
         delegation_lock_path or default_agent_delegation_lock_path()
     )
@@ -852,6 +855,18 @@ def _handler_class(
 
     def invalidate_system_tickets() -> None:
         active_read_cache.invalidate("system_tickets", "system_tickets_all")
+
+    def wake_goal_execution(reason: str) -> None:
+        if active_goal_execution_scheduler is None:
+            return
+        try:
+            active_goal_execution_scheduler.wake(reason)
+        except Exception:
+            log_reader.append_gtasks(
+                severity="error",
+                message="Goal execution wake could not be recorded.",
+                now=clock(),
+            )
 
     def canonical_mapping(value: object) -> dict[str, Any]:
         if isinstance(value, dict):
@@ -1195,22 +1210,22 @@ def _handler_class(
         *,
         mutation_kind: str,
     ) -> None:
-        if active_handoff_event_bridge is None:
-            return
-        receipt_value = canonical_mapping(receipt)
-        receipt_value["mutation_kind"] = mutation_kind
-        try:
-            active_handoff_event_bridge.after_verified_mutation(
-                before, after, receipt_value, clock()
-            )
-        except Exception:
-            # The canonical write is already verified. Dispatcher persistence or
-            # delivery is operational evidence and must never roll it back.
-            log_reader.append_gtasks(
-                severity="error",
-                message="Verified canonical mutation could not enter the handoff dispatcher.",
-                now=clock(),
-            )
+        if active_handoff_event_bridge is not None:
+            receipt_value = canonical_mapping(receipt)
+            receipt_value["mutation_kind"] = mutation_kind
+            try:
+                active_handoff_event_bridge.after_verified_mutation(
+                    before, after, receipt_value, clock()
+                )
+            except Exception:
+                # The canonical write is already verified. Dispatcher persistence or
+                # delivery is operational evidence and must never roll it back.
+                log_reader.append_gtasks(
+                    severity="error",
+                    message="Verified canonical mutation could not enter the handoff dispatcher.",
+                    now=clock(),
+                )
+        wake_goal_execution(mutation_kind)
 
     def partial_mutation_attention(
         before: dict[str, Any] | None,
@@ -1768,6 +1783,25 @@ def _handler_class(
                 return
             if path == "/api/releases":
                 self._json(HTTPStatus.OK, release_payload())
+                return
+            if path == "/api/goal-execution":
+                if active_goal_execution_scheduler is None:
+                    self._json(
+                        HTTPStatus.OK,
+                        {
+                            "mode": "off",
+                            "planner_version": "goal-execution-v1",
+                            "running": False,
+                            "last_run": None,
+                            "last_error": None,
+                            "next_run_in_seconds": None,
+                        },
+                    )
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    active_goal_execution_scheduler.status(),
+                )
                 return
             if path == "/api/handoff-events":
                 self._read_handoff_events(task_slug=None)
@@ -3063,6 +3097,7 @@ def _handler_class(
                         },
                     )
                     return
+                wake_goal_execution("agent_execution_abandoned")
                 self._json(HTTPStatus.OK, result.to_dict())
                 return
             execution_checkpoint_match = re.fullmatch(
@@ -3531,6 +3566,11 @@ def _handler_class(
                         },
                     )
                     return
+                wake_goal_execution(
+                    "agent_handoff_acknowledged"
+                    if ack_match
+                    else "agent_handoff_failure_recorded"
+                )
                 self._json(HTTPStatus.OK, result.to_dict())
                 return
             if path == "/api/artifacts":
@@ -3679,6 +3719,7 @@ def _handler_class(
                     )
                     return
                 body = {"artifact": receipt.artifact.to_dict(), "receipt": receipt.to_dict()}
+                wake_goal_execution("artifact_published")
                 self._json(
                     HTTPStatus.OK if receipt.idempotent else HTTPStatus.CREATED,
                     body,
@@ -3784,6 +3825,7 @@ def _handler_class(
                     )
                     return
                 invalidate_snapshot()
+                wake_goal_execution("agent_handoff_acknowledged")
                 self._json(HTTPStatus.OK, receipt.to_dict())
                 return
             answer_prefix = "/api/todos/"
@@ -4368,6 +4410,7 @@ def _handler_class(
                     )
                     return
                 invalidate_snapshot()
+                wake_goal_execution("goal_created")
                 self._json(
                     HTTPStatus.CREATED,
                     {"goal": goal.to_dict(), "receipt": receipt.to_dict()},
@@ -4422,6 +4465,7 @@ def _handler_class(
                     )
                     return
                 invalidate_snapshot()
+                wake_goal_execution("project_created")
                 self._json(
                     HTTPStatus.CREATED,
                     {
@@ -5241,6 +5285,7 @@ def _handler_class(
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
+                wake_goal_execution("project_updated")
                 self._json(HTTPStatus.OK, {"project": project.to_dict(), "receipt": receipt.to_dict()})
                 return
             proposal_prefix = "/api/proposals/"
@@ -5336,6 +5381,7 @@ def _handler_class(
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
                 invalidate_snapshot()
+                wake_goal_execution("goal_updated")
                 self._json(HTTPStatus.OK, {"goal": receipt.goal.to_dict(), "receipt": receipt.to_dict()})
                 return
             goal_status_suffix = "/status"
@@ -5380,6 +5426,7 @@ def _handler_class(
                     )
                     return
                 invalidate_snapshot()
+                wake_goal_execution("goal_status_updated")
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return
             prefix = "/api/tasks/"
@@ -5880,6 +5927,7 @@ def _handler_class(
                 )
                 return
             invalidate_snapshot()
+            wake_goal_execution("task_goal_updated")
             self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
 
         def do_DELETE(self) -> None:
@@ -5920,6 +5968,7 @@ def _handler_class(
                 )
                 return
             invalidate_snapshot()
+            wake_goal_execution("goal_deleted")
             self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
 
         def _serve_static(self, path: str) -> None:
@@ -5991,6 +6040,7 @@ def build_server(
     | None = None,
     handoff_waiter: Callable[[float], None] | None = None,
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
+    goal_execution_scheduler: GoalExecutionScheduler | None = None,
     delegation_lock_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
@@ -6018,6 +6068,7 @@ def build_server(
         handoff_registration_validator,
         handoff_waiter,
         handoff_event_bridge,
+        goal_execution_scheduler,
         delegation_lock_path,
     )
     return ThreadingHTTPServer((host, port), handler)
@@ -6057,6 +6108,23 @@ def main() -> None:
         if handoff_store is not None
         else None
     )
+    goal_execution_scheduler = None
+    if handoff_event_bridge is not None:
+        goal_execution_engine = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=handoff_event_bridge,
+            mode=os.environ.get(
+                "MISSION_CONTROL_GOAL_EXECUTION_MODE", "shadow"
+            ),
+            canary_goal_slug=(
+                os.environ.get("MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL")
+                or None
+            ),
+        )
+        goal_execution_scheduler = GoalExecutionScheduler(
+            goal_execution_engine
+        )
+        goal_execution_scheduler.start()
     server = build_server(
         host=args.host,
         port=args.port,
@@ -6079,6 +6147,7 @@ def main() -> None:
         handoff_store=handoff_store,
         handoff_dispatcher_auth=handoff_dispatcher_auth,
         handoff_event_bridge=handoff_event_bridge,
+        goal_execution_scheduler=goal_execution_scheduler,
         delegation_lock_path=args.agent_delegation_lock_file,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
@@ -6087,6 +6156,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if goal_execution_scheduler is not None:
+            goal_execution_scheduler.stop()
         server.server_close()
         if handoff_store is not None:
             handoff_store.close()

@@ -1,4 +1,6 @@
 import unittest
+import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ from gtasks.domain import (
 from gtasks.goal_execution import (
     GoalExecutionEngine,
     GoalExecutionPlanner,
+    GoalExecutionScheduler,
     GoalExecutionSnapshot,
     derived_task_slug,
 )
@@ -394,6 +397,15 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.handoff_id, "handoffs/goal-execution-canary")
         self.assertEqual(result.public_reason, "activated")
 
+        public = result.to_dict()
+        self.assertEqual(
+            set(public["decisions"][0]),
+            {"goal_slug", "reason", "task_slug"},
+        )
+        self.assertEqual(public["handoff"], {"status": "queued"})
+        self.assertNotIn("hosts/", repr(public))
+        self.assertNotIn("Do not send", repr(public))
+
     def test_run_once_does_not_activate_when_route_is_unhealthy(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge(verified=False)
@@ -500,6 +512,72 @@ class GoalExecutionEngineTests(unittest.TestCase):
 
         self.assertEqual(result.public_reason, "shadow")
         self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
+
+    def test_off_mode_performs_no_canonical_read_or_write(self) -> None:
+        adapter = self.Adapter()
+        engine = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=self.Bridge(),
+            mode="off",
+        )
+
+        result = engine.run_once(NOW)
+
+        self.assertEqual(result.public_reason, "off")
+        self.assertEqual(adapter.calls, [])
+
+
+class GoalExecutionSchedulerTests(unittest.TestCase):
+    class Engine:
+        def __init__(self, *, error: Exception | None = None) -> None:
+            self.error = error
+            self.run_count = 0
+            self.started = threading.Event()
+            self.mode = "shadow"
+
+        def run_once(self, now):
+            self.run_count += 1
+            self.started.set()
+            if self.error is not None:
+                raise self.error
+            return SimpleNamespace(
+                to_dict=lambda: {
+                    "mode": "shadow",
+                    "ran_at": now.isoformat(),
+                    "public_reason": "shadow",
+                }
+            )
+
+    def test_event_burst_coalesces_and_shutdown_joins_one_worker(self) -> None:
+        engine = self.Engine()
+        scheduler = GoalExecutionScheduler(engine)
+
+        scheduler.start()
+        self.assertTrue(engine.started.wait(timeout=1))
+        for _index in range(25):
+            scheduler.wake("fixture burst")
+        time.sleep(0.05)
+        scheduler.stop()
+
+        self.assertEqual(engine.run_count, 1)
+        self.assertFalse(scheduler.is_running)
+        self.assertGreaterEqual(scheduler.minimum_interval_seconds, 30)
+        self.assertLessEqual(scheduler.reconcile_interval_seconds, 1800)
+
+    def test_exception_is_reported_without_zero_delay_retry(self) -> None:
+        engine = self.Engine(error=RuntimeError("fixture failure"))
+        scheduler = GoalExecutionScheduler(engine)
+
+        scheduler.start()
+        self.assertTrue(engine.started.wait(timeout=1))
+        time.sleep(0.05)
+        status = scheduler.status()
+        scheduler.stop()
+
+        self.assertEqual(engine.run_count, 1)
+        self.assertEqual(status["last_error"], "RuntimeError")
+        self.assertIsNone(status["last_run"])
+        self.assertGreaterEqual(status["next_run_in_seconds"], 29)
 
 
 if __name__ == "__main__":
