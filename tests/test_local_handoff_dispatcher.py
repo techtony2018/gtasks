@@ -3148,6 +3148,94 @@ class RunForeverTests(unittest.TestCase):
             self.assertEqual(adapter.claims, ["handoff-100"])
             self.assertEqual(inbox.get("handoff-100").state, "completed")
 
+    def test_recovered_leased_claim_receipts_received_before_gated_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            claim_store = PrivateClaimStore(directory / "active.json")
+            claim = claim_payload(status="leased", lease_generation=3)
+            claim_store.save(claim)
+            wake_token = claim_store.prepare_wake()
+            claim_store.complete_wake_authorization(
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "leased",
+                    "wake_authorized": True,
+                }
+            )
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            inbox.enqueue(
+                claim,
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
+            claimed = inbox.claim_next(now=datetime.now(timezone.utc))
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(
+                claimed,
+                launch_id=launch_id,
+                now=datetime.now(timezone.utc),
+            )
+            inbox.record_spawned(claimed, pid=43210, now=datetime.now(timezone.utc))
+            inbox.record_ready(claimed, pid=43210, now=datetime.now(timezone.utc))
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=datetime.now(timezone.utc),
+            )
+            inbox.release_worker_claim(claimed, now=datetime.now(timezone.utc))
+
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def recover(inner_self, recovered_claim):
+                    events.append(
+                        f"recover:{recovered_claim['status']}:{recovered_claim['lease_generation']}"
+                    )
+                    return claim_payload(
+                        status="leased",
+                        lease_capability="rotated-capability",
+                        lease_generation=4,
+                    )
+
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    events.append(f"ack:{status}:{claim['status']}:{claim['lease_generation']}")
+                    return super().ack(
+                        claim,
+                        status=status,
+                        detail=detail,
+                        operation_sequence=operation_sequence,
+                    )
+
+            class Adapter(self.Adapter):
+                def launch_request(inner_self, claim):
+                    events.append(f"launch:{claim['status']}:{claim['lease_generation']}")
+                    return super().launch_request(claim)
+
+            run_forever(
+                Client(),
+                Adapter([subprocess.CompletedProcess([], 0)]),
+                claim_store=PrivateClaimStore(claim_store.path),
+                wake_inbox=inbox,
+                max_iterations=3,
+                retry_delay=0,
+            )
+
+            self.assertEqual(wake_token, "wake/handoff-key-100")
+            self.assertEqual(
+                events,
+                [
+                    "recover:leased:3",
+                    "ack:received:leased:4",
+                    "launch:received:4",
+                ],
+            )
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
     def test_authority_loss_during_received_ack_suppresses_inbox_without_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

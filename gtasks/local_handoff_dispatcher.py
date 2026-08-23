@@ -982,6 +982,56 @@ class PrivateWakeInbox:
             self._connection.rollback()
             raise
 
+    def mark_pending_after_recovered_receipt(
+        self,
+        *,
+        handoff_id: str,
+        wake_token: str,
+        now: datetime,
+    ) -> WakeInboxItem:
+        """Re-arm pre-grant local evidence after a recovered lease is receipted."""
+        handoff_id = _require_identifier(handoff_id, "handoff_id")
+        wake_token_ref = hashlib.sha256(
+            _require_identifier(wake_token, "wake_token").encode("utf-8")
+        ).hexdigest()
+        timestamp = self._timestamp(now)
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(handoff_id)
+            if row["wake_token_ref"] != wake_token_ref:
+                raise ValueError("wake token does not match the accepted inbox item")
+            if row["state"] in {
+                "accepted",
+                "pending",
+                "failed",
+                "launch_preparing",
+                "launch_spawned",
+                "launch_ready",
+                "start_requesting",
+            }:
+                self._connection.execute(
+                    """
+                    UPDATE wake_inbox SET state = 'pending', updated_at = ?,
+                        retry_at = NULL, last_error = NULL,
+                        worker_claim_ref = NULL, worker_claim_until = NULL,
+                        current_launch_id = NULL, launch_pid = NULL,
+                        launch_grant_ref = NULL, start_request_ref = NULL,
+                        start_execution_idempotency_key = NULL,
+                        start_registration_ref = NULL,
+                        start_lease_generation = NULL,
+                        start_lease_capability_ref = NULL,
+                        pending_server_action = NULL,
+                        pending_action_reason = NULL
+                    WHERE handoff_id = ? AND wake_token_ref = ?
+                    """,
+                    (timestamp, handoff_id, wake_token_ref),
+                )
+            self._connection.commit()
+            return self.get(handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
     def reconcile_delivery(
         self,
         *,
@@ -2903,7 +2953,11 @@ def run_forever(
                             wake_token=wake_token,
                             now=datetime.now(timezone.utc),
                         )
-            if inbox_worker is not None:
+            defer_inbox_worker_for_leased_recovery = (
+                current_claim is not None
+                and current_claim.get("status") == "leased"
+            )
+            if inbox_worker is not None and not defer_inbox_worker_for_leased_recovery:
                 executed = inbox_worker.run_once(now=datetime.now(timezone.utc))
                 if executed is not None:
                     if executed.state in {"handed_back", "suppressed"}:
@@ -3001,7 +3055,46 @@ def run_forever(
                             wake_token=wake_token,
                             now=datetime.now(timezone.utc),
                         )
-                        if claim.get("status") in {
+                        if claim.get("status") == "leased":
+                            authorization = client.authorize_wake(
+                                claim,
+                                wake_token=wake_token,
+                            )
+                            if not claim_store.complete_wake_authorization(authorization):
+                                continue
+                            sequence = claim_store.prepare_ack("received", None)
+                            response = client.ack(
+                                claim,
+                                status="received",
+                                operation_sequence=sequence,
+                            )
+                            if not isinstance(response, Mapping):
+                                raise ValueError(
+                                    "recovered received acknowledgement was not verified"
+                                )
+                            applied = claim_store.complete_ack(sequence, response)
+                            if not applied:
+                                wake_inbox.reconcile_delivery(
+                                    handoff_id=str(claim["handoff_id"]),
+                                    wake_token=wake_token,
+                                    status=str(response.get("status")),
+                                    now=datetime.now(timezone.utc),
+                                )
+                                recovered_handoffs.discard(str(claim["handoff_id"]))
+                                continue
+                            received_claim = claim_store.load(str(claim["handoff_id"]))
+                            claim = received_claim
+                            wake_inbox.enqueue(
+                                received_claim,
+                                wake_token=wake_token,
+                                now=datetime.now(timezone.utc),
+                            )
+                            wake_inbox.mark_pending_after_recovered_receipt(
+                                handoff_id=str(claim["handoff_id"]),
+                                wake_token=wake_token,
+                                now=datetime.now(timezone.utc),
+                            )
+                        elif claim.get("status") in {
                             "received",
                             "actively_executing",
                             "still_blocked",

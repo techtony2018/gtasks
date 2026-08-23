@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.114",
+  "current_version": "V0.0.115",
   "releases": [
     {
       "version": "V0.0.1",
@@ -684,6 +684,12 @@
       "date": "2026-08-23",
       "title": "Recovered handoff wake launch",
       "summary": "Promotes recovered accepted wake inbox items to pending at the worker claim boundary so an Agent that lost the received-acknowledgement window can launch the original goal-derived Task instead of rotating capabilities indefinitely."
+    },
+    {
+      "version": "V0.0.115",
+      "date": "2026-08-23",
+      "title": "Recovered leased wake receipt",
+      "summary": "Receipts recovered leased Agent handoffs before opening any gated launch, including pre-grant start_requesting recovery, so stale local wake evidence cannot bypass the central received-state fence."
     }
   ]
 }
