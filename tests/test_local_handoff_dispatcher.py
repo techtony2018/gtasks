@@ -1417,6 +1417,22 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(replay.state, "accepted")
             self.assertEqual(replay.claim["status"], "received")
 
+    def test_accepted_claim_after_crash_is_promoted_to_pending_for_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            inbox.enqueue(
+                claim_payload(status="leased"),
+                wake_token="wake/handoff-key-100",
+                now=self.NOW,
+            )
+
+            claimed = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed.item.state, "pending")
+            self.assertEqual(inbox.get("handoff-100").state, "pending")
+
     def test_rotated_claim_refreshes_every_nonterminal_state_without_launch_mutation(self) -> None:
         states = (
             "accepted",

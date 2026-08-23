@@ -1052,6 +1052,7 @@ class PrivateWakeInbox:
                             'launch_preparing', 'launch_spawned', 'launch_ready',
                             'start_requesting', 'start_granted', 'executing'
                         )
+                        OR state = 'accepted'
                         OR state = 'pending'
                         OR (
                             state = 'failed' AND attempt < max_attempts
@@ -1069,6 +1070,7 @@ class PrivateWakeInbox:
             changed = self._connection.execute(
                 """
                 UPDATE wake_inbox SET worker_claim_ref = ?, worker_claim_until = ?,
+                    state = CASE WHEN state = 'accepted' THEN 'pending' ELSE state END,
                     updated_at = ?
                 WHERE handoff_id = ? AND worker_claim_ref IS NULL
                 """,

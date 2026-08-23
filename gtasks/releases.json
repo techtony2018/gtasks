@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.113",
+  "current_version": "V0.0.114",
   "releases": [
     {
       "version": "V0.0.1",
@@ -678,6 +678,12 @@
       "date": "2026-08-23",
       "title": "Expired handoff lease recovery",
       "summary": "Reclaims expired Agent handoff leases at the next authenticated claim boundary, preserving append-only lease-expired evidence and allowing the same fixed-thread worker to retry without manual SQLite or GBrain edits."
+    },
+    {
+      "version": "V0.0.114",
+      "date": "2026-08-23",
+      "title": "Recovered handoff wake launch",
+      "summary": "Promotes recovered accepted wake inbox items to pending at the worker claim boundary so an Agent that lost the received-acknowledgement window can launch the original goal-derived Task instead of rotating capabilities indefinitely."
     }
   ]
 }
