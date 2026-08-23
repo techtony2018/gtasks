@@ -8844,6 +8844,38 @@ class TaskNextActionMutationTests(unittest.TestCase):
 class MarkdownCreationPathTests(unittest.TestCase):
     TICKET_SLUG = "tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620"
 
+    def test_task_page_renders_canonical_goal_derivation_receipt(self) -> None:
+        goal_slug = "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
+        derivation = domain.GoalDerivationReceipt(
+            planner_version="goal-execution-v1",
+            fingerprint="c" * 64,
+            action_kind="goal_progress_review",
+            authority_class="auto_eligible",
+            goal_slug=goal_slug,
+            project_slug=None,
+            expected_evidence="One internal progress brief.",
+        )
+        task = replace(
+            new_inbox_task(
+                "Review Civic progress",
+                datetime(2026, 8, 23, 9, tzinfo=timezone.utc),
+                "goal-review",
+            ),
+            lifecycle_root="collections/timmys-tasks",
+            owner_agent="agents/timmy",
+            goal=goal_slug,
+            goal_derivation=derivation,
+        )
+
+        rendered = gbrain_module.render_task_page(task)
+
+        self.assertIn(
+            'goal_derivation: {"planner_version": "goal-execution-v1", '
+            '"fingerprint": "' + "c" * 64,
+            rendered,
+        )
+        self.assertIn('"goal_slug": "' + goal_slug + '"', rendered)
+
     def test_create_task_projects_verified_ticket_reference_without_a_relationship(self) -> None:
         task = new_task(
             title="Continue dispatcher work",

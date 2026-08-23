@@ -1689,6 +1689,78 @@ class ProposalDecisionEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class GoalDerivationReceipt:
+    planner_version: str
+    fingerprint: str
+    action_kind: str
+    authority_class: str
+    goal_slug: str
+    project_slug: str | None
+    expected_evidence: str
+
+    @classmethod
+    def from_value(cls, value: object) -> "GoalDerivationReceipt":
+        if not isinstance(value, Mapping):
+            raise DomainValidationError("goal_derivation must be an object")
+        planner_version = value.get("planner_version")
+        fingerprint = value.get("fingerprint")
+        action_kind = value.get("action_kind")
+        authority_class = value.get("authority_class")
+        goal_slug = value.get("goal_slug")
+        project_slug = value.get("project_slug")
+        expected_evidence = value.get("expected_evidence")
+        if planner_version != "goal-execution-v1":
+            raise DomainValidationError(
+                "goal_derivation planner_version is unsupported"
+            )
+        if not isinstance(fingerprint, str) or re.fullmatch(
+            r"[0-9a-f]{64}", fingerprint
+        ) is None:
+            raise DomainValidationError(
+                "goal_derivation fingerprint must be sha256"
+            )
+        if action_kind != "goal_progress_review":
+            raise DomainValidationError(
+                "goal_derivation action_kind is unsupported"
+            )
+        if authority_class != "auto_eligible":
+            raise DomainValidationError(
+                "goal_derivation authority_class is unsupported"
+            )
+        if not isinstance(goal_slug, str) or not goal_slug.startswith("goals/"):
+            raise DomainValidationError("goal_derivation goal_slug is invalid")
+        if project_slug is not None and (
+            not isinstance(project_slug, str)
+            or not project_slug.startswith("projects/")
+        ):
+            raise DomainValidationError("goal_derivation project_slug is invalid")
+        if not isinstance(expected_evidence, str) or not expected_evidence.strip():
+            raise DomainValidationError(
+                "goal_derivation expected_evidence is required"
+            )
+        return cls(
+            planner_version=planner_version,
+            fingerprint=fingerprint,
+            action_kind=action_kind,
+            authority_class=authority_class,
+            goal_slug=goal_slug,
+            project_slug=project_slug,
+            expected_evidence=expected_evidence.strip(),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "planner_version": self.planner_version,
+            "fingerprint": self.fingerprint,
+            "action_kind": self.action_kind,
+            "authority_class": self.authority_class,
+            "goal_slug": self.goal_slug,
+            "project_slug": self.project_slug,
+            "expected_evidence": self.expected_evidence,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Task:
     slug: str
     title: str
@@ -1713,6 +1785,7 @@ class Task:
     dependencies: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
     goal: str | None = None
+    goal_derivation: GoalDerivationReceipt | None = None
     progress_metric: ProgressMetric | None = None
     event_progress: EventProgress | None = None
     completed_at: datetime | None = None
@@ -1860,6 +1933,21 @@ class Task:
         )
         if len(goals) > 1:
             raise DomainValidationError("task can advance only one goal")
+        raw_goal_derivation = frontmatter.get("goal_derivation")
+        goal_derivation = (
+            None
+            if raw_goal_derivation is None
+            else GoalDerivationReceipt.from_value(raw_goal_derivation)
+        )
+        if goal_derivation is not None:
+            if goals != (goal_derivation.goal_slug,):
+                raise DomainValidationError(
+                    "derived task derivation goal must match its advances_goal edge"
+                )
+            if project != goal_derivation.project_slug:
+                raise DomainValidationError(
+                    "derived task derivation project must match its project edge"
+                )
 
         assigned_agents = tuple(
             dict.fromkeys(
@@ -2016,6 +2104,7 @@ class Task:
             dependencies=dependencies,
             blockers=blockers,
             goal=goals[0] if goals else None,
+            goal_derivation=goal_derivation,
             progress_metric=progress_metric,
             event_progress=event_progress,
             completed_at=_optional_datetime(
@@ -2041,6 +2130,10 @@ class Task:
             ),
             proposal_decision_events=proposal_decision_events,
         )
+        if task.goal_derivation is not None and task.owner_agent is None:
+            raise DomainValidationError(
+                "goal_derivation requires one canonical Agent owner"
+            )
         validate_task_handoff(task)
         return task
 
@@ -2073,6 +2166,9 @@ class Task:
             "dependencies": list(self.dependencies),
             "blockers": list(self.blockers),
             "goal": self.goal,
+            "goal_derivation": (
+                self.goal_derivation.to_dict() if self.goal_derivation else None
+            ),
             "progress_metric": (
                 self.progress_metric.to_dict() if self.progress_metric else None
             ),

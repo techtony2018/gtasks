@@ -357,6 +357,67 @@ class TodoDomainTests(unittest.TestCase):
 
 
 class TaskParsingTests(unittest.TestCase):
+    def test_task_parses_verified_goal_derivation_receipt(self) -> None:
+        slug = "tasks/9a757f4a-f658-4f87-9ec2-b69707588c28"
+        goal_slug = "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10"
+        page = task_page(
+            slug,
+            links=[
+                {"to": "collections/timmys-tasks", "type": "member_of"},
+                {"to": "agents/timmy", "type": "assigned_to"},
+            ],
+        )
+        page["frontmatter"]["goal_derivation"] = {
+            "planner_version": "goal-execution-v1",
+            "fingerprint": "a" * 64,
+            "action_kind": "goal_progress_review",
+            "authority_class": "auto_eligible",
+            "goal_slug": goal_slug,
+            "project_slug": None,
+            "expected_evidence": (
+                "One internal progress brief with evidence and one bounded next step."
+            ),
+        }
+
+        task = Task.from_page(
+            page,
+            edges=[
+                {
+                    "from_slug": slug,
+                    "to_slug": goal_slug,
+                    "link_type": "advances_goal",
+                },
+                {
+                    "from_slug": slug,
+                    "to_slug": "agents/timmy",
+                    "link_type": "assigned_to",
+                },
+            ],
+        )
+
+        self.assertEqual(task.goal_derivation.fingerprint, "a" * 64)
+        self.assertEqual(task.goal_derivation.goal_slug, goal_slug)
+        self.assertEqual(
+            task.to_dict()["goal_derivation"],
+            page["frontmatter"]["goal_derivation"],
+        )
+
+    def test_task_rejects_goal_derivation_without_exact_goal(self) -> None:
+        slug = "tasks/4050e34f-a7f6-4b66-81d4-554b58eadd6f"
+        page = task_page(slug)
+        page["frontmatter"]["goal_derivation"] = {
+            "planner_version": "goal-execution-v1",
+            "fingerprint": "b" * 64,
+            "action_kind": "goal_progress_review",
+            "authority_class": "auto_eligible",
+            "goal_slug": "goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10",
+            "project_slug": None,
+            "expected_evidence": "One internal progress brief.",
+        }
+
+        with self.assertRaisesRegex(DomainValidationError, "derivation goal"):
+            Task.from_page(page)
+
     def test_waiting_for_input_requires_blocked_status_and_matching_blocker(self) -> None:
         page = task_page(
             "tasks/agent-question",

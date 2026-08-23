@@ -2070,6 +2070,13 @@ def render_task_page(task: Task, *, body: str | None = None) -> str:
             )
         ),
         (
+            "goal_derivation: "
+            + json.dumps(
+                task.goal_derivation.to_dict() if task.goal_derivation else None,
+                ensure_ascii=False,
+            )
+        ),
+        (
             "progress_metric: "
             + json.dumps(
                 task.progress_metric.to_dict() if task.progress_metric else None,
