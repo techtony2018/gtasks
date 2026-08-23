@@ -311,6 +311,9 @@ class FakeAdapter:
     def list_goals(self) -> GoalRead:
         return GoalRead(goals=self.goals)
 
+    def get_goal(self, goal_slug: str) -> Goal:
+        return next(goal for goal in self.goals if goal.slug == goal_slug)
+
     def create_goal(self, goal: Goal) -> GoalMutationReceipt:
         self.created_goals.append(goal)
         self.goals = (*self.goals, goal)
@@ -4388,6 +4391,20 @@ class GoalRelationshipApiTests(unittest.TestCase):
 
 
 class GoalMutationApiTests(unittest.TestCase):
+    def test_reads_exact_goal_by_slug_after_creation(self) -> None:
+        goal = sample_goal()
+        harness = ServerHarness(self, FakeAdapter(goals=(goal,)))
+
+        status, response, _ = harness.request(
+            "GET",
+            f"/api/goals/{goal.slug.replace('/', '%2F')}",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["goal"]["slug"], goal.slug)
+        self.assertEqual(response["goal"]["title"], goal.title)
+        self.assertEqual(response["goal"]["target_day"], goal.target_day.isoformat())
+
     def test_edits_goal_with_verified_receipt(self) -> None:
         goal = sample_goal()
         harness = ServerHarness(self, FakeAdapter(goals=(goal,)))

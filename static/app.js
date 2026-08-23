@@ -4591,6 +4591,33 @@ function openEditGoal() {
   window.setTimeout(() => elements.newGoalTitle.focus(), 0);
 }
 
+async function readExactGoal(goalSlug) {
+  const response = await fetch(`/api/goals/${encodeURIComponent(goalSlug)}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    const error = new Error(result.error || "Goal could not be read from GBrain.");
+    error.code = result.code;
+    throw error;
+  }
+  if (!result.goal || result.goal.slug !== goalSlug) {
+    throw new Error("GBrain returned a different Goal during exact readback.");
+  }
+  return result.goal;
+}
+
+function upsertGoalInSnapshot(goal) {
+  if (!state.snapshot || !Array.isArray(state.snapshot.goals)) return;
+  const index = state.snapshot.goals.findIndex((item) => item.slug === goal.slug);
+  if (index === -1) {
+    state.snapshot.goals = [goal, ...state.snapshot.goals];
+  } else {
+    state.snapshot.goals[index] = { ...state.snapshot.goals[index], ...goal };
+  }
+}
+
 async function submitNewGoal(event) {
   event.preventDefault();
   elements.newGoalError.classList.add("is-hidden");
@@ -4633,20 +4660,21 @@ async function submitNewGoal(event) {
       error.slug = result.slug;
       throw error;
     }
-    await loadTasks();
-    const saved = state.snapshot.goals.find((goal) => goal.slug === result.goal.slug);
-    if (!saved || saved.title !== result.goal.title) {
+    const verifiedGoal = await readExactGoal(result.goal.slug);
+    if (verifiedGoal.title !== result.goal.title) {
       throw new Error(
-        "GBrain accepted the goal, but it was not present after Tony’s Goals refresh.",
+        "GBrain accepted the goal, but exact Goal readback did not match the write.",
       );
     }
+    await loadTasks();
+    upsertGoalInSnapshot(verifiedGoal);
     elements.newGoalDialog.close();
     state.activeView = "goals";
     showMutationStatus(
       editing ? "Goal changes verified in GBrain." : "Goal created, linked, and verified in GBrain.",
       "success",
     );
-    selectGoal(result.goal.slug);
+    selectGoal(verifiedGoal.slug);
   } catch (error) {
     elements.newGoalError.textContent =
       error.code === "partial_write" && error.slug

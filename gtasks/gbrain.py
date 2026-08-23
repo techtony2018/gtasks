@@ -6142,6 +6142,15 @@ class GBrainAdapter:
                 issues.append(issue)
         return GoalRead(goals=tuple(goals), issues=tuple(issues))
 
+    def get_goal(self, goal_slug: str) -> Goal:
+        page = self.runner.run("get_page", {"slug": goal_slug})
+        links = self.runner.run("get_links", {"slug": goal_slug})
+        if not isinstance(page, Mapping):
+            raise GBrainProtocolError("goal get_page did not return an object")
+        if not isinstance(links, list):
+            raise GBrainProtocolError("goal get_links did not return a list")
+        return Goal.from_page(page, edges=links)
+
     def create_goal(self, goal: Goal) -> GoalMutationReceipt:
         self.runner.run(
             "put_page",

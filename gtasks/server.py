@@ -2303,6 +2303,36 @@ def _handler_class(
                     return
                 self._json(HTTPStatus.OK, relationship_read.to_dict())
                 return
+            if path.startswith(goal_prefix) and "/" not in path[len(goal_prefix) :]:
+                goal_slug = unquote(path[len(goal_prefix) :])
+                try:
+                    goal = adapter.get_goal(goal_slug)
+                except GBrainCommandError as exc:
+                    if is_page_not_found_error(exc):
+                        self._json(
+                            HTTPStatus.NOT_FOUND,
+                            {"error": "Goal not found.", "code": "goal_not_found"},
+                        )
+                        return
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                except (DomainValidationError, ValueError) as exc:
+                    self._json(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        {"error": str(exc), "code": "invalid_goal"},
+                    )
+                    return
+                except GBrainError as exc:
+                    self._json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        {"error": str(exc), "code": "gbrain_unavailable"},
+                    )
+                    return
+                self._json(HTTPStatus.OK, {"goal": goal.to_dict()})
+                return
             self._serve_static(path)
 
         def do_POST(self) -> None:

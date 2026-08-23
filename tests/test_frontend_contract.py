@@ -1672,6 +1672,73 @@ assert(state.completionCelebrations[0].mode === "reduced", "prefers-reduced-moti
         self.assertIn("linked tasks", javascript)
         self.assertIn('goal.status === "paused"', javascript)
 
+    def test_goal_creation_uses_exact_readback_before_stale_snapshot_display(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const goal = {
+  slug: "goals/runtime-created",
+  title: "Runtime created goal",
+  status: "planned",
+  outcome: "Outcome.",
+  success_criteria: "Criteria.",
+  target_day: "2026-09-30",
+  strategy: "Strategy.",
+  review_cadence: "weekly",
+  constraints: "Constraints.",
+  advanced_by: [],
+};
+state.snapshot = {
+  tasks: [],
+  goals: [],
+  views: {},
+  read_state: { status: "fresh", refreshing: false, stale: false },
+};
+state.goalEditorSlug = null;
+state.activeView = "goals";
+elements.newGoalTitle.value = goal.title;
+elements.newGoalOutcome.value = goal.outcome;
+elements.newGoalSuccess.value = goal.success_criteria;
+elements.newGoalStrategy.value = goal.strategy;
+elements.newGoalCadence.value = goal.review_cadence;
+elements.newGoalConstraints.value = goal.constraints;
+elements.newGoalTarget.value = "";
+elements.newGoalDialog.close = () => { elements.newGoalDialog.closed = true; };
+let requested = [];
+globalThis.fetch = async (url, options = {}) => {
+  requested.push({ url, method: options.method || "GET" });
+  if (url === "/api/goals") {
+    return { ok: true, json: async () => ({ goal, receipt: { verified: true, goal_slug: goal.slug } }) };
+  }
+  if (url === `/api/goals/${encodeURIComponent(goal.slug)}`) {
+    return { ok: true, json: async () => ({ goal }) };
+  }
+  throw new Error(`unexpected fetch ${url}`);
+};
+loadTasks = async () => {
+  state.snapshot = {
+    tasks: [],
+    goals: [],
+    views: {},
+    read_state: { status: "refreshing", refreshing: true, stale: true },
+  };
+};
+render = () => {};
+let selected = null;
+selectGoal = (slug) => { selected = slug; };
+showMutationStatus = (message, phase) => { state.lastMutation = { message, phase }; };
+
+await submitNewGoal({ preventDefault() {} });
+
+assert(requested.some((item) => item.url === `/api/goals/${encodeURIComponent(goal.slug)}` && item.method === "GET"), "exact goal readback was not requested");
+assert(state.snapshot.goals.some((item) => item.slug === goal.slug), "verified goal was not inserted into stale task snapshot");
+assert(selected === goal.slug, "created goal was not selected after exact readback");
+assert(elements.newGoalDialog.closed === true, "goal dialog was not closed after verified readback");
+assert(state.lastMutation?.phase === "success", `unexpected mutation phase: ${state.lastMutation?.phase}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_about_modal_is_beneath_gbrain_status_with_release_history(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
