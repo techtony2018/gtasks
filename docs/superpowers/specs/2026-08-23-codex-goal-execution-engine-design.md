@@ -28,7 +28,7 @@ within an explicit authority envelope.
 
 Success is observable when:
 
-- each eligible active Goal has either current Agent work, an explicit reason
+- each eligible nonterminal Goal (`planned` or `active`) has either current Agent work, an explicit reason
   why no work is eligible, or one precise Tony decision request;
 - each eligible active Project has a verified Goal relationship or an explicit
   data-quality/ownership issue;
@@ -134,7 +134,7 @@ authority to create work.
 
 ### 2. Goal and Project gap analyzer
 
-For each eligible Goal, produce a small set of evidence-backed gaps:
+For each eligible nonterminal Goal, produce a small set of evidence-backed gaps:
 
 - active Project has no current bounded next work;
 - Goal has no active Project and canonical data contains a sufficiently
