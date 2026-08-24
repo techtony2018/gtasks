@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.163",
+  "current_version": "V0.0.164",
   "releases": [
     {
       "version": "V0.0.1",
@@ -978,6 +978,12 @@
       "date": "2026-08-24",
       "title": "Expose Goal handoff questions",
       "summary": "Goal execution rows and Agent cards now surface the exact open question TODO for tasks waiting on Tony, and task lookup merges richer Agent-work projections so handoff and TODO context is not hidden by stale snapshot rows."
+    },
+    {
+      "version": "V0.0.164",
+      "date": "2026-08-24",
+      "title": "Recover expired Agent execution claims",
+      "summary": "The handoff dispatcher now recovers expired owned execution claims at the next authenticated claim boundary, so a host worker outage or lost local claim state does not leave Goal-derived Agent work permanently queued after the correct remote host comes back online."
     }
   ]
 }

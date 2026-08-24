@@ -1926,6 +1926,59 @@ class DurableHandoffStore:
             )
         with self._write_transaction():
             self._backfill_legacy_execution_claims_in_transaction(now=now)
+            expired_owned = self._connection.execute(
+                f"""
+                SELECT e.claim_sequence, e.handoff_id
+                FROM handoffs h
+                JOIN leases l ON l.handoff_id = h.handoff_id
+                JOIN execution_claims e ON e.handoff_id = h.handoff_id
+                JOIN task_execution_authority t ON t.task_slug = e.task_slug
+                WHERE l.registration_id = ? AND h.status IN ('queued', 'retrying')
+                    AND (l.lease_until IS NULL OR l.lease_until <= ?)
+                    AND e.terminal_state IS NULL AND e.expires_at <= ?
+                    AND e.delegation_slug IS NULL
+                    AND e.executor_agent = e.permanent_owner
+                    AND e.executor_agent = h.agent_slug
+                    AND t.verified = 1
+                    AND t.owner_agent = e.permanent_owner
+                    AND t.status IN ('planned', 'active', 'blocked')
+                    {identity_clause}
+                ORDER BY h.created_at, h.handoff_id LIMIT 1
+                """,
+                (
+                    registration_id,
+                    _timestamp(now),
+                    _timestamp(now),
+                    *identity_parameters,
+                ),
+            ).fetchone()
+            if expired_owned is not None:
+                self._connection.execute(
+                    """
+                    UPDATE execution_claims
+                    SET claimed_at = ?, expires_at = ?
+                    WHERE claim_sequence = ? AND terminal_state IS NULL
+                        AND expires_at <= ?
+                    """,
+                    (
+                        _timestamp(now),
+                        _timestamp(
+                            now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
+                        ),
+                        expired_owned["claim_sequence"],
+                        _timestamp(now),
+                    ),
+                )
+                self._append_event_from_record(
+                    self.get(expired_owned["handoff_id"]),
+                    event_type="execution_claim_recovered",
+                    summary="Expired owned execution claim recovered for its registered local dispatcher.",
+                    detail=None,
+                    mutation_ref=None,
+                    occurred_at=now,
+                    recorded_at=now,
+                    execution_state="active",
+                )
             row = self._connection.execute(
                 f"""
                 SELECT h.handoff_id

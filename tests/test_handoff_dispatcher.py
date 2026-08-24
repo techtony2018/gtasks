@@ -3469,6 +3469,50 @@ class DurableHandoffStoreTests(unittest.TestCase):
             ],
         )
 
+    def test_claim_recovers_an_expired_owned_execution_claim_before_delivery(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        record = dispatcher.record(
+            change(
+                task_status="active",
+                trigger="task_activated",
+                requested_operation="task_status",
+            ),
+            now=NOW,
+        )
+        expired_execution = self.store.get_execution_claim(record.task_slug)
+        self.assertIsNotNone(expired_execution)
+
+        retried = self.store.claim(
+            REGISTRATION_ID,
+            now=expired_execution.expires_at + timedelta(seconds=1),
+            lease_seconds=30,
+        )
+
+        self.assertIsNotNone(retried)
+        self.assertEqual(retried.handoff_id, record.handoff_id)
+        self.assertEqual(retried.status, "leased")
+        refreshed_execution = self.store.get_execution_claim(record.task_slug)
+        self.assertIsNotNone(refreshed_execution)
+        self.assertGreater(refreshed_execution.expires_at, retried.record.created_at)
+        self.assertGreater(refreshed_execution.expires_at, expired_execution.expires_at)
+        event_types = [
+            event.event_type
+            for event in self.store.query_events(limit=50, after_sequence=0).events
+        ]
+        self.assertEqual(
+            event_types,
+            [
+                "handoff_queued",
+                "execution_claimed",
+                "execution_claim_recovered",
+                "handoff_leased",
+            ],
+        )
+
     def test_store_file_is_created_and_read_back_private(self) -> None:
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
