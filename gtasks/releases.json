@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.148",
+  "current_version": "V0.0.149",
   "releases": [
     {
       "version": "V0.0.1",
@@ -888,6 +888,12 @@
       "date": "2026-08-24",
       "title": "Wake Goal execution on refresh",
       "summary": "Manual Goal execution refresh now wakes the bounded scheduler before returning status, reducing avoidable waiting while preserving the existing minimum interval and canary/shadow safety controls."
+    },
+    {
+      "version": "V0.0.149",
+      "date": "2026-08-24",
+      "title": "Show selected Goal execution task metadata",
+      "summary": "Goal execution canary status now includes the existing selected Task title, status, and Agent when a configured Goal is already covered by duplicate or recently completed work."
     }
   ]
 }

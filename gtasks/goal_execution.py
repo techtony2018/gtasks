@@ -695,6 +695,28 @@ class GoalExecutionEngine:
                         status=handoff_status_by_task.get(task.slug)
                     ),
                 )
+        if (
+            goal_slug is not None
+            and selected is not None
+            and selected.reason in {"duplicate", "recently_completed"}
+            and selected.existing_task_slug is not None
+        ):
+            task = next(
+                (
+                    item
+                    for item in snapshot.tasks
+                    if item.slug == selected.existing_task_slug
+                ),
+                None,
+            )
+            if task is not None:
+                return GoalExecutionRun.for_task(
+                    plan,
+                    mode=mode,
+                    ran_at=ran_at,
+                    task=task,
+                    public_reason=selected.reason,
+                )
         return GoalExecutionRun.from_plan(
             plan,
             mode=mode,

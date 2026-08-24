@@ -522,6 +522,39 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(len(bridge.calls), 1)
         self.assertEqual(first.handoff_id, "handoffs/goal-execution-canary")
 
+    def test_existing_completed_goal_task_reports_title_status_and_agent(self) -> None:
+        first_plan = GoalExecutionPlanner().plan(snapshot())
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        completed = replace(
+            agent_task(
+                slug_identity="completed-goal-work",
+                goal_slug=GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            title="Completed Goal Review",
+            summary="Completed Goal Review",
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(completed,))
+
+        result = self.engine(adapter, self.Bridge()).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "recently_completed")
+        self.assertEqual(result.task_slug, completed.slug)
+        self.assertEqual(result.task_title, "Completed Goal Review")
+        self.assertEqual(result.task_status, "completed")
+        self.assertEqual(result.agent_slug, AGENT)
+
     def test_existing_goal_task_with_terminal_handoff_reports_repair_not_duplicate(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge()
