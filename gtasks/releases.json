@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.124",
+  "current_version": "V0.0.125",
   "releases": [
     {
       "version": "V0.0.1",
@@ -744,6 +744,12 @@
       "date": "2026-08-23",
       "title": "Replace stale pre-start inbox launches on recovered retries",
       "summary": "Ensures a verified newer recovered Agent handoff lease clears stale local pre-start launch evidence, so fixed-thread dispatchers do not keep polling an obsolete launch id after operator recovery."
+    },
+    {
+      "version": "V0.0.125",
+      "date": "2026-08-23",
+      "title": "Scope recovered launch ids by lease generation",
+      "summary": "Derives local Agent launch ids from the verified lease generation as well as the handoff idempotency key and attempt, preventing recovered retries from reading stale launch directories from earlier leases."
     }
   ]
 }

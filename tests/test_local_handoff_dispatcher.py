@@ -2170,6 +2170,9 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertIsNone(replaced.launch_pid)
             self.assertIsNone(replaced.launch_grant_ref)
             self.assertIsNone(replaced.start_execution_idempotency_key)
+            retried = inbox.claim_next(now=self.NOW + timedelta(seconds=2))
+            self.assertIsNotNone(retried)
+            self.assertNotEqual(inbox.launch_id_for(retried), launch_id)
 
     def test_checkpoint_terminal_replay_rejects_mismatched_persisted_status(
         self,

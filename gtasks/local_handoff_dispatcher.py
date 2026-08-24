@@ -1264,8 +1264,17 @@ class PrivateWakeInbox:
         execution_key = _require_identifier(
             claim.item.claim.get("idempotency_key"), "idempotency_key"
         )
+        lease_generation = claim.item.claim.get("lease_generation")
+        if (
+            isinstance(lease_generation, bool)
+            or not isinstance(lease_generation, int)
+            or lease_generation < 1
+        ):
+            raise ValueError("lease_generation must be a positive integer")
         digest = hashlib.sha256(
-            f"{execution_key}\0launch-attempt\0{attempt}".encode("utf-8")
+            f"{execution_key}\0lease-generation\0{lease_generation}\0launch-attempt\0{attempt}".encode(
+                "utf-8"
+            )
         ).hexdigest()
         return f"launch/{digest}"
 
