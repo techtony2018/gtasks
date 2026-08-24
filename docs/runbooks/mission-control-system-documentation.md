@@ -498,6 +498,21 @@ to the reviewed source before updating relationships.
   verifier now reports Timmy OK and Toddy blocked with `ssh_unreachable` plus
   `tailscale_key_expired`; Toddy peer metadata is `Toddy's Mac Mini-1`, DNS
   `toddys-mac-mini-1.taildb46a7.ts.net.`, and IP `100.117.212.20`.
+- V0.0.167 evidence: dashboard-managed health and releases readback
+  `V0.0.167`; release commit
+  `5a3a51c81196cfcfdcbce3722802b90e58271d25`; release evidence file
+  `docs/release-evidence/v0.0.167.md`; independent QA PASS at
+  `artifacts/qa/v0.0.167-independent/gate-report.md` with frozen aggregate
+  `8b44466616156a9491f18db25da846641ecd70bb795f8fb0e5a0d34525a97df6`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS; Developer reported
+  focused `126` OK and full regression `1371` OK with `5` skipped.
+- Verified V0.0.167 behavior: auto Goal execution still selects active or
+  eligible work first, but actionable blocker states now surface before
+  `recently_completed` history. The blocker states are `waiting_for_tony`,
+  `handoff_needs_repair`, `handoff_missing`, `task_needs_next_action`, and
+  `handoff_worker_unavailable`. Post-deploy `/api/goal-execution` readback
+  reported `public_reason=waiting_for_tony`, `decision_count=13`, and
+  `last_error=null`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -585,3 +600,7 @@ guard. It does not recover a remote worker by itself: Timmy is verified at
 `6984f24c1fe330aca68fd95adc0a80dbcc9b4428`, while Toddy remains
 `ssh_unreachable` with `tailscale_key_expired` and must not be documented as
 recovered.
+V0.0.167 selection priority is an ordering change only. It does not bypass the
+one-task canary boundary, does not turn `recently_completed` into active work,
+and does not repair `waiting_for_tony`, handoff, missing-next-action, or worker
+blockers without the owner action named by that state.

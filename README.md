@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.166 at commit
-`7b57e945afa70ed47761d20f62be156bb785ee33`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.167 at commit
+`5a3a51c81196cfcfdcbce3722802b90e58271d25`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -216,6 +216,13 @@ canonical roots and visible unsafe Agent-work issues still fail closed. Live
 readback showed `/api/goal-execution` with 13 last-run decisions and
 `last_error: null`; the hidden malformed Tammy task remains an Inbox warning
 and stays excluded from Board.
+V0.0.167 updates auto Goal execution public selection priority: active or
+eligible work and active accepted handoffs still win, but actionable blocker
+states now surface before `recently_completed` history. The blocker states are
+`waiting_for_tony`, `handoff_needs_repair`, `handoff_missing`,
+`task_needs_next_action`, and `handoff_worker_unavailable`. Post-deploy
+readback showed `/api/goal-execution` with `public_reason=waiting_for_tony`,
+`decision_count=13`, and `last_error=null`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -261,11 +268,15 @@ Delivering or Executing state when the latest verified dispatcher status is
 `queued` or `actively_executing`. This is readback context for already-selected
 work; it does not broaden canary scope, mark all Goals automated, or replace
 the completion requirements below.
-In V0.0.162+ auto-canary mode, when no new `auto_eligible` Goal exists, the
-public status selection is ordered: active accepted handoff first, newest
-recently completed canary second, and verified attention/blocker state third.
-This keeps blockers visible in the decisions list while avoiding an unrelated
-blocked task becoming the public canary state after recent automatic progress.
+In V0.0.167+ auto-canary mode, public status selection is ordered: first
+activate the first currently `auto_eligible` Goal, then prefer an existing
+duplicate/recent task with an accepted active dispatcher handoff, then surface
+verified actionable blockers, then fall back to the newest recently completed
+canary. The blocker set is `waiting_for_tony`, `handoff_needs_repair`,
+`handoff_missing`, `task_needs_next_action`, and
+`handoff_worker_unavailable`. This keeps the dashboard pointed at the next
+repairable unblocker instead of foregrounding stale completed history, while
+preserving the one-task canary safety boundary.
 If a goal-derived duplicate decision points at an active or planned canonical
 task without any verified Agent handoff, Goal execution reports
 `handoff_missing` with Needs attention copy instead of ordinary duplicate

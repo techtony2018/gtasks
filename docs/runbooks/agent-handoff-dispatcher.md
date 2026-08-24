@@ -749,8 +749,12 @@ V0.0.162 adds an explicit private `auto` canary target for dashboard-managed
 Goal execution canary mode. `auto` is still bounded to at most one
 Goal-derived Agent Task activation per run; it selects the first currently
 `auto_eligible` Goal instead of staying pinned to a fixed completed canary.
-When no new Goal is eligible, public status prioritizes active accepted
-handoff, then newest recently completed canary, then attention/blocker states.
+V0.0.167 supersedes the older fallback ordering: active/eligible work still
+wins, but if no new activation or active accepted handoff is selected, the
+public status surfaces actionable blockers before `recently_completed`
+history. The blocker states are `waiting_for_tony`,
+`handoff_needs_repair`, `handoff_missing`, `task_needs_next_action`, and
+`handoff_worker_unavailable`.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
@@ -762,6 +766,15 @@ Finance as `recently_completed`, Family/Toddy separately as
 `handoff_worker_unavailable`. Do not document `auto` as unlimited multi-Agent
 automation; it is a private canary target under the same one-task safety
 boundary and exact-readback gates.
+
+V0.0.167 shipped in commit `5a3a51c81196cfcfdcbce3722802b90e58271d25`
+(`Prioritize actionable Goal execution blockers`). Independent QA PASS is at
+`artifacts/qa/v0.0.167-independent/gate-report.md` with frozen aggregate
+`8b44466616156a9491f18db25da846641ecd70bb795f8fb0e5a0d34525a97df6`, including
+desktop `1440x1000` and genuine mobile `390x844`. Developer verification
+reported focused `126` OK and full regression `1371` OK with `5` skipped.
+Post-deploy `/api/goal-execution` readback reported
+`public_reason=waiting_for_tony`, `decision_count=13`, and `last_error=null`.
 
 V0.0.163 exposes open handoff question TODO text in waiting-for-Tony Goal
 execution surfaces. Full Goal execution rows and compact Agent cards now show
