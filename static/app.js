@@ -4039,7 +4039,7 @@ function goalExecutionReasonCopy(decision) {
     goal_paused: "This Goal is paused.",
     goal_terminal: "This Goal is already terminal.",
     system_repair_required: "Canonical task state needs safe system reconciliation.",
-    handoff_needs_repair: "The canonical task is active, but verified delivery needs repair.",
+    handoff_needs_repair: "The canonical task is active, but verified Agent handoff or execution needs system review.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
     shadow: "Shadow mode evaluates safe work without creating or activating a task.",
     off: "Automatic Goal execution is off.",
@@ -6624,8 +6624,8 @@ function renderTaskHandoff(task) {
 
   if (!handoff && dispatcherHandoff) {
     const status = dispatcherHandoff.status || "unavailable";
-    elements.taskHandoffHeading.textContent = "Verified Agent delivery needs system repair";
-    elements.taskHandoffCopy.textContent = `Latest dispatcher status: ${status}. Inspect the Handoff History before retrying delivery.`;
+    elements.taskHandoffHeading.textContent = "Verified Agent handoff needs system review";
+    elements.taskHandoffCopy.textContent = `Latest dispatcher status: ${status}. Inspect Handoff History for execution recovery evidence before retrying.`;
     elements.taskHandoffQuestion.textContent = "";
     return;
   }

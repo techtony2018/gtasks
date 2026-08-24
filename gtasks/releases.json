@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.118",
+  "current_version": "V0.0.119",
   "releases": [
     {
       "version": "V0.0.1",
@@ -708,6 +708,12 @@
       "date": "2026-08-23",
       "title": "Goal handoff repair visibility",
       "summary": "Projects terminal Agent handoff delivery states into Goal execution and exact task details so active goal-derived work that failed delivery is surfaced as system-repair attention instead of a silent duplicate."
+    },
+    {
+      "version": "V0.0.119",
+      "date": "2026-08-23",
+      "title": "Clearer Agent execution recovery copy",
+      "summary": "Clarifies Goal-derived task attention copy so checkpointed Agent execution recovery is described as verified handoff or execution review, not only delivery repair."
     }
   ]
 }

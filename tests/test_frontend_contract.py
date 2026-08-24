@@ -2667,8 +2667,9 @@ assert(findTaskBySlug("tasks/parent").todos[0].status === "done", "verified TODO
         ]
 
         self.assertIn("task?.dispatcher_handoff", renderer)
-        self.assertIn("Verified Agent delivery needs system repair", renderer)
+        self.assertIn("Verified Agent handoff needs system review", renderer)
         self.assertIn("Latest dispatcher status:", renderer)
+        self.assertIn("Inspect Handoff History for execution recovery evidence", renderer)
 
     def test_task_todo_add_form_is_read_only_until_explicit_plus_action(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
