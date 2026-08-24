@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.130",
+  "current_version": "V0.0.131",
   "releases": [
     {
       "version": "V0.0.1",
@@ -780,6 +780,12 @@
       "date": "2026-08-23",
       "title": "Replace completed local inbox entries on recovered retries",
       "summary": "Allows a verified newer recovered Agent handoff lease to replace stale completed local wake-inbox evidence so the same fixed-thread task can rerun after operator recovery."
+    },
+    {
+      "version": "V0.0.131",
+      "date": "2026-08-23",
+      "title": "Ignore terminal derived Goal tasks when planning new Agent work",
+      "summary": "Prevents cancelled or completed Goal-derived Agent tasks from suppressing fresh automatic Goal progress candidates, so terminal historical work does not keep active Goals in repair states."
     }
   ]
 }

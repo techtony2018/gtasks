@@ -169,6 +169,33 @@ class GoalExecutionPlannerTests(unittest.TestCase):
         self.assertEqual(plan.decisions[0].reason, "duplicate")
         self.assertTrue(plan.decisions[0].existing_task_slug.startswith("tasks/"))
 
+    def test_terminal_derived_goal_task_does_not_suppress_new_candidate(self) -> None:
+        first = GoalExecutionPlanner().plan(snapshot())
+        candidate = first.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        terminal = replace(
+            agent_task(
+                slug_identity="terminal-goal-work",
+                goal_slug=GOAL,
+                status="cancelled",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+
+        plan = GoalExecutionPlanner().plan(snapshot(tasks=(terminal,)))
+
+        self.assertEqual(plan.decisions[0].reason, "auto_eligible")
+        self.assertIsNotNone(plan.decisions[0].candidate)
+
     def test_active_agent_wip_suppresses_new_activation(self) -> None:
         plan = GoalExecutionPlanner().plan(
             snapshot(

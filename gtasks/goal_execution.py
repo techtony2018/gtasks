@@ -245,6 +245,7 @@ class GoalExecutionPlanner:
                     for task in snapshot.tasks
                     if task.goal_derivation is not None
                     and task.goal_derivation.fingerprint == candidate.fingerprint
+                    and task.status in {"planned", "active", "blocked"}
                 ),
                 None,
             )
