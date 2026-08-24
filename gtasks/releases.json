@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.151",
+  "current_version": "V0.0.152",
   "releases": [
     {
       "version": "V0.0.1",
@@ -906,6 +906,12 @@
       "date": "2026-08-24",
       "title": "Project missing Goal handoff decisions",
       "summary": "Goal execution now marks every active or planned goal-derived duplicate decision with no verified handoff as missing-handoff attention, so non-canary Goal cards no longer hide dispatch gaps behind ordinary duplicate copy."
+    },
+    {
+      "version": "V0.0.152",
+      "date": "2026-08-24",
+      "title": "Project dispatcher handoff status in Agent work",
+      "summary": "Agent work list readback now includes the latest dispatcher handoff status for non-completed tasks without overwriting canonical task handoff fields, aligning Agents cards and exact Task details with the same verified execution evidence."
     }
   ]
 }

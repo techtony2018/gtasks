@@ -6062,6 +6062,37 @@ class AgentApiTests(unittest.TestCase):
             "expires_at": claim.expires_at.isoformat(),
         })
 
+    def test_agent_work_projects_latest_dispatcher_handoff_status_without_domain_handoff(self) -> None:
+        task_slug = "tasks/goal-derived-active"
+        task = {
+            "slug": task_slug,
+            "title": "Review Civic progress",
+            "status": "active",
+            "owner_agent": "agents/timmy",
+            "owner": {"slug": "agents/timmy", "name": "Timmy"},
+            "handoff": None,
+        }
+
+        class StatusStore:
+            def get_execution_claim(self, _slug, *, include_terminal=False):
+                return None
+
+            def latest_task_handoff_status(self, slug):
+                return "completed" if slug == task_slug else None
+
+        status, payload, _ = ServerHarness(
+            self,
+            FakeAdapter(agent_work=(task,)),
+            handoff_store=StatusStore(),
+        ).request("GET", "/api/agent-work")
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["tasks"][0]["handoff"])
+        self.assertEqual(
+            payload["tasks"][0]["dispatcher_handoff"],
+            {"status": "completed"},
+        )
+
     def test_agent_work_suppresses_unknown_and_every_central_terminal_claim_state(self) -> None:
         now = datetime(2026, 7, 30, 16, 15, tzinfo=timezone.utc)
         task = {

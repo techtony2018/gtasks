@@ -1122,6 +1122,17 @@ def _handler_class(
                     "claimed_at": claim.claimed_at.isoformat(),
                     "expires_at": claim.expires_at.isoformat(),
                 }
+            if isinstance(slug, str) and task.get("status") != "completed":
+                latest_status = getattr(
+                    handoff_store, "latest_task_handoff_status", None
+                )
+                if callable(latest_status):
+                    try:
+                        dispatcher_status = latest_status(slug)
+                    except (RuntimeError, ValueError):
+                        dispatcher_status = None
+                    if dispatcher_status is not None:
+                        task["dispatcher_handoff"] = {"status": dispatcher_status}
             tasks.append(task)
         return {**payload, "tasks": tasks}
 
