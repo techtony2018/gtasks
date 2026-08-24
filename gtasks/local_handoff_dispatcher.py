@@ -191,9 +191,13 @@ def _mutation_id(handoff_id: str, operation: str) -> str:
 
 
 def _safe_server_reason(value: object) -> str:
-    reason = " ".join(str(value).replace("_", " ").split())[:160].strip()
-    if reason == "codex thread active writer":
-        reason = "active writer"
+    raw_reason = " ".join(str(value).split())[:160].strip()
+    if raw_reason == "codex_thread_active_writer":
+        reason = "command_not_started"
+    elif raw_reason in {"command_not_started", "runner_lost_before_gate"}:
+        reason = raw_reason
+    else:
+        reason = " ".join(raw_reason.replace("_", " ").split())[:160].strip()
     if not reason:
         raise ValueError("execution recovery reason is required")
     return reason

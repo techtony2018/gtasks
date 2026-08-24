@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.139",
+  "current_version": "V0.0.140",
   "releases": [
     {
       "version": "V0.0.1",
@@ -834,6 +834,12 @@
       "date": "2026-08-23",
       "title": "Sanitize active-writer handoff recovery reason",
       "summary": "Local handoff recovery now maps Codex active-writer machine failures to privacy-safe reason text accepted by Mission Control, allowing pending abandon recovery to clear before the next Agent handoff."
+    },
+    {
+      "version": "V0.0.140",
+      "date": "2026-08-23",
+      "title": "Preserve handoff abandon proof enums",
+      "summary": "Local handoff recovery now preserves server-approved command-not-started proof enums while mapping Codex active-writer failures to command_not_started, satisfying both privacy-safe text and abandon reconciliation requirements."
     }
   ]
 }

@@ -654,7 +654,7 @@ class LocalDispatcherClientTests(unittest.TestCase):
             body,
             {
                 "launch_id": "launch/client-abandon",
-                "reason": "command not started",
+                "reason": "command_not_started",
             },
         )
         self.assertEqual(
@@ -683,7 +683,7 @@ class LocalDispatcherClientTests(unittest.TestCase):
         )
 
         _url, _method, body, _headers, _timeout = self.request_details()
-        self.assertEqual(body["reason"], "active writer")
+        self.assertEqual(body["reason"], "command_not_started")
 
     def test_execution_abandon_accepts_exact_terminal_reconciliation(self) -> None:
         claim = claim_payload(status="execution_started")
