@@ -2982,7 +2982,10 @@ class RunForeverTests(unittest.TestCase):
 
             class Client(type(client)):
                 def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
-                    self.assertEqual(inbox.get(claim["handoff_id"]).state, "accepted")
+                    if status == "received":
+                        self.assertEqual(
+                            inbox.get(claim["handoff_id"]).state, "accepted"
+                        )
                     return super().ack(
                         claim,
                         status=status,
@@ -3012,10 +3015,14 @@ class RunForeverTests(unittest.TestCase):
                 retry_delay=0,
             )
 
-        self.assertEqual(ordered_client.acks, [("handoff-100", "received")])
+        self.assertEqual(
+            ordered_client.acks,
+            [("handoff-100", "received"), ("handoff-100", "completed")],
+        )
         self.assertEqual(adapter.claims, ["handoff-100"])
         self.assertEqual(ordered_client.failures, [])
         self.assertEqual(inbox.get("handoff-100").state, "completed")
+        self.assertFalse(store.path.exists())
 
     def test_network_loss_retries_without_losing_loop(self) -> None:
         client = self.Client([URLError("offline"), None])
@@ -3025,6 +3032,66 @@ class RunForeverTests(unittest.TestCase):
         run_forever(client, adapter, max_iterations=2, retry_delay=0.25, sleep=sleeps.append)
 
         self.assertEqual(sleeps, [0.25])
+
+    def test_completed_ack_response_loss_retries_without_relaunch(self) -> None:
+        class CompletedAckLostClient(self.Client):
+            def __init__(inner_self, claims: list[object]) -> None:
+                super().__init__(claims)
+                inner_self.completed_ack_attempts = 0
+
+            def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                if status == "completed":
+                    inner_self.completed_ack_attempts += 1
+                    inner_self.acks.append((claim["handoff_id"], status))
+                    if inner_self.completed_ack_attempts == 1:
+                        raise OSError("completed ack response lost")
+                    return {"status": status, "detail": detail}
+                return super().ack(
+                    claim,
+                    status=status,
+                    detail=detail,
+                    operation_sequence=operation_sequence,
+                )
+
+        client = CompletedAckLostClient([claim_payload()])
+        adapter = self.Adapter([subprocess.CompletedProcess([], 0)])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            store = PrivateClaimStore(directory / "active.json")
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+
+            run_forever(
+                client,
+                adapter,
+                claim_store=store,
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+            self.assertTrue(store.path.exists())
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
+
+            run_forever(
+                client,
+                adapter,
+                claim_store=store,
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+        self.assertEqual(
+            client.acks,
+            [
+                ("handoff-100", "received"),
+                ("handoff-100", "completed"),
+                ("handoff-100", "completed"),
+            ],
+        )
+        self.assertEqual(adapter.claims, ["handoff-100"])
+        self.assertFalse(store.path.exists())
 
     def test_nonzero_and_timeout_require_recovery_and_are_never_retryable(self) -> None:
         for result in (
@@ -3247,7 +3314,10 @@ class RunForeverTests(unittest.TestCase):
             )
 
             self.assertEqual(adapter.claims, ["handoff-100"])
-            self.assertEqual(second_client.acks, [("handoff-100", "received")])
+            self.assertEqual(
+                second_client.acks,
+                [("handoff-100", "received"), ("handoff-100", "completed")],
+            )
             self.assertEqual(inbox.get("handoff-100").state, "completed")
 
     def test_crash_after_received_before_pending_recovers_and_executes_once(self) -> None:
@@ -3387,6 +3457,7 @@ class RunForeverTests(unittest.TestCase):
                     "authorize:leased:4",
                     "ack:received:leased:4",
                     "launch:received:4",
+                    "ack:completed:received:4",
                 ],
             )
             self.assertEqual(inbox.get("handoff-100").state, "completed")
@@ -3677,7 +3748,7 @@ class RunForeverTests(unittest.TestCase):
 
             self.assertEqual(events, ["reconcile:queued", "claim"])
             self.assertEqual(adapter.claims, ["handoff-new"])
-            self.assertEqual(store.load_current()["handoff_id"], "handoff-new")
+            self.assertIsNone(store.load_current())
 
     def test_retrying_reconciliation_discards_stale_local_state_then_reclaims(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3714,7 +3785,7 @@ class RunForeverTests(unittest.TestCase):
                 self.fail(f"runner did not accept retrying reconciliation: {exc}")
 
             self.assertEqual(adapter.claims, ["handoff-retry"])
-            self.assertEqual(store.load_current()["handoff_id"], "handoff-retry")
+            self.assertIsNone(store.load_current())
 
     def test_terminal_reconciliation_clears_local_state_and_stops_without_reclaim(self) -> None:
         for terminal_status in ("completed", "dead_letter"):

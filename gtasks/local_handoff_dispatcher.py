@@ -2971,6 +2971,34 @@ def run_forever(
         if wake_inbox is not None
         else None
     )
+
+    def acknowledge_completed_execution(handoff_id: str) -> None:
+        if claim_store is None:
+            raise ValueError("a private claim store is required to complete a handoff")
+        claim = claim_store.load(handoff_id)
+        sequence = claim_store.prepare_ack("completed", None)
+        response = client.ack(
+            claim,
+            status="completed",
+            operation_sequence=sequence,
+        )
+        if not isinstance(response, Mapping):
+            raise ValueError("completed acknowledgement was not verified")
+        applied = claim_store.complete_ack(sequence, response)
+        if not applied:
+            if wake_inbox is not None:
+                wake_token = claim_store.pending_wake()
+                if wake_token is not None:
+                    wake_inbox.reconcile_delivery(
+                        handoff_id=handoff_id,
+                        wake_token=wake_token,
+                        status=str(response.get("status")),
+                        now=datetime.now(timezone.utc),
+                    )
+            recovered_handoffs.discard(handoff_id)
+            return
+        recovered_handoffs.discard(handoff_id)
+
     while not stop_requested() and (max_iterations is None or iterations < max_iterations):
         iterations += 1
         try:
@@ -3017,6 +3045,9 @@ def run_forever(
             if inbox_worker is not None and not defer_inbox_worker_for_leased_recovery:
                 executed = inbox_worker.run_once(now=datetime.now(timezone.utc))
                 if executed is not None:
+                    if executed.state == "completed":
+                        acknowledge_completed_execution(executed.handoff_id)
+                        continue
                     if executed.state in {"handed_back", "suppressed"}:
                         recovered_handoffs.discard(executed.handoff_id)
                     continue
@@ -3231,7 +3262,9 @@ def run_forever(
                 now=datetime.now(timezone.utc),
             )
             recovered_handoffs.add(handoff_id)
-            inbox_worker.run_once(now=datetime.now(timezone.utc))
+            executed = inbox_worker.run_once(now=datetime.now(timezone.utc))
+            if executed is not None and executed.state == "completed":
+                acknowledge_completed_execution(executed.handoff_id)
         except (OSError, TimeoutError):
             if retry_delay > 0:
                 sleep(retry_delay)
