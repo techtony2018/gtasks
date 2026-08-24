@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.152 at commit
-`a1bd22937cbf1f10b4f3035cf844eed41cb70206`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.153 at commit
+`27900b93ca8f63a7fd9bbc91d55812a587adf12d`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -100,7 +100,10 @@ terminal handoff states remain `handoff_needs_repair` and ordinary
 duplicate/recently_completed states stay distinct. V0.0.152 also projects the
 latest dispatcher handoff status into `/api/agent-work` non-completed task
 rows as `dispatcher_handoff` without overwriting the canonical task `handoff`;
-completed task rows suppress that projection. The earlier Finance canary task
+completed task rows suppress that projection. V0.0.153 flags active or planned
+non-derived Agent goal tasks that have no explicit next action, no handoff, no
+blockers/dependencies, and no open TODO as `task_needs_next_action` Needs
+attention instead of ordinary duplicate. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -139,7 +142,11 @@ status, and Agent so operators can verify the canonical work item directly.
 If a goal-derived duplicate decision points at an active or planned canonical
 task without any verified Agent handoff, Goal execution reports
 `handoff_missing` with Needs attention copy instead of ordinary duplicate
-copy. Terminal handoff states remain `handoff_needs_repair`.
+copy. Terminal handoff states remain `handoff_needs_repair`. If an active or
+planned non-derived Agent goal task lacks an explicit next action, handoff,
+blocker/dependency, and open TODO, Goal execution reports
+`task_needs_next_action` with Needs attention copy so the assigned Agent gets a
+repairable instruction gap instead of an actionable duplicate.
 
 ### Independent UI/UX release gate
 

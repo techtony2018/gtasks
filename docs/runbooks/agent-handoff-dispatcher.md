@@ -598,6 +598,18 @@ The live Civic Agent-work row read back active with canonical `handoff: null`
 and `dispatcher_handoff: {"status": "completed"}` for
 `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92`.
 
+V0.0.153 adds a separate Goal execution attention state for active or planned
+non-derived Agent goal tasks that are neither actionable nor already covered by
+handoff/blocker/TODO evidence. If the task has blank `next_action`, no
+canonical `handoff`, no blockers or dependencies, and no open TODO, the
+decision becomes `task_needs_next_action` and the UI must show Needs attention
+with exact copy: `The canonical task is active, but it has no explicit next
+action for the assigned Agent.` Actionable duplicate, passive scheduled waits,
+`handoff_missing`, `handoff_needs_repair`, and `recently_completed` remain
+distinct. The live Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` read back as
+`task_needs_next_action`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

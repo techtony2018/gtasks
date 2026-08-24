@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.152`
+- Last verified pushed release: `V0.0.153`
 - Release commits:
-  `a1bd22937cbf1f10b4f3035cf844eed41cb70206`
+  `27900b93ca8f63a7fd9bbc91d55812a587adf12d`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -221,6 +221,18 @@ to the reviewed source before updating relationships.
   that projection. Live Civic Agent-work readback showed
   `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` active with canonical
   `handoff: null` and `dispatcher_handoff: {"status": "completed"}`.
+- V0.0.153 evidence: dashboard-managed health readback `V0.0.153`; release
+  commit `27900b9`; full suite reported `1345` OK with `5` skipped;
+  independent QA PASS at `artifacts/qa/v0.0.153-independent/gate-report.md`.
+- Verified V0.0.153 behavior: Goal execution flags active or planned
+  non-derived Agent goal tasks with blank `next_action`, no handoff, no
+  blockers/dependencies, and no open TODO as `task_needs_next_action` / Needs
+  attention with exact copy `The canonical task is active, but it has no
+  explicit next action for the assigned Agent.` Actionable duplicate, passive
+  scheduled waits, `handoff_missing`, `handoff_needs_repair`, and
+  `recently_completed` remain distinct. Live Family/Toddy readback showed
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` projecting
+  `task_needs_next_action`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -244,4 +256,6 @@ unbounded autonomous execution. V0.0.151 missing-handoff attention is a
 readback/repair signal; it does not fabricate handoff delivery or mutate the
 canonical task. V0.0.152 `dispatcher_handoff` is also read-only projection
 evidence; it must not be treated as canonical `handoff` content or as
-completion of a non-completed task.
+completion of a non-completed task. V0.0.153 `task_needs_next_action` is an
+instruction-gap signal; it does not create the missing next action, handoff, or
+TODO and must not be merged with duplicate or handoff-repair states.
