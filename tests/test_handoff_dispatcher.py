@@ -1600,6 +1600,89 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(retry_claim.record.handoff_id, record.handoff_id)
         self.assertEqual(retry_claim.record.attempt, 2)
 
+    def test_operator_recovery_requeues_terminal_delivery_after_abandoned_starts(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        record = dispatcher.record(
+            change(
+                canonical_event_id="events/terminal-owned-recovery",
+                task_status="active",
+                requested_operation="task_status",
+                trigger="task_activated",
+            ),
+            now=NOW,
+        )
+        delivery = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        self.assertIsNotNone(delivery)
+        wake_token = f"wake/{record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-terminal-owned-received",
+            now=NOW + timedelta(seconds=2),
+        )
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/terminal-owned-start",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.store.abandon_unstarted_execution(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id="launch/terminal-owned-start",
+            mutation_id="mutation-terminal-owned-abandon",
+            reason="command_not_started",
+            now=NOW + timedelta(seconds=4),
+        )
+        terminal = self.store.record_failure(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-terminal-owned-failure",
+            retryable=False,
+            summary="Dispatcher delivery stopped after terminal failure.",
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(terminal.status, "dead_letter")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+        reopened = self.store.retry_suppressed_execution_recovery(
+            record.handoff_id,
+            mutation_id="mutation-terminal-owned-operator-retry",
+            summary="Operator verified local Codex writer contention recovered.",
+            now=NOW + timedelta(seconds=6),
+        )
+
+        self.assertEqual(reopened.status, "retrying")
+        self.assertEqual(reopened.reason, "system_dependency_recovered")
+        retry_claim = self.store.claim(
+            REGISTRATION_ID, now=NOW + timedelta(seconds=7), lease_seconds=30
+        )
+        self.assertIsNotNone(retry_claim)
+        self.assertEqual(retry_claim.record.handoff_id, record.handoff_id)
+        self.assertEqual(retry_claim.record.attempt, 2)
+
     def test_operator_recovery_requeues_stale_received_owned_execution(self) -> None:
         dispatcher = HandoffDispatcher(
             self.store,

@@ -2757,13 +2757,27 @@ class DurableHandoffStore:
                 ).fetchone()
                 is None
             )
+            terminal_delivery_recovery = (
+                current["status"] == "dead_letter"
+                and current["terminal_state"] == "terminal_delivery_failure"
+                and self._connection.execute(
+                    """
+                    SELECT 1 FROM handoff_events
+                    WHERE handoff_id = ?
+                        AND event_type = 'execution_start_abandoned'
+                    """,
+                    (handoff_id,),
+                ).fetchone()
+                is not None
+            )
             if (
                 not checkpointed_recovery
                 and not expired_recovery
                 and not stale_received_recovery
+                and not terminal_delivery_recovery
             ):
                 raise ValueError(
-                    "operator recovery requires checkpointed, expired, or stale received execution"
+                    "operator recovery requires checkpointed, expired, stale received, or abandoned-start terminal execution"
                 )
             if (
                 current["delegation_slug"] is not None
@@ -2783,7 +2797,7 @@ class DurableHandoffStore:
             ):
                 raise ValueError("operator recovery requires current task authority")
 
-            if checkpointed_recovery or expired_recovery:
+            if checkpointed_recovery or expired_recovery or terminal_delivery_recovery:
                 self._connection.execute(
                     "DELETE FROM execution_starts WHERE handoff_id = ?",
                     (handoff_id,),
@@ -2795,6 +2809,23 @@ class DurableHandoffStore:
                         release_mutation_ref = NULL, release_event_id = NULL,
                         claimed_at = ?, expires_at = ?
                     WHERE handoff_id = ? AND terminal_state IN ('checkpointed', 'expired')
+                    """,
+                    (
+                        _timestamp(now),
+                        _timestamp(
+                            now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
+                        ),
+                        handoff_id,
+                    ),
+                )
+            if terminal_delivery_recovery:
+                self._connection.execute(
+                    """
+                    UPDATE execution_claims
+                    SET terminal_state = NULL, terminal_at = NULL,
+                        release_mutation_ref = NULL, release_event_id = NULL,
+                        claimed_at = ?, expires_at = ?
+                    WHERE handoff_id = ? AND terminal_state = 'terminal_delivery_failure'
                     """,
                     (
                         _timestamp(now),
@@ -2825,6 +2856,8 @@ class DurableHandoffStore:
                         "suppressed"
                         if checkpointed_recovery or expired_recovery
                         else "received"
+                        if stale_received_recovery
+                        else "dead_letter"
                     ),
                 ),
             ).rowcount
