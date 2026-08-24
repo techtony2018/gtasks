@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.159`
+- Last verified pushed release: `V0.0.160`
 - Release commits:
-  `f070f1af2824958e6655d9ba8552278e72624446`
+  `682c28e0b86a1f18357502bfd4e68f7777368536`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -317,6 +317,29 @@ to the reviewed source before updating relationships.
   `2026-08-24T04:08:08.447338-07:00`; exact Artifact
   `artifacts/6e6c331e-a181-4d8f-ab16-cda613b8fed9` was created by
   `agents/timmy` and has `produced_for` set to that task.
+- V0.0.160 evidence: dashboard-managed health readback `V0.0.160`; release
+  commit `682c28e0b86a1f18357502bfd4e68f7777368536`; independent QA PASS at
+  `artifacts/qa/v0.0.160-repair-independent/gate-report.md` with frozen
+  aggregate
+  `0eefffc8cdae5ced352b50e8c2d74f47cde70d360a3ec1e911caee1979c4a836`; full
+  suite reported `1356` OK with `5` skipped; `node --check static/app.js` and
+  `python3 -m compileall -q gtasks tests` passed.
+- Verified V0.0.160 behavior: Goal execution classifies canonical Agent tasks
+  with status `blocked`, canonical handoff state `waiting_for_input`, and
+  `waiting_on=people/tony-guan` as `waiting_for_tony` / Blocked rather than
+  `task_needs_next_action` / Needs attention. The UI copy is exactly
+  `The canonical task is blocked waiting for Tony's answer before the assigned
+  Agent can continue.` Exact task detail hydrates the active handoff question
+  TODO from canonical `todo_for` backlinks. Bounded TODO hydration issues
+  surface as a canonical TODO list unavailable issue, shown as
+  `The canonical TODO list is unavailable.`, while preserving task/handoff
+  visibility. Live readback showed Family/Toddy task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` blocked with handoff
+  `waiting_for_input`, question TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, blocker
+  `people/tony-guan`, and Goal
+  `goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
+  `waiting_for_tony`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -361,4 +384,9 @@ handoff still requires the previously reported Tailscale host login repair.
 V0.0.158/V0.0.159 checkpointed-suppressed reconciliation is also narrowly
 gated: terminal checkpoint state and exact Artifact `produced_for` evidence are
 required. Suppressed without checkpoint, missing terminal checkpoint readback,
-or missing exact Artifact must remain repair attention/active.
+or missing exact Artifact must remain repair attention/active. V0.0.160
+`waiting_for_tony` is a blocked user-input state, not missing next action and
+not completed Agent execution. A TODO hydration issue preserves task/handoff
+visibility and should be treated as readback/data-availability repair; it does
+not authorize creating a replacement TODO, bypassing the Tony answer, or
+marking the task actionable.

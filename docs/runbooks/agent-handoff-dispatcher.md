@@ -693,6 +693,25 @@ was restored to Toddy Health, which still remains
 `handoff_worker_unavailable` pending Toddy host Tailscale login/private-route
 repair.
 
+V0.0.160 adds the Tony-answer blocked state to Goal execution and task-detail
+handoff rendering. A canonical Agent task with status `blocked`, canonical
+handoff state `waiting_for_input`, and `waiting_on=people/tony-guan` projects
+as `waiting_for_tony` and the UI must show Blocked with exact copy:
+`The canonical task is blocked waiting for Tony's answer before the assigned
+Agent can continue.` This state is not `task_needs_next_action`; it already
+has a canonical blocker and an Agent handoff question. The exact task detail
+API hydrates the active handoff question TODO from canonical `todo_for`
+backlinks, so the handoff panel renders the real question instead of indefinite
+loading or No TODO. If bounded TODO hydration fails, the response surfaces a
+canonical TODO list unavailable issue, shown as
+`The canonical TODO list is unavailable.`, while preserving task and handoff
+visibility. Live V0.0.160 readback showed Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` blocked with handoff
+`waiting_for_input`, blocker `people/tony-guan`, question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Goal
+`goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
+`waiting_for_tony`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

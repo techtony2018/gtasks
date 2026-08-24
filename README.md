@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.159 at commit
-`f070f1af2824958e6655d9ba8552278e72624446`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.160 at commit
+`682c28e0b86a1f18357502bfd4e68f7777368536`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -140,6 +140,18 @@ current-cycle Civic/Timmy task
 `2026-08-24T04:08:08.447338-07:00` with Artifact
 `artifacts/6e6c331e-a181-4d8f-ab16-cda613b8fed9` created by `agents/timmy`
 and `produced_for` that task.
+V0.0.160 classifies canonical blocked Agent tasks with
+`handoff.state=waiting_for_input` and `waiting_on=people/tony-guan` as
+`waiting_for_tony` / Blocked rather than `task_needs_next_action` / Needs
+attention. Exact task detail now hydrates the active handoff question TODO
+from canonical `todo_for` backlinks so the handoff panel shows the real
+question; bounded TODO hydration failures surface as a canonical TODO list
+unavailable issue while preserving task and handoff visibility. Live readback
+shows Family/Toddy task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`
+blocked on `people/tony-guan`, handoff `waiting_for_input`, question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Goal
+`goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
+`waiting_for_tony`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -225,6 +237,19 @@ that terminal checkpoint state readable after the active claim is released by
 falling back to terminal execution claims. Suppressed handoffs without the
 checkpoint state or without exact Artifact evidence remain
 `handoff_needs_repair` / active.
+
+Blocked Agent work waiting on Tony is not an instruction-gap duplicate. In
+V0.0.160+, when a canonical Agent task is `blocked`, its canonical handoff is
+`waiting_for_input`, and `waiting_on` is `people/tony-guan`, Goal execution
+reports `waiting_for_tony` with Blocked copy:
+`The canonical task is blocked waiting for Tony's answer before the assigned
+Agent can continue.` The exact task detail API also hydrates the active
+handoff question TODO from canonical `todo_for` backlinks so the handoff panel
+can render the real question and answer flow. If bounded TODO hydration fails,
+the response exposes a canonical TODO list unavailable issue, shown as
+`The canonical TODO list is unavailable.`, but keeps the task and handoff
+visible; operators should repair readback/data availability rather than
+fabricate a new TODO or mark the task actionable.
 
 ### Independent UI/UX release gate
 
