@@ -7419,11 +7419,13 @@ class GBrainAdapter:
 
         work = self.list_agent_work(include_todos=False)
         codex_roots = {profile.work_root for profile in codex_profiles}
-        unsafe_work_roots = {
-            issue.owner_agent or issue.slug
-            for issue in work.issues
-            if issue.owner_agent in profiles_by_slug or issue.slug in codex_roots
-        }
+        unsafe_work_roots: set[str] = set()
+        for issue in work.issues:
+            if issue.slug in codex_roots or issue.category == "canonical_root_data":
+                unsafe_work_roots.add(issue.slug)
+                continue
+            if issue.owner_agent in profiles_by_slug and issue.task_visible:
+                unsafe_work_roots.add(issue.owner_agent or issue.slug)
         if unsafe_work_roots:
             raise CanonicalRootError(tuple(unsafe_work_roots))
 

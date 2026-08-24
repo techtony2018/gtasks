@@ -1154,6 +1154,68 @@ class GoalExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(raised.exception.roots, (GOALS_ROOT,))
         self.assertFalse(any(tool == "put_page" for tool, _ in runner.calls))
 
+    def test_snapshot_does_not_abort_for_non_visible_agent_work_issue(self) -> None:
+        adapter = GBrainAdapter(self._runner())
+        adapter.list_goals = lambda: GoalRead((self._goal(),), ())
+        adapter.list_projects = lambda: ProjectRead((self._project(),), ())
+        adapter.list_agent_profiles = lambda: AgentRead(
+            (
+                self._agent(slug="agents/tammy"),
+                self._agent(),
+                self._agent(slug="agents/toddy"),
+            ),
+            (),
+        )
+        adapter.list_agent_work = lambda **_kwargs: AgentWorkRead(
+            (),
+            (
+                CollectionIssue(
+                    slug="tasks/malformed-handoff",
+                    message="waiting_for_input requires blocked task status",
+                    category="core_data",
+                    task_visible=False,
+                    owner_agent="agents/tammy",
+                ),
+            ),
+            (self.WORK_ROOT,),
+        )
+
+        snapshot = adapter.read_goal_execution_snapshot({self.AGENT: True})
+
+        self.assertEqual(snapshot.goals, (self._goal(),))
+        self.assertEqual(snapshot.tasks, ())
+
+    def test_snapshot_still_fails_closed_for_agent_work_root_issue(self) -> None:
+        adapter = GBrainAdapter(self._runner())
+        adapter.list_goals = lambda: GoalRead((self._goal(),), ())
+        adapter.list_projects = lambda: ProjectRead((self._project(),), ())
+        adapter.list_agent_profiles = lambda: AgentRead(
+            (
+                self._agent(slug="agents/tammy"),
+                self._agent(),
+                self._agent(slug="agents/toddy"),
+            ),
+            (),
+        )
+        adapter.list_agent_work = lambda **_kwargs: AgentWorkRead(
+            (),
+            (
+                CollectionIssue(
+                    slug=self.WORK_ROOT,
+                    message="root read failed",
+                    category="core_data",
+                    task_visible=False,
+                    owner_agent=self.AGENT,
+                ),
+            ),
+            (self.WORK_ROOT,),
+        )
+
+        with self.assertRaises(CanonicalRootError) as raised:
+            adapter.read_goal_execution_snapshot({self.AGENT: True})
+
+        self.assertEqual(raised.exception.roots, (self.WORK_ROOT,))
+
     def test_create_derived_task_writes_planned_then_verifies_all_edges(self) -> None:
         runner = self._runner()
         candidate = self._candidate()

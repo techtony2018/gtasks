@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.165",
+  "current_version": "V0.0.166",
   "releases": [
     {
       "version": "V0.0.1",
@@ -990,6 +990,12 @@
       "date": "2026-08-24",
       "title": "Make missing Goal owners actionable",
       "summary": "Goal execution Needs attention copy now names the exact default_agent_for repair needed when a Goal has no verified Codex Agent owner, so unassigned Goals no longer appear blocked without a clear next step."
+    },
+    {
+      "version": "V0.0.166",
+      "date": "2026-08-24",
+      "title": "Keep Goal execution running past hidden Agent data issues",
+      "summary": "Goal execution now continues planning around non-visible malformed Agent work items that are already reported in Inbox, while still failing closed for missing canonical roots and visible unsafe Agent work."
     }
   ]
 }
