@@ -382,6 +382,8 @@ class GoalExecutionAdapter(Protocol):
         self, route_health: Mapping[str, bool]
     ) -> GoalExecutionSnapshot: ...
 
+    def list_agent_artifacts(self, *, task: str, limit: int = 1) -> Any: ...
+
     def create_or_adopt_derived_agent_task(
         self, candidate: GoalExecutionCandidate, now: datetime
     ) -> Any: ...
@@ -610,6 +612,15 @@ class GoalExecutionEngine:
             None,
         )
         if eligible is None or eligible.candidate is None:
+            reconciled = self._reconcile_selected_completed_handoff(
+                plan,
+                snapshot=snapshot,
+                ran_at=now,
+                goal_slug=self.canary_goal_slug,
+                handoff_status_by_task=handoff_status_by_task,
+            )
+            if reconciled is not None:
+                return reconciled
             return self._run_from_plan(
                 plan,
                 snapshot=snapshot,
@@ -681,6 +692,95 @@ class GoalExecutionEngine:
             task=activated.task,
             public_reason=reason,
             handoff=handoff,
+        )
+
+    def _task_has_verified_artifact(self, task_slug: str) -> bool:
+        list_artifacts = getattr(self.adapter, "list_agent_artifacts", None)
+        if not callable(list_artifacts):
+            return False
+        result = list_artifacts(task=task_slug, limit=1)
+        artifacts = getattr(result, "artifacts", None)
+        if artifacts is None and isinstance(result, Mapping):
+            artifacts = result.get("artifacts")
+        if not isinstance(artifacts, (tuple, list)):
+            return False
+        return any(getattr(artifact, "produced_for", None) == task_slug for artifact in artifacts)
+
+    def _reconcile_selected_completed_handoff(
+        self,
+        plan: GoalExecutionPlan,
+        *,
+        snapshot: GoalExecutionSnapshot,
+        ran_at: datetime,
+        goal_slug: str | None,
+        handoff_status_by_task: Mapping[str, str | None],
+    ) -> GoalExecutionRun | None:
+        selected = next(
+            (
+                decision
+                for decision in plan.decisions
+                if goal_slug is None or decision.goal_slug == goal_slug
+            ),
+            None,
+        )
+        if (
+            selected is None
+            or selected.reason != "duplicate"
+            or selected.existing_task_slug is None
+            or handoff_status_by_task.get(selected.existing_task_slug) != "completed"
+        ):
+            return None
+        task = next(
+            (
+                item
+                for item in snapshot.tasks
+                if item.slug == selected.existing_task_slug
+            ),
+            None,
+        )
+        if (
+            task is None
+            or task.status != "active"
+            or task.goal_derivation is None
+            or not self._task_has_verified_artifact(task.slug)
+        ):
+            return None
+        try:
+            receipt = self.adapter.set_task_status(task.slug, "completed", ran_at)
+        except PartialMutationError:
+            return GoalExecutionRun.for_task(
+                plan,
+                mode="canary",
+                ran_at=ran_at,
+                task=task,
+                public_reason="system_repair_required",
+                handoff=SimpleNamespace(status="completed"),
+            )
+        if receipt.verified is not True or receipt.task.status != "completed":
+            return GoalExecutionRun.for_task(
+                plan,
+                mode="canary",
+                ran_at=ran_at,
+                task=receipt.task,
+                public_reason="system_repair_required",
+                handoff=SimpleNamespace(status="completed"),
+            )
+        revised_plan = GoalExecutionPlan(
+            plan.planner_version,
+            tuple(
+                replace(decision, reason="completed_after_verified_handoff")
+                if decision is selected
+                else decision
+                for decision in plan.decisions
+            ),
+        )
+        return GoalExecutionRun.for_task(
+            revised_plan,
+            mode="canary",
+            ran_at=ran_at,
+            task=receipt.task,
+            public_reason="completed_after_verified_handoff",
+            handoff=SimpleNamespace(status="completed"),
         )
 
     def _annotate_handoff_attention(

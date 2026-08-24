@@ -381,9 +381,16 @@ class GoalExecutionPlannerTests(unittest.TestCase):
 
 class GoalExecutionEngineTests(unittest.TestCase):
     class Adapter:
-        def __init__(self, *, tasks=(), activation_error: Exception | None = None):
+        def __init__(
+            self,
+            *,
+            tasks=(),
+            activation_error: Exception | None = None,
+            artifact_tasks: tuple[str, ...] = (),
+        ):
             self.tasks = list(tasks)
             self.activation_error = activation_error
+            self.artifact_tasks = set(artifact_tasks)
             self.calls: list[tuple[str, object]] = []
 
         def read_goal_execution_snapshot(self, route_health):
@@ -444,6 +451,20 @@ class GoalExecutionEngineTests(unittest.TestCase):
                 task=task,
                 verified=True,
             )
+
+        def list_agent_artifacts(self, *, task: str, limit: int = 1):
+            self.calls.append(("artifacts", task))
+            artifacts = (
+                (
+                    SimpleNamespace(
+                        slug="artifacts/11111111-1111-4111-8111-111111111111",
+                        produced_for=task,
+                    ),
+                )
+                if task in self.artifact_tasks
+                else ()
+            )
+            return SimpleNamespace(artifacts=artifacts)
 
     class Bridge:
         def __init__(self, *, status: str = "queued", verified: bool = True):
@@ -591,6 +612,81 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.task_title, "Completed Goal Review")
         self.assertEqual(result.task_status, "completed")
         self.assertEqual(result.agent_slug, AGENT)
+
+    def test_canary_reconciles_completed_handoff_with_verified_artifact(self) -> None:
+        first_plan = GoalExecutionPlanner().plan(snapshot())
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        active = replace(
+            agent_task(
+                slug_identity="completed-handoff-goal-work",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(active,), artifact_tasks=(active.slug,))
+        bridge = self.Bridge()
+        bridge.latest_status = "completed"
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "completed_after_verified_handoff")
+        self.assertEqual(result.task_slug, active.slug)
+        self.assertEqual(result.task_status, "completed")
+        self.assertIn(("artifacts", active.slug), adapter.calls)
+        self.assertIn(("status", (active.slug, "completed")), adapter.calls)
+
+    def test_canary_does_not_complete_handoff_without_verified_artifact(self) -> None:
+        first_plan = GoalExecutionPlanner().plan(snapshot())
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        active = replace(
+            agent_task(
+                slug_identity="completed-handoff-without-artifact",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(active,))
+        bridge = self.Bridge()
+        bridge.latest_status = "completed"
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "duplicate")
+        self.assertEqual(result.task_status, "active")
+        self.assertIn(("artifacts", active.slug), adapter.calls)
+        self.assertNotIn(("status", (active.slug, "completed")), adapter.calls)
 
     def test_existing_goal_task_with_terminal_handoff_reports_repair_not_duplicate(self) -> None:
         adapter = self.Adapter()

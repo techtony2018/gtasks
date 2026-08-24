@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.155",
+  "current_version": "V0.0.156",
   "releases": [
     {
       "version": "V0.0.1",
@@ -930,6 +930,12 @@
       "date": "2026-08-24",
       "title": "Surface stale queued Goal handoffs",
       "summary": "Goal execution now surfaces a queued derived Agent task as needing system attention when the dispatcher has not produced a verified worker lease after the bounded attention window, making private route/worker outages visible instead of continuing to show ordinary duplicate work."
+    },
+    {
+      "version": "V0.0.156",
+      "date": "2026-08-24",
+      "title": "Reconcile completed Goal handoffs",
+      "summary": "Goal execution can now complete a selected canary Goal-derived Task after verified dispatcher completion and exact produced Artifact readback, preventing completed Agent work from staying active and blocking future Goal progress."
     }
   ]
 }
