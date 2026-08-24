@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.153",
+  "current_version": "V0.0.154",
   "releases": [
     {
       "version": "V0.0.1",
@@ -918,6 +918,12 @@
       "date": "2026-08-24",
       "title": "Surface Agent tasks missing next actions",
       "summary": "Goal execution now flags active or planned non-derived Agent goal tasks that have no explicit next action, handoff, blocker, dependency, or open TODO as Needs attention instead of treating them as ordinary duplicate work."
+    },
+    {
+      "version": "V0.0.154",
+      "date": "2026-08-24",
+      "title": "Ignore non-actionable Agent tasks for Goal WIP",
+      "summary": "Goal execution WIP accounting now ignores active Agent tasks that are themselves missing an explicit next action, so one stalled task does not block another bounded Goal review from becoming eligible."
     }
   ]
 }

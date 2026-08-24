@@ -320,6 +320,7 @@ class GoalExecutionPlanner:
                 for task in snapshot.tasks
                 if task.owner_agent == owner.slug and task.status == "active"
                 and not _is_passive_scheduled_wait_task(task)
+                and not _needs_next_action(task)
             )
             if active_wip >= AUTO_WIP_LIMIT:
                 decisions.append(GoalExecutionDecision(goal.slug, "wip_full"))

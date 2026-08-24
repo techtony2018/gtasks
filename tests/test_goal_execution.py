@@ -258,10 +258,13 @@ class GoalExecutionPlannerTests(unittest.TestCase):
         plan = GoalExecutionPlanner().plan(
             snapshot(
                 tasks=(
-                    agent_task(
-                        slug_identity="other-active",
-                        goal_slug=OTHER_GOAL,
-                        status="active",
+                    replace(
+                        agent_task(
+                            slug_identity="other-active",
+                            goal_slug=OTHER_GOAL,
+                            status="active",
+                        ),
+                        next_action="Publish the bounded Goal progress brief.",
                     ),
                 )
             )
@@ -283,6 +286,18 @@ class GoalExecutionPlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(plan.decisions[0].reason, "auto_eligible")
+
+    def test_unrelated_active_task_needing_next_action_does_not_consume_active_wip(self) -> None:
+        stalled = agent_task(
+            slug_identity="other-active-without-next-action",
+            goal_slug=OTHER_GOAL,
+            status="active",
+        )
+
+        plan = GoalExecutionPlanner().plan(snapshot(tasks=(stalled,)))
+
+        self.assertEqual(plan.decisions[0].reason, "auto_eligible")
+        self.assertIsNotNone(plan.decisions[0].candidate)
 
     def test_missing_and_duplicate_goal_owner_never_infer_agent(self) -> None:
         missing = GoalExecutionPlanner().plan(snapshot(agents=()))
@@ -508,10 +523,13 @@ class GoalExecutionEngineTests(unittest.TestCase):
     def test_run_once_does_not_create_when_wip_is_full(self) -> None:
         adapter = self.Adapter(
             tasks=(
-                agent_task(
-                    slug_identity="other-active",
-                    goal_slug=OTHER_GOAL,
-                    status="active",
+                replace(
+                    agent_task(
+                        slug_identity="other-active",
+                        goal_slug=OTHER_GOAL,
+                        status="active",
+                    ),
+                    next_action="Publish the bounded Goal progress brief.",
                 ),
             )
         )
