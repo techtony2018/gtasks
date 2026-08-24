@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.121",
+  "current_version": "V0.0.122",
   "releases": [
     {
       "version": "V0.0.1",
@@ -726,6 +726,12 @@
       "date": "2026-08-23",
       "title": "Requeue verified execution recovery handoffs",
       "summary": "Adds a bounded operator recovery path for checkpointed owned Agent executions, preserving the same durable handoff while clearing stale launch fences and returning it to retry after verified system repair."
+    },
+    {
+      "version": "V0.0.122",
+      "date": "2026-08-23",
+      "title": "Replace terminal local inbox entries on retry",
+      "summary": "Allows a verified newer server retry for the same Agent handoff to replace stale terminal local wake-inbox evidence, clearing old launch fences so the fixed-thread dispatcher can start the recovered work."
     }
   ]
 }

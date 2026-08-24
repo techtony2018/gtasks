@@ -2089,6 +2089,49 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 )
                 self.assertEqual(replay, completed)
 
+    def test_newer_server_retry_replaces_terminal_handed_back_inbox_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            wake_token = "wake/handoff-key-100"
+            launch_id = self._queue_checkpoint(inbox)
+            pending = inbox.claim_next(now=self.NOW + timedelta(seconds=1))
+            self.assertIsNotNone(pending)
+            terminal = inbox.complete_server_action(
+                pending,
+                action="checkpoint",
+                response={
+                    "handoff_id": "handoff-100",
+                    "status": "suppressed",
+                    "launch_id": launch_id,
+                    "checkpointed": True,
+                },
+                now=self.NOW + timedelta(seconds=2),
+            )
+            self.assertEqual(terminal.state, "handed_back")
+            self.assertEqual(terminal.last_error, "server_suppressed")
+
+            replaced = inbox.enqueue(
+                claim_payload(
+                    status="received",
+                    reason="system_dependency_recovered",
+                    attempt=3,
+                    lease_generation=4,
+                    lease_capability="private-new-lease-capability",
+                ),
+                wake_token=wake_token,
+                now=self.NOW + timedelta(seconds=3),
+            )
+
+            self.assertEqual(replaced.state, "accepted")
+            self.assertEqual(replaced.attempt, 0)
+            self.assertEqual(replaced.claim["lease_generation"], 4)
+            self.assertEqual(replaced.claim["reason"], "system_dependency_recovered")
+            self.assertIsNone(replaced.last_error)
+            self.assertIsNone(replaced.current_launch_id)
+            self.assertIsNone(replaced.launch_grant_ref)
+            self.assertIsNone(replaced.start_execution_idempotency_key)
+
     def test_checkpoint_terminal_replay_rejects_mismatched_persisted_status(
         self,
     ) -> None:

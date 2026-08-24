@@ -128,6 +128,9 @@ INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
         "recovery_required",
     }
 )
+INBOX_REPLACEABLE_TERMINAL_STATES = frozenset(
+    {"handed_back", "suppressed"}
+)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
 _AGENT_SLUG = re.compile(r"agents/[a-z0-9][a-z0-9._-]{0,63}")
 _THREAD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}")
@@ -880,7 +883,35 @@ class PrivateWakeInbox:
                     != stored_claim.get("lease_capability")
                 ):
                     raise ValueError("same-generation claim changed its lease capability")
-                if existing["state"] in INBOX_AUTHORIZATION_REFRESH_STATES:
+                if (
+                    recovered_generation > current_generation
+                    and existing["state"] in INBOX_REPLACEABLE_TERMINAL_STATES
+                ):
+                    self._connection.execute(
+                        """
+                        UPDATE wake_inbox SET claim_json = ?, state = 'accepted',
+                            attempt = 0, accepted_at = ?, updated_at = ?,
+                            retry_at = NULL, last_error = NULL,
+                            worker_claim_ref = NULL, worker_claim_until = NULL,
+                            current_launch_id = NULL, launch_pid = NULL,
+                            launch_grant_ref = NULL, start_request_ref = NULL,
+                            start_execution_idempotency_key = NULL,
+                            start_registration_ref = NULL,
+                            start_lease_generation = NULL,
+                            start_lease_capability_ref = NULL,
+                            pending_server_action = NULL,
+                            pending_action_reason = NULL
+                        WHERE handoff_id = ? AND wake_token_ref = ?
+                        """,
+                        (
+                            claim_json,
+                            timestamp,
+                            timestamp,
+                            handoff_id,
+                            wake_token_ref,
+                        ),
+                    )
+                elif existing["state"] in INBOX_AUTHORIZATION_REFRESH_STATES:
                     self._connection.execute(
                         """
                         UPDATE wake_inbox SET claim_json = ?, updated_at = ?
