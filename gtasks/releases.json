@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.137",
+  "current_version": "V0.0.138",
   "releases": [
     {
       "version": "V0.0.1",
@@ -822,6 +822,12 @@
       "date": "2026-08-23",
       "title": "Recover completed Codex handoff abandon reconciliation",
       "summary": "Local Codex handoff recovery now accepts a verified server-completed handoff while abandoning an unused launch, clearing the worker inbox instead of blocking future Tammy handoffs after an active-writer recovery."
+    },
+    {
+      "version": "V0.0.138",
+      "date": "2026-08-23",
+      "title": "Use privacy-safe handoff recovery reasons",
+      "summary": "Local handoff recovery now converts machine failure codes such as codex_thread_active_writer into privacy-safe server reason text before checkpoint or abandon recovery, allowing blocked wake inbox rows to reconcile and future Agent handoffs to proceed."
     }
   ]
 }

@@ -190,6 +190,13 @@ def _mutation_id(handoff_id: str, operation: str) -> str:
     return f"local/{digest}"
 
 
+def _safe_server_reason(value: object) -> str:
+    reason = " ".join(str(value).replace("_", " ").split())[:160].strip()
+    if not reason:
+        raise ValueError("execution recovery reason is required")
+    return reason
+
+
 def _require_positive_pid(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError("launch ready PID must be positive")
@@ -2681,7 +2688,7 @@ class LocalDispatcherClient:
         """Idempotently checkpoint and hand back one ambiguous started launch."""
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
         launch_id = _require_identifier(launch_id, "launch_id")
-        reason = " ".join(str(reason).split())[:160]
+        reason = _safe_server_reason(reason)
         if not reason:
             raise ValueError("execution checkpoint reason is required")
         headers = self._claim_headers(claim)
@@ -2723,7 +2730,7 @@ class LocalDispatcherClient:
         """Idempotently reset one execution start proven not to have launched."""
         handoff_id = _require_identifier(claim.get("handoff_id"), "handoff_id")
         launch_id = _require_identifier(launch_id, "launch_id")
-        reason = " ".join(str(reason).split())[:160]
+        reason = _safe_server_reason(reason)
         if not reason:
             raise ValueError("execution abandon reason is required")
         headers = self._claim_headers(claim)

@@ -654,13 +654,36 @@ class LocalDispatcherClientTests(unittest.TestCase):
             body,
             {
                 "launch_id": "launch/client-abandon",
-                "reason": "command_not_started",
+                "reason": "command not started",
             },
         )
         self.assertEqual(
             headers["x-handoff-lease-capability"], "private-lease-capability"
         )
         self.assertTrue(response["abandoned"])
+
+    def test_execution_abandon_sends_privacy_safe_reason_text(self) -> None:
+        claim = claim_payload(status="execution_started")
+        self.responses.append(
+            FakeResponse(
+                200,
+                {
+                    "handoff_id": "handoff-100",
+                    "status": "received",
+                    "launch_id": "launch/client-abandon",
+                    "abandoned": True,
+                },
+            )
+        )
+
+        self.client.execution_abandon(
+            claim,
+            launch_id="launch/client-abandon",
+            reason="codex_thread_active_writer",
+        )
+
+        _url, _method, body, _headers, _timeout = self.request_details()
+        self.assertEqual(body["reason"], "codex thread active writer")
 
     def test_execution_abandon_accepts_exact_terminal_reconciliation(self) -> None:
         claim = claim_payload(status="execution_started")
