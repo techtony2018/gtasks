@@ -1791,6 +1791,21 @@ function findTaskBySlug(slug) {
       : snapshotTask || agentTask
   );
   if (canonical) return canonical;
+  const lastRunTask = state.goalExecution?.last_run?.task;
+  if (lastRunTask?.slug === slug) {
+    const ownerAgent = lastRunTask.owner_agent || lastRunTask.agent_slug || null;
+    return {
+      ...lastRunTask,
+      summary: lastRunTask.summary || lastRunTask.title || slug,
+      owner_agent: ownerAgent,
+      owner: ownerAgent
+        ? state.agents.find((agent) => agent.slug === ownerAgent) || lastRunTask.owner || null
+        : lastRunTask.owner || null,
+      todos: Array.isArray(lastRunTask.todos) ? lastRunTask.todos : [],
+      open_todos: Array.isArray(lastRunTask.open_todos) ? lastRunTask.open_todos : [],
+      artifacts: Array.isArray(lastRunTask.artifacts) ? lastRunTask.artifacts : [],
+    };
+  }
   const proposal = state.proposals.find((candidate) => candidate.slug === slug);
   if (!proposal) return null;
   // Proposal reads are deliberately compact for Inbox.  This projection makes

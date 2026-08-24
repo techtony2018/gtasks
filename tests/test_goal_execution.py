@@ -886,6 +886,38 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.task_status, "completed")
         self.assertEqual(result.agent_slug, AGENT)
 
+    def test_waiting_for_tony_goal_task_reports_title_status_and_agent(self) -> None:
+        waiting = replace(
+            agent_task(
+                slug_identity="waiting-goal-work",
+                goal_slug=GOAL,
+                status="blocked",
+            ),
+            title="Waiting Goal Review",
+            summary="Waiting Goal Review",
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/question-round-1",
+                waiting_on="people/tony-guan",
+                resume_owner=AGENT,
+                resume_action="Resume after Tony chooses the scope.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        adapter = self.Adapter(tasks=(waiting,))
+
+        result = self.engine(adapter, self.Bridge()).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "waiting_for_tony")
+        self.assertEqual(result.task_slug, waiting.slug)
+        self.assertEqual(result.task_title, "Waiting Goal Review")
+        self.assertEqual(result.task_status, "blocked")
+        self.assertEqual(result.agent_slug, AGENT)
+
     def test_prior_cycle_completed_task_does_not_permanently_suppress_next_goal_review(self) -> None:
         previous_plan = GoalExecutionPlanner(cycle_day=date(2026, 8, 17)).plan(snapshot())
         previous_candidate = previous_plan.decisions[0].candidate

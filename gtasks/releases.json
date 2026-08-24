@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.167",
+  "current_version": "V0.0.169",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1002,6 +1002,18 @@
       "date": "2026-08-24",
       "title": "Prioritize actionable Goal blockers",
       "summary": "Auto Goal execution now surfaces waiting-for-Tony and handoff repair states before completed history, so the dashboard points to the next action that can unblock Agent progress instead of foregrounding stale success."
+    },
+    {
+      "version": "V0.0.168",
+      "date": "2026-08-24",
+      "title": "Populate waiting Goal task context",
+      "summary": "Goal execution now resolves waiting-for-Tony selected tasks to their canonical title, status, and Agent owner, so the blocker headline links to a populated task instead of an empty slug-only record."
+    },
+    {
+      "version": "V0.0.169",
+      "date": "2026-08-24",
+      "title": "Use populated Goal task before Agent Work reconciliation",
+      "summary": "Agents now render the Goal execution task title and link from the verified goal-execution readback during a cold load, before the separate Agent Work cache has reconciled."
     }
   ]
 }

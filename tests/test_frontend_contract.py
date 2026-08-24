@@ -207,6 +207,16 @@ function flattenText(value) {
 }
 assert(flattenText(goalExecutionRow(waitingDecision)).includes("Answer: Which family-care scope should Toddy use next?"), "Goal execution row did not expose the exact question TODO");
 assert(flattenText(renderAgentGoalExecution(state.agents[0])).includes("Answer: Which family-care scope should Toddy use next?"), "Agent card compact Goal execution did not expose the exact question TODO");
+state.agentTasks = [];
+state.snapshot.tasks = [];
+state.goalExecution.last_run.task = {
+  slug: taskSlug,
+  title: "Prepare family-care goal map and weekly review brief",
+  status: "blocked",
+  agent_slug: "agents/timmy",
+};
+assert(flattenText(goalExecutionRow(waitingDecision)).includes("Prepare family-care goal map and weekly review brief"), "Goal execution row did not use populated last_run task before Agent Work reconciliation");
+assert(flattenText(renderAgentGoalExecution(state.agents[0])).includes("Prepare family-care goal map and weekly review brief"), "Agent card did not use populated last_run task before Agent Work reconciliation");
 state.goalExecution.last_run.task = null;
 state.goalExecution.last_run.handoff = null;
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "auto_eligible", task_slug: null }) === "Ready", "eligible work was not Ready");

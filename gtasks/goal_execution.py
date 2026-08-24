@@ -1000,6 +1000,7 @@ class GoalExecutionEngine:
                 "handoff_missing",
                 "task_needs_next_action",
                 "handoff_worker_unavailable",
+                "waiting_for_tony",
             }
             and selected.existing_task_slug is not None
         ):
