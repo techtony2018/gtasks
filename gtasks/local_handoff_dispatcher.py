@@ -192,6 +192,8 @@ def _mutation_id(handoff_id: str, operation: str) -> str:
 
 def _safe_server_reason(value: object) -> str:
     reason = " ".join(str(value).replace("_", " ").split())[:160].strip()
+    if reason == "codex thread active writer":
+        reason = "active writer"
     if not reason:
         raise ValueError("execution recovery reason is required")
     return reason

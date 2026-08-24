@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.138",
+  "current_version": "V0.0.139",
   "releases": [
     {
       "version": "V0.0.1",
@@ -828,6 +828,12 @@
       "date": "2026-08-23",
       "title": "Use privacy-safe handoff recovery reasons",
       "summary": "Local handoff recovery now converts machine failure codes such as codex_thread_active_writer into privacy-safe server reason text before checkpoint or abandon recovery, allowing blocked wake inbox rows to reconcile and future Agent handoffs to proceed."
+    },
+    {
+      "version": "V0.0.139",
+      "date": "2026-08-23",
+      "title": "Sanitize active-writer handoff recovery reason",
+      "summary": "Local handoff recovery now maps Codex active-writer machine failures to privacy-safe reason text accepted by Mission Control, allowing pending abandon recovery to clear before the next Agent handoff."
     }
   ]
 }
