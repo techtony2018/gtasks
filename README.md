@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.167 at commit
-`5a3a51c81196cfcfdcbce3722802b90e58271d25`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.169 at commit
+`066bca00433deb313b79b2383b0156677c38c2e6`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -223,6 +223,14 @@ states now surface before `recently_completed` history. The blocker states are
 `task_needs_next_action`, and `handoff_worker_unavailable`. Post-deploy
 readback showed `/api/goal-execution` with `public_reason=waiting_for_tony`,
 `decision_count=13`, and `last_error=null`.
+V0.0.168/V0.0.169 populate waiting-for-Tony Goal task context in the
+Goal-execution readback and consume that context during Agents cold load before
+Agent Work reconciliation. The selected headline task now carries
+`slug`, `title`, `status`, and `agent_slug`, so Family/Toddy can render the
+exact blocked Task link immediately. Live readback showed task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, title
+`Prepare family-care goal map and weekly review brief`, status `blocked`, and
+agent `agents/toddy`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -346,6 +354,12 @@ cards. The current Family/Toddy copy is exactly `Answer: Which family-care
 scope, outcomes, constraints, and first action should Toddy use next?`. This
 question text comes from the canonical open TODO, not from generated copy, and
 must remain tied to the same blocked task until Tony answers and hands it back.
+V0.0.168/V0.0.169 also populate the selected waiting-for-Tony task context
+directly in Goal execution status. Agents cold-load rendering may use
+`last_run.task` before the separate Agent Work cache has reconciled, so the
+headline can show the exact Task link/title/status/Agent immediately. This is
+readback context only; the task remains blocked until Tony answers the
+canonical question TODO and the Agent resumes through the normal handoff path.
 
 V0.0.164+ recovers an expired owned execution claim only at an authenticated
 claim boundary for the same registered Agent host, after Mission Control

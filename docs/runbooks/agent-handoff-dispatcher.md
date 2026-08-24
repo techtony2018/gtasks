@@ -789,6 +789,27 @@ state as `Blocked` / `waiting_for_tony`; the visible question is the next
 owner prompt for Tony, not permission to create replacement work or mark the
 task complete.
 
+V0.0.168/V0.0.169 populate the selected waiting-for-Tony Goal task context in
+Goal execution readback. The headline task now carries `slug`, `title`,
+`status`, and `agent_slug`, and the Agents cold-load UI uses
+`goalExecution.last_run.task` before the separate Agent Work cache has
+reconciled. Current live readback for Family/Toddy shows task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, title `Prepare family-care goal
+map and weekly review brief`, status `blocked`, and agent `agents/toddy`.
+This improves immediate linking/rendering only; it does not answer the Tony
+question, unblock the task, or imply local Toddy worker availability.
+
+V0.0.169 shipped in commit `066bca00433deb313b79b2383b0156677c38c2e6`
+(`Populate waiting Goal task context`). Independent QA PASS is at
+`artifacts/qa/v0.0.169-independent/gate-report.md` with structured results at
+`artifacts/qa/v0.0.169-independent/gate-results.json`, including desktop
+`1440x1000` and genuine mobile `390x844`. Developer verification reported
+focused `128` OK, full regression `1372` OK with `5` skipped, and JS syntax
+OK. Dashboard-managed `/api/health` and `/api/releases` read back `V0.0.169`.
+The local worker boundary was reaffirmed: local configs are only
+`agents/tammy` and `agents/tammy-oc`; Timmy/Toddy workers remain remote-host
+responsibilities.
+
 V0.0.164 recovers expired owned execution claims during authenticated
 dispatcher polling. The verified release commit is
 `f9e9e424b6a57df0dc8fc2d5873912aca88efadf`, dashboard-managed health and

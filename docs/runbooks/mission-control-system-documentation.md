@@ -513,6 +513,25 @@ to the reviewed source before updating relationships.
   `handoff_worker_unavailable`. Post-deploy `/api/goal-execution` readback
   reported `public_reason=waiting_for_tony`, `decision_count=13`, and
   `last_error=null`.
+- V0.0.169 evidence: dashboard-managed health and releases readback
+  `V0.0.169`; release commit
+  `066bca00433deb313b79b2383b0156677c38c2e6`; release evidence file
+  `docs/release-evidence/v0.0.169.md`; independent QA PASS at
+  `artifacts/qa/v0.0.169-independent/gate-report.md` with structured results
+  `artifacts/qa/v0.0.169-independent/gate-results.json`; desktop `1440x1000`
+  and genuine mobile `390x844` PASS. Developer verification reported focused
+  `128` OK, full regression `1372` OK with `5` skipped, and JS syntax OK.
+- Verified V0.0.169 behavior: waiting-for-Tony Goal execution headline now
+  carries populated task context (`slug`, `title`, `status`, `agent_slug`).
+  Agents cold-load UI uses `goal-execution.last_run.task` before Agent Work
+  reconciliation, so Family/Toddy shows the exact Task link immediately. Live
+  readback showed `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, title
+  `Prepare family-care goal map and weekly review brief`, status `blocked`,
+  and agent `agents/toddy`.
+- Local worker boundary reaffirmed for V0.0.169: this Mac has only
+  `agents/tammy` and `agents/tammy-oc` local configs. Documentation must not
+  describe Timmy/Toddy as local workers; their workers must be verified or
+  repaired on their own remote hosts.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -604,3 +623,7 @@ V0.0.167 selection priority is an ordering change only. It does not bypass the
 one-task canary boundary, does not turn `recently_completed` into active work,
 and does not repair `waiting_for_tony`, handoff, missing-next-action, or worker
 blockers without the owner action named by that state.
+V0.0.169 waiting-task context is also readback/display behavior. It gives the
+headline and Agents cold-load UI enough canonical task context to render the
+right link immediately, but it does not answer Tony's question, unblock the
+task, or prove any Timmy/Toddy local worker exists on this Mac.
