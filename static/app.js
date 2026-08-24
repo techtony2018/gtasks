@@ -1783,9 +1783,12 @@ function rebuildDerivedTaskViews() {
 }
 
 function findTaskBySlug(slug) {
+  const snapshotTask = state.snapshot?.tasks.find((candidate) => candidate.slug === slug) || null;
+  const agentTask = state.agentTasks.find((candidate) => candidate.slug === slug) || null;
   const canonical = (
-    state.snapshot?.tasks.find((candidate) => candidate.slug === slug) ||
-    state.agentTasks.find((candidate) => candidate.slug === slug)
+    snapshotTask && agentTask
+      ? { ...snapshotTask, ...agentTask }
+      : snapshotTask || agentTask
   );
   if (canonical) return canonical;
   const proposal = state.proposals.find((candidate) => candidate.slug === slug);
@@ -4057,6 +4060,28 @@ function goalExecutionReasonCopy(decision) {
   return copy[reason] || "Waiting for the next verified Goal execution readback.";
 }
 
+function goalExecutionQuestionTodo(task) {
+  const questionSlug = task?.handoff?.question_todo;
+  if (!questionSlug || !Array.isArray(task?.todos)) return null;
+  return task.todos.find((todo) =>
+    todo?.slug === questionSlug &&
+    todo.status !== "done" &&
+    todo.kind === "question" &&
+    typeof todo.text === "string" &&
+    todo.text.trim()) || null;
+}
+
+function goalExecutionDetailCopy(decision, task) {
+  const parts = [goalExecutionReasonCopy(decision)];
+  if (decision?.reason === "waiting_for_tony") {
+    const question = goalExecutionQuestionTodo(task);
+    if (question) {
+      parts.push(`Answer: ${question.text.trim()}`);
+    }
+  }
+  return parts.join(" ");
+}
+
 function goalExecutionButton(label, className, slug, activate, originKey = "") {
   const button = node("button", `goal-execution-link ${className}`, label);
   button.type = "button";
@@ -4110,7 +4135,7 @@ function goalExecutionRow(decision, preferredAgent = null, originKey = "surface"
     taskLink.dataset.goalExecutionOrigin = originKey;
     detail.append(taskLink, document.createTextNode(" · "));
   }
-  detail.append(document.createTextNode(goalExecutionReasonCopy(decision)));
+  detail.append(document.createTextNode(goalExecutionDetailCopy(decision, task)));
   item.append(summary, detail);
   return item;
 }
@@ -4165,6 +4190,7 @@ function renderAgentGoalExecution(agent) {
     const taskLink = taskDetailLink(task, task.title || task.summary || "Open canonical Task");
     taskLink.dataset.goalExecutionOrigin = `card:${agent.slug}:${decision?.goal_slug || "none"}`;
     compact.append(taskLink);
+    compact.append(node("span", "goal-execution-copy", goalExecutionDetailCopy(decision, task)));
   } else {
     compact.append(node("span", "goal-execution-copy", goalExecutionReasonCopy(decision)));
   }

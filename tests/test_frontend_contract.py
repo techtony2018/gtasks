@@ -185,6 +185,25 @@ assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "task_needs_next_a
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }) === "Blocked", "waiting for Tony was not Blocked");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }).includes("waiting for Tony"), "waiting for Tony copy was not explicit");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "completed_after_verified_handoff", task_slug: taskSlug }).includes("Artifact readback"), "completed handoff reconciliation copy was not explicit");
+state.agentTasks = [{
+  slug: taskSlug,
+  title: "Prepare family-care goal map",
+  status: "blocked",
+  owner_agent: "agents/timmy",
+  project: null,
+  handoff: { state: "waiting_for_input", question_todo: "todos/question" },
+  todos: [{ slug: "todos/question", status: "not_done", kind: "question", text: "Which family-care scope should Toddy use next?" }],
+}];
+const waitingDecision = { goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug };
+state.goalExecution.last_run.decisions = [waitingDecision];
+function flattenText(value) {
+  if (!value) return "";
+  if (typeof value.textContent === "string") return value.textContent;
+  if (Array.isArray(value.children)) return value.children.map(flattenText).join(" ");
+  return "";
+}
+assert(flattenText(goalExecutionRow(waitingDecision)).includes("Answer: Which family-care scope should Toddy use next?"), "Goal execution row did not expose the exact question TODO");
+assert(flattenText(renderAgentGoalExecution(state.agents[0])).includes("Answer: Which family-care scope should Toddy use next?"), "Agent card compact Goal execution did not expose the exact question TODO");
 state.goalExecution.last_run.task = null;
 state.goalExecution.last_run.handoff = null;
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "auto_eligible", task_slug: null }) === "Ready", "eligible work was not Ready");
