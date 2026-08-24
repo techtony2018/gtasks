@@ -192,7 +192,14 @@ the same registered Agent host returns, preserving verified task authority and
 owned-execution fencing so remote host worker outages or lost local claim state
 do not leave Goal-derived Agent work permanently queued. The local supervisor
 on this Mac remains Tammy/Tammy-OC only; Timmy and Toddy are not local workers
-here and must run on their own host machines.
+here and must run on their own host machines. Post-release verifier commit
+`f5a2aa77d44561a9d7279a185c184388759945ad` adds
+`scripts/verify_handoff_worker_runtime.py`, a read-only worker runtime verifier
+that checks private worker config, authenticated preflight, optional Git HEAD,
+and optional LaunchAgent presence without claiming, waking, acknowledging, or
+mutating handoffs. Timmy was verified on its own host at this exact commit with
+route `hosts/timmy` and a loaded launch label; Toddy remains unrecovered because
+its host/SSH/control plane is still unreachable.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -322,6 +329,16 @@ execution, arbitrary dead letters, mismatched Agent routes, or unverified
 tasks. This repair makes stale queued Goal-derived Agent work recoverable after
 the correct remote worker host returns, while preserving the distinction
 between remote Agent hosts and this Mac's local worker set.
+
+For remote worker host checks, use `scripts/verify_handoff_worker_runtime.py`
+from the Agent's own host checkout. A passing report must include `ok: true`,
+the expected `agent_slug`, expected `hosts/<agent>` route, exact repo HEAD, and
+loaded LaunchAgent when a launch label is supplied. This is a read-only
+verifier: it redacts tokens/registration IDs/fixed thread IDs and must not be
+used as a substitute for installing Timmy or Toddy locally. Current readback:
+Timmy passed on the Timmy host at commit
+`f5a2aa77d44561a9d7279a185c184388759945ad`; Toddy remains blocked on host/SSH
+control-plane reachability and must not be documented as recovered.
 
 ### Independent UI/UX release gate
 

@@ -813,6 +813,18 @@ For Toddy, run the same verifier on the Toddy host with `--expected-agent
 agents/toddy`; do not install or run a Toddy worker on this Mac to bypass an
 unreachable Toddy host.
 
+Post-release verifier commit
+`f5a2aa77d44561a9d7279a185c184388759945ad` added
+`scripts/verify_handoff_worker_runtime.py` and
+`tests/test_handoff_worker_runtime_verifier.py`. Reported verification: full
+regression `1364` OK with `5` skipped before commit; focused verifier/release
+tests `84` OK; Timmy's own host was fast-forwarded and the verifier returned
+`ok: true` for `agents/timmy`, route `hosts/timmy`, a loaded LaunchAgent label,
+and repo HEAD exactly
+`f5a2aa77d44561a9d7279a185c184388759945ad`. Toddy remains blocked because its
+host/SSH/control plane is unreachable; do not document Toddy as recovered until
+the same read-only verifier passes on the Toddy host.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

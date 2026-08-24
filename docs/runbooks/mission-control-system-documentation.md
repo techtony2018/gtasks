@@ -427,6 +427,16 @@ to the reviewed source before updating relationships.
   configs and no local Timmy/Toddy worker. Documentation must preserve this
   boundary: Timmy/Toddy worker recovery belongs on their own host machines, not
   by installing Timmy/Toddy local workers on this Mac.
+- Post-release verifier evidence: commit
+  `f5a2aa77d44561a9d7279a185c184388759945ad` added
+  `scripts/verify_handoff_worker_runtime.py`,
+  `tests/test_handoff_worker_runtime_verifier.py`, and the read-only remote
+  worker verification procedure. Reported checks: full regression `1364` OK
+  with `5` skipped before commit; focused verifier/release tests `84` OK;
+  Timmy host fast-forwarded and verifier PASS with `ok: true`,
+  `agents/timmy`, route `hosts/timmy`, loaded launch label, and repo HEAD
+  exactly `f5a2aa77d44561a9d7279a185c184388759945ad`. Toddy host/SSH/control
+  plane remains unreachable and must not be documented as recovered.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -494,3 +504,6 @@ after task-authority readback, but delegated execution, mismatched routes,
 arbitrary dead letters, and local installation of the wrong Agent worker remain
 invalid. This Mac remains Tammy/Tammy-OC only; do not document Timmy or Toddy
 as local workers here.
+The read-only runtime verifier is a diagnostic/readback tool only. A Timmy
+PASS on Timmy's host does not imply Toddy recovery, and a Toddy outage must not
+be bypassed by installing or running Toddy locally on this Mac.
