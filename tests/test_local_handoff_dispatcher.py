@@ -1837,7 +1837,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self._accepted(inbox)
             client = self.LaunchClient()
             adapter = self.Adapter(
-                directory, code=self._increment_code(marker, delay=0.25)
+                directory, code=self._increment_code(marker, delay=2.5), timeout=4
             )
             worker = WakeInboxWorker(client, adapter, inbox, retry_delay_seconds=0)
 
@@ -1845,6 +1845,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
 
             self.assertEqual(running.state, "executing")
             self.assertIsInstance(running.launch_pid, int)
+            time.sleep(2.6)
             settled = self._run_until_settled(worker, inbox, start_offset=1)
             self.assertEqual(settled.state, "completed")
             self.assertEqual(marker.read_text(encoding="utf-8"), "1")

@@ -2337,7 +2337,7 @@ class WakeInboxWorker:
             return self._record_ambiguous(
                 claimed, reason="malformed_post_gate_evidence", now=now
             )
-        result_deadline = time.monotonic() + 0.2
+        result_deadline = time.monotonic() + 2.0
         while observation.state == "executing" and observation.runner_alive:
             if time.monotonic() >= result_deadline:
                 break

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.126",
+  "current_version": "V0.0.127",
   "releases": [
     {
       "version": "V0.0.1",
@@ -756,6 +756,12 @@
       "date": "2026-08-23",
       "title": "Acknowledge completed Agent launches centrally",
       "summary": "Sends and retries the completed acknowledgement when a fixed-thread Agent launch exits successfully, closing the central handoff instead of leaving Mission Control stuck in actively executing after local completion."
+    },
+    {
+      "version": "V0.0.127",
+      "date": "2026-08-23",
+      "title": "Stabilize short Agent launch completion observation",
+      "summary": "Extends the local post-gate completion observation window so short successful Agent helper runs are detected reliably on slower host runtimes before the central completed acknowledgement is retried."
     }
   ]
 }
