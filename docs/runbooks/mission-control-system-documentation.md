@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.165`
+- Last verified pushed release: `V0.0.166`
 - Release commits:
-  `4778793e60bb201393afbafc89a2e81079229d9d`
+  `7b57e945afa70ed47761d20f62be156bb785ee33`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -461,6 +461,22 @@ to the reviewed source before updating relationships.
   visible copy contains both `Assign exactly one Codex Agent` and
   `default_agent_for`, and the local supervisor still contains exactly
   `agents/tammy` and `agents/tammy-oc`.
+- V0.0.166 evidence: dashboard-managed health and releases readback
+  `V0.0.166`; release commit
+  `7b57e945afa70ed47761d20f62be156bb785ee33`; release evidence file
+  `docs/release-evidence/v0.0.166.md`; independent QA PASS at
+  `artifacts/qa/v0.0.166-independent/gate-report.md` with frozen aggregate
+  `c9fd2484758bde53b55767930659607c75f8d99dc7cea56bdaab73b789e7adaa`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS; Developer reported
+  focused `141` OK and full regression `1369` OK with `5` skipped.
+- Verified V0.0.166 behavior: non-visible malformed Agent work items already
+  reported in Inbox no longer abort the whole Goal execution scheduler. Missing
+  canonical roots and visible unsafe Agent-work issues still fail closed. QA
+  and documentation refresh readback showed `/api/goal-execution` with
+  top-level `last_error: null` and a populated 13-decision `last_run`.
+  Malformed Tammy task `tasks/78147b5d-7385-431e-ae1a-cf710a160910` remains an
+  Inbox data-quality warning with `task_visible: false` and is excluded from
+  Board.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -539,3 +555,7 @@ V0.0.165 `owner_missing` remains a repair instruction, not a documentation
 authority to mutate Goal ownership. Do not create or infer ownership links in
 docs; the actual repair is exactly one verified Codex Agent
 `default_agent_for` relationship on the Goal.
+V0.0.166 hidden-item tolerance is also narrow. It applies only when malformed
+Agent work is non-visible and already reported in Inbox. Missing roots, visible
+unsafe Agent-work issues, and malformed work appearing on Board remain
+fail-closed conditions and must not be documented as safe to ignore.

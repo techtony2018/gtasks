@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.165 at commit
-`4778793e60bb201393afbafc89a2e81079229d9d`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.166 at commit
+`7b57e945afa70ed47761d20f62be156bb785ee33`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -210,7 +210,12 @@ exactly `d7622b7`; Toddy is still `ok: false` with `ssh_unreachable` for
 copy actionable: assign exactly one Codex Agent and verify the single
 `default_agent_for` link for that Goal. QA verified the copy on desktop
 1440x1000 and genuine mobile 390x844, and local workers still read back
-Tammy/Tammy-OC only.
+Tammy/Tammy-OC only. V0.0.166 keeps Goal execution running past non-visible
+malformed Agent work items that are already reported in Inbox, while missing
+canonical roots and visible unsafe Agent-work issues still fail closed. Live
+readback showed `/api/goal-execution` with 13 last-run decisions and
+`last_error: null`; the hidden malformed Tammy task remains an Inbox warning
+and stays excluded from Board.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -355,6 +360,12 @@ For fleet checks, use `scripts/verify_handoff_worker_fleet.py` with
 the current `ok=1 failed=1` report verifies Timmy and preserves Toddy as a
 host-access blocker, not as a recovered worker and not as permission to install
 Toddy locally on this Mac.
+
+V0.0.166+ preserves Goal execution availability around hidden malformed Agent
+work only when that item is already surfaced as an Inbox data-quality issue and
+excluded from Board. This is not a general ignore-errors mode: missing
+canonical roots and visible unsafe Agent-work issues still fail closed so
+operators must repair canonical state before automatic Goal planning proceeds.
 
 ### Independent UI/UX release gate
 
