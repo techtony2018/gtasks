@@ -116,6 +116,7 @@ INBOX_PROVEN_PRELAUNCH_STATES = frozenset(
     }
 )
 LOCAL_CONCURRENCY_RETRY_REASONS = frozenset({"codex_thread_active_writer"})
+LOCAL_CONCURRENCY_RETRY_DELAY_SECONDS = 300
 INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
     {
         "accepted",
@@ -2233,10 +2234,15 @@ class WakeInboxWorker:
     def _record_unstarted(
         self, claimed: WakeInboxClaim, *, reason: str, now: datetime
     ) -> WakeInboxItem | None:
+        retry_delay_seconds = (
+            LOCAL_CONCURRENCY_RETRY_DELAY_SECONDS
+            if reason in LOCAL_CONCURRENCY_RETRY_REASONS
+            else self.retry_delay_seconds
+        )
         self.inbox.record_start_abandon_required(
             claimed,
             reason=reason,
-            retry_at=now + timedelta(seconds=self.retry_delay_seconds),
+            retry_at=now + timedelta(seconds=retry_delay_seconds),
             now=now,
         )
         self.phase_hook("start_abandon_required")

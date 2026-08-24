@@ -1965,6 +1965,10 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(first.state, "failed")
             self.assertTrue(first.retryable)
             self.assertEqual(first.last_error, "codex_thread_active_writer")
+            self.assertEqual(
+                first.retry_at,
+                self.NOW + timedelta(seconds=300),
+            )
             self.assertEqual(len(client.abandon_calls), 1)
             self.assertEqual(len(client.checkpoint_calls), 0)
             self.assertEqual(len({call[2] for call in client.start_calls}), 1)
@@ -1978,7 +1982,7 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 launch_controller=GatedLaunchController(launch_root),
             )
             settled = self._run_until_settled(
-                retry_worker, inbox, start_offset=1
+                retry_worker, inbox, start_offset=301
             )
 
             self.assertEqual(settled.state, "completed")

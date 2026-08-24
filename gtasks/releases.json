@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.143",
+  "current_version": "V0.0.144",
   "releases": [
     {
       "version": "V0.0.1",
@@ -858,6 +858,12 @@
       "date": "2026-08-24",
       "title": "Recover abandoned-start terminal handoffs",
       "summary": "Operator recovery can now requeue an owned Agent handoff that reached terminal delivery failure only after verified abandoned execution starts, preserving the same handoff and task while retrying after local Codex writer contention is cleared."
+    },
+    {
+      "version": "V0.0.144",
+      "date": "2026-08-24",
+      "title": "Throttle busy Codex thread handoff retries",
+      "summary": "Fixed-thread Codex handoffs that encounter an active writer now back off for a bounded local-concurrency interval instead of rapidly creating and abandoning repeated execution starts."
     }
   ]
 }
