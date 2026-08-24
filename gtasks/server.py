@@ -1812,6 +1812,8 @@ def _handler_class(
                         },
                     )
                     return
+                if urlsplit(self.path).query == "refresh=1":
+                    active_goal_execution_scheduler.wake("manual_refresh")
                 self._json(
                     HTTPStatus.OK,
                     active_goal_execution_scheduler.status(),

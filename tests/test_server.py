@@ -4660,6 +4660,20 @@ class GoalMutationApiTests(unittest.TestCase):
         self.assertEqual(payload["planner_version"], "goal-execution-v1")
         self.assertEqual(scheduler.wakes, [])
 
+    def test_goal_execution_refresh_wakes_scheduler_before_status_read(self) -> None:
+        scheduler = self.GoalExecutionScheduler()
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            goal_execution_scheduler=scheduler,
+        )
+
+        status, payload, _ = harness.request("GET", "/api/goal-execution?refresh=1")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["mode"], "shadow")
+        self.assertEqual(scheduler.wakes, ["manual_refresh"])
+
     def test_verified_goal_creation_wakes_goal_execution_scheduler(self) -> None:
         scheduler = self.GoalExecutionScheduler()
         harness = ServerHarness(

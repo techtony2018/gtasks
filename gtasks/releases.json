@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.147",
+  "current_version": "V0.0.148",
   "releases": [
     {
       "version": "V0.0.1",
@@ -882,6 +882,12 @@
       "date": "2026-08-24",
       "title": "Read legacy summary-free tasks",
       "summary": "Exact Task readback now falls back from a missing legacy summary field to the canonical page title while preserving strict task lifecycle validation."
+    },
+    {
+      "version": "V0.0.148",
+      "date": "2026-08-24",
+      "title": "Wake Goal execution on refresh",
+      "summary": "Manual Goal execution refresh now wakes the bounded scheduler before returning status, reducing avoidable waiting while preserving the existing minimum interval and canary/shadow safety controls."
     }
   ]
 }
