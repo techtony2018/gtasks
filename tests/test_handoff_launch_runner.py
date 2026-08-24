@@ -181,6 +181,31 @@ class GatedLaunchRunnerTests(unittest.TestCase):
                 self.assertNotIn("stdout", rendered)
                 self.assertNotIn("stderr", rendered)
 
+    def test_thread_store_conflict_is_classified_without_leaking_output(self) -> None:
+        launch_id = "launch/thread-store-conflict"
+        secret = "private-thread-path"
+        self.controller.start(
+            launch_id,
+            self._request(
+                "import sys; "
+                f"sys.stderr.write('thread-store conflict: {secret} already has an active writer'); "
+                "sys.exit(1)"
+            ),
+        )
+        self._wait_for(launch_id, "ready")
+        self.controller.open_gate(launch_id, "grant/thread-store-conflict")
+
+        ambiguous = self._wait_for(launch_id, "ambiguous")
+        self.assertEqual(ambiguous.outcome, "ambiguous")
+        self.assertEqual(ambiguous.reason, "codex_thread_active_writer")
+        result_path = self.controller.launch_directory(launch_id) / "result.json"
+        rendered = result_path.read_text(encoding="utf-8")
+        self.assertIn("codex_thread_active_writer", rendered)
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn("thread-store conflict", rendered)
+        self.assertNotIn("stdout", rendered)
+        self.assertNotIn("stderr", rendered)
+
     def test_cancel_before_gate_never_runs_target(self) -> None:
         marker = self.directory / "cancelled-target"
         launch_id = "launch/cancelled"

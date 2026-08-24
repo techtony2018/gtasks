@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.116",
+  "current_version": "V0.0.117",
   "releases": [
     {
       "version": "V0.0.1",
@@ -696,6 +696,12 @@
       "date": "2026-08-23",
       "title": "Handoff wake identity normalization",
       "summary": "Accepts both raw dispatcher registrations and already-normalized lease identities during canonical route validation so recovered leased handoffs can authorize wake without double-hashing."
+    },
+    {
+      "version": "V0.0.117",
+      "date": "2026-08-23",
+      "title": "Privacy-safe handoff launch diagnostics",
+      "summary": "Classifies Codex fixed-thread active-writer failures without storing command output, giving Agent handoff recovery a concrete next action while preserving private stdout and stderr boundaries."
     }
   ]
 }

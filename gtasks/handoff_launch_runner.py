@@ -489,6 +489,15 @@ def _write_result(
     )
 
 
+def _classify_nonzero_reason(stdout: bytes, stderr: bytes) -> str:
+    output = b"\n".join((stdout[:65536], stderr[:65536])).decode(
+        "utf-8", errors="replace"
+    ).lower()
+    if "thread-store conflict" in output and "active writer" in output:
+        return "codex_thread_active_writer"
+    return "nonzero_exit"
+
+
 def run_launch(directory: str | Path, *, poll_seconds: float = 0.02) -> int:
     launch_directory = Path(directory)
     _validate_private_directory(launch_directory, "launch directory")
@@ -544,16 +553,22 @@ def run_launch(directory: str | Path, *, poll_seconds: float = 0.02) -> int:
             time.sleep(poll_seconds)
 
         try:
-            completed = subprocess.run(
-                list(request.argv),
-                cwd=request.working_directory,
-                env={**os.environ, **dict(request.environment)},
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=request.timeout_seconds,
-            )
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                completed = subprocess.run(
+                    list(request.argv),
+                    cwd=request.working_directory,
+                    env={**os.environ, **dict(request.environment)},
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=request.timeout_seconds,
+                )
+                stdout.seek(0)
+                stderr.seek(0)
+                failure_reason = _classify_nonzero_reason(
+                    stdout.read(65536), stderr.read(65536)
+                )
         except subprocess.TimeoutExpired:
             _write_result(
                 launch_directory,
@@ -585,7 +600,7 @@ def run_launch(directory: str | Path, *, poll_seconds: float = 0.02) -> int:
                 launch_directory,
                 launch_id=launch_id,
                 outcome="ambiguous",
-                reason="nonzero_exit",
+                reason=failure_reason,
                 returncode=completed.returncode,
             )
         return 0
