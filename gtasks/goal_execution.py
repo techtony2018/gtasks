@@ -1014,12 +1014,19 @@ class GoalExecutionEngine:
                 None,
             )
             if task is not None:
+                status = handoff_status_by_task.get(task.slug)
+                handoff = (
+                    SimpleNamespace(status=status)
+                    if status is not None
+                    else None
+                )
                 return GoalExecutionRun.for_task(
                     plan,
                     mode=mode,
                     ran_at=ran_at,
                     task=task,
                     public_reason=selected.reason,
+                    handoff=handoff,
                 )
         return GoalExecutionRun.from_plan(
             plan,

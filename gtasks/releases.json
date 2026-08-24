@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.160",
+  "current_version": "V0.0.161",
   "releases": [
     {
       "version": "V0.0.1",
@@ -960,6 +960,12 @@
       "date": "2026-08-24",
       "title": "Classify Agent work waiting for Tony",
       "summary": "Shows canonical Agent tasks that are blocked for Tony input as Blocked and waiting for Tony in Goal execution, instead of misclassifying them as missing next action."
+    },
+    {
+      "version": "V0.0.161",
+      "date": "2026-08-24",
+      "title": "Surface active Goal handoff status",
+      "summary": "Goal execution now retains accepted dispatcher handoff status for selected duplicate/recent Goal tasks, so active work can render as delivering or executing instead of losing progress context."
     }
   ]
 }

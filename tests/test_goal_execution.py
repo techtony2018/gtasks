@@ -991,8 +991,26 @@ class GoalExecutionEngineTests(unittest.TestCase):
 
         self.assertEqual(shadow.task_slug, canary.task_slug)
         self.assertEqual(shadow.public_reason, "duplicate")
-        self.assertEqual(shadow.handoff_status, None)
+        self.assertEqual(shadow.handoff_status, "queued")
         self.assertEqual(shadow.to_dict()["decisions"][0]["reason"], "duplicate")
+
+    def test_shadow_mode_reports_active_duplicate_handoff_as_executing(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        canary = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "actively_executing"
+
+        shadow = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(shadow.task_slug, canary.task_slug)
+        self.assertEqual(shadow.public_reason, "duplicate")
+        self.assertEqual(shadow.handoff_status, "actively_executing")
+        self.assertEqual(shadow.to_dict()["handoff"]["status"], "actively_executing")
 
     def test_activation_partial_write_returns_attention_without_success(self) -> None:
         adapter = self.Adapter(
