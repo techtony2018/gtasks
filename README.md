@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.154 at commit
-`3e4e2a59085df119c49c83958e60ee0b1fb6f841`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.155 at commit
+`05dce491ab298a5c11c05b791e2f4c0a683de4f6`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -106,7 +106,12 @@ blockers/dependencies, and no open TODO as `task_needs_next_action` Needs
 attention instead of ordinary duplicate. V0.0.154 excludes those stalled,
 non-actionable Agent tasks from Goal execution WIP accounting so another
 bounded Goal review can become `auto_eligible`; active Agent tasks with a real
-`next_action` still consume WIP. The earlier Finance canary task
+`next_action` still consume WIP. V0.0.155 flags a Goal-derived active task
+whose latest handoff is still `queued` after the bounded worker attention
+window as `handoff_worker_unavailable` Needs attention, while fresh queued
+handoffs remain Delivering. The current Toddy Health readback is an
+operational host/private-route remediation item, not a completed Agent
+execution. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -153,6 +158,16 @@ repairable instruction gap instead of an actionable duplicate. That stalled
 instruction-gap task does not consume the Goal execution WIP slot in
 V0.0.154+, but actionable active Agent work with a real next action still
 blocks additional automatic Goal review as `wip_full`.
+
+If a Goal-derived active task has latest handoff status `queued` and the
+dispatcher execution claim is still nonterminal after the bounded worker
+attention window, Goal execution reports `handoff_worker_unavailable` with
+Needs attention copy: `The canonical task is active and queued, but no
+verified Agent worker has leased it yet. Verify the Agent host dispatcher and
+private route.` Fresh queued handoffs remain Delivering. Treat this as
+operator remediation for the Agent host, dispatcher, or private route; do not
+claim Agent execution completion until a verified lease/delivery/completion
+readback exists.
 
 ### Independent UI/UX release gate
 

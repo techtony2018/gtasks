@@ -623,6 +623,21 @@ readback kept Family/Toddy task
 `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`; later documentation validation
 read it as `duplicate` for the same task, still not `wip_full`.
 
+V0.0.155 adds a separate stale-worker attention state for Goal-derived active
+tasks whose latest handoff is still `queued`. When the dispatcher execution
+claim remains nonterminal after the bounded worker attention window, Goal
+execution projects `handoff_worker_unavailable` and the UI must show Needs
+attention with exact copy: `The canonical task is active and queued, but no
+verified Agent worker has leased it yet. Verify the Agent host dispatcher and
+private route.` Fresh queued handoffs remain Delivering. Live readback for
+Toddy Health Goal `goals/d175890b-6e89-5543-b587-b5df345c1c81` showed task
+`tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5` with latest handoff status
+`queued` and projected `handoff_worker_unavailable`. The operational diagnosis
+is that Toddy fixed thread/host configuration exists, but the Toddy host's
+Tailscale session is logged out, leaving the private route
+`https://tonys-macbook-pro.taildb46a7.ts.net` unreachable. Record that as
+host/private-route remediation, not as completed Agent execution.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

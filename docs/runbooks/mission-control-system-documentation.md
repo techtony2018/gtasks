@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.154`
+- Last verified pushed release: `V0.0.155`
 - Release commits:
-  `3e4e2a59085df119c49c83958e60ee0b1fb6f841`
+  `05dce491ab298a5c11c05b791e2f4c0a683de4f6`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -248,6 +248,21 @@ to the reviewed source before updating relationships.
   task `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, not `wip_full`, in the
   release/QA evidence. Documentation validation later read the same Goal as
   `duplicate` for that task, still not `wip_full`.
+- V0.0.155 evidence: dashboard-managed health readback `V0.0.155`; release
+  commit `05dce491ab298a5c11c05b791e2f4c0a683de4f6`; full suite reported
+  `1348` OK with `5` skipped; independent QA PASS at
+  `artifacts/qa/v0.0.155-independent/gate-report.md`.
+- Verified V0.0.155 behavior: Goal execution surfaces
+  `handoff_worker_unavailable` when a Goal-derived active task has latest
+  handoff status `queued` and the dispatcher execution claim remains
+  nonterminal after the bounded worker attention window. The UI copy is exactly
+  `The canonical task is active and queued, but no verified Agent worker has
+  leased it yet. Verify the Agent host dispatcher and private route.` Fresh
+  queued handoffs remain Delivering. Live Toddy Health readback showed
+  `goals/d175890b-6e89-5543-b587-b5df345c1c81` projecting
+  `handoff_worker_unavailable` for
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, latest handoff status
+  `queued`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -275,4 +290,8 @@ completion of a non-completed task. V0.0.153 `task_needs_next_action` is an
 instruction-gap signal; it does not create the missing next action, handoff, or
 TODO and must not be merged with duplicate or handoff-repair states. V0.0.154
 does not make stalled work complete or actionable; it only prevents that
-non-actionable item from consuming the automatic Goal WIP slot.
+non-actionable item from consuming the automatic Goal WIP slot. V0.0.155
+`handoff_worker_unavailable` is also a worker/route repair signal. The current
+Toddy Health case is caused by an unreachable private route while Toddy's host
+Tailscale session is logged out; do not document it as a leased handoff,
+delivered worker execution, or completed Agent task.
