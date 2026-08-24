@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -138,6 +139,43 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
 
         self.assertFalse(report["ok"])
         self.assertEqual(report["workers"][0]["issues"], ["repo_head_mismatch"])
+
+    def test_default_expected_commit_is_current_local_head(self) -> None:
+        verifier = load_verifier()
+        expected_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+        ).strip()
+        commands: list[list[str]] = []
+
+        def run(command, **_kwargs):
+            commands.append(list(command))
+            return verifier.CompletedProbe(
+                0,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "agent_slug": "agents/timmy",
+                        "expected_route": "hosts/timmy",
+                        "route": "hosts/timmy",
+                        "repo_head": expected_head,
+                        "issues": [],
+                    }
+                ),
+                "",
+            )
+
+        payload = json.loads(self.inventory.read_text(encoding="utf-8"))
+        payload["workers"] = [payload["workers"][0]]
+        self.inventory.write_text(json.dumps(payload), encoding="utf-8")
+
+        report = verifier.verify_fleet(inventory_path=self.inventory, run=run)
+
+        self.assertTrue(report["ok"])
+        remote_script = commands[0][-1]
+        self.assertIn(expected_head, remote_script)
+        self.assertNotIn('"$expected"', remote_script)
 
 
 if __name__ == "__main__":

@@ -118,6 +118,18 @@ def _ssh_command(
     ]
 
 
+def _local_head() -> str:
+    result = _default_run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        timeout=10,
+    )
+    head = result.stdout.strip()
+    if result.returncode != 0 or not head:
+        raise RuntimeError("could not determine local repository HEAD")
+    return head
+
+
 def _worker_failure(worker: dict[str, str], issue: str, stderr: str = "") -> dict[str, object]:
     return {
         "ok": False,
@@ -139,11 +151,12 @@ def verify_fleet(
 ) -> dict[str, object]:
     inventory = load_inventory(inventory_path)
     execute = run or _default_run
+    expected = expected_commit or _local_head()
     reports: list[dict[str, object]] = []
     for raw_worker in inventory["workers"]:
         worker = dict(raw_worker)
         result = execute(
-            _ssh_command(worker, expected_commit=expected_commit, ssh_timeout=ssh_timeout),
+            _ssh_command(worker, expected_commit=expected, ssh_timeout=ssh_timeout),
             timeout=max(ssh_timeout + 30, 35),
         )
         remote_report: dict[str, object] | None = None
