@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.150",
+  "current_version": "V0.0.151",
   "releases": [
     {
       "version": "V0.0.1",
@@ -900,6 +900,12 @@
       "date": "2026-08-24",
       "title": "Surface missing Goal handoffs",
       "summary": "Goal execution now distinguishes active goal-derived Agent tasks with no verified handoff record from ordinary duplicates, surfacing them as Needs attention with exact task metadata instead of hiding the dispatch gap."
+    },
+    {
+      "version": "V0.0.151",
+      "date": "2026-08-24",
+      "title": "Project missing Goal handoff decisions",
+      "summary": "Goal execution now marks every active or planned goal-derived duplicate decision with no verified handoff as missing-handoff attention, so non-canary Goal cards no longer hide dispatch gaps behind ordinary duplicate copy."
     }
   ]
 }

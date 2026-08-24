@@ -533,7 +533,7 @@ class GoalExecutionEngine:
         route_health = self.route_health()
         snapshot = self.adapter.read_goal_execution_snapshot(route_health)
         plan = self.planner.plan(snapshot)
-        plan, handoff_status_by_task = self._annotate_handoff_attention(plan)
+        plan, handoff_status_by_task = self._annotate_handoff_attention(plan, snapshot)
         if self.mode != "canary":
             return self._run_from_plan(
                 plan,
@@ -627,11 +627,12 @@ class GoalExecutionEngine:
         )
 
     def _annotate_handoff_attention(
-        self, plan: GoalExecutionPlan
+        self, plan: GoalExecutionPlan, snapshot: GoalExecutionSnapshot
     ) -> tuple[GoalExecutionPlan, dict[str, str | None]]:
         latest_status = getattr(self.bridge, "latest_task_handoff_status", None)
         if not callable(latest_status):
             return plan, {}
+        tasks_by_slug = {task.slug: task for task in snapshot.tasks}
         revised: list[GoalExecutionDecision] = []
         handoff_status_by_task: dict[str, str | None] = {}
         changed = False
@@ -646,6 +647,16 @@ class GoalExecutionEngine:
             handoff_status_by_task[task_slug] = status if isinstance(status, str) else None
             if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
                 revised.append(replace(decision, reason="handoff_needs_repair"))
+                changed = True
+                continue
+            task = tasks_by_slug.get(task_slug)
+            if (
+                status is None
+                and task is not None
+                and task.goal_derivation is not None
+                and task.status in {"planned", "active"}
+            ):
+                revised.append(replace(decision, reason="handoff_missing"))
                 changed = True
                 continue
             revised.append(decision)
@@ -673,7 +684,7 @@ class GoalExecutionEngine:
         )
         if (
             selected is not None
-            and selected.reason == "handoff_needs_repair"
+            and selected.reason in {"handoff_needs_repair", "handoff_missing"}
             and selected.existing_task_slug is not None
         ):
             task = next(
@@ -685,15 +696,16 @@ class GoalExecutionEngine:
                 None,
             )
             if task is not None:
+                status = handoff_status_by_task.get(task.slug)
+                if selected.reason == "handoff_missing":
+                    status = "missing"
                 return GoalExecutionRun.for_task(
                     plan,
                     mode=mode,
                     ran_at=ran_at,
                     task=task,
-                    public_reason="handoff_needs_repair",
-                    handoff=SimpleNamespace(
-                        status=handoff_status_by_task.get(task.slug)
-                    ),
+                    public_reason=selected.reason,
+                    handoff=SimpleNamespace(status=status),
                 )
         if (
             selected is not None

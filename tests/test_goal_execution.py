@@ -619,6 +619,70 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
         self.assertEqual(bridge.calls, [])
 
+    def test_missing_handoff_is_projected_for_each_derived_duplicate_decision(self) -> None:
+        other_agent = agent(
+            slug="agents/toddy",
+            goals=(OTHER_GOAL,),
+        )
+        first_plan = GoalExecutionPlanner().plan(
+            snapshot(
+                goals=(goal(), goal(slug=OTHER_GOAL, title="Faith")),
+                agents=(agent(), other_agent),
+                projects=(project(goals=(GOAL,)),),
+                route_health={AGENT: True, "agents/toddy": True},
+            )
+        )
+        other_candidate = next(
+            decision.candidate
+            for decision in first_plan.decisions
+            if decision.goal_slug == OTHER_GOAL
+        )
+        self.assertIsNotNone(other_candidate)
+        existing = replace(
+            agent_task(
+                slug_identity="other-active-goal-work",
+                goal_slug=OTHER_GOAL,
+                status="active",
+                owner="agents/toddy",
+            ),
+            slug=derived_task_slug(other_candidate.fingerprint),
+            title="Other Active Goal Review",
+            summary="Other Active Goal Review",
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=other_candidate.fingerprint,
+                action_kind=other_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=other_candidate.goal_slug,
+                project_slug=other_candidate.project_slug,
+                expected_evidence=other_candidate.expected_evidence,
+            ),
+        )
+
+        class Adapter(self.Adapter):
+            def read_goal_execution_snapshot(self, route_health):
+                self.calls.append(("snapshot", dict(route_health)))
+                return snapshot(
+                    goals=(goal(), goal(slug=OTHER_GOAL, title="Faith")),
+                    agents=(agent(), other_agent),
+                    projects=(project(goals=(GOAL,)),),
+                    tasks=(existing,),
+                    route_health={**dict(route_health), "agents/toddy": True},
+                )
+
+        result = GoalExecutionEngine(
+            adapter=Adapter(tasks=(existing,)),
+            bridge=self.Bridge(),
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        decisions = {
+            decision["goal_slug"]: decision["reason"]
+            for decision in result.to_dict()["decisions"]
+        }
+        self.assertEqual(decisions[OTHER_GOAL], "handoff_missing")
+
     def test_shadow_mode_reports_existing_terminal_handoff_attention(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge()
