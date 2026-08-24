@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.161 at commit
-`28a9c8de5f3191f261c91adfa04d156f0667c5c6`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.162 at commit
+`351fb99bc6c216e7d3a5558c425c7c176fa85a51`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -166,6 +166,19 @@ Tony's answer on question TODO
 `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Toddy Health waiting for
 Toddy host Tailscale login/dispatcher availability before queued task
 `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5` can be leased.
+V0.0.162 adds an explicit private `auto` canary target for
+dashboard-managed canary mode. `auto` still activates at most one
+Goal-derived Agent Task per run; it selects the first currently
+`auto_eligible` Goal instead of staying pinned to a fixed completed canary. If
+no new Goal is eligible, public status prioritizes an active accepted handoff,
+then the newest recently completed canary, then attention/blocker states. Live
+readback showed the auto canary completed Finance/Tammy task
+`tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
+`artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
+`tasks/53264f17-e5d5-5b5d-ad36-af1eadc1a770` with Artifact
+`artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`; `/api/goal-execution` now
+surfaces Career as the newest `recently_completed`, Finance as
+`recently_completed`, and Family/Toddy separately as `waiting_for_tony`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -178,12 +191,15 @@ supported runtime controls are:
 
 ```text
 MISSION_CONTROL_GOAL_EXECUTION_MODE=off|shadow|canary
-MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL=goals/<uuid>
+MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL=goals/<uuid>|auto
 ```
 
 `shadow` is the default and performs no canonical mutation. `canary` requires
-one exact Goal slug and may create or adopt at most one automatic Task for that
-Goal after canonical eligibility, WIP, identity, and fixed-route checks pass.
+one exact Goal slug or the explicit private target `auto`. A fixed Goal slug
+may create or adopt at most one automatic Task for that Goal after canonical
+eligibility, WIP, identity, and fixed-route checks pass. `auto` applies the
+same one-task safety boundary but chooses the first currently `auto_eligible`
+Goal for the run, avoiding a stale fixed canary after a prior Goal completes.
 Every create, activation, and handoff requires exact canonical readback and a
 deterministic derivation receipt. OpenClaw is excluded from this rollout. If a
 canary cannot verify its Task or delivery path, switch back to `shadow`, retain
@@ -208,6 +224,11 @@ Delivering or Executing state when the latest verified dispatcher status is
 `queued` or `actively_executing`. This is readback context for already-selected
 work; it does not broaden canary scope, mark all Goals automated, or replace
 the completion requirements below.
+In V0.0.162+ auto-canary mode, when no new `auto_eligible` Goal exists, the
+public status selection is ordered: active accepted handoff first, newest
+recently completed canary second, and verified attention/blocker state third.
+This keeps blockers visible in the decisions list while avoiding an unrelated
+blocked task becoming the public canary state after recent automatic progress.
 If a goal-derived duplicate decision points at an active or planned canonical
 task without any verified Agent handoff, Goal execution reports
 `handoff_missing` with Needs attention copy instead of ordinary duplicate

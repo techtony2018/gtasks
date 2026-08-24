@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.161`
+- Last verified pushed release: `V0.0.162`
 - Release commits:
-  `28a9c8de5f3191f261c91adfa04d156f0667c5c6`
+  `351fb99bc6c216e7d3a5558c425c7c176fa85a51`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -365,6 +365,29 @@ to the reviewed source before updating relationships.
   with dispatcher status `queued` / `handoff_worker_unavailable` until the
   Toddy fixed-thread host is logged into Tailscale and its dispatcher route is
   available. Do not document either as completed Agent execution.
+- V0.0.162 evidence: dashboard-managed health and releases readback
+  `V0.0.162`; release commit
+  `351fb99bc6c216e7d3a5558c425c7c176fa85a51`; release evidence file
+  `docs/release-evidence/v0.0.162.md`; independent QA PASS at
+  `artifacts/qa/v0.0.162-independent/gate-report.md` with frozen aggregate
+  `fbf32c0f28353053daf0d8db38a0ad16222104b1362fbc5ca89291b678f7b847`; full
+  suite reported `1360` OK with `5` skipped; focused/static checks passed,
+  including `node --check static/app.js` and
+  `python3 -m compileall -q gtasks tests`.
+- Verified V0.0.162 behavior: dashboard-managed canary mode accepts explicit
+  private target `auto`. `auto` still activates at most one Goal-derived Agent
+  Task per run, but chooses the first currently `auto_eligible` Goal instead
+  of staying pinned to a fixed completed canary. When no new eligible exists,
+  public status prioritizes active accepted handoff, then newest recently
+  completed canary, then attention/blocker states. Live readback showed
+  Finance/Tammy task `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` completed
+  with Artifact `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, and
+  Career/Tammy task `tasks/53264f17-e5d5-5b5d-ad36-af1eadc1a770` completed
+  with Artifact `artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`.
+  Post-deploy `/api/goal-execution` surfaces Career as newest
+  `recently_completed`, Finance as `recently_completed`, Family/Toddy as
+  separate `waiting_for_tony`, and Toddy Health as separate
+  `handoff_worker_unavailable`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -418,4 +441,8 @@ marking the task actionable. V0.0.161 active handoff-status projection is also
 readback context only: it can show Delivering or Executing for selected
 duplicate/recent active work, but it does not automate all Goals, expand the
 single-canary boundary, or satisfy completion without terminal handoff and
-exact Artifact evidence.
+exact Artifact evidence. V0.0.162 `auto` is also a private canary target under
+the same one-task safety boundary. It is not unlimited multi-Agent automation,
+and remaining blockers still require their next owners: Tony for the
+Family/Toddy question TODO and Toddy host dispatcher/private route availability
+for Toddy Health.

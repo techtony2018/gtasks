@@ -734,6 +734,24 @@ infrastructure-blocked with dispatcher status `queued` /
 `handoff_worker_unavailable` until the Toddy fixed-thread host is logged into
 Tailscale and its dispatcher route is available.
 
+V0.0.162 adds an explicit private `auto` canary target for dashboard-managed
+Goal execution canary mode. `auto` is still bounded to at most one
+Goal-derived Agent Task activation per run; it selects the first currently
+`auto_eligible` Goal instead of staying pinned to a fixed completed canary.
+When no new Goal is eligible, public status prioritizes active accepted
+handoff, then newest recently completed canary, then attention/blocker states.
+Live readback showed the auto canary completed Finance/Tammy task
+`tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
+`artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
+`tasks/53264f17-e5d5-5b5d-ad36-af1eadc1a770` with Artifact
+`artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`. Post-deploy
+`/api/goal-execution` surfaces Career as the newest `recently_completed`,
+Finance as `recently_completed`, Family/Toddy separately as
+`waiting_for_tony`, and Toddy Health separately as
+`handoff_worker_unavailable`. Do not document `auto` as unlimited multi-Agent
+automation; it is a private canary target under the same one-task safety
+boundary and exact-readback gates.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
