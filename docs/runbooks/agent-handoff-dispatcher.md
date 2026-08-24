@@ -787,6 +787,32 @@ local Timmy/Toddy worker. Preserve that host-local ownership boundary when
 remediating stale queued handoffs: Timmy/Toddy recovery belongs on their own
 host machines, while this Mac's local dispatcher remains Tammy/Tammy-OC only.
 
+### Read-only remote worker verification
+
+Use the version-controlled verifier before changing any host-local worker
+state. It performs only safe configuration/readback checks: private dispatcher
+config parsing, authenticated `POST /api/handoffs/preflight`, optional Git HEAD
+readback, and optional LaunchAgent presence. It never claims, wakes,
+acknowledges, or mutates a handoff, and its JSON output redacts tokens,
+registration IDs, and fixed thread IDs.
+
+Example for the Timmy host after fast-forwarding its clean checkout:
+
+```bash
+python3 scripts/verify_handoff_worker_runtime.py \
+  --config "$HOME/Library/Application Support/GTasks/handoff-dispatcher.json" \
+  --expected-agent agents/timmy \
+  --expected-commit <released-gtasks-commit> \
+  --repo "$HOME/gtasks" \
+  --launch-label com.tony.gtasks-handoff-dispatcher
+```
+
+Expected success includes `ok: true`, `preflight_verified: true`, route
+`hosts/timmy`, the exact released `repo_head`, and `launch_loaded: true`.
+For Toddy, run the same verifier on the Toddy host with `--expected-agent
+agents/toddy`; do not install or run a Toddy worker on this Mac to bypass an
+unreachable Toddy host.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
