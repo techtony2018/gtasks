@@ -76,15 +76,18 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.137 at commit
-`f9fa6545103378266b37ec486342fdbbd1bbb2f5`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.144 at commit
+`c96a68464b2046e391924eb5a41a1f63aeafe687`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
 immediate duplicate exact completed Goal review canaries as
-`recently_completed`, and treats server-completed handoffs as authoritative
-when abandoning an unused local launch after `codex_thread_active_writer`
-recovery. The verified Finance canary task
+`recently_completed`, reconciles stale local abandon-start rows against
+authoritative server recovery state, treats `codex_thread_active_writer` as
+retryable local backpressure, permits operator recovery of owned
+`terminal_delivery_failure` handoffs only when abandoned execution starts prove
+the failed launches were unused, and throttles active-writer retries with a
+bounded 300-second local backoff. The verified Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.

@@ -481,6 +481,26 @@ logs.
   stops without claiming replacement work.
 - Repeated recovery reconciliation is bounded and the exhausted count is
   persisted, preventing a restart loop against stale state.
+- V0.0.141+ stale local `abandon_start` rows are reconciled through the
+  authoritative server `/recover` path before the host retries the pending
+  local action. If the server proves the handoff is already `completed` or
+  `suppressed`, the local wake inbox row is cleared as `server_completed` or
+  `server_suppressed` without touching the current Agent claim or inventing a
+  replacement handoff.
+- V0.0.142+ treats `codex_thread_active_writer` as retryable local Codex
+  backpressure, not terminal delivery. The host records a retryable local
+  failure and keeps the same handoff eligible for retry instead of promoting it
+  directly to `dead_letter`.
+- V0.0.143+ operator recovery can requeue an owned handoff that reached
+  `dead_letter` with released execution state `terminal_delivery_failure`, but
+  only when server evidence shows abandoned execution starts for that handoff.
+  This preserves the same handoff and task and records
+  `system_dependency_recovered`; it must not be used for arbitrary dead
+  letters, missing ownership, or handoffs without abandoned-start proof.
+- V0.0.144+ active-writer retries are throttled. Fixed-thread Codex handoffs
+  that encounter `codex_thread_active_writer` back off for the bounded local
+  concurrency interval, currently 300 seconds, instead of rapidly creating and
+  abandoning repeated execution starts.
 
 Never clear local claim state merely because a request was sent. Clear or
 replace it only after a verified retry, terminal, or rotated recovery response.
@@ -555,13 +575,14 @@ with `produced_for` pointing to the same task and `supports_project` /
 handoff history reached `completed` and `execution_claim_released`, and Goal
 execution mode was returned to `shadow`.
 
-V0.0.137 repairs one recovery edge for local Codex handoffs: if the Codex CLI
-reports `codex_thread_active_writer`, a manual same-thread recovery may
-abandon the unused or blocked local launch after server readback shows the
-handoff has completed. This is not a new automatic dispatcher path and must
-not be generalized into duplicate launches. The automatic path still requires
-the normal claim, wake authorization, `received`, `execution_started`,
-acknowledgement, and terminal release chain.
+V0.0.137 repaired one recovery edge for local Codex handoffs by accepting a
+server-completed handoff during manual same-thread recovery. V0.0.142 through
+V0.0.144 supersede the earlier active-writer handling: a fixed Codex thread
+with an active writer is retryable local backpressure with bounded 300-second
+backoff, not terminal delivery and not authority to create duplicate Codex
+threads. The automatic path still requires the normal claim, wake
+authorization, `received`, `execution_started`, acknowledgement, and terminal
+release chain.
 
 ## Rollback
 

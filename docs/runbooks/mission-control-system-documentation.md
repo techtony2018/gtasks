@@ -135,12 +135,12 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-23`
+- Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.137`
+- Last verified pushed release: `V0.0.144`
 - Release commits:
-  `e19278d80f47f997966482a5f77b64b08f159681` and
-  `f9fa6545103378266b37ec486342fdbbd1bbb2f5`
+  `001d742`, `4608077`, `3cd682c`, and
+  `c96a68464b2046e391924eb5a41a1f63aeafe687`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -158,6 +158,19 @@ to the reviewed source before updating relationships.
   Artifact `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`, and its handoff
   events reached `completed` plus `execution_claim_released`; Goal execution
   mode was restored to `shadow`.
+- V0.0.141 through V0.0.144 evidence: dashboard-managed health readback
+  `V0.0.144`; full suite `1336` OK with `5` skipped and focused
+  handoff/local-dispatcher suites passed per Developer release handoff.
+  Verified behavior: stale local `abandon_start` rows reconcile through
+  authoritative `/recover` completed/suppressed state; `codex_thread_active_writer`
+  is retryable local backpressure; owned `terminal_delivery_failure` handoffs
+  can be operator-recovered only with abandoned-start proof; active-writer
+  retries back off for 300 seconds.
+- Live recovery examples: Finance handoff `handoff-3369...` read back
+  `completed` for `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9`; Career
+  handoff `handoff-806...` read back `received` with
+  `system_dependency_recovered` after operator recovery, and active-writer
+  retries no longer dead-letter immediately.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -169,9 +182,9 @@ Documentation Manager must not mutate that ticket-owned collection merely to
 hide the mismatch; its owner should reconcile it through the supported
 contract.
 
-Current operational caveat at this baseline: V0.0.137 covered the
-`codex_thread_active_writer` recovery path through one manual same-thread
-recovery that accepted server-completed handoff state while abandoning an
-unused or blocked local launch. The Documentation Manager must preserve this
-as a recovery exception, not describe it as the normal automatic dispatcher
-path.
+Current operational caveat at this baseline: V0.0.142 through V0.0.144
+supersede the earlier V0.0.137 active-writer handling. Active writer is local
+backpressure with bounded retry/backoff, while operator recovery from
+`terminal_delivery_failure` remains limited to owned handoffs with verified
+abandoned execution starts. The Documentation Manager must not document this
+as general dead-letter recovery or permission to duplicate Codex launches.

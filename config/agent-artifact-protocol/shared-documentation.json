@@ -4,10 +4,10 @@
   "collection_slug": "collections/mission-control-documentation",
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
-  "last_verified_version": "V0.0.137",
-  "last_verified_commit": "f9fa6545103378266b37ec486342fdbbd1bbb2f5",
-  "source_evidence_base_commit": "f9fa6545103378266b37ec486342fdbbd1bbb2f5",
-  "last_verified_date": "2026-08-23",
+  "last_verified_version": "V0.0.144",
+  "last_verified_commit": "c96a68464b2046e391924eb5a41a1f63aeafe687",
+  "source_evidence_base_commit": "c96a68464b2046e391924eb5a41a1f63aeafe687",
+  "last_verified_date": "2026-08-24",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "consultation_roles": [
     {
@@ -18,7 +18,7 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-23T23:58:00-07:00",
+    "verified_at": "2026-08-24T00:35:00-07:00",
     "verification_scope": "local dashboard remote MCP readback; cross-host recheck not performed in this refresh",
     "agents": [
       "tammy",
@@ -26,7 +26,7 @@
       "toddy"
     ],
     "collection_content_hash": "7df109b3c0186cf407fd3dc66cc827743d882697d2fc609603df80a5d70f3a5d",
-    "overview_content_hash": "8d7a45cfcef9cc55bf06f89e84e17adcb6d753578c6e5ce975b95945d2d75e7c",
+    "overview_content_hash": "1a433805486b98c0da9a629eed46c209b827f6bcf9b040d09b17b8d1be7c0a96",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],
