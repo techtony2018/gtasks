@@ -850,6 +850,32 @@ exactly `d7622b7`; Toddy returned `ok: false` with issue `ssh_unreachable` for
 Toddy is host-access blocked, and local Toddy worker installation remains
 forbidden.
 
+Fleet verifier improvement commit
+`8d4f31b458286ac9750b4b1e3a9f1b375189ff96` changed omitted
+`--expected-commit` behavior: the fleet CLI now resolves this checkout's local
+HEAD and verifies each remote worker against that exact commit, instead of
+letting each remote validate against its own potentially stale repo HEAD. Use
+an explicit `--expected-commit` only when intentionally checking a different
+reviewed commit. Reported verification: focused runtime/fleet verifier tests
+`7` OK; Timmy host `toddy@100.100.126.85` was fast-forwarded to
+`8d4f31b458286ac9750b4b1e3a9f1b375189ff96`, LaunchAgent restarted, and runtime
+verifier PASS. The fleet verifier now reports Timmy OK against current HEAD and
+Toddy still `ssh_unreachable` at `toddy@100.117.212.20`; do not document Toddy
+as recovered or install a local Toddy worker.
+
+Fleet verifier diagnostic commit
+`6984f24c1fe330aca68fd95adc0a80dbcc9b4428` added safe Tailscale diagnostics
+to SSH failure reports. The fleet verifier may now attach peer metadata and
+specific issues such as `tailscale_key_expired` or `tailscale_peer_offline`
+without exposing secrets. Reported verification: focused runtime/fleet
+verifier tests `8` OK; Timmy host `toddy@100.100.126.85` was fast-forwarded to
+`6984f24c1fe330aca68fd95adc0a80dbcc9b4428` and runtime verifier PASS. Current
+fleet readback reports Timmy OK and Toddy blocked with `ssh_unreachable` plus
+`tailscale_key_expired`; Toddy peer metadata is `Toddy's Mac Mini-1`, DNS
+`toddys-mac-mini-1.taildb46a7.ts.net.`, and IP `100.117.212.20`. This remains
+a host/Tailscale remediation item for Toddy, not a recovered worker and not
+permission to install Toddy locally.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

@@ -477,6 +477,27 @@ to the reviewed source before updating relationships.
   Malformed Tammy task `tasks/78147b5d-7385-431e-ae1a-cf710a160910` remains an
   Inbox data-quality warning with `task_visible: false` and is excluded from
   Board.
+- Post-release fleet verifier HEAD-pinning evidence: commit
+  `8d4f31b458286ac9750b4b1e3a9f1b375189ff96` changed
+  `scripts/verify_handoff_worker_fleet.py` so omitted `--expected-commit`
+  defaults to this checkout's local HEAD instead of allowing each remote
+  worker to validate against its own stale repo HEAD. Focused verifier tests
+  `tests.test_handoff_worker_fleet_verifier` plus
+  `tests.test_handoff_worker_runtime_verifier` reported `7` OK. Timmy remote
+  host `toddy@100.100.126.85` was fast-forwarded to
+  `8d4f31b458286ac9750b4b1e3a9f1b375189ff96`, LaunchAgent restarted, and
+  runtime verifier PASS. Fleet verifier now reports Timmy OK against current
+  HEAD and Toddy still `ssh_unreachable` at `toddy@100.117.212.20`.
+- Post-release fleet verifier diagnostic evidence: commit
+  `6984f24c1fe330aca68fd95adc0a80dbcc9b4428` added safe Tailscale diagnostics
+  to worker fleet verifier SSH failures, including peer metadata and issues
+  such as `tailscale_key_expired` and `tailscale_peer_offline`. Focused
+  runtime/fleet verifier tests reported `8` OK. Timmy remote host
+  `toddy@100.100.126.85` was fast-forwarded to
+  `6984f24c1fe330aca68fd95adc0a80dbcc9b4428` and runtime verifier PASS. Fleet
+  verifier now reports Timmy OK and Toddy blocked with `ssh_unreachable` plus
+  `tailscale_key_expired`; Toddy peer metadata is `Toddy's Mac Mini-1`, DNS
+  `toddys-mac-mini-1.taildb46a7.ts.net.`, and IP `100.117.212.20`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -559,3 +580,8 @@ V0.0.166 hidden-item tolerance is also narrow. It applies only when malformed
 Agent work is non-visible and already reported in Inbox. Missing roots, visible
 unsafe Agent-work issues, and malformed work appearing on Board remain
 fail-closed conditions and must not be documented as safe to ignore.
+The fleet verifier's default-to-local-HEAD behavior is a verifier consistency
+guard. It does not recover a remote worker by itself: Timmy is verified at
+`6984f24c1fe330aca68fd95adc0a80dbcc9b4428`, while Toddy remains
+`ssh_unreachable` with `tailscale_key_expired` and must not be documented as
+recovered.
