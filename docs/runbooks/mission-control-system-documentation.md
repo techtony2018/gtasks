@@ -437,6 +437,16 @@ to the reviewed source before updating relationships.
   `agents/timmy`, route `hosts/timmy`, loaded launch label, and repo HEAD
   exactly `f5a2aa77d44561a9d7279a185c184388759945ad`. Toddy host/SSH/control
   plane remains unreachable and must not be documented as recovered.
+- Fleet verifier evidence: commit
+  `d7622b7272df3c8979d1db8e6b0c7b396c7a093c` added non-secret inventory
+  `config/handoff-dispatcher/remote-workers.json`, fleet CLI
+  `scripts/verify_handoff_worker_fleet.py`, tests
+  `tests/test_handoff_worker_fleet_verifier.py`, and fleet runbook
+  instructions. Reported checks: full regression `1367` OK with `5` skipped;
+  focused verifier/release tests `87` OK. Final fleet result was `ok=1
+  failed=1`: Timmy `ok: true`, route `hosts/timmy`, preflight verified, launch
+  loaded, repo head exact `d7622b7`; Toddy `ok: false`, issue
+  `ssh_unreachable` for `toddy@100.117.212.20`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -507,3 +517,7 @@ as local workers here.
 The read-only runtime verifier is a diagnostic/readback tool only. A Timmy
 PASS on Timmy's host does not imply Toddy recovery, and a Toddy outage must not
 be bypassed by installing or running Toddy locally on this Mac.
+The fleet verifier preserves partial success: Timmy verified plus Toddy
+`ssh_unreachable` means the fleet is not fully healthy. Do not collapse the
+summary to all-green, do not document Toddy as recovered, and do not suggest
+local Toddy installation as a workaround.

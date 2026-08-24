@@ -200,6 +200,13 @@ and optional LaunchAgent presence without claiming, waking, acknowledging, or
 mutating handoffs. Timmy was verified on its own host at this exact commit with
 route `hosts/timmy` and a loaded launch label; Toddy remains unrecovered because
 its host/SSH/control plane is still unreachable.
+Fleet verifier commit `d7622b7272df3c8979d1db8e6b0c7b396c7a093c` adds
+non-secret inventory `config/handoff-dispatcher/remote-workers.json` and
+`scripts/verify_handoff_worker_fleet.py` to check remote workers as a fleet.
+Latest reported fleet evidence is summary `ok=1 failed=1`: Timmy is verified
+at route `hosts/timmy` with preflight verified, launch loaded, and repo HEAD
+exactly `d7622b7`; Toddy is still `ok: false` with `ssh_unreachable` for
+`toddy@100.117.212.20`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -339,6 +346,11 @@ used as a substitute for installing Timmy or Toddy locally. Current readback:
 Timmy passed on the Timmy host at commit
 `f5a2aa77d44561a9d7279a185c184388759945ad`; Toddy remains blocked on host/SSH
 control-plane reachability and must not be documented as recovered.
+For fleet checks, use `scripts/verify_handoff_worker_fleet.py` with
+`config/handoff-dispatcher/remote-workers.json`. A mixed result is meaningful:
+the current `ok=1 failed=1` report verifies Timmy and preserves Toddy as a
+host-access blocker, not as a recovered worker and not as permission to install
+Toddy locally on this Mac.
 
 ### Independent UI/UX release gate
 

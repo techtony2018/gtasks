@@ -838,6 +838,18 @@ This reports each remote host independently. A healthy Timmy result with
 Timmy route is verified and the Toddy route needs host access or SSH repair;
 it is not permission to run Toddy locally.
 
+Fleet verifier commit `d7622b7272df3c8979d1db8e6b0c7b396c7a093c` added the
+non-secret inventory `config/handoff-dispatcher/remote-workers.json`, fleet
+CLI `scripts/verify_handoff_worker_fleet.py`, and
+`tests/test_handoff_worker_fleet_verifier.py`. Reported validation: full
+regression `1367` OK with `5` skipped, and focused verifier/release tests `87`
+OK. Final fleet evidence was summary `ok=1 failed=1`: Timmy returned
+`ok: true`, route `hosts/timmy`, preflight verified, launch loaded, repo head
+exactly `d7622b7`; Toddy returned `ok: false` with issue `ssh_unreachable` for
+`toddy@100.117.212.20`. Keep this distinction explicit: Timmy is verified,
+Toddy is host-access blocked, and local Toddy worker installation remains
+forbidden.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
