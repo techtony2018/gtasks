@@ -1547,6 +1547,11 @@ class CanonicalHandoffEventBridge:
             task_slug,
             include_terminal=False,
         )
+        if claim is None:
+            claim = self.dispatcher.store.get_execution_claim(
+                task_slug,
+                include_terminal=True,
+            )
         if status is None and claim is None:
             return None
         state: dict[str, Any] = {"status": status}

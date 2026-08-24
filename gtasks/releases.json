@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.158",
+  "current_version": "V0.0.159",
   "releases": [
     {
       "version": "V0.0.1",
@@ -948,6 +948,12 @@
       "date": "2026-08-24",
       "title": "Reconcile checkpointed Agent Artifacts",
       "summary": "Goal execution now completes active Goal-derived Agent Tasks when a checkpointed execution produced an exact Artifact, avoiding stuck suppressed handoff states after verified work."
+    },
+    {
+      "version": "V0.0.159",
+      "date": "2026-08-24",
+      "title": "Read terminal handoff checkpoint state",
+      "summary": "Goal execution now reads terminal checkpointed handoff claim state after release, allowing verified Agent Artifacts to reconcile completed work instead of staying in a suppressed repair state."
     }
   ]
 }

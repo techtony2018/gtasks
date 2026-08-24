@@ -2398,6 +2398,28 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(record.reason, "stable_blocker")
         self.assertIsNone(self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30))
 
+    def test_canonical_bridge_reports_latest_terminal_checkpointed_delivery_state(self) -> None:
+        self.record()
+        self.claim()
+        claim = self.store.get_execution_claim(TASK)
+        self.assertIsNotNone(claim)
+        self.store.release_execution_claim(
+            TASK,
+            executor_agent=AGENT,
+            idempotency_key=claim.idempotency_key,
+            terminal_state="checkpointed",
+            mutation_id="mutation-checkpointed-release",
+            now=NOW + timedelta(minutes=3),
+        )
+
+        state = CanonicalHandoffEventBridge(
+            self.dispatcher
+        ).latest_task_handoff_delivery_state(TASK)
+
+        self.assertEqual(state["status"], "suppressed")
+        self.assertEqual(state["terminal_state"], "checkpointed")
+        self.assertEqual(state["executor_agent"], AGENT)
+
     def test_canonical_bridge_persists_one_verified_record_or_attention_event(self) -> None:
         bridge = CanonicalHandoffEventBridge(self.dispatcher)
         snapshot = {
