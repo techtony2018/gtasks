@@ -4129,6 +4129,36 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
         self.assertEqual(payload["detail"], "")
         self.assertEqual(payload["status"], "planned")
 
+    def test_exact_task_read_accepts_legacy_missing_summary_from_title(self) -> None:
+        task = new_inbox_task(
+            "Legacy summary-free task",
+            datetime(2026, 7, 30, tzinfo=timezone.utc),
+            "a1b2c3",
+        )
+        page = stored_page(task)
+        page["frontmatter"].pop("summary")
+        runner = FakeRunner(
+            {
+                "get_page": [page],
+                "get_links": [
+                    [],
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ],
+                ],
+            }
+        )
+
+        payload = GBrainAdapter(runner).get_task_api_payload(task.slug)
+
+        self.assertEqual(payload["slug"], task.slug)
+        self.assertEqual(payload["title"], "Legacy summary-free task")
+        self.assertEqual(payload["summary"], "Legacy summary-free task")
+
     def test_typed_membership_wins_over_duplicate_legacy_backlinks(self) -> None:
         task = new_inbox_task(
             "One canonical task",

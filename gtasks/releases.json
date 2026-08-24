@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.146",
+  "current_version": "V0.0.147",
   "releases": [
     {
       "version": "V0.0.1",
@@ -876,6 +876,12 @@
       "date": "2026-08-24",
       "title": "Read legacy detail-free tasks",
       "summary": "Exact Task readback now treats legacy pages that omit the optional detail field as empty-detail tasks while retaining strict summary, status, due date, and lifecycle membership validation."
+    },
+    {
+      "version": "V0.0.147",
+      "date": "2026-08-24",
+      "title": "Read legacy summary-free tasks",
+      "summary": "Exact Task readback now falls back from a missing legacy summary field to the canonical page title while preserving strict task lifecycle validation."
     }
   ]
 }

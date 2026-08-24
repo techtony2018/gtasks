@@ -8696,9 +8696,36 @@ class GBrainAdapter:
             raise ValueError(
                 f"task has unexpected page type {page.get('type') or 'missing'}; repair the task type before editing"
             )
-        task = Task.from_page(page, edges=links)
+        normalized_page = deepcopy(dict(page))
+        raw_frontmatter = normalized_page.get("frontmatter")
+        if isinstance(raw_frontmatter, Mapping):
+            normalized_page["frontmatter"] = deepcopy(dict(raw_frontmatter))
+            frontmatter = normalized_page["frontmatter"]
+            if (
+                not isinstance(frontmatter.get("summary"), str)
+                or not str(frontmatter.get("summary")).strip()
+            ) and isinstance(page.get("title"), str):
+                frontmatter["summary"] = str(page["title"]).strip()
+            roots = tuple(
+                dict.fromkeys(
+                    str(edge.get("to_slug"))
+                    for edge in links
+                    if isinstance(edge, Mapping)
+                    and edge.get("from_slug") == task_slug
+                    and edge.get("link_type") == "member_of"
+                    and edge.get("to_slug") in TASK_SCOPE_ROOTS
+                )
+            )
+            if len(roots) == 1:
+                normalized_page, links, _warnings = _normalize_collection_task(
+                    normalized_page,
+                    links,
+                    roots[0],
+                    legacy_untyped_backlink=False,
+                )
+        task = Task.from_page(normalized_page, edges=links)
         self._require_task_openclaw_activation(task)
-        return task, page
+        return task, normalized_page
 
     def get_task(self, task_slug: str) -> Task:
         task, _page = self._get_task_readback(task_slug)
