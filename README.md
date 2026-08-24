@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.149 at commit
-`b25797c3ce404b98be9c7a5658be73fcdc367791`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.151 at commit
+`30e717de70abb90043a89ba8aa4dea48d9ede860`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -94,7 +94,10 @@ verified Career canary task
 `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` completed with canonical Artifact
 `artifacts/32142bd1-8b1b-4ffc-a115-87fd39d7f6d7`; V0.0.149 shows that
 recently-completed Career task's title, status, and Agent in Goal execution
-status. The earlier Finance canary task
+status. V0.0.151 projects active or planned goal-derived duplicate decisions
+with no verified Agent handoff as `handoff_missing` Needs attention, while
+terminal handoff states remain `handoff_needs_repair` and ordinary
+duplicate/recently_completed states stay distinct. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -130,6 +133,10 @@ returning status. It does not bypass canary/shadow mode, WIP, identity, or
 handoff safety checks. When a canary Goal is already covered by duplicate or
 recently completed work, the status includes the selected Task slug, title,
 status, and Agent so operators can verify the canonical work item directly.
+If a goal-derived duplicate decision points at an active or planned canonical
+task without any verified Agent handoff, Goal execution reports
+`handoff_missing` with Needs attention copy instead of ordinary duplicate
+copy. Terminal handoff states remain `handoff_needs_repair`.
 
 ### Independent UI/UX release gate
 

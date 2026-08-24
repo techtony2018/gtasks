@@ -137,10 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.149`
+- Last verified pushed release: `V0.0.151`
 - Release commits:
-  `9931700`, `d895ea3`, `5058a53`, and
-  `b25797c3ce404b98be9c7a5658be73fcdc367791`
+  `63e1233` and `30e717de70abb90043a89ba8aa4dea48d9ede860`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -200,6 +199,19 @@ to the reviewed source before updating relationships.
   `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` and now includes selected Task
   title, status `completed`, and Agent `agents/tammy`. Agent roster readback
   returned `6` agents with `issues: []`.
+- V0.0.150/V0.0.151 evidence: dashboard-managed health readback `V0.0.151`;
+  release commits `63e1233` and `30e717d`; full suite reported `1343` OK with
+  `5` skipped; independent QA PASS at
+  `artifacts/qa/v0.0.151-independent/gate-report.md`.
+- Verified V0.0.150/V0.0.151 behavior: active or planned goal-derived
+  duplicate decisions with no verified Agent handoff project as
+  `handoff_missing` / Needs attention with exact copy `The canonical task is
+  active, but no verified Agent handoff is recorded yet.` Terminal handoff
+  statuses remain `handoff_needs_repair`; ordinary `duplicate` and
+  `recently_completed` remain distinct. Live Civic remains ordinary
+  `duplicate` because handoff-store readback showed task
+  `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` latest status
+  `completed`/`system_dependency_recovered`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -219,4 +231,6 @@ after authoritative completed/suppressed recovery, and operator recovery from
 abandoned execution starts. The Documentation Manager must not document this
 as general dead-letter recovery or permission to duplicate Codex launches.
 V0.0.148 manual Goal execution refresh is still bounded scheduler wakeup, not
-unbounded autonomous execution.
+unbounded autonomous execution. V0.0.151 missing-handoff attention is a
+readback/repair signal; it does not fabricate handoff delivery or mutate the
+canonical task.

@@ -577,6 +577,17 @@ safety controls. V0.0.149+ includes selected Task metadata for duplicate and
 This metadata is readback context only; it does not create, complete, or
 handoff work by itself.
 
+V0.0.150/V0.0.151 distinguish active or planned goal-derived duplicates that
+lack a verified Agent handoff. If the duplicate Task is still executable and
+Mission Control cannot verify a handoff record, the projected decision becomes
+`handoff_missing` and the UI must show Needs attention with exact copy:
+`The canonical task is active, but no verified Agent handoff is recorded yet.`
+Terminal handoff states still project as `handoff_needs_repair`; ordinary
+`duplicate` and `recently_completed` remain separate non-missing states. A
+completed handoff readback is sufficient to keep an otherwise duplicate Goal
+decision ordinary, as verified by the live Civic task
+`tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
