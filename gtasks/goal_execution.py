@@ -185,6 +185,19 @@ def _is_passive_scheduled_wait_task(task: Task) -> bool:
     )
 
 
+def _needs_next_action(task: Task) -> bool:
+    """Identify Agent work that blocks a Goal without an actionable handoff."""
+    return (
+        task.status in {"planned", "active"}
+        and task.goal_derivation is None
+        and not task.next_action.strip()
+        and task.handoff is None
+        and not task.blockers
+        and not task.dependencies
+        and not any(todo.status != "done" for todo in task.todos)
+    )
+
+
 class GoalExecutionPlanner:
     """Classify one bounded review candidate per available Codex Agent."""
 
@@ -231,10 +244,15 @@ class GoalExecutionPlanner:
                 None,
             )
             if existing is not None:
+                reason = (
+                    "task_needs_next_action"
+                    if _needs_next_action(existing)
+                    else "duplicate"
+                )
                 decisions.append(
                     GoalExecutionDecision(
                         goal.slug,
-                        "duplicate",
+                        reason,
                         existing_task_slug=existing.slug,
                     )
                 )
@@ -264,10 +282,15 @@ class GoalExecutionPlanner:
                 None,
             )
             if exact is not None:
+                reason = (
+                    "task_needs_next_action"
+                    if _needs_next_action(exact)
+                    else "duplicate"
+                )
                 decisions.append(
                     GoalExecutionDecision(
                         goal.slug,
-                        "duplicate",
+                        reason,
                         existing_task_slug=exact.slug,
                     )
                 )
@@ -684,7 +707,11 @@ class GoalExecutionEngine:
         )
         if (
             selected is not None
-            and selected.reason in {"handoff_needs_repair", "handoff_missing"}
+            and selected.reason in {
+                "handoff_needs_repair",
+                "handoff_missing",
+                "task_needs_next_action",
+            }
             and selected.existing_task_slug is not None
         ):
             task = next(
@@ -699,13 +726,18 @@ class GoalExecutionEngine:
                 status = handoff_status_by_task.get(task.slug)
                 if selected.reason == "handoff_missing":
                     status = "missing"
+                handoff = (
+                    SimpleNamespace(status=status)
+                    if status is not None
+                    else None
+                )
                 return GoalExecutionRun.for_task(
                     plan,
                     mode=mode,
                     ran_at=ran_at,
                     task=task,
                     public_reason=selected.reason,
-                    handoff=SimpleNamespace(status=status),
+                    handoff=handoff,
                 )
         if (
             selected is not None

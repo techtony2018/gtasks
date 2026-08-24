@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.152",
+  "current_version": "V0.0.153",
   "releases": [
     {
       "version": "V0.0.1",
@@ -912,6 +912,12 @@
       "date": "2026-08-24",
       "title": "Project dispatcher handoff status in Agent work",
       "summary": "Agent work list readback now includes the latest dispatcher handoff status for non-completed tasks without overwriting canonical task handoff fields, aligning Agents cards and exact Task details with the same verified execution evidence."
+    },
+    {
+      "version": "V0.0.153",
+      "date": "2026-08-24",
+      "title": "Surface Agent tasks missing next actions",
+      "summary": "Goal execution now flags active or planned non-derived Agent goal tasks that have no explicit next action, handoff, blocker, dependency, or open TODO as Needs attention instead of treating them as ordinary duplicate work."
     }
   ]
 }
