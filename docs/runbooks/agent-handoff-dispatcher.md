@@ -588,6 +588,16 @@ completed handoff readback is sufficient to keep an otherwise duplicate Goal
 decision ordinary, as verified by the live Civic task
 `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92`.
 
+V0.0.152 projects the same latest dispatcher handoff evidence into
+`/api/agent-work` for non-completed Agent tasks. The response may include
+`dispatcher_handoff: {"status": "<latest>"}` when the handoff store has a
+latest status and the canonical task `handoff` field is empty; the projection
+does not overwrite canonical `handoff`. Completed Agent-work rows suppress
+`dispatcher_handoff` so old execution evidence does not imply current work.
+The live Civic Agent-work row read back active with canonical `handoff: null`
+and `dispatcher_handoff: {"status": "completed"}` for
+`tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

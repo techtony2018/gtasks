@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.151`
+- Last verified pushed release: `V0.0.152`
 - Release commits:
-  `63e1233` and `30e717de70abb90043a89ba8aa4dea48d9ede860`
+  `a1bd22937cbf1f10b4f3035cf844eed41cb70206`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -212,6 +212,15 @@ to the reviewed source before updating relationships.
   `duplicate` because handoff-store readback showed task
   `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` latest status
   `completed`/`system_dependency_recovered`.
+- V0.0.152 evidence: dashboard-managed health readback `V0.0.152`; release
+  commit `a1bd229`; full suite reported `1344` OK with `5` skipped;
+  independent QA PASS at `artifacts/qa/v0.0.152-independent/gate-report.md`.
+- Verified V0.0.152 behavior: `/api/agent-work` projects latest dispatcher
+  handoff status for non-completed Agent tasks as `dispatcher_handoff` without
+  overwriting the canonical `handoff` field. Completed Agent-work rows suppress
+  that projection. Live Civic Agent-work readback showed
+  `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` active with canonical
+  `handoff: null` and `dispatcher_handoff: {"status": "completed"}`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -233,4 +242,6 @@ as general dead-letter recovery or permission to duplicate Codex launches.
 V0.0.148 manual Goal execution refresh is still bounded scheduler wakeup, not
 unbounded autonomous execution. V0.0.151 missing-handoff attention is a
 readback/repair signal; it does not fabricate handoff delivery or mutate the
-canonical task.
+canonical task. V0.0.152 `dispatcher_handoff` is also read-only projection
+evidence; it must not be treated as canonical `handoff` content or as
+completion of a non-completed task.

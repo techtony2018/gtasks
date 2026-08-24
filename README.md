@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.151 at commit
-`30e717de70abb90043a89ba8aa4dea48d9ede860`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.152 at commit
+`a1bd22937cbf1f10b4f3035cf844eed41cb70206`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -97,7 +97,10 @@ recently-completed Career task's title, status, and Agent in Goal execution
 status. V0.0.151 projects active or planned goal-derived duplicate decisions
 with no verified Agent handoff as `handoff_missing` Needs attention, while
 terminal handoff states remain `handoff_needs_repair` and ordinary
-duplicate/recently_completed states stay distinct. The earlier Finance canary task
+duplicate/recently_completed states stay distinct. V0.0.152 also projects the
+latest dispatcher handoff status into `/api/agent-work` non-completed task
+rows as `dispatcher_handoff` without overwriting the canonical task `handoff`;
+completed task rows suppress that projection. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -328,7 +331,12 @@ The Agent Work view is a coordination surface, not another Today list. It
 shows profile-to-goal ownership and keeps work in the standard task states
 Planned, Active, Blocked, Completed, and Cancelled. Waiting for Tony is a
 specific Blocked condition, never a separate status. It does not imply
-that unapproved work is permitted to execute.
+that unapproved work is permitted to execute. V0.0.152+ includes a read-only
+`dispatcher_handoff` projection for non-completed Agent work when the handoff
+store has a latest dispatcher status but the canonical task `handoff` field is
+empty. The projection helps operators see recovery evidence in Agents and
+fallback Task details; it never overwrites canonical handoff data, and
+completed rows suppress it.
 
 ### Agent question and answer handoff
 
