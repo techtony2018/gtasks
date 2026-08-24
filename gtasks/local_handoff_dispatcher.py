@@ -2024,6 +2024,7 @@ class PrivateWakeInbox:
         *,
         reconciliation: Mapping[str, object],
         now: datetime,
+        require_pending_server_action: bool = True,
     ) -> WakeInboxItem:
         if set(reconciliation) != RECOVERY_RECONCILIATION_KEYS:
             raise ValueError("recovery reconciliation must match the documented safe shape")
@@ -2051,8 +2052,16 @@ class PrivateWakeInbox:
                 raise ValueError(
                     "recovery reconciliation does not match the registration identity"
                 )
-            if row["pending_server_action"] is None:
+            if row["pending_server_action"] is None and require_pending_server_action:
                 raise ValueError("recovery reconciliation requires a pending server action")
+            if row["pending_server_action"] is None and row["state"] not in {
+                "launch_ready",
+                "start_requesting",
+                "start_granted",
+            }:
+                raise ValueError(
+                    "recovery reconciliation requires pending action or pre-gate launch state"
+                )
             state = str(status)
             last_error = (
                 "server_completed" if state == "completed" else "server_suppressed"
@@ -2248,6 +2257,39 @@ class WakeInboxWorker:
         self.phase_hook("start_abandon_required")
         return self._deliver_pending_action(claimed, now=now)
 
+    def _complete_pre_gate_terminal_recovery(
+        self,
+        claimed: WakeInboxClaim,
+        *,
+        reconciliation: Mapping[str, object],
+        launch_id: str,
+        observation: LaunchObservation,
+        now: datetime,
+    ) -> WakeInboxItem | None:
+        if (
+            reconciliation.get("code") != "handoff_recovery_reconcile"
+            or reconciliation.get("status") not in {"completed", "suppressed"}
+        ):
+            return None
+        if observation.state not in {
+            "absent",
+            "preparing",
+            "spawned",
+            "ready",
+            "cancelled",
+        }:
+            return None
+        if observation.state != "cancelled":
+            self.launch_controller.cancel(launch_id)
+        completed = self.inbox.complete_reconciled_server_state(
+            claimed,
+            reconciliation=reconciliation,
+            now=now,
+            require_pending_server_action=False,
+        )
+        self.phase_hook("server_reconciliation_inbox_terminalized")
+        return completed
+
     def run_once(self, *, now: datetime) -> WakeInboxItem | None:
         claimed = self.inbox.claim_next(now=now)
         if claimed is None:
@@ -2409,6 +2451,21 @@ class WakeInboxWorker:
                     launch_id=launch_id,
                 )
             except (OSError, TimeoutError):
+                if hasattr(self.client, "recover"):
+                    try:
+                        recovered = self.client.recover(item.claim)  # type: ignore[attr-defined]
+                    except (OSError, TimeoutError):
+                        recovered = None
+                    if isinstance(recovered, Mapping):
+                        completed = self._complete_pre_gate_terminal_recovery(
+                            claimed,
+                            reconciliation=recovered,
+                            launch_id=launch_id,
+                            observation=observation,
+                            now=now,
+                        )
+                        if completed is not None:
+                            return completed
                 self.inbox.release_worker_claim(claimed, now=now)
                 return None
             if not isinstance(start, Mapping) or (

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.144",
+  "current_version": "V0.0.145",
   "releases": [
     {
       "version": "V0.0.1",
@@ -864,6 +864,12 @@
       "date": "2026-08-24",
       "title": "Throttle busy Codex thread handoff retries",
       "summary": "Fixed-thread Codex handoffs that encounter an active writer now back off for a bounded local-concurrency interval instead of rapidly creating and abandoning repeated execution starts."
+    },
+    {
+      "version": "V0.0.145",
+      "date": "2026-08-24",
+      "title": "Reconcile pre-gate terminal handoff recovery",
+      "summary": "Local Codex handoff recovery now cancels an unused pre-gate launch and clears the wake inbox when authoritative Mission Control recovery proves the same handoff is already completed or suppressed."
     }
   ]
 }

@@ -2035,6 +2035,58 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertGreater(failed.max_attempts, 1)
             self.assertEqual(client.failure_calls, [])
 
+    def test_pre_gate_start_failure_reconciles_completed_server_state(self) -> None:
+        class CompletedOnRecoverClient(self.LaunchClient):
+            def execution_start(self, claim, *, wake_token, launch_id):
+                self.start_calls.append((claim["handoff_id"], wake_token, launch_id))
+                raise OSError("execution start lost after server completion")
+
+            def recover(self, claim):
+                return {
+                    "code": "handoff_recovery_reconcile",
+                    "error": "Persisted handoff claim requires authoritative reconciliation.",
+                    "handoff_id": claim["handoff_id"],
+                    "status": "completed",
+                    "lease_generation": claim["lease_generation"],
+                    "agent_slug": claim["agent_slug"],
+                    "registration_ref": claim["registration_ref"],
+                }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = CompletedOnRecoverClient()
+            launch_root = directory / "launches"
+            launch_controller = GatedLaunchController(launch_root)
+            adapter = self.Adapter(
+                directory,
+                code="import time; time.sleep(30)",
+                timeout=30,
+            )
+            worker = WakeInboxWorker(
+                client,
+                adapter,
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=launch_controller,
+            )
+
+            settled = self._run_until_settled(worker, inbox)
+
+            self.assertEqual(settled.state, "completed")
+            self.assertEqual(settled.last_error, "server_completed")
+            self.assertEqual(len(client.start_calls), 1)
+            result_path = (
+                launch_controller.launch_directory(settled.current_launch_id)
+                / "result.json"
+            )
+            self.assertTrue(result_path.exists())
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["outcome"], "cancelled")
+            self.assertEqual(result["reason"], "cancelled_before_gate")
+
     def test_checkpoint_network_loss_retries_only_the_server_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
