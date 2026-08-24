@@ -501,6 +501,12 @@ logs.
   that encounter `codex_thread_active_writer` back off for the bounded local
   concurrency interval, currently 300 seconds, instead of rapidly creating and
   abandoning repeated execution starts.
+- V0.0.145+ closes the pre-gate terminal reconciliation gap. When the host has
+  an unused pre-gate launch and authoritative Mission Control recovery proves
+  the same handoff is already `completed` or `suppressed`, the local dispatcher
+  cancels that unused launch, clears the wake inbox as `server_completed` or
+  `server_suppressed`, and does not create another launch or mutate the
+  completed canonical task.
 
 Never clear local claim state merely because a request was sent. Clear or
 replace it only after a verified retry, terminal, or rotated recovery response.

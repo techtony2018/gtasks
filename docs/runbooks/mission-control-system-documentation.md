@@ -137,10 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.144`
+- Last verified pushed release: `V0.0.145`
 - Release commits:
-  `001d742`, `4608077`, `3cd682c`, and
-  `c96a68464b2046e391924eb5a41a1f63aeafe687`
+  `573d56cfb19f33f9d4bbc10140c315a9b6e6ba1d`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -171,6 +170,20 @@ to the reviewed source before updating relationships.
   handoff `handoff-806...` read back `received` with
   `system_dependency_recovered` after operator recovery, and active-writer
   retries no longer dead-letter immediately.
+- V0.0.145 evidence: dashboard-managed health readback `V0.0.145`; pushed
+  commit `573d56c`; `python3 -m py_compile gtasks/local_handoff_dispatcher.py`
+  passed; focused new regression `1/1` OK; handoff local/launch/dispatcher
+  targeted suites `222` OK; earlier full suite before commit `1337` OK with
+  `5` skipped per Developer handoff.
+- Verified V0.0.145 behavior: local Codex handoff recovery cancels an unused
+  pre-gate launch and clears the wake inbox when authoritative Mission Control
+  recovery proves the same handoff is already completed or suppressed. Live
+  readback for Career handoff `handoff-806...` showed local inbox
+  `completed` with `last_error=server_completed`, server handoff `completed`
+  with reason `system_dependency_recovered`, target task
+  `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` completed, and Artifact
+  `artifacts/32142bd1-8b1b-4ffc-a115-87fd39d7f6d7` created by
+  `agents/tammy` for the same Career task/Goal.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -182,9 +195,10 @@ Documentation Manager must not mutate that ticket-owned collection merely to
 hide the mismatch; its owner should reconcile it through the supported
 contract.
 
-Current operational caveat at this baseline: V0.0.142 through V0.0.144
+Current operational caveat at this baseline: V0.0.142 through V0.0.145
 supersede the earlier V0.0.137 active-writer handling. Active writer is local
-backpressure with bounded retry/backoff, while operator recovery from
+backpressure with bounded retry/backoff, pre-gate local cleanup is allowed only
+after authoritative completed/suppressed recovery, and operator recovery from
 `terminal_delivery_failure` remains limited to owned handoffs with verified
 abandoned execution starts. The Documentation Manager must not document this
 as general dead-letter recovery or permission to duplicate Codex launches.
