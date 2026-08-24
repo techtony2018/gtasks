@@ -169,6 +169,21 @@ class GoalExecutionPlannerTests(unittest.TestCase):
         self.assertEqual(plan.decisions[0].reason, "duplicate")
         self.assertTrue(plan.decisions[0].existing_task_slug.startswith("tasks/"))
 
+    def test_passive_scheduled_wait_task_does_not_suppress_goal_review(self) -> None:
+        passive = replace(
+            agent_task(
+                slug_identity="weekly-passive-wait",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            next_action="Wait for the next weekly scheduled run.",
+        )
+
+        plan = GoalExecutionPlanner().plan(snapshot(tasks=(passive,)))
+
+        self.assertEqual(plan.decisions[0].reason, "auto_eligible")
+        self.assertIsNotNone(plan.decisions[0].candidate)
+
     def test_terminal_derived_goal_task_does_not_suppress_new_candidate(self) -> None:
         first = GoalExecutionPlanner().plan(snapshot())
         candidate = first.decisions[0].candidate

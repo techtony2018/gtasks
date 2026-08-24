@@ -172,6 +172,19 @@ def _candidate(
     )
 
 
+def _is_passive_scheduled_wait_task(task: Task) -> bool:
+    """Return true only for explicit, non-actionable scheduled wait records."""
+    next_action = task.next_action.strip().lower()
+    return (
+        task.status in {"planned", "active", "blocked"}
+        and not task.todos
+        and not task.blockers
+        and not task.dependencies
+        and next_action.startswith("wait for the next ")
+        and ("scheduled" in next_action or " run" in next_action)
+    )
+
+
 class GoalExecutionPlanner:
     """Classify one bounded review candidate per available Codex Agent."""
 
@@ -213,6 +226,7 @@ class GoalExecutionPlanner:
                     for task in snapshot.tasks
                     if task.goal == goal.slug
                     and task.status in {"planned", "active", "blocked"}
+                    and not _is_passive_scheduled_wait_task(task)
                 ),
                 None,
             )
@@ -263,6 +277,7 @@ class GoalExecutionPlanner:
                 1
                 for task in snapshot.tasks
                 if task.owner_agent == owner.slug and task.status == "active"
+                and not _is_passive_scheduled_wait_task(task)
             )
             if active_wip >= AUTO_WIP_LIMIT:
                 decisions.append(GoalExecutionDecision(goal.slug, "wip_full"))

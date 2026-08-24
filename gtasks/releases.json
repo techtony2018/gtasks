@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.131",
+  "current_version": "V0.0.132",
   "releases": [
     {
       "version": "V0.0.1",
@@ -786,6 +786,12 @@
       "date": "2026-08-23",
       "title": "Ignore terminal derived Goal tasks when planning new Agent work",
       "summary": "Prevents cancelled or completed Goal-derived Agent tasks from suppressing fresh automatic Goal progress candidates, so terminal historical work does not keep active Goals in repair states."
+    },
+    {
+      "version": "V0.0.132",
+      "date": "2026-08-23",
+      "title": "Ignore passive scheduled waits for Goal execution planning",
+      "summary": "Keeps explicit scheduled-wait Agent tasks from occupying Goal execution duplicate and active-WIP slots, allowing fresh bounded Goal progress reviews while retaining normal duplicate protection for actionable work."
     }
   ]
 }
