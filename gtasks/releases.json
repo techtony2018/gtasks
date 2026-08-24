@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.157",
+  "current_version": "V0.0.158",
   "releases": [
     {
       "version": "V0.0.1",
@@ -942,6 +942,12 @@
       "date": "2026-08-24",
       "title": "Cycle Goal-derived Agent reviews",
       "summary": "Goal execution now derives Agent review Tasks with a cycle key so a completed prior-cycle review no longer permanently suppresses future bounded Goal progress."
+    },
+    {
+      "version": "V0.0.158",
+      "date": "2026-08-24",
+      "title": "Reconcile checkpointed Agent Artifacts",
+      "summary": "Goal execution now completes active Goal-derived Agent Tasks when a checkpointed execution produced an exact Artifact, avoiding stuck suppressed handoff states after verified work."
     }
   ]
 }

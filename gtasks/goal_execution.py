@@ -733,6 +733,31 @@ class GoalExecutionEngine:
             return False
         return any(getattr(artifact, "produced_for", None) == task_slug for artifact in artifacts)
 
+    def _task_has_verified_completion_signal(
+        self,
+        task_slug: str,
+        *,
+        handoff_status_by_task: Mapping[str, str | None],
+    ) -> bool:
+        status = handoff_status_by_task.get(task_slug)
+        if status == "completed":
+            return True
+        if status != "suppressed":
+            return False
+        latest_delivery_state = getattr(
+            self.bridge,
+            "latest_task_handoff_delivery_state",
+            None,
+        )
+        if not callable(latest_delivery_state):
+            return False
+        state = latest_delivery_state(task_slug)
+        return (
+            isinstance(state, Mapping)
+            and state.get("status") == "suppressed"
+            and state.get("terminal_state") == "checkpointed"
+        )
+
     def _reconcile_selected_completed_handoff(
         self,
         plan: GoalExecutionPlan,
@@ -752,9 +777,12 @@ class GoalExecutionEngine:
         )
         if (
             selected is None
-            or selected.reason != "duplicate"
+            or selected.reason not in {"duplicate", "handoff_needs_repair"}
             or selected.existing_task_slug is None
-            or handoff_status_by_task.get(selected.existing_task_slug) != "completed"
+            or not self._task_has_verified_completion_signal(
+                selected.existing_task_slug,
+                handoff_status_by_task=handoff_status_by_task,
+            )
         ):
             return None
         task = next(

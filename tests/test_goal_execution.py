@@ -690,6 +690,48 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertIn(("artifacts", active.slug), adapter.calls)
         self.assertIn(("status", (active.slug, "completed")), adapter.calls)
 
+    def test_canary_reconciles_checkpointed_suppressed_handoff_with_verified_artifact(self) -> None:
+        first_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(snapshot())
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        active = replace(
+            agent_task(
+                slug_identity="checkpointed-handoff-goal-work",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(active,), artifact_tasks=(active.slug,))
+        bridge = self.Bridge()
+        bridge.latest_status = "suppressed"
+        bridge.latest_delivery_state = {
+            "status": "suppressed",
+            "terminal_state": "checkpointed",
+        }
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "completed_after_verified_handoff")
+        self.assertEqual(result.task_slug, active.slug)
+        self.assertEqual(result.task_status, "completed")
+        self.assertIn(("artifacts", active.slug), adapter.calls)
+        self.assertIn(("status", (active.slug, "completed")), adapter.calls)
+
     def test_canary_does_not_complete_handoff_without_verified_artifact(self) -> None:
         first_plan = GoalExecutionPlanner().plan(snapshot())
         candidate = first_plan.decisions[0].candidate
