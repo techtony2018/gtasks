@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.155 at commit
-`05dce491ab298a5c11c05b791e2f4c0a683de4f6`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.156 at commit
+`7f779030695076763f871a166ac67ee2253b95c2`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -111,7 +111,13 @@ whose latest handoff is still `queued` after the bounded worker attention
 window as `handoff_worker_unavailable` Needs attention, while fresh queued
 handoffs remain Delivering. The current Toddy Health readback is an
 operational host/private-route remediation item, not a completed Agent
-execution. The earlier Finance canary task
+execution. V0.0.156 safely reconciles a selected canary Goal-derived active
+Task to completed only after the latest dispatcher handoff is completed and an
+exact `produced_for` Artifact readback exists; if the Artifact is missing, the
+Task remains active/duplicate. The live Civic task
+`tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` completed at
+`2026-08-24T03:25:19.000864-07:00` after exact Artifact readback for
+`artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f`. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -168,6 +174,16 @@ private route.` Fresh queued handoffs remain Delivering. Treat this as
 operator remediation for the Agent host, dispatcher, or private route; do not
 claim Agent execution completion until a verified lease/delivery/completion
 readback exists.
+
+If a selected canary Goal-derived active task has latest dispatcher handoff
+status `completed`, Goal execution may reconcile the canonical Task to
+completed only after exact Artifact readback verifies at least one Artifact
+with `produced_for` equal to that Task slug. The public reason is
+`completed_after_verified_handoff`, with UI copy:
+`Mission Control completed the canonical task after verified Agent handoff and
+Artifact readback.` Missing Artifact evidence keeps the task active and the
+Goal decision at ordinary duplicate/executing rather than fabricating
+completion.
 
 ### Independent UI/UX release gate
 

@@ -638,6 +638,23 @@ Tailscale session is logged out, leaving the private route
 `https://tonys-macbook-pro.taildb46a7.ts.net` unreachable. Record that as
 host/private-route remediation, not as completed Agent execution.
 
+V0.0.156 adds the positive reconciliation path for selected canary
+Goal-derived active tasks. Mission Control may mark the canonical task
+completed only after the latest dispatcher handoff is `completed` and exact
+Artifact readback verifies a canonical Artifact whose `produced_for` equals the
+same task slug. The projected public reason is
+`completed_after_verified_handoff`, with UI copy: `Mission Control completed
+the canonical task after verified Agent handoff and Artifact readback.` If the
+completed handoff lacks exact Artifact evidence, the task must remain
+active/duplicate. Live Civic readback shows
+`tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` completed at
+`2026-08-24T03:25:19.000864-07:00`, with Artifact
+`artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f` retaining
+`produced_for -> tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92`. The Toddy Health
+host-route blocker remains separate: Toddy fixed thread configuration exists,
+but the host is still logged out of Tailscale, so its queued handoff remains
+`handoff_worker_unavailable` until the private route is restored.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.155`
+- Last verified pushed release: `V0.0.156`
 - Release commits:
-  `05dce491ab298a5c11c05b791e2f4c0a683de4f6`
+  `7f779030695076763f871a166ac67ee2253b95c2`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -263,6 +263,20 @@ to the reviewed source before updating relationships.
   `handoff_worker_unavailable` for
   `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, latest handoff status
   `queued`.
+- V0.0.156 evidence: dashboard-managed health readback `V0.0.156`; release
+  commit `7f779030695076763f871a166ac67ee2253b95c2`; independent QA PASS at
+  `artifacts/qa/v0.0.156-independent/gate-report.md` with frozen aggregate
+  `6c36412229ea5a32652168b8a717f032f503b6e3cbf67d04f3163c226181876f`;
+  focused Goal execution/frontend contract suite reported `219` passed.
+- Verified V0.0.156 behavior: Goal execution reconciles a selected canary
+  Goal-derived active Task to completed only after latest dispatcher handoff
+  completion plus exact `produced_for` Artifact readback. Missing Artifact
+  evidence leaves the Task active/duplicate. Live readback showed Civic task
+  `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` completed at
+  `2026-08-24T03:25:19.000864-07:00`; Artifact
+  `artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f` still has
+  `produced_for` set to that task; `/api/goal-execution?mode=shadow` now
+  reports Civic as `recently_completed`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -294,4 +308,8 @@ non-actionable item from consuming the automatic Goal WIP slot. V0.0.155
 `handoff_worker_unavailable` is also a worker/route repair signal. The current
 Toddy Health case is caused by an unreachable private route while Toddy's host
 Tailscale session is logged out; do not document it as a leased handoff,
-delivered worker execution, or completed Agent task.
+delivered worker execution, or completed Agent task. V0.0.156
+`completed_after_verified_handoff` is narrowly gated by dispatcher completion
+plus exact Artifact `produced_for` readback; do not use it to complete tasks
+that only have a terminal handoff, only have an Artifact without the exact task
+relationship, or still have an unresolved worker/route blocker.
