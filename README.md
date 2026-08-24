@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.162 at commit
-`351fb99bc6c216e7d3a5558c425c7c176fa85a51`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.163 at commit
+`c39f726034d7579959337abf759cdb92706dd132`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -179,6 +179,14 @@ readback showed the auto canary completed Finance/Tammy task
 `artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`; `/api/goal-execution` now
 surfaces Career as the newest `recently_completed`, Finance as
 `recently_completed`, and Family/Toddy separately as `waiting_for_tony`.
+V0.0.163 exposes the exact open question TODO on Goal execution rows and Agent
+compact cards for Goal-derived work waiting on Tony. Current Family/Toddy
+surfaces now include the copy `Answer: Which family-care scope, outcomes,
+constraints, and first action should Toddy use next?` for task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`. Task lookup also merges richer
+Agent-work projections with same-slug snapshot rows so handoff/TODO context is
+not hidden by thinner cached rows.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -291,6 +299,13 @@ the response exposes a canonical TODO list unavailable issue, shown as
 `The canonical TODO list is unavailable.`, but keeps the task and handoff
 visible; operators should repair readback/data availability rather than
 fabricate a new TODO or mark the task actionable.
+
+V0.0.163+ surfaces the open question TODO text directly in waiting-for-Tony
+Goal execution surfaces, including full Goal execution rows and compact Agent
+cards. The current Family/Toddy copy is exactly `Answer: Which family-care
+scope, outcomes, constraints, and first action should Toddy use next?`. This
+question text comes from the canonical open TODO, not from generated copy, and
+must remain tied to the same blocked task until Tony answers and hands it back.
 
 ### Independent UI/UX release gate
 

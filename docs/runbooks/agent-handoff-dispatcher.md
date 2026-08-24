@@ -752,6 +752,19 @@ Finance as `recently_completed`, Family/Toddy separately as
 automation; it is a private canary target under the same one-task safety
 boundary and exact-readback gates.
 
+V0.0.163 exposes open handoff question TODO text in waiting-for-Tony Goal
+execution surfaces. Full Goal execution rows and compact Agent cards now show
+the exact canonical question for Goal-derived work waiting on Tony. For the
+current Family/Toddy blocker, the copy is exactly `Answer: Which family-care
+scope, outcomes, constraints, and first action should Toddy use next?`, backed
+by task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`. The frontend task lookup also
+merges richer Agent-work projections with same-slug snapshot rows, so a thin
+cached row cannot hide the verified handoff or TODO context. Preserve the
+state as `Blocked` / `waiting_for_tony`; the visible question is the next
+owner prompt for Tony, not permission to create replacement work or mark the
+task complete.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

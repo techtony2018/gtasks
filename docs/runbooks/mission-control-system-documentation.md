@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.162`
+- Last verified pushed release: `V0.0.163`
 - Release commits:
-  `351fb99bc6c216e7d3a5558c425c7c176fa85a51`
+  `c39f726034d7579959337abf759cdb92706dd132`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -388,6 +388,30 @@ to the reviewed source before updating relationships.
   `recently_completed`, Finance as `recently_completed`, Family/Toddy as
   separate `waiting_for_tony`, and Toddy Health as separate
   `handoff_worker_unavailable`.
+- V0.0.163 evidence: dashboard-managed health and releases readback
+  `V0.0.163`; release commit
+  `c39f726034d7579959337abf759cdb92706dd132`; release evidence file
+  `docs/release-evidence/v0.0.163.md`; independent QA PASS at
+  `artifacts/qa/v0.0.163-independent/gate-report.md` with frozen aggregate
+  `2544cd274a848a35eaf3dd080c8a1814f1730da6e229dcc65074cab3ca657539`;
+  focused/static checks reported `263` OK for
+  `tests.test_frontend_contract` plus `tests.test_releases`;
+  `node --check static/app.js` and
+  `python3 -m compileall -q gtasks tests` passed; full suite reported `1360`
+  OK with `5` skipped.
+- Verified V0.0.163 behavior: Goal execution rows and compact Agent cards
+  surface exact open question TODO text for Goal-derived work waiting on Tony.
+  Current Family/Toddy surfaces show exactly `Answer: Which family-care scope,
+  outcomes, constraints, and first action should Toddy use next?` for task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and question TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`. Task lookup merges richer
+  Agent-work projections with same-slug snapshot rows so handoff/TODO context
+  is not hidden by thinner cached rows. Finance/Tammy and Career/Tammy remain
+  completed with exact `produced_for` Artifacts:
+  `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` /
+  `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, and
+  `tasks/53264f17-e5d5-5b5d-ad36-af1eadc1a770` /
+  `artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -445,4 +469,6 @@ exact Artifact evidence. V0.0.162 `auto` is also a private canary target under
 the same one-task safety boundary. It is not unlimited multi-Agent automation,
 and remaining blockers still require their next owners: Tony for the
 Family/Toddy question TODO and Toddy host dispatcher/private route availability
-for Toddy Health.
+for Toddy Health. V0.0.163 question surfacing is display/readback behavior:
+showing the exact `Answer: ...` TODO text does not answer the question, remove
+the Tony blocker, create a replacement TODO, or complete the task.
