@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.127",
+  "current_version": "V0.0.128",
   "releases": [
     {
       "version": "V0.0.1",
@@ -762,6 +762,12 @@
       "date": "2026-08-23",
       "title": "Stabilize short Agent launch completion observation",
       "summary": "Extends the local post-gate completion observation window so short successful Agent helper runs are detected reliably on slower host runtimes before the central completed acknowledgement is retried."
+    },
+    {
+      "version": "V0.0.128",
+      "date": "2026-08-23",
+      "title": "Expose Artifact publisher boundary to fixed-thread Agents",
+      "summary": "Adds an optional private Artifact publisher token path to installed Agent dispatcher config and includes the authenticated Artifact publication endpoint in fixed-thread handoff prompts without exposing token material."
     }
   ]
 }
