@@ -272,6 +272,25 @@ class GoalExecutionPlanner:
                     )
                 )
                 continue
+            completed_exact = next(
+                (
+                    task
+                    for task in snapshot.tasks
+                    if task.goal_derivation is not None
+                    and task.goal_derivation.fingerprint == candidate.fingerprint
+                    and task.status == "completed"
+                ),
+                None,
+            )
+            if completed_exact is not None:
+                decisions.append(
+                    GoalExecutionDecision(
+                        goal.slug,
+                        "recently_completed",
+                        existing_task_slug=completed_exact.slug,
+                    )
+                )
+                continue
 
             active_wip = sum(
                 1

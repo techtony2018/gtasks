@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.135",
+  "current_version": "V0.0.136",
   "releases": [
     {
       "version": "V0.0.1",
@@ -810,6 +810,12 @@
       "date": "2026-08-23",
       "title": "Hide stale dispatcher recovery after canonical task completion",
       "summary": "Task detail now treats canonical completed task readback as authoritative for dispatcher attention, so a launched Agent that completed its Goal-derived work is not shown as requiring recovery solely because an older local launch timed out."
+    },
+    {
+      "version": "V0.0.136",
+      "date": "2026-08-23",
+      "title": "Suppress repeated exact Goal reviews after completion",
+      "summary": "Goal execution planning now treats an exact completed derived review task as recently completed instead of immediately eligible again, preventing repeated same-goal canary work while still allowing cancelled or materially changed candidates to proceed."
     }
   ]
 }

@@ -211,6 +211,34 @@ class GoalExecutionPlannerTests(unittest.TestCase):
         self.assertEqual(plan.decisions[0].reason, "auto_eligible")
         self.assertIsNotNone(plan.decisions[0].candidate)
 
+    def test_completed_exact_derived_goal_task_suppresses_repeat_review(self) -> None:
+        first = GoalExecutionPlanner().plan(snapshot())
+        candidate = first.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        completed = replace(
+            agent_task(
+                slug_identity="completed-goal-work",
+                goal_slug=GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+
+        plan = GoalExecutionPlanner().plan(snapshot(tasks=(completed,)))
+
+        self.assertEqual(plan.decisions[0].reason, "recently_completed")
+        self.assertEqual(plan.decisions[0].existing_task_slug, completed.slug)
+        self.assertIsNone(plan.decisions[0].candidate)
+
     def test_active_agent_wip_suppresses_new_activation(self) -> None:
         plan = GoalExecutionPlanner().plan(
             snapshot(
