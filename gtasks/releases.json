@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.129",
+  "current_version": "V0.0.130",
   "releases": [
     {
       "version": "V0.0.1",
@@ -774,6 +774,12 @@
       "date": "2026-08-23",
       "title": "Retry expired owned Agent executions after repair",
       "summary": "Allows operator-verified recovery of expired owned Agent execution claims once a system dependency is restored, preserving the same handoff while clearing stale launch fences for a safe retry."
+    },
+    {
+      "version": "V0.0.130",
+      "date": "2026-08-23",
+      "title": "Replace completed local inbox entries on recovered retries",
+      "summary": "Allows a verified newer recovered Agent handoff lease to replace stale completed local wake-inbox evidence so the same fixed-thread task can rerun after operator recovery."
     }
   ]
 }

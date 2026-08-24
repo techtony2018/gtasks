@@ -2156,6 +2156,54 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertIsNone(replaced.launch_grant_ref)
             self.assertIsNone(replaced.start_execution_idempotency_key)
 
+    def test_newer_server_retry_replaces_completed_inbox_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            wake_token = self._accepted(inbox)
+            claimed = inbox.claim_next(now=self.NOW)
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(claimed, launch_id=launch_id, now=self.NOW)
+            inbox.record_spawned(claimed, pid=43210, now=self.NOW)
+            inbox.record_ready(claimed, pid=43210, now=self.NOW)
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=self.NOW,
+            )
+            inbox.record_start_grant(
+                claimed,
+                launch_grant="grant/completed-before-retry",
+                now=self.NOW,
+            )
+            executing = inbox.record_gate_open(claimed, now=self.NOW)
+            completed = inbox.record_completed(
+                WakeInboxClaim(executing, claimed.worker_token),
+                now=self.NOW + timedelta(seconds=1),
+            )
+            self.assertEqual(completed.state, "completed")
+
+            replaced = inbox.enqueue(
+                claim_payload(
+                    status="received",
+                    reason="system_dependency_recovered",
+                    attempt=3,
+                    lease_generation=4,
+                    lease_capability="private-new-lease-capability",
+                ),
+                wake_token=wake_token,
+                now=self.NOW + timedelta(seconds=2),
+            )
+
+            self.assertEqual(replaced.state, "accepted")
+            self.assertEqual(replaced.attempt, 0)
+            self.assertEqual(replaced.claim["lease_generation"], 4)
+            self.assertEqual(replaced.claim["reason"], "system_dependency_recovered")
+            self.assertIsNone(replaced.current_launch_id)
+            self.assertIsNone(replaced.launch_pid)
+            self.assertIsNone(replaced.start_execution_idempotency_key)
+
     def test_newer_server_retry_replaces_pre_start_launch_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")

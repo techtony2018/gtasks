@@ -130,7 +130,7 @@ INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
     }
 )
 INBOX_REPLACEABLE_TERMINAL_STATES = frozenset(
-    {"handed_back", "suppressed"}
+    {"completed", "handed_back", "suppressed"}
 )
 INBOX_REPLACEABLE_RECOVERED_LEASE_STATES = frozenset(
     {
