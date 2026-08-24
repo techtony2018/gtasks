@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.154",
+  "current_version": "V0.0.155",
   "releases": [
     {
       "version": "V0.0.1",
@@ -924,6 +924,12 @@
       "date": "2026-08-24",
       "title": "Ignore non-actionable Agent tasks for Goal WIP",
       "summary": "Goal execution WIP accounting now ignores active Agent tasks that are themselves missing an explicit next action, so one stalled task does not block another bounded Goal review from becoming eligible."
+    },
+    {
+      "version": "V0.0.155",
+      "date": "2026-08-24",
+      "title": "Surface stale queued Goal handoffs",
+      "summary": "Goal execution now surfaces a queued derived Agent task as needing system attention when the dispatcher has not produced a verified worker lease after the bounded attention window, making private route/worker outages visible instead of continuing to show ordinary duplicate work."
     }
   ]
 }

@@ -178,6 +178,8 @@ assert(goalExecutionState({ goal_slug: goalSlug, reason: "wip_full", task_slug: 
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "route_unavailable", task_slug: null }) === "Needs attention", "route failure was not Needs attention");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "handoff_missing", task_slug: taskSlug }) === "Needs attention", "missing handoff was not Needs attention");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "handoff_missing", task_slug: taskSlug }).includes("no verified Agent handoff"), "missing handoff copy was not explicit");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "handoff_worker_unavailable", task_slug: taskSlug }) === "Needs attention", "stale queued handoff was not Needs attention");
+assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "handoff_worker_unavailable", task_slug: taskSlug }).includes("no verified Agent worker has leased"), "stale queued handoff copy was not explicit");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "task_needs_next_action", task_slug: taskSlug }) === "Needs attention", "missing next action was not Needs attention");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "task_needs_next_action", task_slug: taskSlug }).includes("no explicit next action"), "missing next action copy was not explicit");
 state.goalExecution.last_run.task = null;

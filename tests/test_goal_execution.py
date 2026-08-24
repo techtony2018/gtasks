@@ -2,7 +2,7 @@ import unittest
 import threading
 import time
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from gtasks.domain import (
@@ -459,6 +459,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
             )
             self.status = status
             self.latest_status: str | None = None
+            self.latest_delivery_state: dict[str, object] | None = None
             self.calls: list[tuple[dict, dict, dict]] = []
 
         def after_verified_mutation(self, before, after, receipt, now):
@@ -471,6 +472,9 @@ class GoalExecutionEngineTests(unittest.TestCase):
 
         def latest_task_handoff_status(self, task_slug):
             return self.latest_status
+
+        def latest_task_handoff_delivery_state(self, task_slug):
+            return self.latest_delivery_state
 
     def engine(self, adapter=None, bridge=None):
         return GoalExecutionEngine(
@@ -735,6 +739,55 @@ class GoalExecutionEngineTests(unittest.TestCase):
             shadow.to_dict()["decisions"][0]["reason"],
             "handoff_needs_repair",
         )
+
+    def test_shadow_mode_reports_stale_queued_handoff_as_worker_attention(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        canary = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "queued"
+        bridge.latest_delivery_state = {
+            "status": "queued",
+            "claimed_at": (NOW - timedelta(minutes=7)).isoformat(),
+            "terminal_state": None,
+        }
+
+        shadow = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(shadow.task_slug, canary.task_slug)
+        self.assertEqual(shadow.public_reason, "handoff_worker_unavailable")
+        self.assertEqual(shadow.handoff_status, "queued")
+        self.assertEqual(
+            shadow.to_dict()["decisions"][0]["reason"],
+            "handoff_worker_unavailable",
+        )
+
+    def test_shadow_mode_keeps_fresh_queued_handoff_delivering(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        canary = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "queued"
+        bridge.latest_delivery_state = {
+            "status": "queued",
+            "claimed_at": (NOW - timedelta(minutes=1)).isoformat(),
+            "terminal_state": None,
+        }
+
+        shadow = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(shadow.task_slug, canary.task_slug)
+        self.assertEqual(shadow.public_reason, "duplicate")
+        self.assertEqual(shadow.handoff_status, None)
+        self.assertEqual(shadow.to_dict()["decisions"][0]["reason"], "duplicate")
 
     def test_activation_partial_write_returns_attention_without_success(self) -> None:
         adapter = self.Adapter(

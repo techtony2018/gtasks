@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Condition, Thread
 from time import monotonic
 from types import SimpleNamespace
@@ -19,6 +19,7 @@ from .gbrain import PartialMutationError
 PLANNER_VERSION = "goal-execution-v1"
 AUTOMATIC_ACTION_KIND = "goal_progress_review"
 AUTO_WIP_LIMIT = 1
+HANDOFF_WORKER_ATTENTION_AFTER = timedelta(minutes=5)
 DERIVED_TASK_NAMESPACE = uuid.UUID("d90827ae-4529-44c4-9c4c-e86eeb19764a")
 EXPECTED_EVIDENCE = (
     "One internal progress brief with evidence, one bounded next step, "
@@ -196,6 +197,34 @@ def _needs_next_action(task: Task) -> bool:
         and not task.dependencies
         and not any(todo.status != "done" for todo in task.todos)
     )
+
+
+def _parse_aware_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _stale_queued_handoff(delivery_state: object, now: datetime) -> bool:
+    if not isinstance(delivery_state, Mapping):
+        return False
+    status = delivery_state.get("status")
+    terminal_state = delivery_state.get("terminal_state")
+    if status != "queued" or terminal_state not in {None, ""}:
+        return False
+    claimed_at = _parse_aware_datetime(delivery_state.get("claimed_at"))
+    if claimed_at is None:
+        return False
+    return now - claimed_at >= HANDOFF_WORKER_ATTENTION_AFTER
 
 
 class GoalExecutionPlanner:
@@ -557,7 +586,11 @@ class GoalExecutionEngine:
         route_health = self.route_health()
         snapshot = self.adapter.read_goal_execution_snapshot(route_health)
         plan = self.planner.plan(snapshot)
-        plan, handoff_status_by_task = self._annotate_handoff_attention(plan, snapshot)
+        plan, handoff_status_by_task = self._annotate_handoff_attention(
+            plan,
+            snapshot,
+            now=now,
+        )
         if self.mode != "canary":
             return self._run_from_plan(
                 plan,
@@ -651,11 +684,20 @@ class GoalExecutionEngine:
         )
 
     def _annotate_handoff_attention(
-        self, plan: GoalExecutionPlan, snapshot: GoalExecutionSnapshot
+        self,
+        plan: GoalExecutionPlan,
+        snapshot: GoalExecutionSnapshot,
+        *,
+        now: datetime,
     ) -> tuple[GoalExecutionPlan, dict[str, str | None]]:
         latest_status = getattr(self.bridge, "latest_task_handoff_status", None)
         if not callable(latest_status):
             return plan, {}
+        latest_delivery_state = getattr(
+            self.bridge,
+            "latest_task_handoff_delivery_state",
+            None,
+        )
         tasks_by_slug = {task.slug: task for task in snapshot.tasks}
         revised: list[GoalExecutionDecision] = []
         handoff_status_by_task: dict[str, str | None] = {}
@@ -671,6 +713,14 @@ class GoalExecutionEngine:
             handoff_status_by_task[task_slug] = status if isinstance(status, str) else None
             if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
                 revised.append(replace(decision, reason="handoff_needs_repair"))
+                changed = True
+                continue
+            if (
+                status == "queued"
+                and callable(latest_delivery_state)
+                and _stale_queued_handoff(latest_delivery_state(task_slug), now)
+            ):
+                revised.append(replace(decision, reason="handoff_worker_unavailable"))
                 changed = True
                 continue
             task = tasks_by_slug.get(task_slug)
@@ -712,6 +762,7 @@ class GoalExecutionEngine:
                 "handoff_needs_repair",
                 "handoff_missing",
                 "task_needs_next_action",
+                "handoff_worker_unavailable",
             }
             and selected.existing_task_slug is not None
         ):

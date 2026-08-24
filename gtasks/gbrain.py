@@ -1541,6 +1541,28 @@ class CanonicalHandoffEventBridge:
     def latest_task_handoff_status(self, task_slug: str) -> str | None:
         return self.dispatcher.store.latest_task_handoff_status(task_slug)
 
+    def latest_task_handoff_delivery_state(self, task_slug: str) -> dict[str, Any] | None:
+        status = self.dispatcher.store.latest_task_handoff_status(task_slug)
+        claim = self.dispatcher.store.get_execution_claim(
+            task_slug,
+            include_terminal=False,
+        )
+        if status is None and claim is None:
+            return None
+        state: dict[str, Any] = {"status": status}
+        if claim is not None:
+            state.update(
+                {
+                    "executor_agent": claim.executor_agent,
+                    "permanent_owner": claim.permanent_owner,
+                    "correlation_id": claim.correlation_id,
+                    "claimed_at": claim.claimed_at.isoformat(),
+                    "expires_at": claim.expires_at.isoformat(),
+                    "terminal_state": claim.terminal_state,
+                }
+            )
+        return state
+
     @staticmethod
     def _mapping(value: object) -> dict[str, Any]:
         if value is None:

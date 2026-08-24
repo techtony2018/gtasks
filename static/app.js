@@ -3966,6 +3966,7 @@ const GOAL_EXECUTION_ATTENTION_REASONS = new Set([
   "handoff_needs_repair",
   "handoff_missing",
   "task_needs_next_action",
+  "handoff_worker_unavailable",
 ]);
 
 function goalExecutionTask(decision) {
@@ -4044,6 +4045,7 @@ function goalExecutionReasonCopy(decision) {
     handoff_needs_repair: "The canonical task is active, but verified Agent handoff or execution needs system review.",
     handoff_missing: "The canonical task is active, but no verified Agent handoff is recorded yet.",
     task_needs_next_action: "The canonical task is active, but it has no explicit next action for the assigned Agent.",
+    handoff_worker_unavailable: "The canonical task is active and queued, but no verified Agent worker has leased it yet. Verify the Agent host dispatcher and private route.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
     shadow: "Shadow mode evaluates safe work without creating or activating a task.",
     off: "Automatic Goal execution is off.",
