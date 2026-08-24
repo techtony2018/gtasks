@@ -825,6 +825,19 @@ and repo HEAD exactly
 host/SSH/control plane is unreachable; do not document Toddy as recovered until
 the same read-only verifier passes on the Toddy host.
 
+For the current Codex worker fleet, the non-secret inventory is
+`config/handoff-dispatcher/remote-workers.json`:
+
+```bash
+python3 scripts/verify_handoff_worker_fleet.py \
+  --inventory config/handoff-dispatcher/remote-workers.json
+```
+
+This reports each remote host independently. A healthy Timmy result with
+`ok: true` and a Toddy result such as `issues: ["ssh_unreachable"]` means the
+Timmy route is verified and the Toddy route needs host access or SSH repair;
+it is not permission to run Toddy locally.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "workers": [
+    {
+      "name": "timmy",
+      "ssh_target": "toddy@100.100.126.85",
+      "expected_agent_slug": "agents/timmy",
+      "expected_route": "hosts/timmy",
+      "config_path": "/Users/toddy/Library/Application Support/GTasks/handoff-dispatcher.json",
+      "repo_path": "/Users/toddy/gtasks",
+      "launch_label": "com.tony.gtasks-handoff-dispatcher"
+    },
+    {
+      "name": "toddy",
+      "ssh_target": "toddy@100.117.212.20",
+      "expected_agent_slug": "agents/toddy",
+      "expected_route": "hosts/toddy",
+      "config_path": "/Users/toddy/Library/Application Support/GTasks/handoff-dispatcher.json",
+      "repo_path": "/Users/toddy/gtasks",
+      "launch_label": "com.tony.gtasks-handoff-dispatcher"
+    }
+  ]
+}
