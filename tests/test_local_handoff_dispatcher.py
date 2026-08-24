@@ -1988,6 +1988,49 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(len(client.checkpoint_calls), 0)
             self.assertEqual(len(client.start_calls), 2)
 
+    def test_codex_invocation_lock_does_not_exhaust_terminal_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            inbox = PrivateWakeInbox(
+                directory / "wake-inbox.sqlite3", max_attempts=1
+            )
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = self.LaunchClient()
+            adapter = self.Adapter(
+                directory,
+                code=(
+                    "import sys; "
+                    "sys.stderr.write('Tammy work skipped: existing invocation lock'); "
+                    "sys.exit(1)"
+                ),
+            )
+            worker = WakeInboxWorker(
+                client,
+                adapter,
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=GatedLaunchController(directory / "launches"),
+            )
+
+            failed = None
+            for index in range(60):
+                worker.run_once(now=self.NOW + timedelta(seconds=index))
+                current = inbox.get("handoff-100")
+                if current.state == "failed" and current.retryable:
+                    failed = current
+                    break
+                time.sleep(0.02)
+            self.assertIsNotNone(failed)
+
+            self.assertEqual(failed.state, "failed")
+            self.assertEqual(failed.last_error, "codex_thread_active_writer")
+            self.assertTrue(failed.retryable)
+            self.assertIsNone(failed.pending_server_action)
+            self.assertEqual(failed.attempt, 1)
+            self.assertGreater(failed.max_attempts, 1)
+            self.assertEqual(client.failure_calls, [])
+
     def test_checkpoint_network_loss_retries_only_the_server_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

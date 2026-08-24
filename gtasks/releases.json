@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.141",
+  "current_version": "V0.0.142",
   "releases": [
     {
       "version": "V0.0.1",
@@ -846,6 +846,12 @@
       "date": "2026-08-23",
       "title": "Reconcile stale local handoff abandon rows",
       "summary": "Local handoff recovery now uses authoritative server recovery before retrying a stale abandon-start action; if Mission Control verifies the handoff is already completed or suppressed, the old wake inbox row is cleared without touching the current Agent claim."
+    },
+    {
+      "version": "V0.0.142",
+      "date": "2026-08-23",
+      "title": "Keep busy Codex thread handoffs retryable",
+      "summary": "Local handoff recovery now treats a fixed Codex thread with an active writer as local concurrency backpressure instead of a terminal launch failure, preserving durable retries without dead-lettering the Agent task."
     }
   ]
 }

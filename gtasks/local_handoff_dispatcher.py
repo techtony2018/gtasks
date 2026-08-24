@@ -115,6 +115,7 @@ INBOX_PROVEN_PRELAUNCH_STATES = frozenset(
         "launch_ready",
     }
 )
+LOCAL_CONCURRENCY_RETRY_REASONS = frozenset({"codex_thread_active_writer"})
 INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
     {
         "accepted",
@@ -1872,17 +1873,38 @@ class PrivateWakeInbox:
                     )
                 else:
                     exhausted = row["attempt"] >= row["max_attempts"]
+                    local_concurrency_retry = (
+                        row["last_error"] in LOCAL_CONCURRENCY_RETRY_REASONS
+                    )
                     self._connection.execute(
                         """
                         UPDATE wake_inbox SET pending_server_action = ?,
-                            pending_action_reason = ?, retry_at = ?, updated_at = ?,
+                            pending_action_reason = ?, retry_at = ?, max_attempts = ?,
+                            updated_at = ?,
                             worker_claim_ref = NULL, worker_claim_until = NULL
                         WHERE handoff_id = ?
                         """,
                         (
-                            "terminal_failure" if exhausted else None,
-                            row["last_error"] if exhausted else None,
-                            None if exhausted else row["retry_at"],
+                            (
+                                "terminal_failure"
+                                if exhausted and not local_concurrency_retry
+                                else None
+                            ),
+                            (
+                                row["last_error"]
+                                if exhausted and not local_concurrency_retry
+                                else None
+                            ),
+                            (
+                                None
+                                if exhausted and not local_concurrency_retry
+                                else row["retry_at"]
+                            ),
+                            (
+                                row["attempt"] + 1
+                                if exhausted and local_concurrency_retry
+                                else row["max_attempts"]
+                            ),
                             self._timestamp(now),
                             claim.item.handoff_id,
                         ),
