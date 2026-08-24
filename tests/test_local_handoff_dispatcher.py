@@ -664,35 +664,37 @@ class LocalDispatcherClientTests(unittest.TestCase):
 
     def test_execution_abandon_accepts_exact_terminal_reconciliation(self) -> None:
         claim = claim_payload(status="execution_started")
-        self.responses.append(
-            FakeResponse(
-                200,
-                {
-                    "handoff_id": "handoff-100",
-                    "status": "suppressed",
-                    "launch_id": "launch/client-abandon-terminal",
-                    "abandoned": False,
-                },
-            )
+        cases = (
+            ("suppressed", "launch/client-abandon-terminal"),
+            ("completed", "launch/client-abandon-completed"),
         )
+        for status, launch_id in cases:
+            with self.subTest(status=status):
+                self.responses.append(
+                    FakeResponse(
+                        200,
+                        {
+                            "handoff_id": "handoff-100",
+                            "status": status,
+                            "launch_id": launch_id,
+                            "abandoned": False,
+                        },
+                    )
+                )
 
-        response = self.client.execution_abandon(
-            claim,
-            launch_id="launch/client-abandon-terminal",
-            reason="runner_lost_before_gate",
-        )
+                response = self.client.execution_abandon(
+                    claim,
+                    launch_id=launch_id,
+                    reason="runner_lost_before_gate",
+                )
 
-        self.assertEqual(
-            (response["status"], response["abandoned"]),
-            ("suppressed", False),
-        )
+                self.assertEqual((response["status"], response["abandoned"]), (status, False))
 
     def test_execution_abandon_rejects_every_other_status_boolean_pair(self) -> None:
         claim = claim_payload(status="execution_started")
         invalid_pairs = (
             ("received", False),
             ("suppressed", True),
-            ("completed", False),
             ("dead_letter", False),
         )
         for index, (status, abandoned) in enumerate(invalid_pairs):
@@ -2773,6 +2775,36 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertIsNone(completed.pending_server_action)
             self.assertEqual(replay, completed)
 
+    def test_abandon_reconciliation_accepts_server_completed_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            pending, launch_id = self._pending_abandon(inbox)
+            response = {
+                "handoff_id": "handoff-100",
+                "status": "completed",
+                "launch_id": launch_id,
+                "abandoned": False,
+            }
+
+            completed = inbox.complete_server_action(
+                pending,
+                action="abandon_start",
+                response=response,
+                now=self.NOW + timedelta(seconds=2),
+            )
+            replay = inbox.complete_server_action(
+                pending,
+                action="abandon_start",
+                response=response,
+                now=self.NOW + timedelta(seconds=3),
+            )
+
+            self.assertEqual(completed.state, "completed")
+            self.assertEqual(completed.last_error, "server_completed")
+            self.assertIsNone(completed.pending_server_action)
+            self.assertEqual(replay, completed)
+
     def test_inbox_abandon_completion_rejects_every_other_exact_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
@@ -2790,12 +2822,6 @@ class PrivateWakeInboxTests(unittest.TestCase):
                     "status": "suppressed",
                     "launch_id": launch_id,
                     "abandoned": True,
-                },
-                {
-                    "handoff_id": "handoff-100",
-                    "status": "completed",
-                    "launch_id": launch_id,
-                    "abandoned": False,
                 },
                 {
                     "handoff_id": "handoff-100",

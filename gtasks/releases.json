@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.136",
+  "current_version": "V0.0.137",
   "releases": [
     {
       "version": "V0.0.1",
@@ -816,6 +816,12 @@
       "date": "2026-08-23",
       "title": "Suppress repeated exact Goal reviews after completion",
       "summary": "Goal execution planning now treats an exact completed derived review task as recently completed instead of immediately eligible again, preventing repeated same-goal canary work while still allowing cancelled or materially changed candidates to proceed."
+    },
+    {
+      "version": "V0.0.137",
+      "date": "2026-08-23",
+      "title": "Recover completed Codex handoff abandon reconciliation",
+      "summary": "Local Codex handoff recovery now accepts a verified server-completed handoff while abandoning an unused launch, clearing the worker inbox instead of blocking future Tammy handoffs after an active-writer recovery."
     }
   ]
 }

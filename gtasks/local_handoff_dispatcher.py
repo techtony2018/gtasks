@@ -1801,6 +1801,7 @@ class PrivateWakeInbox:
                     not in {
                         ("received", True),
                         ("suppressed", False),
+                        ("completed", False),
                     }
                 ):
                     raise ValueError(
@@ -1808,9 +1809,9 @@ class PrivateWakeInbox:
                     )
                 if row["pending_server_action"] != action:
                     if (
-                        response["status"] == "suppressed"
+                        response["status"] in {"completed", "suppressed"}
                         and response["abandoned"] is False
-                        and row["state"] == "suppressed"
+                        and row["state"] == response["status"]
                         and row["pending_server_action"] is None
                         and self._has_launch_event(
                             handoff_id=row["handoff_id"],
@@ -1823,17 +1824,28 @@ class PrivateWakeInbox:
                     raise ValueError(
                         "server action does not match the pending inbox action"
                     )
-                if response["status"] == "suppressed":
+                if response["status"] in {"completed", "suppressed"}:
+                    state = str(response["status"])
+                    last_error = (
+                        "server_completed"
+                        if state == "completed"
+                        else "server_suppressed"
+                    )
                     self._connection.execute(
                         """
-                        UPDATE wake_inbox SET state = 'suppressed',
-                            last_error = 'server_suppressed', retry_at = NULL,
+                        UPDATE wake_inbox SET state = ?,
+                            last_error = ?, retry_at = NULL,
                             pending_server_action = NULL,
                             pending_action_reason = NULL, updated_at = ?,
                             worker_claim_ref = NULL, worker_claim_until = NULL
                         WHERE handoff_id = ?
                         """,
-                        (self._timestamp(now), claim.item.handoff_id),
+                        (
+                            state,
+                            last_error,
+                            self._timestamp(now),
+                            claim.item.handoff_id,
+                        ),
                     )
                     self._append_launch_event(
                         handoff_id=claim.item.handoff_id,
@@ -1843,7 +1855,7 @@ class PrivateWakeInbox:
                         now=now,
                         pid=row["launch_pid"],
                         grant_ref=row["launch_grant_ref"],
-                        detail=row["last_error"],
+                        detail=last_error,
                     )
                 else:
                     exhausted = row["attempt"] >= row["max_attempts"]
@@ -2735,6 +2747,7 @@ class LocalDispatcherClient:
         if (response.get("status"), response["abandoned"]) not in {
             ("received", True),
             ("suppressed", False),
+            ("completed", False),
         }:
             raise ValueError("execution abandon response is inconsistent")
         return response
