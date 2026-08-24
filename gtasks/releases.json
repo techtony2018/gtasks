@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.140",
+  "current_version": "V0.0.141",
   "releases": [
     {
       "version": "V0.0.1",
@@ -840,6 +840,12 @@
       "date": "2026-08-23",
       "title": "Preserve handoff abandon proof enums",
       "summary": "Local handoff recovery now preserves server-approved command-not-started proof enums while mapping Codex active-writer failures to command_not_started, satisfying both privacy-safe text and abandon reconciliation requirements."
+    },
+    {
+      "version": "V0.0.141",
+      "date": "2026-08-23",
+      "title": "Reconcile stale local handoff abandon rows",
+      "summary": "Local handoff recovery now uses authoritative server recovery before retrying a stale abandon-start action; if Mission Control verifies the handoff is already completed or suppressed, the old wake inbox row is cleared without touching the current Agent claim."
     }
   ]
 }

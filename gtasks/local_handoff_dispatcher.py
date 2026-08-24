@@ -1995,6 +1995,75 @@ class PrivateWakeInbox:
             self._connection.rollback()
             raise
 
+    def complete_reconciled_server_state(
+        self,
+        claim: WakeInboxClaim,
+        *,
+        reconciliation: Mapping[str, object],
+        now: datetime,
+    ) -> WakeInboxItem:
+        if set(reconciliation) != RECOVERY_RECONCILIATION_KEYS:
+            raise ValueError("recovery reconciliation must match the documented safe shape")
+        if reconciliation.get("code") != "handoff_recovery_reconcile":
+            raise ValueError("recovery reconciliation code is invalid")
+        if not isinstance(reconciliation.get("error"), str) or not reconciliation["error"]:
+            raise ValueError("recovery reconciliation error is invalid")
+        status = reconciliation.get("status")
+        if status not in {"completed", "suppressed"}:
+            raise ValueError("recovery reconciliation did not verify a terminal inbox state")
+        generation = reconciliation.get("lease_generation")
+        if not isinstance(generation, int) or generation < 0:
+            raise ValueError("recovery reconciliation generation is invalid")
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._row(claim.item.handoff_id)
+            row_claim = json.loads(row["claim_json"])
+            if not isinstance(row_claim, dict):
+                raise ValueError("wake inbox claim is invalid")
+            if reconciliation.get("handoff_id") != row["handoff_id"]:
+                raise ValueError("recovery reconciliation does not match the pending handoff")
+            if reconciliation.get("agent_slug") != row_claim.get("agent_slug"):
+                raise ValueError("recovery reconciliation does not match the Agent identity")
+            if reconciliation.get("registration_ref") != row_claim.get("registration_ref"):
+                raise ValueError(
+                    "recovery reconciliation does not match the registration identity"
+                )
+            if row["pending_server_action"] is None:
+                raise ValueError("recovery reconciliation requires a pending server action")
+            state = str(status)
+            last_error = (
+                "server_completed" if state == "completed" else "server_suppressed"
+            )
+            self._connection.execute(
+                """
+                UPDATE wake_inbox SET state = ?, last_error = ?, retry_at = NULL,
+                    pending_server_action = NULL, pending_action_reason = NULL,
+                    updated_at = ?, worker_claim_ref = NULL, worker_claim_until = NULL
+                WHERE handoff_id = ?
+                """,
+                (
+                    state,
+                    last_error,
+                    self._timestamp(now),
+                    claim.item.handoff_id,
+                ),
+            )
+            self._append_launch_event(
+                handoff_id=claim.item.handoff_id,
+                launch_id=row["current_launch_id"],
+                attempt=row["attempt"],
+                state="server_reconciled_terminal",
+                now=now,
+                pid=row["launch_pid"],
+                grant_ref=row["launch_grant_ref"],
+                detail=last_error,
+            )
+            self._connection.commit()
+            return self.get(claim.item.handoff_id)
+        except BaseException:
+            self._connection.rollback()
+            raise
+
     def mark_suppressed(
         self, claim: WakeInboxClaim, *, reason: str, now: datetime
     ) -> WakeInboxItem:
@@ -2077,6 +2146,24 @@ class WakeInboxWorker:
             else:
                 raise ValueError("inbox contains an unsupported pending server action")
         except (OSError, TimeoutError):
+            if action == "abandon_start" and hasattr(self.client, "recover"):
+                try:
+                    recovered = self.client.recover(item.claim)  # type: ignore[attr-defined]
+                except (OSError, TimeoutError):
+                    recovered = None
+                if recovered is not None:
+                    if (
+                        isinstance(recovered, Mapping)
+                        and recovered.get("code") == "handoff_recovery_reconcile"
+                        and recovered.get("status") in {"completed", "suppressed"}
+                    ):
+                        completed = self.inbox.complete_reconciled_server_state(
+                            claimed,
+                            reconciliation=recovered,
+                            now=now,
+                        )
+                        self.phase_hook("server_reconciliation_inbox_terminalized")
+                        return completed
             self.inbox.release_worker_claim(claimed, now=now)
             return None
         if not isinstance(response, Mapping):

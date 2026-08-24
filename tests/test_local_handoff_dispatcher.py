@@ -1311,6 +1311,9 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.failure_calls.append((claim["handoff_id"], failure_class))
             return {"status": "dead_letter"}
 
+        def recover(self, claim):
+            raise OSError("recovery unavailable")
+
     class Adapter:
         def __init__(
             self,
@@ -2827,6 +2830,58 @@ class PrivateWakeInboxTests(unittest.TestCase):
             self.assertEqual(completed.last_error, "server_completed")
             self.assertIsNone(completed.pending_server_action)
             self.assertEqual(replay, completed)
+
+    def test_stale_abandon_failure_recovers_completed_server_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            pending, launch_id = self._pending_abandon(inbox)
+
+            class Client(self.LaunchClient):
+                def __init__(inner_self) -> None:
+                    super().__init__(abandon_failures=1)
+                    inner_self.recover_calls: list[dict[str, object]] = []
+
+                def recover(inner_self, claim):
+                    inner_self.recover_calls.append(dict(claim))
+                    return {
+                        "code": "handoff_recovery_reconcile",
+                        "error": "Persisted handoff claim requires authoritative reconciliation.",
+                        "handoff_id": "handoff-100",
+                        "status": "completed",
+                        "lease_generation": 2,
+                        "agent_slug": "agents/tammy",
+                        "registration_ref": hashlib.sha256(
+                            b"private-registration-tammy"
+                        ).hexdigest(),
+                    }
+
+            client = Client()
+            worker = WakeInboxWorker(
+                client,
+                self.Adapter(Path(temporary)),
+                inbox,
+                retry_delay_seconds=0,
+            )
+
+            completed = worker._deliver_pending_action(
+                pending,
+                now=self.NOW + timedelta(seconds=2),
+            )
+
+            self.assertIsNotNone(completed)
+            self.assertEqual(completed.state, "completed")
+            self.assertEqual(completed.last_error, "server_completed")
+            self.assertIsNone(completed.pending_server_action)
+            self.assertEqual(
+                client.abandon_calls,
+                [("handoff-100", launch_id, "runner_lost_before_gate")],
+            )
+            self.assertEqual(len(client.recover_calls), 1)
+            self.assertIn(
+                "server_reconciled_terminal",
+                [event["state"] for event in inbox.launch_events("handoff-100")],
+            )
 
     def test_inbox_abandon_completion_rejects_every_other_exact_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
