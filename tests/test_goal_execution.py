@@ -677,7 +677,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.task_slug, executing.slug)
         self.assertEqual(result.handoff_status, "actively_executing")
 
-    def test_auto_canary_surfaces_latest_completed_goal_before_unrelated_waiting_goal(self) -> None:
+    def test_auto_canary_surfaces_waiting_goal_before_completed_history(self) -> None:
         primary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
             snapshot(projects=(project(),))
         )
@@ -775,8 +775,8 @@ class GoalExecutionEngineTests(unittest.TestCase):
             canary_goal_slug="auto",
         ).run_once(NOW)
 
-        self.assertEqual(result.public_reason, "recently_completed")
-        self.assertEqual(result.task_slug, latest_completed.slug)
+        self.assertEqual(result.public_reason, "waiting_for_tony")
+        self.assertEqual(result.task_slug, waiting.slug)
 
     def test_run_once_creates_planned_reads_back_activates_and_dispatches(self) -> None:
         adapter = self.Adapter()

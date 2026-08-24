@@ -771,6 +771,15 @@ class GoalExecutionEngine:
                 in self._HANDOFF_ACCEPTED
             ):
                 return decision.goal_slug
+        for decision in plan.decisions:
+            if decision.reason in {
+                "handoff_needs_repair",
+                "handoff_missing",
+                "task_needs_next_action",
+                "handoff_worker_unavailable",
+                "waiting_for_tony",
+            }:
+                return decision.goal_slug
         tasks_by_slug = {task.slug: task for task in snapshot.tasks}
         completed = [
             decision
@@ -789,15 +798,6 @@ class GoalExecutionEngine:
                 ),
             )
             return selected.goal_slug
-        for decision in plan.decisions:
-            if decision.reason in {
-                "handoff_needs_repair",
-                "handoff_missing",
-                "task_needs_next_action",
-                "handoff_worker_unavailable",
-                "waiting_for_tony",
-            }:
-                return decision.goal_slug
         for decision in plan.decisions:
             if decision.reason in {"duplicate", "recently_completed"}:
                 return decision.goal_slug
