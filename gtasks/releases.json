@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.145",
+  "current_version": "V0.0.146",
   "releases": [
     {
       "version": "V0.0.1",
@@ -870,6 +870,12 @@
       "date": "2026-08-24",
       "title": "Reconcile pre-gate terminal handoff recovery",
       "summary": "Local Codex handoff recovery now cancels an unused pre-gate launch and clears the wake inbox when authoritative Mission Control recovery proves the same handoff is already completed or suppressed."
+    },
+    {
+      "version": "V0.0.146",
+      "date": "2026-08-24",
+      "title": "Read legacy detail-free tasks",
+      "summary": "Exact Task readback now treats legacy pages that omit the optional detail field as empty-detail tasks while retaining strict summary, status, due date, and lifecycle membership validation."
     }
   ]
 }

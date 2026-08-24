@@ -1815,8 +1815,6 @@ class Task:
         if not frontmatter:
             raise DomainValidationError(f"{slug} has no canonical frontmatter")
 
-        if "detail" not in frontmatter:
-            raise DomainValidationError("detail is required")
         summary = frontmatter.get("summary")
         if not isinstance(summary, str) or not summary.strip():
             raise DomainValidationError("summary is required")
@@ -1824,7 +1822,7 @@ class Task:
         if len(summary) > 160:
             raise DomainValidationError("summary must be 160 characters or fewer")
 
-        detail = frontmatter.get("detail")
+        detail = frontmatter.get("detail", "")
         if not isinstance(detail, str):
             raise DomainValidationError("detail must be text")
 
