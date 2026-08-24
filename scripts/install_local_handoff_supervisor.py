@@ -1375,6 +1375,7 @@ def install(
     codex_path: str,
     openclaw_path: str,
     working_directory: str | Path,
+    codex_resume_timeout: float = 1800.0,
     home_directory: str | Path | None = None,
     label: str = DEFAULT_LABEL,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
@@ -1386,6 +1387,8 @@ def install(
         raise ValueError("exactly two source worker configs are required")
     if label != DEFAULT_LABEL:
         raise ValueError("installer requires the canonical supervisor label")
+    if codex_resume_timeout <= 0:
+        raise ValueError("codex resume timeout must be positive")
     paths = canonical_install_paths(
         home_directory if home_directory is not None else Path.home()
     )
@@ -1590,6 +1593,23 @@ def install(
         resolved_openclaw,
         "--working-directory",
         str(resolved_working_directory),
+        "--codex-resume-timeout",
+        str(int(codex_resume_timeout))
+        if float(codex_resume_timeout).is_integer()
+        else str(codex_resume_timeout),
+    ]
+    previous_arguments = [
+        resolved_python,
+        "-m",
+        "gtasks.local_handoff_supervisor",
+        "--config",
+        str(paths.supervisor_config.resolve()),
+        "--codex-path",
+        resolved_codex,
+        "--openclaw-path",
+        resolved_openclaw,
+        "--working-directory",
+        str(resolved_working_directory),
     ]
     template_text = Path(plist_template).read_text(encoding="utf-8")
     plist_text = _render_template(
@@ -1601,6 +1621,9 @@ def install(
             "CODEX_PATH": resolved_codex,
             "OPENCLAW_PATH": resolved_openclaw,
             "WORKING_DIRECTORY": str(resolved_working_directory),
+            "CODEX_RESUME_TIMEOUT": str(int(codex_resume_timeout))
+            if float(codex_resume_timeout).is_integer()
+            else str(codex_resume_timeout),
             "MODULE_ROOT": str(resolved_module_root),
             "RUNTIME_PATH": runtime_path,
         },
@@ -1644,10 +1667,24 @@ def install(
     }
     prior_supervisor_plist = prior_files["plist"]
     prior_supervisor_runtime_path: str | None = runtime_path
+    prior_supervisor_arguments = expected_arguments
     if prior_supervisor_plist.exists:
         if prior_supervisor_plist.content is None:
             raise ValueError("existing canonical supervisor plist is invalid")
         previous_plist = _expected_supervisor_plist(
+            label=label,
+            arguments=previous_arguments,
+            working_directory=str(resolved_working_directory),
+            module_root=str(resolved_module_root),
+        )
+        previous_plist_with_runtime_path = _expected_supervisor_plist(
+            label=label,
+            arguments=previous_arguments,
+            working_directory=str(resolved_working_directory),
+            module_root=str(resolved_module_root),
+            runtime_path=runtime_path,
+        )
+        previous_plist_without_runtime_path = _expected_supervisor_plist(
             label=label,
             arguments=expected_arguments,
             working_directory=str(resolved_working_directory),
@@ -1660,12 +1697,31 @@ def install(
                 description="existing canonical supervisor plist",
             )
         except ValueError:
-            _parse_exact_plist(
-                prior_supervisor_plist.content,
-                expected=previous_plist,
-                description="existing canonical supervisor plist",
-            )
-            prior_supervisor_runtime_path = None
+            try:
+                _parse_exact_plist(
+                    prior_supervisor_plist.content,
+                    expected=previous_plist_without_runtime_path,
+                    description="existing canonical supervisor plist",
+                )
+                prior_supervisor_arguments = expected_arguments
+                prior_supervisor_runtime_path = None
+            except ValueError:
+                try:
+                    _parse_exact_plist(
+                        prior_supervisor_plist.content,
+                        expected=previous_plist_with_runtime_path,
+                        description="existing canonical supervisor plist",
+                    )
+                    prior_supervisor_arguments = previous_arguments
+                    prior_supervisor_runtime_path = runtime_path
+                except ValueError:
+                    _parse_exact_plist(
+                        prior_supervisor_plist.content,
+                        expected=previous_plist,
+                        description="existing canonical supervisor plist",
+                    )
+                    prior_supervisor_arguments = previous_arguments
+                    prior_supervisor_runtime_path = None
 
     disabled_readback = _run_launchctl(
         run,
@@ -1698,7 +1754,7 @@ def install(
         )
     if supervisor_readback.returncode == 0 and not _loaded_contract_matches(
         supervisor_readback.stdout,
-        expected_arguments=expected_arguments,
+        expected_arguments=prior_supervisor_arguments,
         expected_working_directory=str(resolved_working_directory),
         expected_module_root=str(resolved_module_root),
         expected_runtime_path=prior_supervisor_runtime_path,
@@ -1998,6 +2054,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-path", default="codex")
     parser.add_argument("--openclaw-path", default="openclaw")
     parser.add_argument("--working-directory", type=Path, default=root)
+    parser.add_argument("--codex-resume-timeout", type=float, default=1800.0)
     parser.add_argument("--home-directory", type=Path, default=Path.home())
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--replace-legacy", action="store_true")
@@ -2018,6 +2075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             codex_path=args.codex_path,
             openclaw_path=args.openclaw_path,
             working_directory=args.working_directory,
+            codex_resume_timeout=args.codex_resume_timeout,
             home_directory=args.home_directory,
             dry_run=args.dry_run,
             replace_legacy=args.replace_legacy,

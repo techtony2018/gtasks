@@ -660,6 +660,8 @@ class SupervisorInstallerTests(SupervisorFixture):
             str(self.openclaw.resolve()),
             "--working-directory",
             str(ROOT.resolve()),
+            "--codex-resume-timeout",
+            "1800",
         ]
 
     def launchctl_output(
@@ -1645,6 +1647,34 @@ class SupervisorInstallerTests(SupervisorFixture):
                 self.paths.plist.write_bytes(
                     plistlib.dumps(canonical_plist, sort_keys=False)
                 )
+
+    def test_accepts_prior_supervisor_plist_with_runtime_path_before_timeout_upgrade(
+        self,
+    ) -> None:
+        prior_arguments = self.expected_arguments()[:-2]
+        prior_plist = self.installer._expected_supervisor_plist(
+            label=self.installer.DEFAULT_LABEL,
+            arguments=prior_arguments,
+            working_directory=str(ROOT.resolve()),
+            module_root=str(ROOT.resolve()),
+            runtime_path=os.pathsep.join(
+                (
+                    str(self.openclaw.parent.resolve()),
+                    "/usr/local/bin",
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/sbin",
+                    "/sbin",
+                )
+            ),
+        )
+        self.paths.plist.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.plist.write_bytes(plistlib.dumps(prior_plist, sort_keys=False))
+        self.paths.plist.chmod(0o644)
+
+        receipt, _calls = self.install(dry_run=True)
+
+        self.assertFalse(receipt.activated)
 
     def test_dry_run_reports_an_active_legacy_fence_without_mutating_it(self) -> None:
         self.write_legacy_install(loaded=True)

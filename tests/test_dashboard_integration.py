@@ -11,6 +11,7 @@ HANDOFF_STATE_ROOT = Path(
 )
 BUZZ_ENV_FILE = HANDOFF_STATE_ROOT / "buzz.env"
 BUZZ_OUTBOX_ROOT = HANDOFF_STATE_ROOT / "buzz-outbox"
+GOAL_EXECUTION_ENV_FILE = HANDOFF_STATE_ROOT / "goal-execution.env"
 REMOTE_GBRAIN_ROOT = Path(
     "/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote"
 )
@@ -106,6 +107,13 @@ class DashboardIntegrationTests(unittest.TestCase):
             PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh"
         ).read_text(encoding="utf-8")
 
+        self.assertIn(f"GOAL_EXECUTION_ENV_FILE={GOAL_EXECUTION_ENV_FILE}", launcher)
+        self.assertIn(
+            'if [[ -f "$GOAL_EXECUTION_ENV_FILE" ]]; then',
+            launcher,
+        )
+        self.assertIn('require_owner_file "$GOAL_EXECUTION_ENV_FILE"', launcher)
+        self.assertIn('source "$GOAL_EXECUTION_ENV_FILE"', launcher)
         self.assertIn(
             'MISSION_CONTROL_GOAL_EXECUTION_MODE="${MISSION_CONTROL_GOAL_EXECUTION_MODE:-shadow}"',
             launcher,

@@ -6,6 +6,7 @@ GBRAIN_CONFIG_FILE="$GBRAIN_HOME/.gbrain/config.json"
 GBRAIN_CREDENTIALS_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote/credentials.env
 PROVISION_TOKEN_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/openclaw-profile-activation/provision.token
 BUZZ_ENV_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/buzz.env
+GOAL_EXECUTION_ENV_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/goal-execution.env
 
 require_owner_file() {
   local file_path="$1"
@@ -61,6 +62,13 @@ set +a
   print -u2 -- "Mission Control Buzz outbox is unavailable"
   exit 70
 }
+
+if [[ -f "$GOAL_EXECUTION_ENV_FILE" ]]; then
+  require_owner_file "$GOAL_EXECUTION_ENV_FILE"
+  set -a
+  source "$GOAL_EXECUTION_ENV_FILE"
+  set +a
+fi
 
 MISSION_CONTROL_GOAL_EXECUTION_MODE="${MISSION_CONTROL_GOAL_EXECUTION_MODE:-shadow}"
 case "$MISSION_CONTROL_GOAL_EXECUTION_MODE" in

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.132",
+  "current_version": "V0.0.134",
   "releases": [
     {
       "version": "V0.0.1",
@@ -792,6 +792,18 @@
       "date": "2026-08-23",
       "title": "Ignore passive scheduled waits for Goal execution planning",
       "summary": "Keeps explicit scheduled-wait Agent tasks from occupying Goal execution duplicate and active-WIP slots, allowing fresh bounded Goal progress reviews while retaining normal duplicate protection for actionable work."
+    },
+    {
+      "version": "V0.0.133",
+      "date": "2026-08-23",
+      "title": "Configurable Goal execution canary",
+      "summary": "Mission Control can now load a private dashboard-managed Goal execution runtime file, allowing an operator to switch from shadow mode to one verified canary Goal without changing source or bypassing fail-closed validation."
+    },
+    {
+      "version": "V0.0.134",
+      "date": "2026-08-23",
+      "title": "Configurable Goal execution canary and longer local Codex wakes",
+      "summary": "Mission Control now loads a private dashboard-managed Goal execution runtime file for fail-closed shadow/canary control, and the installed local Tammy supervisor persists a longer Codex resume timeout so verified Goal-derived Agent work is not prematurely marked for execution recovery."
     }
   ]
 }

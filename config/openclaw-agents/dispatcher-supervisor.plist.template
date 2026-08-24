@@ -17,6 +17,8 @@
     <string>__OPENCLAW_PATH__</string>
     <string>--working-directory</string>
     <string>__WORKING_DIRECTORY__</string>
+    <string>--codex-resume-timeout</string>
+    <string>__CODEX_RESUME_TIMEOUT__</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__WORKING_DIRECTORY__</string>
