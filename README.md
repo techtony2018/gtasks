@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.153 at commit
-`27900b93ca8f63a7fd9bbc91d55812a587adf12d`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.154 at commit
+`3e4e2a59085df119c49c83958e60ee0b1fb6f841`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -103,7 +103,10 @@ rows as `dispatcher_handoff` without overwriting the canonical task `handoff`;
 completed task rows suppress that projection. V0.0.153 flags active or planned
 non-derived Agent goal tasks that have no explicit next action, no handoff, no
 blockers/dependencies, and no open TODO as `task_needs_next_action` Needs
-attention instead of ordinary duplicate. The earlier Finance canary task
+attention instead of ordinary duplicate. V0.0.154 excludes those stalled,
+non-actionable Agent tasks from Goal execution WIP accounting so another
+bounded Goal review can become `auto_eligible`; active Agent tasks with a real
+`next_action` still consume WIP. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -146,7 +149,10 @@ copy. Terminal handoff states remain `handoff_needs_repair`. If an active or
 planned non-derived Agent goal task lacks an explicit next action, handoff,
 blocker/dependency, and open TODO, Goal execution reports
 `task_needs_next_action` with Needs attention copy so the assigned Agent gets a
-repairable instruction gap instead of an actionable duplicate.
+repairable instruction gap instead of an actionable duplicate. That stalled
+instruction-gap task does not consume the Goal execution WIP slot in
+V0.0.154+, but actionable active Agent work with a real next action still
+blocks additional automatic Goal review as `wip_full`.
 
 ### Independent UI/UX release gate
 

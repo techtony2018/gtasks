@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.153`
+- Last verified pushed release: `V0.0.154`
 - Release commits:
-  `27900b93ca8f63a7fd9bbc91d55812a587adf12d`
+  `3e4e2a59085df119c49c83958e60ee0b1fb6f841`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -233,6 +233,21 @@ to the reviewed source before updating relationships.
   `recently_completed` remain distinct. Live Family/Toddy readback showed
   `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` projecting
   `task_needs_next_action`.
+- V0.0.154 evidence: dashboard-managed health readback `V0.0.154`; release
+  commit `3e4e2a5`; full suite reported `1346` OK with `5` skipped;
+  independent QA PASS at `artifacts/qa/v0.0.154-independent/gate-report.md`.
+- Verified V0.0.154 behavior: Goal execution WIP accounting ignores active
+  Agent tasks that are themselves missing explicit `next_action`, handoff,
+  blocker, dependency, and open TODO evidence, so one stalled
+  `task_needs_next_action` item does not block another bounded Goal review from
+  becoming `auto_eligible`. Active Agent work with a real `next_action` still
+  consumes WIP. Live readback kept Family/Toddy task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` at
+  `task_needs_next_action`, while Toddy Goal
+  `goals/d175890b-6e89-5543-b587-b5df345c1c81` projected `auto_eligible` with
+  task `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, not `wip_full`, in the
+  release/QA evidence. Documentation validation later read the same Goal as
+  `duplicate` for that task, still not `wip_full`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -258,4 +273,6 @@ canonical task. V0.0.152 `dispatcher_handoff` is also read-only projection
 evidence; it must not be treated as canonical `handoff` content or as
 completion of a non-completed task. V0.0.153 `task_needs_next_action` is an
 instruction-gap signal; it does not create the missing next action, handoff, or
-TODO and must not be merged with duplicate or handoff-repair states.
+TODO and must not be merged with duplicate or handoff-repair states. V0.0.154
+does not make stalled work complete or actionable; it only prevents that
+non-actionable item from consuming the automatic Goal WIP slot.

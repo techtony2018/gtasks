@@ -610,6 +610,19 @@ distinct. The live Family/Toddy task
 `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` read back as
 `task_needs_next_action`.
 
+V0.0.154 keeps that attention state visible but excludes it from automatic Goal
+execution WIP accounting. A stalled/non-actionable Agent task with blank
+`next_action`, no handoff, no blockers or dependencies, and no open TODO does
+not by itself block another bounded Goal review from becoming `auto_eligible`.
+The control behavior remains strict: active Agent work with a real
+`next_action` still consumes WIP and can keep another Goal at `wip_full`. Live
+readback kept Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` as
+`task_needs_next_action`, while Toddy's other Goal
+`goals/d175890b-6e89-5543-b587-b5df345c1c81` became `auto_eligible` with task
+`tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`; later documentation validation
+read it as `duplicate` for the same task, still not `wip_full`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
