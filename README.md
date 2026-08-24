@@ -76,11 +76,15 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest candidate release: V0.0.112. Mission Control now recognizes each exact
-verified Agent registration after the dispatcher validates an approved shared
-host-route group, so paired Codex and OpenClaw identities do not make the Codex
-route look unavailable. Duplicate registrations for one Agent still fail
-closed, verified GBrain delegation ingestion metadata remains readable, and
+Latest verified pushed release baseline: V0.0.135 at commit
+`9430533a9e97b3fc436043be0d48db9b6f6a6855`. Mission Control now supports a
+controlled Codex-only Goal execution canary through private dashboard-managed
+runtime configuration, keeps the default mode at `shadow`, persists a
+30-minute local Codex resume timeout for the Tammy supervisor, and treats a
+canonical completed task as authoritative over stale dispatcher recovery
+attention. The verified Faith canary task
+`tasks/83ed4e35-46a2-5a40-b3a3-502c573c7dea` completed with exactly one
+canonical Artifact, `artifacts/5f35baf9-e7fb-44f4-a28a-cd88e8e9581c`.
 OpenClaw remains excluded from Goal execution.
 
 ### Codex Goal execution controls
@@ -101,6 +105,11 @@ deterministic derivation receipt. OpenClaw is excluded from this rollout. If a
 canary cannot verify its Task or delivery path, switch back to `shadow`, retain
 the canonical Task and receipts, and repair the named blocker instead of
 creating a replacement.
+
+Completed canonical Goal-derived tasks do not require dispatcher recovery just
+because an older local wake or launch timed out. Active Goal-derived work with
+a suppressed or failed dispatcher state still surfaces repair attention until
+the handoff history and canonical task state are reconciled.
 
 ### Independent UI/UX release gate
 

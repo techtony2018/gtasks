@@ -135,28 +135,30 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified local date: `2026-08-04` (`America/Los_Angeles`)
-- Mission Control version: `V0.0.76`
-- Deployed product repair commit:
-  `44abd12ea56f15f50bf1232daaa04be05fd877d6`
-- Source/evidence base commit:
-  `4d3cd4d02825970b5e318098320884821ca1ddbd`
+- Last verified released baseline date: `2026-08-23`
+  (`America/Los_Angeles`)
+- Last verified pushed release: `V0.0.135`
+- Release commits:
+  `e3640f716b4cc6ab1c7ac0ab5613402cbcfc20a4` and
+  `9430533a9e97b3fc436043be0d48db9b6f6a6855`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
-- Full automated gate: `715` tests passed, `5` skipped.
-- V0.0.76 Dispatcher evidence: release evidence records independent
-  desktop `1440x1000` and genuine mobile `390x844` QA PASS, three-host
-  Dispatcher installation, one bounded Tammy-only canary, and completed
-  canonical System Ticket `tasks/fad23bf2-571f-4db0-b9f5-07ab52ae8620`.
-- Cross-host readback: Tammy, Timmy, and Toddy each returned the same canonical
-  collection hash, Overview `V0.0.76` document version `4`, Overview hash
-  `d485bbbfa54f1ac6d6cdf969c3aa080320edfc44bc779ed5e37030368a6ef9ba`, and
-  one discovery edge on `2026-08-04`.
-- Installed prompt state: all six active fixed-target Agent automations lacked
-  the shared collection reference at the `2026-08-03` snapshot. The pushed
-  source contract is current; installed rollout remains a separately
-  authorized step and was not mutated by the `V0.0.76` documentation refresh.
+- Full automated gate reported by Developer handoff: `1330` tests OK,
+  `5` skipped.
+- Independent V0.0.135 QA evidence:
+  `artifacts/qa/v0.0.135-independent/gate-report.md` and
+  `artifacts/qa/v0.0.135-independent/gate-results.json`, PASS at desktop
+  `1440x1000` and genuine mobile `390x844`.
+- Verified V0.0.135 behavior: controlled Goal execution canary remains
+  Codex-only and private-runtime-gated; local Tammy supervisor persisted
+  `--codex-resume-timeout 1800`; completed goal-derived task
+  `tasks/83ed4e35-46a2-5a40-b3a3-502c573c7dea` no longer exposes false
+  `dispatcher_handoff` recovery attention and retains exactly one canonical
+  Artifact `artifacts/5f35baf9-e7fb-44f4-a28a-cd88e8e9581c`.
+- GBrain documentation readback during this refresh found the canonical
+  Overview and exactly one
+  `member_of -> collections/mission-control-documentation` discovery edge.
 
 Known documentation-quality issue at this baseline:
 `collections/mission-control-system-tickets` still lists legacy `waiting` in
@@ -164,3 +166,11 @@ frontmatter while the deployed contract writes only `blocked`. The
 Documentation Manager must not mutate that ticket-owned collection merely to
 hide the mismatch; its owner should reconcile it through the supported
 contract.
+
+Current runtime-data-quality issue at this baseline: after the V0.0.135 handoff
+was received, this documentation pass observed uncommitted product changes in
+`gtasks/goal_execution.py`, `gtasks/releases.json`, and
+`tests/test_goal_execution.py`; the dashboard-managed health endpoint then
+reported `V0.0.136`. Because those changes were not part of the pushed
+V0.0.135 evidence, the Documentation Manager records them as unverified
+runtime drift rather than released current behavior.

@@ -520,6 +520,23 @@ verified, switch back to `shadow`, keep the same Task and durable evidence, and
 record the exact system-repair blocker. Do not delete the Task, fabricate a
 receipt, or silently redirect it to Tony or an OpenClaw Agent.
 
+V0.0.135 verified the first completed Faith canary path. Task
+`tasks/83ed4e35-46a2-5a40-b3a3-502c573c7dea` remained canonical
+`completed`, retained one `collections/tammys-tasks` membership, one
+`assigned_to -> agents/tammy`, one `advances_goal` relationship, and produced
+exactly one Artifact,
+`artifacts/5f35baf9-e7fb-44f4-a28a-cd88e8e9581c`. Task detail must treat that
+completed canonical task readback as stronger than stale dispatcher recovery
+attention. The same release kept active suppressed dispatcher states visible
+as repair attention, so this completion suppression does not hide genuinely
+active or blocked delivery problems.
+
+The local supervisor installer now defaults `--codex-resume-timeout` to
+`1800` seconds, and the Tammy LaunchAgent was verified with that persisted
+timeout during the V0.0.135 handoff. Operators must still use the private
+installer/launchd boundary; do not hand-edit plist or inbox state to force a
+retry.
+
 ## Rollback
 
 Rollback restores the previous verified release, not a partially reviewed
@@ -543,11 +560,14 @@ correction event.
 
 Automated tests and independent desktop/mobile UI QA use synthetic fixtures
 and perform zero live Agent wakes. Only after QA PASS, commit, push,
-dashboard-managed deployment, exact `/api/health` V0.0.76 readback, and private
-credential readback may the three host installations begin.
+dashboard-managed deployment, exact `/api/health` readback for the released
+version, and private credential readback may host installation or live canary
+work proceed.
 
 Install and verify Tammy, Timmy, and Toddy separately; each must see only its
-own identity. V0.0.76 permits one bounded Tammy canary after all three installs
-read back. Do not canary Timmy or Toddy in V0.0.76. The Tammy canary must prove
-one claim, one resume of the already-approved fixed thread, received and active
-acknowledgements, one stable correlation id, and zero cross-identity visibility.
+own identity. V0.0.76 permitted one bounded Tammy handoff canary after all
+three installs read back. V0.0.135 separately verified a controlled
+Codex-only Goal execution Faith canary for Tammy and returned private runtime
+Goal execution mode to `shadow` afterward. Do not generalize either canary to
+Timmy, Toddy, OpenClaw, or recurring autonomous Goal execution without a new
+verified release and explicit authorization.
