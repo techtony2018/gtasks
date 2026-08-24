@@ -648,7 +648,7 @@ def exact_task_api_payload(
         payload = adapter.get_task(task_slug).to_dict()
     if handoff_store is not None:
         status = handoff_store.latest_task_handoff_status(task_slug)
-        if status is not None:
+        if status is not None and payload.get("status") != "completed":
             payload["dispatcher_handoff"] = {"status": status}
     return payload
 

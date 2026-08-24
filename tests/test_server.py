@@ -3686,6 +3686,100 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             {"status": "dead_letter"},
         )
 
+    def test_exact_task_api_suppresses_dispatcher_recovery_for_completed_task(self) -> None:
+        task = replace(
+            new_task(
+                title="Completed dispatcher task",
+                detail="Canonical task completed after the launched Agent work.",
+                due_day=date(2026, 8, 5),
+                now=self.NOW,
+                identity="completed-dispatcher-task",
+            ),
+            slug=self.TASK,
+            status="completed",
+            owner_agent="agents/tammy",
+        )
+        record = self._record(event="events/exact-task-recovery")
+        active_task = replace(task, status="active")
+        lifecycle_harness = ServerHarness(
+            self,
+            FakeAdapter(active=(active_task,)),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                self.registration
+                if agent == "agents/tammy" and registration == self.REGISTRATION
+                else None
+            ),
+            handoff_waiter=lambda _seconds: None,
+        )
+        _status, claim, _ = lifecycle_harness.request(
+            "POST",
+            "/api/handoffs/claim",
+            {
+                "registration_id": self.REGISTRATION,
+                "wait_seconds": 0,
+                "lease_seconds": 30,
+            },
+            self._auth(),
+        )
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-exact-task-recovery"
+        status, started, _ = lifecycle_harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/wake",
+            {"wake_token": f"wake/{record.idempotency_key}"},
+            {**headers, "Idempotency-Key": "mutation-exact-task-recovery-wake"},
+        )
+        self.assertEqual(status, 200)
+        status, received, _ = lifecycle_harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/ack",
+            {"status": "received", "detail": None},
+            {**headers, "Idempotency-Key": "mutation-exact-task-recovery-received"},
+        )
+        self.assertEqual(status, 200)
+        status, started, _ = lifecycle_harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-start",
+            {
+                "launch_id": "launch/completed-recovery",
+                "wake_token": f"wake/{record.idempotency_key}",
+            },
+            {**headers, "Idempotency-Key": "mutation-exact-task-recovery-start"},
+        )
+        self.assertEqual(status, 200)
+        status, recovered, _ = lifecycle_harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/execution-checkpoint",
+            {
+                "launch_id": "launch/completed-recovery",
+                "reason": "timeout",
+            },
+            {**headers, "Idempotency-Key": "mutation-exact-task-recovery-checkpoint"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(recovered["status"], "suppressed")
+        harness = ServerHarness(
+            self,
+            FakeAdapter(active=(), completed=(task,)),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                self.registration
+                if agent == "agents/tammy" and registration == self.REGISTRATION
+                else None
+            ),
+            handoff_waiter=lambda _seconds: None,
+        )
+
+        encoded = self.TASK.replace("/", "%2F")
+        status, payload, _ = harness.request("GET", f"/api/tasks/{encoded}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["status"], "completed")
+        self.assertNotIn("dispatcher_handoff", payload["task"])
+
     def test_event_projection_includes_verified_task_reference_and_unavailable_fallback(self) -> None:
         task = new_task(
             title="Review Unicode handoff title 🚀 with enough text",
