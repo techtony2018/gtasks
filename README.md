@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.157 at commit
-`5b9dbb1cdfe372e1a3b067230749172ba30ab193`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.159 at commit
+`f070f1af2824958e6655d9ba8552278e72624446`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -128,6 +128,18 @@ dashboard-managed scheduler created/activated current-cycle Civic/Timmy task
 `actively_executing` during the deploy handoff. A later documentation readback
 showed the task still active with `dispatcher_handoff.status=suppressed`; no
 Artifact completion was present at the bounded handoff check.
+V0.0.158/V0.0.159 complete the checkpointed handoff reconciliation path:
+`suppressed` plus terminal `checkpointed` state plus exact `produced_for`
+Artifact reconciles as `completed_after_verified_handoff`; suppressed without
+checkpoint or without exact Artifact remains attention/active. V0.0.159 fixed
+the bridge readback root cause by falling back to terminal execution claims so
+released checkpointed claims retain `terminal_state=checkpointed` instead of
+losing that state after nonterminal-claim filtering. Final live readback shows
+current-cycle Civic/Timmy task
+`tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2` completed at
+`2026-08-24T04:08:08.447338-07:00` with Artifact
+`artifacts/6e6c331e-a181-4d8f-ab16-cda613b8fed9` created by `agents/timmy`
+and `produced_for` that task.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -203,6 +215,16 @@ The new cycle creates a different deterministic Task slug and includes the
 cycle marker in the task detail, for example `Review cycle starts
 2026-08-24`. Treat the newly activated task as live Agent work until its
 handoff and Artifact evidence prove a later state.
+
+Checkpointed suppressed handoffs are a separate terminal-success path in
+V0.0.158+. A selected Goal-derived task can reconcile to
+`completed_after_verified_handoff` when the latest handoff is `suppressed`,
+the terminal execution claim readback says `terminal_state=checkpointed`, and
+an exact Artifact with `produced_for` equal to that Task exists. V0.0.159 makes
+that terminal checkpoint state readable after the active claim is released by
+falling back to terminal execution claims. Suppressed handoffs without the
+checkpoint state or without exact Artifact evidence remain
+`handoff_needs_repair` / active.
 
 ### Independent UI/UX release gate
 

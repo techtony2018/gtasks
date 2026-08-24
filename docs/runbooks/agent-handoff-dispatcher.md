@@ -671,6 +671,28 @@ handoff check. The canary target was then restored to Toddy Health;
 Toddy still requires the Tailscale host login/private-route repair before its
 queued handoff can advance beyond `handoff_worker_unavailable`.
 
+V0.0.158 extends the V0.0.156 verified-completion rule to checkpointed
+suppressed handoffs. If the selected Goal-derived task has latest handoff
+status `suppressed`, terminal execution state `checkpointed`, and exact
+Artifact readback with `produced_for` equal to the same task slug, Goal
+execution reconciles the task as `completed_after_verified_handoff`.
+Suppressed handoffs without checkpoint state, or checkpointed suppressed
+handoffs without exact Artifact evidence, remain attention/active. V0.0.159
+repairs the readback root cause: `CanonicalHandoffEventBridge.latest_task_handoff_delivery_state()`
+falls back to terminal execution claims, so released checkpointed claims expose
+`terminal_state=checkpointed` instead of losing the state after
+`include_terminal=False`.
+
+Final live V0.0.159 readback showed current-cycle Civic/Timmy task
+`tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2` completed at
+`2026-08-24T04:08:08.447338-07:00`; exact Artifact
+`artifacts/6e6c331e-a181-4d8f-ab16-cda613b8fed9` was created by
+`agents/timmy` and has
+`produced_for -> tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2`. The canary target
+was restored to Toddy Health, which still remains
+`handoff_worker_unavailable` pending Toddy host Tailscale login/private-route
+repair.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.157`
+- Last verified pushed release: `V0.0.159`
 - Release commits:
-  `5b9dbb1cdfe372e1a3b067230749172ba30ab193`
+  `f070f1af2824958e6655d9ba8552278e72624446`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -295,6 +295,28 @@ to the reviewed source before updating relationships.
   `actively_executing` during the deploy handoff. Later documentation readback
   showed the task still active with `dispatcher_handoff.status=suppressed`; no
   Artifact was present at the bounded handoff check.
+- V0.0.158 evidence: release commit
+  `3fedf27c404c1d5e7c371c546a069c29c74293b0`; independent QA PASS at
+  `artifacts/qa/v0.0.158-independent/gate-report.md` with frozen aggregate
+  `fe3281d1deb2799278c2e1c54d95c50a1a69d62f19977ce2a02cf76753d10928`;
+  focused Goal execution suite reported `40` passed.
+- Verified V0.0.158 behavior: checkpointed `suppressed` handoff plus exact
+  `produced_for` Artifact reconciles as `completed_after_verified_handoff`;
+  ordinary completed handoff plus Artifact still reconciles; suppressed
+  without checkpoint or without exact Artifact remains attention/active.
+- V0.0.159 evidence: dashboard-managed health readback `V0.0.159`; release
+  commit `f070f1af2824958e6655d9ba8552278e72624446`; independent QA PASS at
+  `artifacts/qa/v0.0.159-independent/gate-report.md` with frozen aggregate
+  `fddfe686453ae1c455f14b7ece5ff324c44d3f76b4618915139477b082a8ce1d`;
+  focused Goal execution tests reported `40` passed.
+- Verified V0.0.159 behavior: `CanonicalHandoffEventBridge.latest_task_handoff_delivery_state()`
+  falls back to terminal execution claims, so released checkpointed claims
+  expose `terminal_state=checkpointed` instead of losing the state after
+  `include_terminal=False`. Live final readback showed Civic/Timmy task
+  `tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2` completed at
+  `2026-08-24T04:08:08.447338-07:00`; exact Artifact
+  `artifacts/6e6c331e-a181-4d8f-ab16-cda613b8fed9` was created by
+  `agents/timmy` and has `produced_for` set to that task.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -336,3 +358,7 @@ unbounded recurring execution; same-cycle completed work still suppresses
 repeat creation, and an activated current-cycle task remains live Agent work
 until handoff and Artifact evidence prove a later state. Toddy's queued
 handoff still requires the previously reported Tailscale host login repair.
+V0.0.158/V0.0.159 checkpointed-suppressed reconciliation is also narrowly
+gated: terminal checkpoint state and exact Artifact `produced_for` evidence are
+required. Suppressed without checkpoint, missing terminal checkpoint readback,
+or missing exact Artifact must remain repair attention/active.
