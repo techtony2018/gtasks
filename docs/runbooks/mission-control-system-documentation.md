@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.156`
+- Last verified pushed release: `V0.0.157`
 - Release commits:
-  `7f779030695076763f871a166ac67ee2253b95c2`
+  `5b9dbb1cdfe372e1a3b067230749172ba30ab193`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -277,6 +277,22 @@ to the reviewed source before updating relationships.
   `artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f` still has
   `produced_for` set to that task; `/api/goal-execution?mode=shadow` now
   reports Civic as `recently_completed`.
+- V0.0.157 evidence: dashboard-managed health readback `V0.0.157`; release
+  commit `5b9dbb1cdfe372e1a3b067230749172ba30ab193`; independent QA PASS at
+  `artifacts/qa/v0.0.157-independent/gate-report.md` with frozen aggregate
+  `dc485a26f8439327c4276b5b0ca429010291d6e6d5053dbff4f3c6f63ace94cd`;
+  focused Goal execution suite reported `39` passed.
+- Verified V0.0.157 behavior: Goal-derived Agent review Tasks include a cycle
+  key in the deterministic fingerprint. A completed prior-cycle review no
+  longer permanently suppresses the next bounded review cycle; same-cycle
+  completed work still suppresses repeat creation. QA verified different
+  deterministic task slugs for cycles `2026-08-17` and `2026-08-24`.
+- Live V0.0.157 activation: dashboard-managed scheduler created and activated
+  current-cycle Civic/Timmy task
+  `tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2`, owner `agents/timmy`, Goal
+  `goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; detail includes
+  `Review cycle starts 2026-08-24`; dispatcher handoff readback reached
+  `actively_executing`; no Artifact was present at the bounded handoff check.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -312,4 +328,9 @@ delivered worker execution, or completed Agent task. V0.0.156
 `completed_after_verified_handoff` is narrowly gated by dispatcher completion
 plus exact Artifact `produced_for` readback; do not use it to complete tasks
 that only have a terminal handoff, only have an Artifact without the exact task
-relationship, or still have an unresolved worker/route blocker.
+relationship, or still have an unresolved worker/route blocker. V0.0.157
+cycle-keyed review fingerprints permit the next bounded cycle but do not imply
+unbounded recurring execution; same-cycle completed work still suppresses
+repeat creation, and an activated current-cycle task remains live Agent work
+until handoff and Artifact evidence prove a later state. Toddy's queued
+handoff still requires the previously reported Tailscale host login repair.

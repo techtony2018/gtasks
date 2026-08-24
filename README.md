@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.156 at commit
-`7f779030695076763f871a166ac67ee2253b95c2`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.157 at commit
+`5b9dbb1cdfe372e1a3b067230749172ba30ab193`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -117,7 +117,16 @@ exact `produced_for` Artifact readback exists; if the Artifact is missing, the
 Task remains active/duplicate. The live Civic task
 `tasks/7ad5e1f5-eeb3-5fcf-850f-580eadb4ce92` completed at
 `2026-08-24T03:25:19.000864-07:00` after exact Artifact readback for
-`artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f`. The earlier Finance canary task
+`artifacts/4fb85655-dc13-4050-b3a3-0c56b27acb9f`. V0.0.157 adds a cycle key
+to Goal-derived Agent review deterministic fingerprints, so a completed
+prior-cycle review no longer permanently suppresses the next bounded review
+cycle while same-cycle completed work still suppresses repeats. The
+dashboard-managed scheduler created/activated current-cycle Civic/Timmy task
+`tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2` for
+`goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; its detail includes
+`Review cycle starts 2026-08-24`, and dispatcher handoff readback reached
+`actively_executing` with no Artifact present at the bounded handoff check.
+The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -184,6 +193,14 @@ with `produced_for` equal to that Task slug. The public reason is
 Artifact readback.` Missing Artifact evidence keeps the task active and the
 Goal decision at ordinary duplicate/executing rather than fabricating
 completion.
+
+Goal-derived Agent review deterministic fingerprints include the review cycle
+key in V0.0.157+. A completed prior-cycle review can suppress same-cycle
+repeats, but it does not permanently suppress the next bounded review cycle.
+The new cycle creates a different deterministic Task slug and includes the
+cycle marker in the task detail, for example `Review cycle starts
+2026-08-24`. Treat the newly activated task as live Agent work until its
+handoff and Artifact evidence prove a later state.
 
 ### Independent UI/UX release gate
 

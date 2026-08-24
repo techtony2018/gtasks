@@ -655,6 +655,20 @@ host-route blocker remains separate: Toddy fixed thread configuration exists,
 but the host is still logged out of Tailscale, so its queued handoff remains
 `handoff_worker_unavailable` until the private route is restored.
 
+V0.0.157 adds a cycle key to Goal-derived Agent review deterministic
+fingerprints. A completed prior-cycle review no longer leaves the Goal stuck
+in `recently_completed` forever; same-cycle completed work still suppresses
+repeat creation. QA verified different deterministic task slugs for cycles
+`2026-08-17` and `2026-08-24`. After deploy, the dashboard-managed scheduler
+created and activated current-cycle Civic/Timmy task
+`tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2`, owned by `agents/timmy`, for
+Goal `goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; the detail includes
+`Review cycle starts 2026-08-24`. Dispatcher readback progressed from leased
+to execution_started to `actively_executing`, and no Artifact was present at
+the bounded handoff check. The canary target was then restored to Toddy Health;
+Toddy still requires the Tailscale host login/private-route repair before its
+queued handoff can advance beyond `handoff_worker_unavailable`.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
