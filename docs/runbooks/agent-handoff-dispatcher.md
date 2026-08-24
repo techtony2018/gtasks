@@ -537,6 +537,32 @@ timeout during the V0.0.135 handoff. Operators must still use the private
 installer/launchd boundary; do not hand-edit plist or inbox state to force a
 retry.
 
+V0.0.136 adds the planner duplicate-completion boundary: when a derived Goal
+review task has the exact deterministic fingerprint and is already
+`completed`, the planner returns `recently_completed` and does not immediately
+offer a duplicate canary. Cancelled tasks and materially changed candidates
+remain eligible through the normal planner rules.
+
+The V0.0.136/V0.0.137 Finance canary for
+`goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
+completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
+The task retained `member_of -> collections/tammys-tasks`,
+`assigned_to -> agents/tammy`, `advances_goal -> goals/840b3122-b299-5991-96be-30364c7f2e12`,
+and project membership to `projects/fe9b0d37-d756-42ef-b8f1-98217f79eae7`.
+Tammy published Artifact `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`,
+with `produced_for` pointing to the same task and `supports_project` /
+`supports_goal` pointing to the Finance project and Goal. The task-scoped
+handoff history reached `completed` and `execution_claim_released`, and Goal
+execution mode was returned to `shadow`.
+
+V0.0.137 repairs one recovery edge for local Codex handoffs: if the Codex CLI
+reports `codex_thread_active_writer`, a manual same-thread recovery may
+abandon the unused or blocked local launch after server readback shows the
+handoff has completed. This is not a new automatic dispatcher path and must
+not be generalized into duplicate launches. The automatic path still requires
+the normal claim, wake authorization, `received`, `execution_started`,
+acknowledgement, and terminal release chain.
+
 ## Rollback
 
 Rollback restores the previous verified release, not a partially reviewed
@@ -566,8 +592,9 @@ work proceed.
 
 Install and verify Tammy, Timmy, and Toddy separately; each must see only its
 own identity. V0.0.76 permitted one bounded Tammy handoff canary after all
-three installs read back. V0.0.135 separately verified a controlled
-Codex-only Goal execution Faith canary for Tammy and returned private runtime
-Goal execution mode to `shadow` afterward. Do not generalize either canary to
-Timmy, Toddy, OpenClaw, or recurring autonomous Goal execution without a new
-verified release and explicit authorization.
+three installs read back. V0.0.135 verified a controlled Codex-only Faith Goal
+execution canary for Tammy; V0.0.136/V0.0.137 verified a controlled
+Codex-only Finance Goal execution canary for Tammy. Each canary returned
+private runtime Goal execution mode to `shadow` afterward. Do not generalize
+these canaries to Timmy, Toddy, OpenClaw, or recurring autonomous Goal
+execution without a new verified release and explicit authorization.

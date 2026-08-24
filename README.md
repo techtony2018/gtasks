@@ -76,16 +76,18 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.135 at commit
-`9430533a9e97b3fc436043be0d48db9b6f6a6855`. Mission Control now supports a
+Latest verified pushed release baseline: V0.0.137 at commit
+`f9fa6545103378266b37ec486342fdbbd1bbb2f5`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
-30-minute local Codex resume timeout for the Tammy supervisor, and treats a
-canonical completed task as authoritative over stale dispatcher recovery
-attention. The verified Faith canary task
-`tasks/83ed4e35-46a2-5a40-b3a3-502c573c7dea` completed with exactly one
-canonical Artifact, `artifacts/5f35baf9-e7fb-44f4-a28a-cd88e8e9581c`.
-OpenClaw remains excluded from Goal execution.
+30-minute local Codex resume timeout for the Tammy supervisor, suppresses
+immediate duplicate exact completed Goal review canaries as
+`recently_completed`, and treats server-completed handoffs as authoritative
+when abandoning an unused local launch after `codex_thread_active_writer`
+recovery. The verified Finance canary task
+`tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
+`artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
+from Goal execution.
 
 ### Codex Goal execution controls
 
@@ -107,9 +109,11 @@ the canonical Task and receipts, and repair the named blocker instead of
 creating a replacement.
 
 Completed canonical Goal-derived tasks do not require dispatcher recovery just
-because an older local wake or launch timed out. Active Goal-derived work with
-a suppressed or failed dispatcher state still surfaces repair attention until
-the handoff history and canonical task state are reconciled.
+because an older local wake or launch timed out. Exact completed derived Goal
+review tasks suppress immediate repeats as `recently_completed`; cancelled or
+materially changed candidates may still be eligible. Active Goal-derived work
+with a suppressed or failed dispatcher state still surfaces repair attention
+until the handoff history and canonical task state are reconciled.
 
 ### Independent UI/UX release gate
 

@@ -137,25 +137,27 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-23`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.135`
+- Last verified pushed release: `V0.0.137`
 - Release commits:
-  `e3640f716b4cc6ab1c7ac0ab5613402cbcfc20a4` and
-  `9430533a9e97b3fc436043be0d48db9b6f6a6855`
+  `e19278d80f47f997966482a5f77b64b08f159681` and
+  `f9fa6545103378266b37ec486342fdbbd1bbb2f5`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
-- Full automated gate reported by Developer handoff: `1330` tests OK,
-  `5` skipped.
-- Independent V0.0.135 QA evidence:
-  `artifacts/qa/v0.0.135-independent/gate-report.md` and
-  `artifacts/qa/v0.0.135-independent/gate-results.json`, PASS at desktop
-  `1440x1000` and genuine mobile `390x844`.
-- Verified V0.0.135 behavior: controlled Goal execution canary remains
-  Codex-only and private-runtime-gated; local Tammy supervisor persisted
-  `--codex-resume-timeout 1800`; completed goal-derived task
-  `tasks/83ed4e35-46a2-5a40-b3a3-502c573c7dea` no longer exposes false
-  `dispatcher_handoff` recovery attention and retains exactly one canonical
-  Artifact `artifacts/5f35baf9-e7fb-44f4-a28a-cd88e8e9581c`.
+- V0.0.136 evidence: full suite `1331` OK, independent QA PASS at
+  `artifacts/qa/v0.0.136-independent/gate-report.md`, and deployed health
+  readback `V0.0.136`.
+- V0.0.137 evidence reported by Developer handoff: focused recovery tests `5`
+  OK, handoff dispatcher/supervisor `183` OK, full suite `1332` OK,
+  release/handoff targeted `208` OK, deployed health readback `V0.0.137`, and
+  supervisor restart with `--codex-resume-timeout 1800`.
+- Verified V0.0.136/V0.0.137 behavior: exact completed derived Goal review
+  tasks suppress immediate duplicate canaries as `recently_completed`; the
+  Finance canary task `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed
+  for `agents/tammy`, retained the Finance Goal and Project links, published
+  Artifact `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`, and its handoff
+  events reached `completed` plus `execution_claim_released`; Goal execution
+  mode was restored to `shadow`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -167,10 +169,9 @@ Documentation Manager must not mutate that ticket-owned collection merely to
 hide the mismatch; its owner should reconcile it through the supported
 contract.
 
-Current runtime-data-quality issue at this baseline: after the V0.0.135 handoff
-was received, this documentation pass observed uncommitted product changes in
-`gtasks/goal_execution.py`, `gtasks/releases.json`, and
-`tests/test_goal_execution.py`; the dashboard-managed health endpoint then
-reported `V0.0.136`. Because those changes were not part of the pushed
-V0.0.135 evidence, the Documentation Manager records them as unverified
-runtime drift rather than released current behavior.
+Current operational caveat at this baseline: V0.0.137 covered the
+`codex_thread_active_writer` recovery path through one manual same-thread
+recovery that accepted server-completed handoff state while abandoning an
+unused or blocked local launch. The Documentation Manager must preserve this
+as a recovery exception, not describe it as the normal automatic dispatcher
+path.
