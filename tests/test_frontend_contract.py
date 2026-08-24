@@ -182,6 +182,8 @@ assert(goalExecutionState({ goal_slug: goalSlug, reason: "handoff_worker_unavail
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "handoff_worker_unavailable", task_slug: taskSlug }).includes("no verified Agent worker has leased"), "stale queued handoff copy was not explicit");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "task_needs_next_action", task_slug: taskSlug }) === "Needs attention", "missing next action was not Needs attention");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "task_needs_next_action", task_slug: taskSlug }).includes("no explicit next action"), "missing next action copy was not explicit");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }) === "Blocked", "waiting for Tony was not Blocked");
+assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }).includes("waiting for Tony"), "waiting for Tony copy was not explicit");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "completed_after_verified_handoff", task_slug: taskSlug }).includes("Artifact readback"), "completed handoff reconciliation copy was not explicit");
 state.goalExecution.last_run.task = null;
 state.goalExecution.last_run.handoff = null;
@@ -2664,7 +2666,22 @@ assert(findTaskBySlug("tasks/parent").todos[0].status === "done", "verified TODO
         self.assertIn("elements.taskHandoffError.textContent = message", javascript)
         self.assertIn(".task-handoff-panel", css)
         self.assertNotIn('status: "waiting"', javascript)
-        self.assertNotIn("waiting for Tony", javascript)
+        handoff_renderer = javascript[
+            javascript.index("function renderTaskHandoff")
+            : javascript.index("function renderTaskTodos")
+        ]
+        self.assertNotIn("waiting for Tony", handoff_renderer)
+
+    def test_task_todo_renderer_surfaces_bounded_canonical_todo_issues(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderTaskTodos")
+            : javascript.index("function todoErrorMessage")
+        ]
+
+        self.assertIn("task.todo_issues", renderer)
+        self.assertIn("canonical TODO list is unavailable", renderer)
+        self.assertIn("elements.taskTodoError.classList.remove", renderer)
 
     def test_task_detail_surfaces_dispatcher_handoff_attention_without_domain_handoff(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

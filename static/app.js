@@ -4007,6 +4007,7 @@ function goalExecutionState(decision) {
   if (!decision) return "Ready";
   const reason = decision.reason;
   if (GOAL_EXECUTION_ATTENTION_REASONS.has(reason)) return "Needs attention";
+  if (reason === "waiting_for_tony") return "Blocked";
   if (reason === "wip_full" || reason === "goal_paused") return "Blocked";
   const task = goalExecutionTask(decision);
   const lastTask = state.goalExecution?.last_run?.task;
@@ -4045,6 +4046,7 @@ function goalExecutionReasonCopy(decision) {
     handoff_needs_repair: "The canonical task is active, but verified Agent handoff or execution needs system review.",
     handoff_missing: "The canonical task is active, but no verified Agent handoff is recorded yet.",
     task_needs_next_action: "The canonical task is active, but it has no explicit next action for the assigned Agent.",
+    waiting_for_tony: "The canonical task is blocked waiting for Tony's answer before the assigned Agent can continue.",
     handoff_worker_unavailable: "The canonical task is active and queued, but no verified Agent worker has leased it yet. Verify the Agent host dispatcher and private route.",
     completed_after_verified_handoff: "Mission Control completed the canonical task after verified Agent handoff and Artifact readback.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
@@ -6673,6 +6675,7 @@ function renderTaskHandoff(task) {
 function renderTaskTodos(task) {
   renderTaskHandoff(task);
   const todos = Array.isArray(task.todos) ? task.todos : [];
+  const todoIssues = Array.isArray(task.todo_issues) ? task.todo_issues : [];
   const filtered = state.showCompletedTodos
     ? todos
     : todos.filter((todo) => todo.status === "not_done");
@@ -6688,6 +6691,16 @@ function renderTaskTodos(task) {
     "is-hidden",
     state.todoLoadingTask !== task.slug,
   );
+  if (todoIssues.length) {
+    elements.taskTodoError.textContent = (
+      todoIssues[0]?.impact ||
+      todoIssues[0]?.message ||
+      "The canonical TODO list is unavailable."
+    );
+    elements.taskTodoError.classList.remove("is-hidden");
+  } else {
+    elements.taskTodoError.classList.add("is-hidden");
+  }
   elements.taskTodoShowCompleted.checked = state.showCompletedTodos;
 }
 

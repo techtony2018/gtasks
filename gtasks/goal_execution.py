@@ -210,6 +210,16 @@ def _needs_next_action(task: Task) -> bool:
     )
 
 
+def _is_waiting_for_tony(task: Task) -> bool:
+    handoff = task.handoff
+    return (
+        task.status == "blocked"
+        and handoff is not None
+        and handoff.state == "waiting_for_input"
+        and handoff.waiting_on == "people/tony-guan"
+    )
+
+
 def _parse_aware_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime) and value.tzinfo is not None:
         return value
@@ -296,6 +306,9 @@ class GoalExecutionPlanner:
             )
             if existing is not None:
                 reason = (
+                    "waiting_for_tony"
+                    if _is_waiting_for_tony(existing)
+                    else
                     "task_needs_next_action"
                     if _needs_next_action(existing)
                     else "duplicate"
@@ -339,6 +352,9 @@ class GoalExecutionPlanner:
             )
             if exact is not None:
                 reason = (
+                    "waiting_for_tony"
+                    if _is_waiting_for_tony(exact)
+                    else
                     "task_needs_next_action"
                     if _needs_next_action(exact)
                     else "duplicate"

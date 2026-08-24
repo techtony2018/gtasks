@@ -20,6 +20,7 @@ from gtasks.goal_execution import (
     derived_task_slug,
 )
 from gtasks.gbrain import PartialMutationError, StatusMutationReceipt, TaskEditReceipt
+from gtasks.handoff import TaskHandoff
 from gtasks.handoff_dispatcher import AgentRegistration
 
 
@@ -183,6 +184,33 @@ class GoalExecutionPlannerTests(unittest.TestCase):
 
         self.assertEqual(plan.decisions[0].reason, "task_needs_next_action")
         self.assertEqual(plan.decisions[0].existing_task_slug, stalled.slug)
+
+    def test_existing_goal_task_waiting_for_tony_is_blocked_not_missing_next_action(self) -> None:
+        waiting = replace(
+            agent_task(
+                slug_identity="existing-goal-work-waiting-for-tony",
+                goal_slug=GOAL,
+                status="blocked",
+            ),
+            next_action="Which scope should the Agent use next?",
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/question-round-1",
+                waiting_on="people/tony-guan",
+                resume_owner=AGENT,
+                resume_action="Resume after Tony chooses the scope.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+
+        plan = GoalExecutionPlanner().plan(snapshot(tasks=(waiting,)))
+
+        self.assertEqual(plan.decisions[0].reason, "waiting_for_tony")
+        self.assertEqual(plan.decisions[0].existing_task_slug, waiting.slug)
 
     def test_passive_scheduled_wait_task_does_not_suppress_goal_review(self) -> None:
         passive = replace(

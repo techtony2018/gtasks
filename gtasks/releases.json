@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.159",
+  "current_version": "V0.0.160",
   "releases": [
     {
       "version": "V0.0.1",
@@ -954,6 +954,12 @@
       "date": "2026-08-24",
       "title": "Read terminal handoff checkpoint state",
       "summary": "Goal execution now reads terminal checkpointed handoff claim state after release, allowing verified Agent Artifacts to reconcile completed work instead of staying in a suppressed repair state."
+    },
+    {
+      "version": "V0.0.160",
+      "date": "2026-08-24",
+      "title": "Classify Agent work waiting for Tony",
+      "summary": "Shows canonical Agent tasks that are blocked for Tony input as Blocked and waiting for Tony in Goal execution, instead of misclassifying them as missing next action."
     }
   ]
 }

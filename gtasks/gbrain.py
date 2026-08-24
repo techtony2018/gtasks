@@ -8761,7 +8761,27 @@ class GBrainAdapter:
     def get_task_api_payload(self, task_slug: str) -> dict[str, Any]:
         """Return structured authority plus an optional display-only body."""
         task, page = self._get_task_readback(task_slug)
+        todo_issues: tuple[CollectionIssue, ...] = ()
+        if task.handoff is not None:
+            try:
+                todo_read = self._list_task_todos_for_task(task, limit=100)
+                task = replace(task, todos=todo_read.todos)
+                todo_issues = todo_read.issues
+            except (DomainValidationError, GBrainError, ValueError) as exc:
+                todo_issues = (
+                    CollectionIssue(
+                        slug=task.slug,
+                        message=str(exc),
+                        category="todo_data",
+                        impact=(
+                            "The task remains visible, but its canonical TODO list "
+                            "is unavailable."
+                        ),
+                    ),
+                )
         payload = task.to_dict()
+        if todo_issues:
+            payload["todo_issues"] = [issue.to_dict() for issue in todo_issues]
         display_markdown = self._validated_task_display_markdown(task, page)
         if display_markdown is not None:
             payload["display_markdown"] = display_markdown

@@ -7654,6 +7654,27 @@ class TodoAdapterTests(unittest.TestCase):
             task = Task.from_page(page, edges=links)
         return StatefulIdentityMigrationRunner({task.slug: page}, links), task
 
+    def test_task_api_payload_includes_active_handoff_question_todo(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/toddy")
+        adapter = GBrainAdapter(runner)
+        receipt = adapter.request_agent_input(
+            task.slug,
+            question="Which family-care scope should Toddy use next?",
+            question_detail="Choose the scope before the Agent continues.",
+            resume_action="Resume with Tony's selected scope.",
+            agent_slug="agents/toddy",
+            idempotency_key="family-scope-question",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        )
+
+        payload = adapter.get_task_api_payload(task.slug)
+
+        self.assertEqual(payload["handoff"]["state"], "waiting_for_input")
+        self.assertEqual(payload["handoff"]["question_todo"], receipt.todo.slug)
+        self.assertEqual([todo["slug"] for todo in payload["todos"]], [receipt.todo.slug])
+        self.assertEqual(payload["todos"][0]["text"], receipt.todo.text)
+        self.assertEqual(payload["todos"][0]["kind"], "question")
+
     def test_creates_multiple_stable_todos_and_projects_first_open_text(self) -> None:
         self.assertTrue(hasattr(GBrainAdapter, "create_todo"))
         runner, task = self._fixture()
