@@ -131,6 +131,18 @@ INBOX_AUTHORIZATION_REFRESH_STATES = frozenset(
 INBOX_REPLACEABLE_TERMINAL_STATES = frozenset(
     {"handed_back", "suppressed"}
 )
+INBOX_REPLACEABLE_RECOVERED_LEASE_STATES = frozenset(
+    {
+        "accepted",
+        "pending",
+        "failed",
+        "launch_preparing",
+        "launch_spawned",
+        "launch_ready",
+        "start_requesting",
+        *INBOX_REPLACEABLE_TERMINAL_STATES,
+    }
+)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
 _AGENT_SLUG = re.compile(r"agents/[a-z0-9][a-z0-9._-]{0,63}")
 _THREAD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}")
@@ -885,7 +897,8 @@ class PrivateWakeInbox:
                     raise ValueError("same-generation claim changed its lease capability")
                 if (
                     recovered_generation > current_generation
-                    and existing["state"] in INBOX_REPLACEABLE_TERMINAL_STATES
+                    and stored_claim.get("reason") == "system_dependency_recovered"
+                    and existing["state"] in INBOX_REPLACEABLE_RECOVERED_LEASE_STATES
                 ):
                     self._connection.execute(
                         """

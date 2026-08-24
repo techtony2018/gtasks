@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.123",
+  "current_version": "V0.0.124",
   "releases": [
     {
       "version": "V0.0.1",
@@ -738,6 +738,12 @@
       "date": "2026-08-23",
       "title": "Recover stale received Agent handoffs",
       "summary": "Extends bounded operator recovery to received Agent handoffs that never recorded an execution start, returning stale post-acknowledgement work to retry without changing the canonical task."
+    },
+    {
+      "version": "V0.0.124",
+      "date": "2026-08-23",
+      "title": "Replace stale pre-start inbox launches on recovered retries",
+      "summary": "Ensures a verified newer recovered Agent handoff lease clears stale local pre-start launch evidence, so fixed-thread dispatchers do not keep polling an obsolete launch id after operator recovery."
     }
   ]
 }
