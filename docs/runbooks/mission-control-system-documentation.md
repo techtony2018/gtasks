@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.164`
+- Last verified pushed release: `V0.0.165`
 - Release commits:
-  `f9e9e424b6a57df0dc8fc2d5873912aca88efadf`
+  `4778793e60bb201393afbafc89a2e81079229d9d`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -447,6 +447,20 @@ to the reviewed source before updating relationships.
   failed=1`: Timmy `ok: true`, route `hosts/timmy`, preflight verified, launch
   loaded, repo head exact `d7622b7`; Toddy `ok: false`, issue
   `ssh_unreachable` for `toddy@100.117.212.20`.
+- V0.0.165 evidence: dashboard-managed health and releases readback
+  `V0.0.165`; release commit
+  `4778793e60bb201393afbafc89a2e81079229d9d`; release evidence file
+  `docs/release-evidence/v0.0.165.md`; independent QA PASS at
+  `artifacts/qa/v0.0.165-independent/gate-report.md` with frozen aggregate
+  `261c5f4e5b9b0d990088ca0a4f56169c614580d0b1f48b351bab85d58b917fb1`;
+  focused frontend/release contracts `263` passed; desktop `1440x1000` and
+  genuine mobile `390x844` PASS.
+- Verified V0.0.165 behavior: Goal execution `owner_missing` copy now names
+  the exact repair. Operators must assign exactly one Codex Agent and verify
+  the single `default_agent_for` link for the Goal. QA readback confirmed the
+  visible copy contains both `Assign exactly one Codex Agent` and
+  `default_agent_for`, and the local supervisor still contains exactly
+  `agents/tammy` and `agents/tammy-oc`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -521,3 +535,7 @@ The fleet verifier preserves partial success: Timmy verified plus Toddy
 `ssh_unreachable` means the fleet is not fully healthy. Do not collapse the
 summary to all-green, do not document Toddy as recovered, and do not suggest
 local Toddy installation as a workaround.
+V0.0.165 `owner_missing` remains a repair instruction, not a documentation
+authority to mutate Goal ownership. Do not create or infer ownership links in
+docs; the actual repair is exactly one verified Codex Agent
+`default_agent_for` relationship on the Goal.

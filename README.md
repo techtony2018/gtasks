@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.164 at commit
-`f9e9e424b6a57df0dc8fc2d5873912aca88efadf`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.165 at commit
+`4778793e60bb201393afbafc89a2e81079229d9d`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -206,7 +206,11 @@ non-secret inventory `config/handoff-dispatcher/remote-workers.json` and
 Latest reported fleet evidence is summary `ok=1 failed=1`: Timmy is verified
 at route `hosts/timmy` with preflight verified, launch loaded, and repo HEAD
 exactly `d7622b7`; Toddy is still `ok: false` with `ssh_unreachable` for
-`toddy@100.117.212.20`.
+`toddy@100.117.212.20`. V0.0.165 makes Goal execution `owner_missing` repair
+copy actionable: assign exactly one Codex Agent and verify the single
+`default_agent_for` link for that Goal. QA verified the copy on desktop
+1440x1000 and genuine mobile 390x844, and local workers still read back
+Tammy/Tammy-OC only.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -524,7 +528,11 @@ for dry-run, canary, rollback, and recovery gates.
 Agent profiles are read from `type: agent` GBrain pages. Goal ownership comes
 from the single typed agent-to-goal `default_agent_for` edge; Goal detail reads
 that edge in reverse without requiring or creating a redundant reciprocal
-edge. A profile may later provide an explicit safe `chat_url` and avatar
+edge. In V0.0.165+, a Goal execution `owner_missing` Needs attention state
+names the exact repair: assign exactly one Codex Agent and verify the
+`default_agent_for` link. Do not infer Goal ownership from prose, an Agent
+profile, a task assignment, or a local worker install. A profile may later
+provide an explicit safe `chat_url` and avatar
 configuration. Until then, GTasks links to the canonical Memory Stargraph
 profile and renders a stable initials placeholder—never an invented photo or
 external image.
