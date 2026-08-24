@@ -577,6 +577,48 @@ class GoalExecutionEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(bridge.calls), 1)
 
+    def test_existing_active_goal_task_without_handoff_reports_missing_handoff(self) -> None:
+        first_plan = GoalExecutionPlanner().plan(snapshot(projects=(project(),)))
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        existing = replace(
+            agent_task(
+                slug_identity="existing-active-goal-work",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            title="Active Goal Review",
+            summary="Active Goal Review",
+            project=PROJECT,
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(existing,))
+        bridge = self.Bridge()
+
+        result = self.engine(adapter, bridge).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "handoff_missing")
+        self.assertEqual(result.task_slug, existing.slug)
+        self.assertEqual(result.task_title, "Active Goal Review")
+        self.assertEqual(result.task_status, "active")
+        self.assertEqual(result.agent_slug, AGENT)
+        self.assertEqual(result.handoff_status, "missing")
+        self.assertEqual(
+            result.to_dict()["decisions"][0]["reason"],
+            "handoff_missing",
+        )
+        self.assertEqual([name for name, _value in adapter.calls], ["snapshot"])
+        self.assertEqual(bridge.calls, [])
+
     def test_shadow_mode_reports_existing_terminal_handoff_attention(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge()

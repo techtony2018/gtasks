@@ -628,12 +628,12 @@ class GoalExecutionEngine:
 
     def _annotate_handoff_attention(
         self, plan: GoalExecutionPlan
-    ) -> tuple[GoalExecutionPlan, dict[str, str]]:
+    ) -> tuple[GoalExecutionPlan, dict[str, str | None]]:
         latest_status = getattr(self.bridge, "latest_task_handoff_status", None)
         if not callable(latest_status):
             return plan, {}
         revised: list[GoalExecutionDecision] = []
-        handoff_status_by_task: dict[str, str] = {}
+        handoff_status_by_task: dict[str, str | None] = {}
         changed = False
         for decision in plan.decisions:
             task_slug = decision.existing_task_slug
@@ -643,14 +643,14 @@ class GoalExecutionEngine:
             status = latest_status(task_slug)
             if isinstance(status, Mapping):
                 status = status.get("status")
+            handoff_status_by_task[task_slug] = status if isinstance(status, str) else None
             if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
                 revised.append(replace(decision, reason="handoff_needs_repair"))
-                handoff_status_by_task[task_slug] = status
                 changed = True
                 continue
             revised.append(decision)
         if not changed:
-            return plan, {}
+            return plan, handoff_status_by_task
         return GoalExecutionPlan(plan.planner_version, tuple(revised)), handoff_status_by_task
 
     @staticmethod
@@ -661,7 +661,7 @@ class GoalExecutionEngine:
         mode: str,
         ran_at: datetime,
         goal_slug: str | None,
-        handoff_status_by_task: Mapping[str, str],
+        handoff_status_by_task: Mapping[str, str | None],
     ) -> GoalExecutionRun:
         selected = next(
             (
@@ -694,6 +694,43 @@ class GoalExecutionEngine:
                     handoff=SimpleNamespace(
                         status=handoff_status_by_task.get(task.slug)
                     ),
+                )
+        if (
+            selected is not None
+            and selected.reason == "duplicate"
+            and selected.existing_task_slug is not None
+        ):
+            task = next(
+                (
+                    item
+                    for item in snapshot.tasks
+                    if item.slug == selected.existing_task_slug
+                ),
+                None,
+            )
+            if (
+                task is not None
+                and task.goal_derivation is not None
+                and task.status in {"planned", "active"}
+                and task.slug in handoff_status_by_task
+                and handoff_status_by_task[task.slug] is None
+            ):
+                revised_plan = GoalExecutionPlan(
+                    plan.planner_version,
+                    tuple(
+                        replace(decision, reason="handoff_missing")
+                        if decision is selected
+                        else decision
+                        for decision in plan.decisions
+                    ),
+                )
+                return GoalExecutionRun.for_task(
+                    revised_plan,
+                    mode=mode,
+                    ran_at=ran_at,
+                    task=task,
+                    public_reason="handoff_missing",
+                    handoff=SimpleNamespace(status="missing"),
                 )
         if (
             goal_slug is not None

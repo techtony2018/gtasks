@@ -176,6 +176,8 @@ state.goalExecution.last_run.handoff.status = "received";
 assert(goalExecutionState(decision) === "Executing", "received handoff was not Executing");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "wip_full", task_slug: null }) === "Blocked", "WIP was not Blocked");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "route_unavailable", task_slug: null }) === "Needs attention", "route failure was not Needs attention");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "handoff_missing", task_slug: taskSlug }) === "Needs attention", "missing handoff was not Needs attention");
+assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "handoff_missing", task_slug: taskSlug }).includes("no verified Agent handoff"), "missing handoff copy was not explicit");
 state.goalExecution.last_run.task = null;
 state.goalExecution.last_run.handoff = null;
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "auto_eligible", task_slug: null }) === "Ready", "eligible work was not Ready");

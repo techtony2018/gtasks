@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.149",
+  "current_version": "V0.0.150",
   "releases": [
     {
       "version": "V0.0.1",
@@ -894,6 +894,12 @@
       "date": "2026-08-24",
       "title": "Show selected Goal execution task metadata",
       "summary": "Goal execution canary status now includes the existing selected Task title, status, and Agent when a configured Goal is already covered by duplicate or recently completed work."
+    },
+    {
+      "version": "V0.0.150",
+      "date": "2026-08-24",
+      "title": "Surface missing Goal handoffs",
+      "summary": "Goal execution now distinguishes active goal-derived Agent tasks with no verified handoff record from ordinary duplicates, surfacing them as Needs attention with exact task metadata instead of hiding the dispatch gap."
     }
   ]
 }

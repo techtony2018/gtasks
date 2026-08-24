@@ -3964,6 +3964,7 @@ const GOAL_EXECUTION_ATTENTION_REASONS = new Set([
   "route_unavailable",
   "system_repair_required",
   "handoff_needs_repair",
+  "handoff_missing",
 ]);
 
 function goalExecutionTask(decision) {
@@ -4040,6 +4041,7 @@ function goalExecutionReasonCopy(decision) {
     goal_terminal: "This Goal is already terminal.",
     system_repair_required: "Canonical task state needs safe system reconciliation.",
     handoff_needs_repair: "The canonical task is active, but verified Agent handoff or execution needs system review.",
+    handoff_missing: "The canonical task is active, but no verified Agent handoff is recorded yet.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
     shadow: "Shadow mode evaluates safe work without creating or activating a task.",
     off: "Automatic Goal execution is off.",
