@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.163`
+- Last verified pushed release: `V0.0.164`
 - Release commits:
-  `c39f726034d7579959337abf759cdb92706dd132`
+  `f9e9e424b6a57df0dc8fc2d5873912aca88efadf`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -412,6 +412,21 @@ to the reviewed source before updating relationships.
   `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, and
   `tasks/53264f17-e5d5-5b5d-ad36-af1eadc1a770` /
   `artifacts/fbffd8c1-b04e-420f-8db3-14be7a2b7f8f`.
+- V0.0.164 evidence: dashboard-managed health and releases readback
+  `V0.0.164`; release commit
+  `f9e9e424b6a57df0dc8fc2d5873912aca88efadf`; release evidence file
+  `docs/release-evidence/v0.0.164.md`; independent QA PASS at
+  `artifacts/qa/v0.0.164-independent/gate-report.md` with frozen aggregate
+  `423fd743695dcd53c0ea688620c87409ad0fda75e78973639a3f019a1fd09846`; full
+  regression reported `1361` OK with `5` skipped.
+- Verified V0.0.164 behavior: the handoff dispatcher recovers expired owned
+  `execution_claim` rows at the next authenticated claim boundary for the same
+  registered Agent host, after verifying current task authority and preserving
+  the owned/nondelegated execution fence. QA readback confirmed this Mac's
+  local supervisor has exactly `agents/tammy` and `agents/tammy-oc` worker
+  configs and no local Timmy/Toddy worker. Documentation must preserve this
+  boundary: Timmy/Toddy worker recovery belongs on their own host machines, not
+  by installing Timmy/Toddy local workers on this Mac.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -472,3 +487,10 @@ Family/Toddy question TODO and Toddy host dispatcher/private route availability
 for Toddy Health. V0.0.163 question surfacing is display/readback behavior:
 showing the exact `Answer: ...` TODO text does not answer the question, remove
 the Tony blocker, create a replacement TODO, or complete the task.
+
+V0.0.164 expired owned execution claim recovery is also narrowly scoped:
+authenticated same-host polling may refresh and lease an expired owned claim
+after task-authority readback, but delegated execution, mismatched routes,
+arbitrary dead letters, and local installation of the wrong Agent worker remain
+invalid. This Mac remains Tammy/Tammy-OC only; do not document Timmy or Toddy
+as local workers here.

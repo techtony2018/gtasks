@@ -32,6 +32,10 @@ The supervisor never merges identities or credentials. The accepted pairs are
 exactly `agents/tammy` / `agents/tammy-oc`, `agents/timmy` /
 `agents/timmy-oc`, and `agents/toddy` / `agents/toddy-oc`. OpenClaw resumes a
 pre-existing fixed session; it never creates, replaces, forks, or guesses one.
+As of V0.0.164, this Mac's local supervisor readback is Tammy/Tammy-OC only:
+Timmy and Toddy are not local workers here. A Timmy or Toddy outage must be
+repaired on that Agent's own host route, not by adding local worker configs on
+this Mac.
 
 Delegated execution is additive and does not rewrite `assigned_to`. A verified
 Tony authorization may last 15 minutes through 7 days. Owned work always
@@ -507,6 +511,13 @@ logs.
   cancels that unused launch, clears the wake inbox as `server_completed` or
   `server_suppressed`, and does not create another launch or mutate the
   completed canonical task.
+- V0.0.164+ recovers an expired owned execution claim at the next authenticated
+  claim boundary for the same registered Agent host. Mission Control verifies
+  current task authority, keeps delegated execution out of this owned repair
+  path, refreshes the execution fence, and then leases the queued handoff. This
+  covers worker-host outages or lost local claim state without leaving
+  Goal-derived Agent work permanently queued, but it is not a manual
+  delete/retry path and not permission to run another Agent locally.
 
 Never clear local claim state merely because a request was sent. Clear or
 replace it only after a verified retry, terminal, or rotated recovery response.
@@ -764,6 +775,17 @@ cached row cannot hide the verified handoff or TODO context. Preserve the
 state as `Blocked` / `waiting_for_tony`; the visible question is the next
 owner prompt for Tony, not permission to create replacement work or mark the
 task complete.
+
+V0.0.164 recovers expired owned execution claims during authenticated
+dispatcher polling. The verified release commit is
+`f9e9e424b6a57df0dc8fc2d5873912aca88efadf`, dashboard-managed health and
+releases read back `V0.0.164`, full regression reported `1361` OK with `5`
+skipped, and independent QA PASS is recorded at
+`artifacts/qa/v0.0.164-independent/gate-report.md`. QA confirmed the local
+supervisor config contains exactly `agents/tammy` and `agents/tammy-oc` and no
+local Timmy/Toddy worker. Preserve that host-local ownership boundary when
+remediating stale queued handoffs: Timmy/Toddy recovery belongs on their own
+host machines, while this Mac's local dispatcher remains Tammy/Tammy-OC only.
 
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and

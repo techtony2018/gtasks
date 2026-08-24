@@ -27,12 +27,18 @@ new claims and hands unfinished work back to its permanent Codex owner.
 
 ## Fixed-session and two-worker isolation
 
-Each host runs one two-worker supervisor. One worker resumes the existing fixed
-Codex thread; the other resumes one pre-existing fixed OpenClaw session. A
-worker never creates, replaces, forks, or guesses a target. The two workers
-have separate identity-scoped config, credentials, inbox, claim files, runtime
-adapter, and failure counters. The supervisor must fail closed on route,
-identity, session, credential, lease, or permanent-owner mismatch.
+Each Agent host runs one two-worker supervisor for that host's identity pair.
+One worker resumes the existing fixed Codex thread; the other resumes one
+pre-existing fixed OpenClaw session. A worker never creates, replaces, forks,
+or guesses a target. The two workers have separate identity-scoped config,
+credentials, inbox, claim files, runtime adapter, and failure counters. The
+supervisor must fail closed on route, identity, session, credential, lease, or
+permanent-owner mismatch.
+
+Current V0.0.164 host-local boundary: this Mac's local supervisor is
+Tammy/Tammy-OC only. Timmy and Toddy are not local workers on this Mac; their
+Codex/OpenClaw workers belong on their own host machines. Do not install or
+recover Timmy/Toddy worker configs locally to clear a remote-host outage.
 
 Before disabling the legacy worker, the installer verifies both workers
 against one reachable Mission Control origin through authenticated,
