@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.119",
+  "current_version": "V0.0.120",
   "releases": [
     {
       "version": "V0.0.1",
@@ -714,6 +714,12 @@
       "date": "2026-08-23",
       "title": "Clearer Agent execution recovery copy",
       "summary": "Clarifies Goal-derived task attention copy so checkpointed Agent execution recovery is described as verified handoff or execution review, not only delivery repair."
+    },
+    {
+      "version": "V0.0.120",
+      "date": "2026-08-23",
+      "title": "Recover locked Agent handoff launches",
+      "summary": "Classifies Codex existing-invocation-lock launches as recoverable start conflicts so fixed-thread Agent handoffs abandon the unstarted attempt and retry instead of checkpointing as generic nonzero exits."
     }
   ]
 }

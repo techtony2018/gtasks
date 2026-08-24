@@ -493,7 +493,10 @@ def _classify_nonzero_reason(stdout: bytes, stderr: bytes) -> str:
     output = b"\n".join((stdout[:65536], stderr[:65536])).decode(
         "utf-8", errors="replace"
     ).lower()
-    if "thread-store conflict" in output and "active writer" in output:
+    if (
+        ("thread-store conflict" in output and "active writer" in output)
+        or "existing invocation lock" in output
+    ):
         return "codex_thread_active_writer"
     return "nonzero_exit"
 

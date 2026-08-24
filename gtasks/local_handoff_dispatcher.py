@@ -2310,6 +2310,10 @@ class WakeInboxWorker:
                 now=now,
             )
         if observation.state == "ambiguous":
+            if observation.reason == "codex_thread_active_writer":
+                return self._record_unstarted(
+                    claimed, reason="codex_thread_active_writer", now=now
+                )
             return self._record_ambiguous(
                 claimed,
                 reason=observation.reason or "ambiguous_launch_outcome",

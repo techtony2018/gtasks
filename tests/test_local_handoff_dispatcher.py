@@ -1873,6 +1873,69 @@ class PrivateWakeInboxTests(unittest.TestCase):
                 self.assertEqual(settled.attempt, 1)
                 inbox.close()
 
+    def test_codex_invocation_lock_abandons_started_launch_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            marker = directory / "count"
+            inbox = PrivateWakeInbox(
+                directory / "wake-inbox.sqlite3", max_attempts=2
+            )
+            self.addCleanup(inbox.close)
+            self._accepted(inbox)
+            client = self.LaunchClient()
+            adapter = self.Adapter(
+                directory,
+                code=(
+                    "import sys; "
+                    "sys.stderr.write('Timmy work skipped: existing invocation lock'); "
+                    "sys.exit(1)"
+                ),
+            )
+            launch_root = directory / "launches"
+            worker = WakeInboxWorker(
+                client,
+                adapter,
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=GatedLaunchController(launch_root),
+            )
+
+            first = None
+            for index in range(60):
+                worker.run_once(now=self.NOW + timedelta(seconds=index))
+                current = inbox.get("handoff-100")
+                if current.state == "failed" and current.retryable:
+                    first = current
+                    break
+                time.sleep(0.02)
+            self.assertIsNotNone(first)
+
+            self.assertEqual(first.state, "failed")
+            self.assertTrue(first.retryable)
+            self.assertEqual(first.last_error, "codex_thread_active_writer")
+            self.assertEqual(len(client.abandon_calls), 1)
+            self.assertEqual(len(client.checkpoint_calls), 0)
+            self.assertEqual(len({call[2] for call in client.start_calls}), 1)
+
+            adapter.code = self._increment_code(marker)
+            retry_worker = WakeInboxWorker(
+                client,
+                adapter,
+                inbox,
+                retry_delay_seconds=0,
+                launch_controller=GatedLaunchController(launch_root),
+            )
+            settled = self._run_until_settled(
+                retry_worker, inbox, start_offset=1
+            )
+
+            self.assertEqual(settled.state, "completed")
+            self.assertEqual(settled.attempt, 2)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "1")
+            self.assertEqual(len(client.abandon_calls), 1)
+            self.assertEqual(len(client.checkpoint_calls), 0)
+            self.assertEqual(len(client.start_calls), 2)
+
     def test_checkpoint_network_loss_retries_only_the_server_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
