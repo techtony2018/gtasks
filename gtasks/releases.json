@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.120",
+  "current_version": "V0.0.121",
   "releases": [
     {
       "version": "V0.0.1",
@@ -720,6 +720,12 @@
       "date": "2026-08-23",
       "title": "Recover locked Agent handoff launches",
       "summary": "Classifies Codex existing-invocation-lock launches as recoverable start conflicts so fixed-thread Agent handoffs abandon the unstarted attempt and retry instead of checkpointing as generic nonzero exits."
+    },
+    {
+      "version": "V0.0.121",
+      "date": "2026-08-23",
+      "title": "Requeue verified execution recovery handoffs",
+      "summary": "Adds a bounded operator recovery path for checkpointed owned Agent executions, preserving the same durable handoff while clearing stale launch fences and returning it to retry after verified system repair."
     }
   ]
 }

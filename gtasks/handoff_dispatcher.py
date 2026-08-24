@@ -2688,6 +2688,130 @@ class DurableHandoffStore:
             )
             return self.get(handoff_id)
 
+    def retry_suppressed_execution_recovery(
+        self,
+        handoff_id: str,
+        *,
+        mutation_id: str,
+        summary: str,
+        now: datetime,
+    ) -> HandoffRecord:
+        """Requeue one operator-verified checkpointed owned execution recovery.
+
+        This is intentionally narrower than normal delivery retry: it only
+        reopens a handoff that already terminalized as an execution recovery
+        checkpoint, preserves the same durable handoff/idempotency key, clears
+        stale launch fences, and lets the registered fixed-thread worker claim
+        the same work again.
+        """
+        _require_structured_id(handoff_id, "handoff_id")
+        _require_structured_id(mutation_id, "mutation_id")
+        summary = _require_safe_text(summary, "recovery summary")
+        now = _require_utc(now, "now")
+        mutation_ref = _reference(mutation_id)
+        with self._write_transaction():
+            replay = self._connection.execute(
+                """
+                SELECT 1 FROM handoff_events
+                WHERE handoff_id = ? AND mutation_ref = ?
+                    AND event_type = 'delivery_retry'
+                """,
+                (handoff_id, mutation_ref),
+            ).fetchone()
+            if replay is not None:
+                return self.get(handoff_id)
+
+            current = self._connection.execute(
+                """
+                SELECT h.status, h.reason, h.detail, h.agent_slug,
+                    h.executor_agent, h.permanent_owner, h.delegation_slug,
+                    h.registration_ref, l.registration_id, e.*
+                FROM handoffs h
+                JOIN leases l ON l.handoff_id = h.handoff_id
+                JOIN execution_claims e ON e.handoff_id = h.handoff_id
+                WHERE h.handoff_id = ?
+                """,
+                (handoff_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(handoff_id)
+            if (
+                current["status"] != "suppressed"
+                or current["reason"] != "execution_recovery_required"
+                or current["terminal_state"] != "checkpointed"
+            ):
+                raise ValueError(
+                    "operator recovery requires a checkpointed execution-recovery handoff"
+                )
+            if (
+                current["delegation_slug"] is not None
+                or current["executor_agent"] != current["permanent_owner"]
+                or current["executor_agent"] != current["agent_slug"]
+            ):
+                raise ValueError("operator recovery currently supports owned execution only")
+            task = self._connection.execute(
+                "SELECT * FROM task_execution_authority WHERE task_slug = ?",
+                (current["task_slug"],),
+            ).fetchone()
+            if (
+                task is None
+                or task["verified"] != 1
+                or task["owner_agent"] != current["permanent_owner"]
+                or task["status"] not in {"planned", "active", "blocked"}
+            ):
+                raise ValueError("operator recovery requires current task authority")
+
+            self._connection.execute(
+                "DELETE FROM execution_starts WHERE handoff_id = ?",
+                (handoff_id,),
+            )
+            self._connection.execute(
+                """
+                UPDATE execution_claims
+                SET terminal_state = NULL, terminal_at = NULL,
+                    release_mutation_ref = NULL, release_event_id = NULL,
+                    claimed_at = ?, expires_at = ?
+                WHERE handoff_id = ? AND terminal_state = 'checkpointed'
+                """,
+                (
+                    _timestamp(now),
+                    _timestamp(now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)),
+                    handoff_id,
+                ),
+            )
+            self._connection.execute(
+                """
+                UPDATE leases
+                SET lease_until = NULL, lease_capability_ref = NULL
+                WHERE handoff_id = ?
+                """,
+                (handoff_id,),
+            )
+            changed = self._connection.execute(
+                """
+                UPDATE handoffs
+                SET status = 'retrying', reason = 'system_dependency_recovered',
+                    detail = NULL
+                WHERE handoff_id = ? AND status = 'suppressed'
+                    AND reason = 'execution_recovery_required'
+                """,
+                (handoff_id,),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("operator recovery lost its handoff-state fence")
+            record = self.get(handoff_id)
+            self._append_event_from_record(
+                record,
+                event_type="delivery_retry",
+                summary=summary,
+                detail="execution_recovery_required",
+                mutation_ref=mutation_ref,
+                occurred_at=now,
+                recorded_at=now,
+                execution_state="active",
+            )
+            return record
+
     def authorize_wake(
         self,
         handoff_id: str,
