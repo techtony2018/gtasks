@@ -3617,6 +3617,75 @@ class HandoffDispatcherApiTests(unittest.TestCase):
         self.assertEqual(exported["metadata"]["format"], "handoff-audit-v1")
         self.assertEqual(self._event_count(), before)
 
+    def test_runtime_bridge_reports_latest_task_handoff_status_for_goal_execution(self) -> None:
+        record = self._record(event="events/terminal-status")
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-terminal-status"
+        status, payload, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/failure",
+            {"failure_class": "terminal"},
+            headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "dead_letter")
+
+        bridge = gbrain.CanonicalHandoffEventBridge(self.dispatcher)
+
+        self.assertEqual(
+            bridge.latest_task_handoff_status(self.TASK),
+            "dead_letter",
+        )
+
+    def test_exact_task_api_projects_latest_dispatcher_handoff_status_without_domain_handoff(self) -> None:
+        task = replace(
+            new_task(
+                title="Exact dispatcher task",
+                detail="Task detail remains canonical.",
+                due_day=date(2026, 8, 5),
+                now=self.NOW,
+                identity="exact-dispatcher-task",
+            ),
+            slug=self.TASK,
+            status="active",
+            owner_agent="agents/tammy",
+        )
+        record = self._record(event="events/exact-task-terminal")
+        _status, claim, _ = self._claim()
+        headers = self._lease_headers(claim)
+        headers["Idempotency-Key"] = "mutation-exact-task-terminal"
+        status, failed, _ = self.harness.request(
+            "POST",
+            f"/api/handoffs/{record.handoff_id}/failure",
+            {"failure_class": "terminal"},
+            headers,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(failed["status"], "dead_letter")
+        harness = ServerHarness(
+            self,
+            FakeAdapter(active=(task,)),
+            handoff_store=self.store,
+            handoff_dispatcher_auth=self.auth,
+            handoff_registration_validator=lambda agent, registration: (
+                self.registration
+                if agent == "agents/tammy" and registration == self.REGISTRATION
+                else None
+            ),
+            handoff_waiter=lambda _seconds: None,
+        )
+
+        encoded = self.TASK.replace("/", "%2F")
+        status, payload, _ = harness.request("GET", f"/api/tasks/{encoded}")
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["task"]["handoff"])
+        self.assertEqual(
+            payload["task"]["dispatcher_handoff"],
+            {"status": "dead_letter"},
+        )
+
     def test_event_projection_includes_verified_task_reference_and_unavailable_fallback(self) -> None:
         task = new_task(
             title="Review Unicode handoff title 🚀 with enough text",

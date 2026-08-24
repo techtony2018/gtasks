@@ -6613,13 +6613,22 @@ function todoCard(todo) {
 
 function renderTaskHandoff(task) {
   const handoff = task?.handoff;
+  const dispatcherHandoff = task?.dispatcher_handoff;
   const blockers = Array.isArray(task?.blockers) ? task.blockers : [];
-  const show = Boolean(handoff || task?.status === "blocked");
+  const show = Boolean(handoff || dispatcherHandoff || task?.status === "blocked");
   elements.taskHandoffPanel.classList.toggle("is-hidden", !show);
   elements.taskHandoffAnswerForm.classList.add("is-hidden");
   elements.taskHandoffQuestion.classList.add("is-hidden");
   elements.taskHandoffError.classList.add("is-hidden");
   if (!show) return;
+
+  if (!handoff && dispatcherHandoff) {
+    const status = dispatcherHandoff.status || "unavailable";
+    elements.taskHandoffHeading.textContent = "Verified Agent delivery needs system repair";
+    elements.taskHandoffCopy.textContent = `Latest dispatcher status: ${status}. Inspect the Handoff History before retrying delivery.`;
+    elements.taskHandoffQuestion.textContent = "";
+    return;
+  }
 
   if (!handoff) {
     const blocker = blockers.length

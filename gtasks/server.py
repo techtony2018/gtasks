@@ -634,12 +634,23 @@ def _parent_slug_from_request(
     return raw_parent
 
 
-def exact_task_api_payload(adapter: GBrainAdapter, task_slug: str) -> dict[str, Any]:
+def exact_task_api_payload(
+    adapter: GBrainAdapter,
+    task_slug: str,
+    *,
+    handoff_store: DurableHandoffStore | None = None,
+) -> dict[str, Any]:
     """Expose an optional display projection without changing Task authority."""
     projector = getattr(adapter, "get_task_api_payload", None)
     if callable(projector):
-        return dict(projector(task_slug))
-    return adapter.get_task(task_slug).to_dict()
+        payload = dict(projector(task_slug))
+    else:
+        payload = adapter.get_task(task_slug).to_dict()
+    if handoff_store is not None:
+        status = handoff_store.latest_task_handoff_status(task_slug)
+        if status is not None:
+            payload["dispatcher_handoff"] = {"status": status}
+    return payload
 
 
 def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
@@ -2141,7 +2152,11 @@ def _handler_class(
                     return
                 try:
                     with foreground_operation():
-                        task_payload = exact_task_api_payload(adapter, task_slug)
+                        task_payload = exact_task_api_payload(
+                            adapter,
+                            task_slug,
+                            handoff_store=handoff_store,
+                        )
                 except GBrainCommandError as exc:
                     if is_page_not_found_error(exc):
                         self._json(

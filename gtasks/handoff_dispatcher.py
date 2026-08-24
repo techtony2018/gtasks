@@ -1326,6 +1326,22 @@ class DurableHandoffStore:
             raise KeyError(handoff_id)
         return self._record_from_row(row)
 
+    def latest_task_handoff_status(self, task_slug: str) -> str | None:
+        _require_structured_id(task_slug, "task_slug")
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT status FROM handoffs
+                WHERE task_slug = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (task_slug,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row["status"]
+
     def get_execution_claim(
         self, task_slug: str, *, include_terminal: bool = False
     ) -> ExecutionClaim | None:

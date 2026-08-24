@@ -2659,6 +2659,17 @@ assert(findTaskBySlug("tasks/parent").todos[0].status === "done", "verified TODO
         self.assertNotIn('status: "waiting"', javascript)
         self.assertNotIn("waiting for Tony", javascript)
 
+    def test_task_detail_surfaces_dispatcher_handoff_attention_without_domain_handoff(self) -> None:
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        renderer = javascript[
+            javascript.index("function renderTaskHandoff")
+            : javascript.index("function renderTaskTodos")
+        ]
+
+        self.assertIn("task?.dispatcher_handoff", renderer)
+        self.assertIn("Verified Agent delivery needs system repair", renderer)
+        self.assertIn("Latest dispatcher status:", renderer)
+
     def test_task_todo_add_form_is_read_only_until_explicit_plus_action(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

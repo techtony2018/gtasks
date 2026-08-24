@@ -1538,6 +1538,9 @@ class CanonicalHandoffEventBridge:
     def __init__(self, dispatcher: HandoffDispatcher) -> None:
         self.dispatcher = dispatcher
 
+    def latest_task_handoff_status(self, task_slug: str) -> str | None:
+        return self.dispatcher.store.latest_task_handoff_status(task_slug)
+
     @staticmethod
     def _mapping(value: object) -> dict[str, Any]:
         if value is None:

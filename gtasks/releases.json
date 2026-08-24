@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.117",
+  "current_version": "V0.0.118",
   "releases": [
     {
       "version": "V0.0.1",
@@ -702,6 +702,12 @@
       "date": "2026-08-23",
       "title": "Privacy-safe handoff launch diagnostics",
       "summary": "Classifies Codex fixed-thread active-writer failures without storing command output, giving Agent handoff recovery a concrete next action while preserving private stdout and stderr boundaries."
+    },
+    {
+      "version": "V0.0.118",
+      "date": "2026-08-23",
+      "title": "Goal handoff repair visibility",
+      "summary": "Projects terminal Agent handoff delivery states into Goal execution and exact task details so active goal-derived work that failed delivery is surfaced as system-repair attention instead of a silent duplicate."
     }
   ]
 }

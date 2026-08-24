@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from threading import Condition, Thread
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any, Mapping, Protocol
 
 from .domain import AgentProfile, Goal, Project, Task
@@ -439,6 +440,7 @@ class GoalExecutionEngine:
             "actively_executing",
         }
     )
+    _HANDOFF_ATTENTION = frozenset({"dead_letter", "suppressed", "handed_back"})
 
     def __init__(
         self,
@@ -496,12 +498,15 @@ class GoalExecutionEngine:
         route_health = self.route_health()
         snapshot = self.adapter.read_goal_execution_snapshot(route_health)
         plan = self.planner.plan(snapshot)
+        plan, handoff_status_by_task = self._annotate_handoff_attention(plan)
         if self.mode != "canary":
-            return GoalExecutionRun.from_plan(
+            return self._run_from_plan(
                 plan,
+                snapshot=snapshot,
                 mode=self.mode,
                 ran_at=now,
                 goal_slug=self.canary_goal_slug,
+                handoff_status_by_task=handoff_status_by_task,
             )
         eligible = next(
             (
@@ -513,11 +518,13 @@ class GoalExecutionEngine:
             None,
         )
         if eligible is None or eligible.candidate is None:
-            return GoalExecutionRun.from_plan(
+            return self._run_from_plan(
                 plan,
+                snapshot=snapshot,
                 mode=self.mode,
                 ran_at=now,
                 goal_slug=self.canary_goal_slug,
+                handoff_status_by_task=handoff_status_by_task,
             )
         try:
             planned = self.adapter.create_or_adopt_derived_agent_task(
@@ -582,6 +589,82 @@ class GoalExecutionEngine:
             task=activated.task,
             public_reason=reason,
             handoff=handoff,
+        )
+
+    def _annotate_handoff_attention(
+        self, plan: GoalExecutionPlan
+    ) -> tuple[GoalExecutionPlan, dict[str, str]]:
+        latest_status = getattr(self.bridge, "latest_task_handoff_status", None)
+        if not callable(latest_status):
+            return plan, {}
+        revised: list[GoalExecutionDecision] = []
+        handoff_status_by_task: dict[str, str] = {}
+        changed = False
+        for decision in plan.decisions:
+            task_slug = decision.existing_task_slug
+            if decision.reason != "duplicate" or task_slug is None:
+                revised.append(decision)
+                continue
+            status = latest_status(task_slug)
+            if isinstance(status, Mapping):
+                status = status.get("status")
+            if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
+                revised.append(replace(decision, reason="handoff_needs_repair"))
+                handoff_status_by_task[task_slug] = status
+                changed = True
+                continue
+            revised.append(decision)
+        if not changed:
+            return plan, {}
+        return GoalExecutionPlan(plan.planner_version, tuple(revised)), handoff_status_by_task
+
+    @staticmethod
+    def _run_from_plan(
+        plan: GoalExecutionPlan,
+        *,
+        snapshot: GoalExecutionSnapshot,
+        mode: str,
+        ran_at: datetime,
+        goal_slug: str | None,
+        handoff_status_by_task: Mapping[str, str],
+    ) -> GoalExecutionRun:
+        selected = next(
+            (
+                decision
+                for decision in plan.decisions
+                if goal_slug is None or decision.goal_slug == goal_slug
+            ),
+            None,
+        )
+        if (
+            selected is not None
+            and selected.reason == "handoff_needs_repair"
+            and selected.existing_task_slug is not None
+        ):
+            task = next(
+                (
+                    item
+                    for item in snapshot.tasks
+                    if item.slug == selected.existing_task_slug
+                ),
+                None,
+            )
+            if task is not None:
+                return GoalExecutionRun.for_task(
+                    plan,
+                    mode=mode,
+                    ran_at=ran_at,
+                    task=task,
+                    public_reason="handoff_needs_repair",
+                    handoff=SimpleNamespace(
+                        status=handoff_status_by_task.get(task.slug)
+                    ),
+                )
+        return GoalExecutionRun.from_plan(
+            plan,
+            mode=mode,
+            ran_at=ran_at,
+            goal_slug=goal_slug,
         )
 
 

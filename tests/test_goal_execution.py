@@ -358,6 +358,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
                 )
             )
             self.status = status
+            self.latest_status: str | None = None
             self.calls: list[tuple[dict, dict, dict]] = []
 
         def after_verified_mutation(self, before, after, receipt, now):
@@ -367,6 +368,9 @@ class GoalExecutionEngineTests(unittest.TestCase):
                 status=self.status,
                 reason="delivery failed" if self.status == "dead_letter" else "queued",
             )
+
+        def latest_task_handoff_status(self, task_slug):
+            return self.latest_status
 
     def engine(self, adapter=None, bridge=None):
         return GoalExecutionEngine(
@@ -447,6 +451,48 @@ class GoalExecutionEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(bridge.calls), 1)
         self.assertEqual(first.handoff_id, "handoffs/goal-execution-canary")
+
+    def test_existing_goal_task_with_terminal_handoff_reports_repair_not_duplicate(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        engine = self.engine(adapter, bridge)
+        first = engine.run_once(NOW)
+        bridge.latest_status = "dead_letter"
+
+        second = engine.run_once(NOW)
+
+        self.assertEqual(first.task_slug, second.task_slug)
+        self.assertEqual(second.public_reason, "handoff_needs_repair")
+        self.assertEqual(second.handoff_status, "dead_letter")
+        self.assertEqual(
+            second.to_dict()["decisions"][0]["reason"],
+            "handoff_needs_repair",
+        )
+        self.assertEqual(
+            [name for name, _value in adapter.calls],
+            ["snapshot", "create", "status", "snapshot"],
+        )
+        self.assertEqual(len(bridge.calls), 1)
+
+    def test_shadow_mode_reports_existing_terminal_handoff_attention(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        canary = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "suppressed"
+        shadow = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(shadow.task_slug, canary.task_slug)
+        self.assertEqual(shadow.public_reason, "handoff_needs_repair")
+        self.assertEqual(shadow.handoff_status, "suppressed")
+        self.assertEqual(
+            shadow.to_dict()["decisions"][0]["reason"],
+            "handoff_needs_repair",
+        )
 
     def test_activation_partial_write_returns_attention_without_success(self) -> None:
         adapter = self.Adapter(
