@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.145 at commit
-`573d56cfb19f33f9d4bbc10140c315a9b6e6ba1d`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.149 at commit
+`b25797c3ce404b98be9c7a5658be73fcdc367791`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -92,8 +92,9 @@ inbox by cancelling its unused launch when authoritative Mission Control
 recovery proves the same handoff is already completed or suppressed. The
 verified Career canary task
 `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` completed with canonical Artifact
-`artifacts/32142bd1-8b1b-4ffc-a115-87fd39d7f6d7`; the earlier Finance canary
-task
+`artifacts/32142bd1-8b1b-4ffc-a115-87fd39d7f6d7`; V0.0.149 shows that
+recently-completed Career task's title, status, and Agent in Goal execution
+status. The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
 from Goal execution.
@@ -123,6 +124,12 @@ review tasks suppress immediate repeats as `recently_completed`; cancelled or
 materially changed candidates may still be eligible. Active Goal-derived work
 with a suppressed or failed dispatcher state still surfaces repair attention
 until the handoff history and canonical task state are reconciled.
+
+Manual `GET /api/goal-execution?refresh=1` wakes the bounded scheduler before
+returning status. It does not bypass canary/shadow mode, WIP, identity, or
+handoff safety checks. When a canary Goal is already covered by duplicate or
+recently completed work, the status includes the selected Task slug, title,
+status, and Agent so operators can verify the canonical work item directly.
 
 ### Independent UI/UX release gate
 

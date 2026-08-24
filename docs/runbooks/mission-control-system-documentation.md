@@ -137,9 +137,10 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.145`
+- Last verified pushed release: `V0.0.149`
 - Release commits:
-  `573d56cfb19f33f9d4bbc10140c315a9b6e6ba1d`
+  `9931700`, `d895ea3`, `5058a53`, and
+  `b25797c3ce404b98be9c7a5658be73fcdc367791`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -184,6 +185,21 @@ to the reviewed source before updating relationships.
   `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` completed, and Artifact
   `artifacts/32142bd1-8b1b-4ffc-a115-87fd39d7f6d7` created by
   `agents/tammy` for the same Career task/Goal.
+- V0.0.146 through V0.0.149 evidence: dashboard-managed health readback
+  `V0.0.149`; release commits `9931700`, `d895ea3`, `5058a53`, and
+  `b25797c`; full suites reported as `1338`, `1339`, `1340`, and `1341` OK
+  with `5` skipped after the four releases.
+- Verified V0.0.146/V0.0.147 behavior: exact Task readback accepts legacy
+  pages that omit optional `detail` as empty-detail tasks, and the GBrain
+  adapter falls back from missing legacy `summary` to the canonical page title
+  while raw `Task.from_page` domain validation remains strict for missing
+  summary.
+- Verified V0.0.148/V0.0.149 behavior: `GET /api/goal-execution?refresh=1`
+  wakes the bounded scheduler before status readback; live readback showed the
+  Career canary remains `recently_completed` for
+  `tasks/a6251324-1af6-5005-8a17-0ad0610be4d8` and now includes selected Task
+  title, status `completed`, and Agent `agents/tammy`. Agent roster readback
+  returned `6` agents with `issues: []`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -202,3 +218,5 @@ after authoritative completed/suppressed recovery, and operator recovery from
 `terminal_delivery_failure` remains limited to owned handoffs with verified
 abandoned execution starts. The Documentation Manager must not document this
 as general dead-letter recovery or permission to duplicate Codex launches.
+V0.0.148 manual Goal execution refresh is still bounded scheduler wakeup, not
+unbounded autonomous execution.

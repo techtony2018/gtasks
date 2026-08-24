@@ -569,6 +569,14 @@ review task has the exact deterministic fingerprint and is already
 offer a duplicate canary. Cancelled tasks and materially changed candidates
 remain eligible through the normal planner rules.
 
+V0.0.148+ makes manual Goal execution refresh active rather than passive:
+`GET /api/goal-execution?refresh=1` wakes the bounded scheduler before status
+readback while preserving the existing minimum interval and canary/shadow
+safety controls. V0.0.149+ includes selected Task metadata for duplicate and
+`recently_completed` canary decisions: Task slug, title, status, and Agent.
+This metadata is readback context only; it does not create, complete, or
+handoff work by itself.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.
