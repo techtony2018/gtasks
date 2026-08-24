@@ -581,7 +581,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(first.handoff_id, "handoffs/goal-execution-canary")
 
     def test_existing_completed_goal_task_reports_title_status_and_agent(self) -> None:
-        first_plan = GoalExecutionPlanner().plan(snapshot())
+        first_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(snapshot())
         candidate = first_plan.decisions[0].candidate
         self.assertIsNotNone(candidate)
         completed = replace(
@@ -612,6 +612,45 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.task_title, "Completed Goal Review")
         self.assertEqual(result.task_status, "completed")
         self.assertEqual(result.agent_slug, AGENT)
+
+    def test_prior_cycle_completed_task_does_not_permanently_suppress_next_goal_review(self) -> None:
+        previous_plan = GoalExecutionPlanner(cycle_day=date(2026, 8, 17)).plan(snapshot())
+        previous_candidate = previous_plan.decisions[0].candidate
+        self.assertIsNotNone(previous_candidate)
+        completed_previous_cycle = replace(
+            agent_task(
+                slug_identity="previous-cycle-goal-work",
+                goal_slug=GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(previous_candidate.fingerprint),
+            title="Previous Weekly Goal Review",
+            summary="Previous Weekly Goal Review",
+            completed_at=NOW - timedelta(days=6),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=previous_candidate.fingerprint,
+                action_kind=previous_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=previous_candidate.goal_slug,
+                project_slug=previous_candidate.project_slug,
+                expected_evidence=previous_candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(completed_previous_cycle,))
+        bridge = self.Bridge()
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug=GOAL,
+            planner=GoalExecutionPlanner(cycle_day=date(2026, 8, 24)),
+        ).run_once(NOW + timedelta(days=1))
+
+        self.assertEqual(result.public_reason, "activated")
+        self.assertNotEqual(result.task_slug, completed_previous_cycle.slug)
+        self.assertIn(("status", (result.task_slug, "active")), adapter.calls)
 
     def test_canary_reconciles_completed_handoff_with_verified_artifact(self) -> None:
         first_plan = GoalExecutionPlanner().plan(snapshot())

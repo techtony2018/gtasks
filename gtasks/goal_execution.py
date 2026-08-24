@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from threading import Condition, Thread
 from time import monotonic
 from types import SimpleNamespace
@@ -37,6 +37,7 @@ class GoalExecutionCandidate:
     detail: str
     expected_evidence: str
     fingerprint: str
+    cycle_day: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -47,6 +48,7 @@ class GoalExecutionCandidate:
             "title": self.title,
             "detail": self.detail,
             "expected_evidence": self.expected_evidence,
+            "cycle_day": self.cycle_day,
             "fingerprint": self.fingerprint,
             "task_slug": derived_task_slug(self.fingerprint),
         }
@@ -116,6 +118,7 @@ def _candidate_fingerprint(
     project_slug: str | None,
     title: str,
     expected_evidence: str,
+    cycle_day: str | None,
 ) -> str:
     value = {
         "planner_version": PLANNER_VERSION,
@@ -124,6 +127,7 @@ def _candidate_fingerprint(
         "action_kind": AUTOMATIC_ACTION_KIND,
         "title": title,
         "expected_evidence": expected_evidence,
+        "cycle_day": cycle_day,
     }
     return hashlib.sha256(
         json.dumps(
@@ -139,7 +143,10 @@ def _candidate(
     goal: Goal,
     project: Project | None,
     agent: AgentProfile,
+    *,
+    cycle_day: date | None = None,
 ) -> GoalExecutionCandidate:
+    cycle_text = cycle_day.isoformat() if cycle_day is not None else None
     title = (
         f"Review {goal.title} progress and publish one bounded next-step brief"
     )
@@ -155,11 +162,14 @@ def _candidate(
         "progress, gaps, and one bounded next step. Do not send, publish, "
         "purchase, delete, change permissions, or mutate Tony Tasks."
     )
+    if cycle_text is not None:
+        detail = f"{detail} Review cycle starts {cycle_text}."
     fingerprint = _candidate_fingerprint(
         goal_slug=goal.slug,
         project_slug=project.slug if project else None,
         title=title,
         expected_evidence=EXPECTED_EVIDENCE,
+        cycle_day=cycle_text,
     )
     return GoalExecutionCandidate(
         goal_slug=goal.slug,
@@ -170,6 +180,7 @@ def _candidate(
         detail=detail,
         expected_evidence=EXPECTED_EVIDENCE,
         fingerprint=fingerprint,
+        cycle_day=cycle_text,
     )
 
 
@@ -230,7 +241,18 @@ def _stale_queued_handoff(delivery_state: object, now: datetime) -> bool:
 class GoalExecutionPlanner:
     """Classify one bounded review candidate per available Codex Agent."""
 
-    def plan(self, snapshot: GoalExecutionSnapshot) -> GoalExecutionPlan:
+    def __init__(self, *, cycle_day: date | None = None) -> None:
+        self.cycle_day = cycle_day
+
+    def plan(
+        self,
+        snapshot: GoalExecutionSnapshot,
+        *,
+        cycle_day: date | None = None,
+    ) -> GoalExecutionPlan:
+        effective_cycle_day = (
+            cycle_day if cycle_day is not None else self.cycle_day
+        )
         decisions: list[GoalExecutionDecision] = []
         auto_agents: set[str] = set()
         for goal in sorted(snapshot.goals, key=lambda value: value.slug):
@@ -299,7 +321,12 @@ class GoalExecutionPlanner:
                 )
                 continue
             selected_project = projects[0] if projects else None
-            candidate = _candidate(goal, selected_project, owner)
+            candidate = _candidate(
+                goal,
+                selected_project,
+                owner,
+                cycle_day=effective_cycle_day,
+            )
             exact = next(
                 (
                     task
@@ -587,7 +614,7 @@ class GoalExecutionEngine:
             )
         route_health = self.route_health()
         snapshot = self.adapter.read_goal_execution_snapshot(route_health)
-        plan = self.planner.plan(snapshot)
+        plan = self.planner.plan(snapshot, cycle_day=now.date())
         plan, handoff_status_by_task = self._annotate_handoff_attention(
             plan,
             snapshot,

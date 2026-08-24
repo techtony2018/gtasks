@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.156",
+  "current_version": "V0.0.157",
   "releases": [
     {
       "version": "V0.0.1",
@@ -936,6 +936,12 @@
       "date": "2026-08-24",
       "title": "Reconcile completed Goal handoffs",
       "summary": "Goal execution can now complete a selected canary Goal-derived Task after verified dispatcher completion and exact produced Artifact readback, preventing completed Agent work from staying active and blocking future Goal progress."
+    },
+    {
+      "version": "V0.0.157",
+      "date": "2026-08-24",
+      "title": "Cycle Goal-derived Agent reviews",
+      "summary": "Goal execution now derives Agent review Tasks with a cycle key so a completed prior-cycle review no longer permanently suppresses future bounded Goal progress."
     }
   ]
 }
