@@ -82,6 +82,8 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
                 )
             if command[0] == "ssh" and "toddy@toddy-host.test" in command:
                 return verifier.CompletedProbe(255, "", "Operation timed out")
+            if command[:3] == ["tailscale", "status", "--json"]:
+                return verifier.CompletedProbe(1, "", "tailscale unavailable")
             raise AssertionError(command)
 
         report = verifier.verify_fleet(
@@ -176,6 +178,53 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
         remote_script = commands[0][-1]
         self.assertIn(expected_head, remote_script)
         self.assertNotIn('"$expected"', remote_script)
+
+    def test_ssh_failure_reports_tailscale_peer_state_when_available(self) -> None:
+        verifier = load_verifier()
+        expected_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+        ).strip()
+        payload = json.loads(self.inventory.read_text(encoding="utf-8"))
+        payload["workers"] = [payload["workers"][1]]
+        payload["workers"][0]["ssh_target"] = "toddy@100.117.212.20"
+        self.inventory.write_text(json.dumps(payload), encoding="utf-8")
+
+        def run(command, **_kwargs):
+            if command[:3] == ["git", "rev-parse", "HEAD"]:
+                return verifier.CompletedProbe(0, expected_head + "\n", "")
+            if command[:3] == ["tailscale", "status", "--json"]:
+                return verifier.CompletedProbe(
+                    0,
+                    json.dumps(
+                        {
+                            "Peer": {
+                                "nodekey:test": {
+                                    "HostName": "Toddy's Mac Mini-1",
+                                    "DNSName": "toddys-mac-mini-1.tail.test.",
+                                    "TailscaleIPs": ["100.117.212.20"],
+                                    "Online": True,
+                                    "Expired": True,
+                                    "LastSeen": "2026-08-22T21:46:08Z",
+                                }
+                            }
+                        }
+                    ),
+                    "",
+                )
+            if command[0] == "ssh":
+                return verifier.CompletedProbe(255, "", "Operation timed out")
+            raise AssertionError(command)
+
+        report = verifier.verify_fleet(inventory_path=self.inventory, run=run)
+
+        worker = report["workers"][0]
+        self.assertFalse(worker["ok"])
+        self.assertIn("ssh_unreachable", worker["issues"])
+        self.assertIn("tailscale_key_expired", worker["issues"])
+        self.assertEqual(worker["tailscale_peer"]["dns"], "toddys-mac-mini-1.tail.test.")
+        self.assertTrue(worker["tailscale_peer"]["online"])
 
 
 if __name__ == "__main__":

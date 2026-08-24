@@ -142,6 +142,46 @@ def _worker_failure(worker: dict[str, str], issue: str, stderr: str = "") -> dic
     }
 
 
+def _tailscale_peer_for_target(
+    ssh_target: str,
+    *,
+    run: Callable[..., CompletedProbe] | None = None,
+) -> dict[str, object] | None:
+    host = ssh_target.rsplit("@", 1)[-1]
+    execute = run or _default_run
+    result = execute(["tailscale", "status", "--json"], timeout=10)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    peers = payload.get("Peer") if isinstance(payload, dict) else None
+    if not isinstance(peers, dict):
+        return None
+    for raw_peer in peers.values():
+        if not isinstance(raw_peer, dict):
+            continue
+        ips = raw_peer.get("TailscaleIPs")
+        dns = raw_peer.get("DNSName")
+        names = {
+            str(dns).rstrip(".") if dns is not None else "",
+            str(raw_peer.get("HostName") or ""),
+        }
+        ip_values = [str(ip) for ip in ips] if isinstance(ips, list) else []
+        if host not in ip_values and host.rstrip(".") not in names:
+            continue
+        return {
+            "host": str(raw_peer.get("HostName") or ""),
+            "dns": str(dns or ""),
+            "ips": ip_values,
+            "online": bool(raw_peer.get("Online")),
+            "expired": bool(raw_peer.get("Expired")),
+            "last_seen": str(raw_peer.get("LastSeen") or ""),
+        }
+    return None
+
+
 def verify_fleet(
     *,
     inventory_path: str | Path,
@@ -174,7 +214,15 @@ def verify_fleet(
                 remote_report["ssh_target"] = worker["ssh_target"]
                 reports.append(remote_report)
             else:
-                reports.append(_worker_failure(worker, "ssh_unreachable", result.stderr))
+                failure = _worker_failure(worker, "ssh_unreachable", result.stderr)
+                peer = _tailscale_peer_for_target(worker["ssh_target"], run=execute)
+                if peer is not None:
+                    failure["tailscale_peer"] = peer
+                    if peer.get("expired"):
+                        failure["issues"].append("tailscale_key_expired")
+                    if peer.get("online") is False:
+                        failure["issues"].append("tailscale_peer_offline")
+                reports.append(failure)
             continue
         if remote_report is None:
             reports.append(_worker_failure(worker, "invalid_worker_report"))
