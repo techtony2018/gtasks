@@ -18,7 +18,7 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-24T04:05:00-07:00",
+    "verified_at": "2026-08-24T04:10:00-07:00",
     "verification_scope": "local dashboard remote MCP readback; cross-host recheck not performed in this refresh",
     "agents": [
       "tammy",
@@ -26,7 +26,7 @@
       "toddy"
     ],
     "collection_content_hash": "7df109b3c0186cf407fd3dc66cc827743d882697d2fc609603df80a5d70f3a5d",
-    "overview_content_hash": "3dd4a65b2a3cf6f4e33826e0f6c9d3c7d5922b61cf3a4036aa6f3ac35f13a3e6",
+    "overview_content_hash": "09edcfd4dfe588a5cdd4087e85985666c3be7792990b40e77bb97ee6db876713",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],

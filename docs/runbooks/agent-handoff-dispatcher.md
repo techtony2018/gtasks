@@ -664,8 +664,10 @@ created and activated current-cycle Civic/Timmy task
 `tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2`, owned by `agents/timmy`, for
 Goal `goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; the detail includes
 `Review cycle starts 2026-08-24`. Dispatcher readback progressed from leased
-to execution_started to `actively_executing`, and no Artifact was present at
-the bounded handoff check. The canary target was then restored to Toddy Health;
+to execution_started to `actively_executing` during the deploy handoff. A
+later documentation readback showed the task still active with
+`dispatcher_handoff.status=suppressed`; no Artifact was present at the bounded
+handoff check. The canary target was then restored to Toddy Health;
 Toddy still requires the Tailscale host login/private-route repair before its
 queued handoff can advance beyond `handoff_worker_unavailable`.
 

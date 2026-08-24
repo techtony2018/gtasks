@@ -292,7 +292,9 @@ to the reviewed source before updating relationships.
   `tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2`, owner `agents/timmy`, Goal
   `goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; detail includes
   `Review cycle starts 2026-08-24`; dispatcher handoff readback reached
-  `actively_executing`; no Artifact was present at the bounded handoff check.
+  `actively_executing` during the deploy handoff. Later documentation readback
+  showed the task still active with `dispatcher_handoff.status=suppressed`; no
+  Artifact was present at the bounded handoff check.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.

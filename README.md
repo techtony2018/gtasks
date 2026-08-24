@@ -125,7 +125,9 @@ dashboard-managed scheduler created/activated current-cycle Civic/Timmy task
 `tasks/44e14ea5-0f81-558b-a761-ec3540f3b4e2` for
 `goals/41fb50e0-e1d7-592b-b2c3-ff1f7aacff10`; its detail includes
 `Review cycle starts 2026-08-24`, and dispatcher handoff readback reached
-`actively_executing` with no Artifact present at the bounded handoff check.
+`actively_executing` during the deploy handoff. A later documentation readback
+showed the task still active with `dispatcher_handoff.status=suppressed`; no
+Artifact completion was present at the bounded handoff check.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
