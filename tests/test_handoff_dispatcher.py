@@ -1527,6 +1527,79 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(events.total, 1)
         self.assertEqual(events.events[0].execution_state, "active")
 
+    def test_operator_recovery_requeues_expired_owned_execution(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        record = dispatcher.record(
+            change(
+                canonical_event_id="events/expired-owned-recovery",
+                task_status="active",
+                requested_operation="task_status",
+                trigger="task_activated",
+            ),
+            now=NOW,
+        )
+        delivery = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        wake_token = f"wake/{record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-expired-owned-received",
+            now=NOW + timedelta(seconds=2),
+        )
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/expired-owned-start",
+            now=NOW + timedelta(seconds=3),
+        )
+        expired = self.store.acknowledge(
+            delivery.handoff_id,
+            "still_blocked",
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-expired-owned-blocked",
+            detail="Artifact publication boundary was unavailable.",
+            now=NOW + timedelta(days=1),
+        )
+        self.assertEqual(expired.status, "suppressed")
+        self.assertEqual(expired.reason, "execution_claim_expired")
+        self.assertIsNone(self.store.get_execution_claim(TASK))
+
+        reopened = self.store.retry_suppressed_execution_recovery(
+            record.handoff_id,
+            mutation_id="mutation-expired-owned-operator-retry",
+            summary="Operator verified expired execution dependency recovered.",
+            now=NOW + timedelta(days=1, seconds=1),
+        )
+
+        self.assertEqual(reopened.status, "retrying")
+        self.assertEqual(reopened.reason, "system_dependency_recovered")
+        retry_claim = self.store.claim(
+            REGISTRATION_ID, now=NOW + timedelta(days=1, seconds=2), lease_seconds=30
+        )
+        self.assertIsNotNone(retry_claim)
+        self.assertEqual(retry_claim.record.handoff_id, record.handoff_id)
+        self.assertEqual(retry_claim.record.attempt, 2)
+
     def test_operator_recovery_requeues_stale_received_owned_execution(self) -> None:
         dispatcher = HandoffDispatcher(
             self.store,

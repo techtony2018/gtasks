@@ -2696,13 +2696,15 @@ class DurableHandoffStore:
         summary: str,
         now: datetime,
     ) -> HandoffRecord:
-        """Requeue one operator-verified checkpointed owned execution recovery.
+        """Requeue one operator-verified owned execution recovery.
 
         This is intentionally narrower than normal delivery retry: it only
-        reopens a handoff that already terminalized as an execution recovery
-        checkpoint, preserves the same durable handoff/idempotency key, clears
-        stale launch fences, and lets the registered fixed-thread worker claim
-        the same work again.
+        reopens a handoff whose owned execution already terminalized as an
+        execution recovery checkpoint, whose owned execution expired before the
+        operator restored a system dependency, or whose received lease is stale.
+        It preserves the same durable handoff/idempotency key, clears stale
+        launch fences, and lets the registered fixed-thread worker claim the
+        same work again.
         """
         _require_structured_id(handoff_id, "handoff_id")
         _require_structured_id(mutation_id, "mutation_id")
@@ -2740,6 +2742,11 @@ class DurableHandoffStore:
                 and current["reason"] == "execution_recovery_required"
                 and current["terminal_state"] == "checkpointed"
             )
+            expired_recovery = (
+                current["status"] == "suppressed"
+                and current["reason"] == "execution_claim_expired"
+                and current["terminal_state"] == "expired"
+            )
             stale_received_recovery = (
                 current["status"] == "received"
                 and current["reason"] == "system_dependency_recovered"
@@ -2750,9 +2757,13 @@ class DurableHandoffStore:
                 ).fetchone()
                 is None
             )
-            if not checkpointed_recovery and not stale_received_recovery:
+            if (
+                not checkpointed_recovery
+                and not expired_recovery
+                and not stale_received_recovery
+            ):
                 raise ValueError(
-                    "operator recovery requires checkpointed or stale received execution"
+                    "operator recovery requires checkpointed, expired, or stale received execution"
                 )
             if (
                 current["delegation_slug"] is not None
@@ -2772,7 +2783,7 @@ class DurableHandoffStore:
             ):
                 raise ValueError("operator recovery requires current task authority")
 
-            if checkpointed_recovery:
+            if checkpointed_recovery or expired_recovery:
                 self._connection.execute(
                     "DELETE FROM execution_starts WHERE handoff_id = ?",
                     (handoff_id,),
@@ -2783,7 +2794,7 @@ class DurableHandoffStore:
                     SET terminal_state = NULL, terminal_at = NULL,
                         release_mutation_ref = NULL, release_event_id = NULL,
                         claimed_at = ?, expires_at = ?
-                    WHERE handoff_id = ? AND terminal_state = 'checkpointed'
+                    WHERE handoff_id = ? AND terminal_state IN ('checkpointed', 'expired')
                     """,
                     (
                         _timestamp(now),
@@ -2810,7 +2821,11 @@ class DurableHandoffStore:
                 """,
                 (
                     handoff_id,
-                    "suppressed" if checkpointed_recovery else "received",
+                    (
+                        "suppressed"
+                        if checkpointed_recovery or expired_recovery
+                        else "received"
+                    ),
                 ),
             ).rowcount
             if changed != 1:

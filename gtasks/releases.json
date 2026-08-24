@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.128",
+  "current_version": "V0.0.129",
   "releases": [
     {
       "version": "V0.0.1",
@@ -768,6 +768,12 @@
       "date": "2026-08-23",
       "title": "Expose Artifact publisher boundary to fixed-thread Agents",
       "summary": "Adds an optional private Artifact publisher token path to installed Agent dispatcher config and includes the authenticated Artifact publication endpoint in fixed-thread handoff prompts without exposing token material."
+    },
+    {
+      "version": "V0.0.129",
+      "date": "2026-08-23",
+      "title": "Retry expired owned Agent executions after repair",
+      "summary": "Allows operator-verified recovery of expired owned Agent execution claims once a system dependency is restored, preserving the same handoff while clearing stale launch fences for a safe retry."
     }
   ]
 }

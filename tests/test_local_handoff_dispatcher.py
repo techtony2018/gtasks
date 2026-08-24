@@ -26,6 +26,7 @@ from gtasks.local_handoff_dispatcher import (
     RejectRedirectHandler,
     PrivateClaimStore,
     PrivateWakeInbox,
+    WakeInboxClaim,
     WakeInboxWorker,
     acknowledge_handoff,
     install_signal_handlers,
@@ -3115,6 +3116,73 @@ class RunForeverTests(unittest.TestCase):
         )
         self.assertEqual(adapter.claims, ["handoff-100"])
         self.assertFalse(store.path.exists())
+
+    def test_pending_ack_retries_before_completed_inbox_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            store = PrivateClaimStore(directory / "active.json")
+            claim = claim_payload(status="actively_executing")
+            store.save(claim)
+            blocked_sequence = store.prepare_ack(
+                "still_blocked",
+                "Waiting for the Artifact publisher boundary.",
+            )
+            wake_token = store.prepare_wake()
+            inbox = PrivateWakeInbox(directory / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            inbox.enqueue(claim, wake_token=wake_token, now=datetime.now(timezone.utc))
+            inbox.mark_pending(
+                handoff_id="handoff-100",
+                wake_token=wake_token,
+                now=datetime.now(timezone.utc),
+            )
+            claimed = inbox.claim_next(now=datetime.now(timezone.utc))
+            self.assertIsNotNone(claimed)
+            launch_id = inbox.launch_id_for(claimed)
+            inbox.prepare_launch(
+                claimed,
+                launch_id=launch_id,
+                now=datetime.now(timezone.utc),
+            )
+            inbox.record_spawned(claimed, pid=43210, now=datetime.now(timezone.utc))
+            inbox.record_ready(claimed, pid=43210, now=datetime.now(timezone.utc))
+            inbox.record_start_requesting(
+                claimed,
+                current_claim=inbox.get("handoff-100").claim,
+                now=datetime.now(timezone.utc),
+            )
+            inbox.record_start_grant(
+                claimed,
+                launch_grant="grant/completed-but-blocked-pending",
+                now=datetime.now(timezone.utc),
+            )
+            executing = inbox.record_gate_open(claimed, now=datetime.now(timezone.utc))
+            inbox.record_completed(
+                WakeInboxClaim(executing, claimed.worker_token),
+                now=datetime.now(timezone.utc),
+            )
+            events: list[str] = []
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    events.append(f"ack:{operation_sequence}:{status}")
+                    return {"status": status, "detail": detail}
+
+            run_forever(
+                Client(),
+                self.Adapter([subprocess.CompletedProcess([], 0)]),
+                claim_store=store,
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(events, [f"ack:{blocked_sequence}:still_blocked"])
+            self.assertEqual(store.load_current()["status"], "still_blocked")
+            self.assertEqual(inbox.get("handoff-100").state, "completed")
 
     def test_nonzero_and_timeout_require_recovery_and_are_never_retryable(self) -> None:
         for result in (
