@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.164",
+  "current_version": "V0.0.165",
   "releases": [
     {
       "version": "V0.0.1",
@@ -984,6 +984,12 @@
       "date": "2026-08-24",
       "title": "Recover expired Agent execution claims",
       "summary": "The handoff dispatcher now recovers expired owned execution claims at the next authenticated claim boundary, so a host worker outage or lost local claim state does not leave Goal-derived Agent work permanently queued after the correct remote host comes back online."
+    },
+    {
+      "version": "V0.0.165",
+      "date": "2026-08-24",
+      "title": "Make missing Goal owners actionable",
+      "summary": "Goal execution Needs attention copy now names the exact default_agent_for repair needed when a Goal has no verified Codex Agent owner, so unassigned Goals no longer appear blocked without a clear next step."
     }
   ]
 }

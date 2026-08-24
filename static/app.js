@@ -4038,7 +4038,7 @@ function goalExecutionReasonCopy(decision) {
     duplicate: "A canonical task already represents this Goal work.",
     wip_full: "The assigned Agent is already at the automatic work-in-progress limit.",
     route_unavailable: "The verified fixed Agent route needs system repair.",
-    owner_missing: "This Goal needs one verified default Codex Agent.",
+    owner_missing: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
     owner_ambiguous: "This Goal has more than one default Agent and needs attention.",
     project_ambiguous: "More than one active Project supports this Goal.",
     runtime_not_allowed: "Automatic execution is limited to Codex Agents in this rollout.",
