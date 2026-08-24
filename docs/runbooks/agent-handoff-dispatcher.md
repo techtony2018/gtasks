@@ -712,6 +712,28 @@ visibility. Live V0.0.160 readback showed Family/Toddy task
 `goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
 `waiting_for_tony`.
 
+V0.0.161 retains accepted dispatcher handoff status for selected duplicate or
+recent active Goal tasks. If the planner selects an existing task whose public
+reason remains `duplicate` or `recently_completed`, and the dispatcher has a
+latest accepted handoff status such as `queued` or `actively_executing`, the
+Goal execution response includes that handoff status so the UI can render
+Delivering or Executing instead of ambiguous Ready or duplicate-only context.
+This is presentation/readback context only; completion still requires the
+normal terminal handoff plus exact Artifact evidence path, and canary mode
+still targets one configured Goal. The V0.0.161 canary target was rotated from
+Toddy Health to Faith/Tammy. Runtime readback showed Faith/Tammy Goal-derived
+task `tasks/46ba34c2-9ccb-523e-a786-9b70d5673073` completed for
+`agents/tammy`, and Artifact `artifacts/d2a45c21-1428-4891-ae98-531a958e1e98`
+was created by `agents/tammy` with `produced_for` that task and
+`supports_goal -> goals/755548a3-d556-513a-900c-45f90da5702e`. Current
+remaining next-owner blockers are separate: Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` is legitimately blocked waiting
+for Tony via question TODO `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and
+Toddy Health task `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5` remains
+infrastructure-blocked with dispatcher status `queued` /
+`handoff_worker_unavailable` until the Toddy fixed-thread host is logged into
+Tailscale and its dispatcher route is available.
+
 The V0.0.136/V0.0.137 Finance canary for
 `goals/840b3122-b299-5991-96be-30364c7f2e12` created, activated, and
 completed `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` for `agents/tammy`.

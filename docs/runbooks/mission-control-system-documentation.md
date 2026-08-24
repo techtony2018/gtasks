@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-24`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.160`
+- Last verified pushed release: `V0.0.161`
 - Release commits:
-  `682c28e0b86a1f18357502bfd4e68f7777368536`
+  `28a9c8de5f3191f261c91adfa04d156f0667c5c6`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -340,6 +340,31 @@ to the reviewed source before updating relationships.
   `people/tony-guan`, and Goal
   `goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
   `waiting_for_tony`.
+- V0.0.161 evidence: dashboard-managed health readback `V0.0.161`; release
+  commit `28a9c8de5f3191f261c91adfa04d156f0667c5c6`; independent QA PASS at
+  `artifacts/qa/v0.0.161-independent/gate-report.md` with frozen aggregate
+  `8b4d97e103e48ea4b61dfc2d2787f1a84ab16ced2cadbd2a740319a7f920e5fd`; full
+  suite reported `1357` OK with `5` skipped; `node --check static/app.js` and
+  `python3 -m compileall -q gtasks tests` passed.
+- Verified V0.0.161 behavior: Goal execution retains accepted dispatcher
+  handoff status for selected duplicate or recent active tasks so the UI can
+  render Delivering or Executing instead of ambiguous Ready or duplicate-only
+  context. Independent QA verified a Faith/Tammy active duplicate fixture with
+  last-run `handoff.status=actively_executing` rendered `Executing` on desktop
+  1440x1000 and genuine mobile 390x844. Runtime canary target was rotated from
+  Toddy Health to Faith/Tammy; live readback showed Goal-derived task
+  `tasks/46ba34c2-9ccb-523e-a786-9b70d5673073` completed for `agents/tammy`
+  and Artifact `artifacts/d2a45c21-1428-4891-ae98-531a958e1e98` created by
+  `agents/tammy` with `produced_for` that task and `supports_goal` pointing to
+  `goals/755548a3-d556-513a-900c-45f90da5702e`.
+- Current V0.0.161 next-owner blockers: Family/Toddy task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` remains legitimately blocked
+  waiting for Tony via question TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`; Toddy Health task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5` remains infrastructure-blocked
+  with dispatcher status `queued` / `handoff_worker_unavailable` until the
+  Toddy fixed-thread host is logged into Tailscale and its dispatcher route is
+  available. Do not document either as completed Agent execution.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -389,4 +414,8 @@ or missing exact Artifact must remain repair attention/active. V0.0.160
 not completed Agent execution. A TODO hydration issue preserves task/handoff
 visibility and should be treated as readback/data-availability repair; it does
 not authorize creating a replacement TODO, bypassing the Tony answer, or
-marking the task actionable.
+marking the task actionable. V0.0.161 active handoff-status projection is also
+readback context only: it can show Delivering or Executing for selected
+duplicate/recent active work, but it does not automate all Goals, expand the
+single-canary boundary, or satisfy completion without terminal handoff and
+exact Artifact evidence.

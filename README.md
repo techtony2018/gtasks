@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.160 at commit
-`682c28e0b86a1f18357502bfd4e68f7777368536`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.161 at commit
+`28a9c8de5f3191f261c91adfa04d156f0667c5c6`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -152,6 +152,20 @@ blocked on `people/tony-guan`, handoff `waiting_for_input`, question TODO
 `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Goal
 `goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8` projecting
 `waiting_for_tony`.
+V0.0.161 retains accepted dispatcher handoff status for selected duplicate or
+recent active Goal tasks, so the Goal execution UI can render Delivering or
+Executing instead of falling back to ambiguous Ready or duplicate-only context.
+The live canary target was rotated from Toddy Health to Faith/Tammy; the
+dashboard-managed scheduler produced and completed Goal-derived task
+`tasks/46ba34c2-9ccb-523e-a786-9b70d5673073` for `agents/tammy`, with exact
+Artifact `artifacts/d2a45c21-1428-4891-ae98-531a958e1e98` created by
+`agents/tammy`, `produced_for` that task, and supporting Faith Goal
+`goals/755548a3-d556-513a-900c-45f90da5702e`. This does not mean all Goals are
+automated: the current next-owner blockers remain Family/Toddy waiting for
+Tony's answer on question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Toddy Health waiting for
+Toddy host Tailscale login/dispatcher availability before queued task
+`tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5` can be leased.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -188,6 +202,12 @@ returning status. It does not bypass canary/shadow mode, WIP, identity, or
 handoff safety checks. When a canary Goal is already covered by duplicate or
 recently completed work, the status includes the selected Task slug, title,
 status, and Agent so operators can verify the canonical work item directly.
+V0.0.161+ also preserves an accepted dispatcher handoff status on selected
+duplicate or recently active task responses, allowing the UI to show live
+Delivering or Executing state when the latest verified dispatcher status is
+`queued` or `actively_executing`. This is readback context for already-selected
+work; it does not broaden canary scope, mark all Goals automated, or replace
+the completion requirements below.
 If a goal-derived duplicate decision points at an active or planned canonical
 task without any verified Agent handoff, Goal execution reports
 `handoff_missing` with Needs attention copy instead of ordinary duplicate
