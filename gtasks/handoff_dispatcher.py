@@ -2735,13 +2735,24 @@ class DurableHandoffStore:
             ).fetchone()
             if current is None:
                 raise KeyError(handoff_id)
-            if (
-                current["status"] != "suppressed"
-                or current["reason"] != "execution_recovery_required"
-                or current["terminal_state"] != "checkpointed"
-            ):
+            checkpointed_recovery = (
+                current["status"] == "suppressed"
+                and current["reason"] == "execution_recovery_required"
+                and current["terminal_state"] == "checkpointed"
+            )
+            stale_received_recovery = (
+                current["status"] == "received"
+                and current["reason"] == "system_dependency_recovered"
+                and current["terminal_state"] is None
+                and self._connection.execute(
+                    "SELECT 1 FROM execution_starts WHERE handoff_id = ?",
+                    (handoff_id,),
+                ).fetchone()
+                is None
+            )
+            if not checkpointed_recovery and not stale_received_recovery:
                 raise ValueError(
-                    "operator recovery requires a checkpointed execution-recovery handoff"
+                    "operator recovery requires checkpointed or stale received execution"
                 )
             if (
                 current["delegation_slug"] is not None
@@ -2761,24 +2772,27 @@ class DurableHandoffStore:
             ):
                 raise ValueError("operator recovery requires current task authority")
 
-            self._connection.execute(
-                "DELETE FROM execution_starts WHERE handoff_id = ?",
-                (handoff_id,),
-            )
-            self._connection.execute(
-                """
-                UPDATE execution_claims
-                SET terminal_state = NULL, terminal_at = NULL,
-                    release_mutation_ref = NULL, release_event_id = NULL,
-                    claimed_at = ?, expires_at = ?
-                WHERE handoff_id = ? AND terminal_state = 'checkpointed'
-                """,
-                (
-                    _timestamp(now),
-                    _timestamp(now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)),
-                    handoff_id,
-                ),
-            )
+            if checkpointed_recovery:
+                self._connection.execute(
+                    "DELETE FROM execution_starts WHERE handoff_id = ?",
+                    (handoff_id,),
+                )
+                self._connection.execute(
+                    """
+                    UPDATE execution_claims
+                    SET terminal_state = NULL, terminal_at = NULL,
+                        release_mutation_ref = NULL, release_event_id = NULL,
+                        claimed_at = ?, expires_at = ?
+                    WHERE handoff_id = ? AND terminal_state = 'checkpointed'
+                    """,
+                    (
+                        _timestamp(now),
+                        _timestamp(
+                            now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
+                        ),
+                        handoff_id,
+                    ),
+                )
             self._connection.execute(
                 """
                 UPDATE leases
@@ -2792,10 +2806,12 @@ class DurableHandoffStore:
                 UPDATE handoffs
                 SET status = 'retrying', reason = 'system_dependency_recovered',
                     detail = NULL
-                WHERE handoff_id = ? AND status = 'suppressed'
-                    AND reason = 'execution_recovery_required'
+                WHERE handoff_id = ? AND status = ?
                 """,
-                (handoff_id,),
+                (
+                    handoff_id,
+                    "suppressed" if checkpointed_recovery else "received",
+                ),
             ).rowcount
             if changed != 1:
                 raise ValueError("operator recovery lost its handoff-state fence")

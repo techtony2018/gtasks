@@ -1527,6 +1527,129 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(events.total, 1)
         self.assertEqual(events.events[0].execution_state, "active")
 
+    def test_operator_recovery_requeues_stale_received_owned_execution(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        record = dispatcher.record(
+            change(
+                canonical_event_id="events/stale-received-recovery",
+                task_status="active",
+                requested_operation="task_status",
+                trigger="task_activated",
+            ),
+            now=NOW,
+        )
+        first = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        wake_token = f"wake/{first.record.idempotency_key}"
+        self.store.authorize_wake(
+            first.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=first.lease_token,
+            lease_generation=first.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.store.acknowledge(
+            first.record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=first.lease_token,
+            lease_generation=first.lease_generation,
+            mutation_id="mutation-stale-received",
+            now=NOW + timedelta(seconds=2),
+        )
+        self.store.start_execution(
+            first.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=first.lease_token,
+            lease_generation=first.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/stale-received-checkpoint",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.store.checkpoint_started_execution(
+            first.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=first.lease_token,
+            lease_generation=first.lease_generation,
+            launch_id="launch/stale-received-checkpoint",
+            mutation_id="mutation-stale-received-checkpoint",
+            reason="Launch outcome requires recovery.",
+            now=NOW + timedelta(seconds=4),
+        )
+        self.store.retry_suppressed_execution_recovery(
+            record.handoff_id,
+            mutation_id="mutation-stale-received-first-retry",
+            summary="Operator verified launch dependency recovered.",
+            now=NOW + timedelta(seconds=5),
+        )
+        received = self.store.claim(
+            REGISTRATION_ID, now=NOW + timedelta(seconds=6), lease_seconds=30
+        )
+        self.assertIsNotNone(received)
+        self.store.authorize_wake(
+            received.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=received.lease_token,
+            lease_generation=received.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=7),
+        )
+        self.store.acknowledge(
+            received.record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=received.lease_token,
+            lease_generation=received.lease_generation,
+            mutation_id="mutation-stale-received-received",
+            now=NOW + timedelta(seconds=8),
+        )
+        self.assertEqual(self.store.get(record.handoff_id).status, "received")
+
+        reopened = self.store.retry_suppressed_execution_recovery(
+            record.handoff_id,
+            mutation_id="mutation-stale-received-retry",
+            summary="Operator verified received launch recovered.",
+            now=NOW + timedelta(seconds=9),
+        )
+
+        self.assertEqual(reopened.status, "retrying")
+        second = self.store.claim(
+            REGISTRATION_ID, now=NOW + timedelta(seconds=10), lease_seconds=30
+        )
+        self.assertIsNotNone(second)
+        self.assertEqual(second.record.attempt, 3)
+        self.store.authorize_wake(
+            second.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=second.lease_token,
+            lease_generation=second.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=11),
+        )
+        self.store.acknowledge(
+            second.record.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=second.lease_token,
+            lease_generation=second.lease_generation,
+            mutation_id="mutation-stale-received-second-ack",
+            now=NOW + timedelta(seconds=12),
+        )
+        started = self.store.start_execution(
+            second.record.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=second.lease_token,
+            lease_generation=second.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/stale-received-retry-start",
+            now=NOW + timedelta(seconds=13),
+        )
+        self.assertTrue(started.execution_started)
+
     def test_rotated_checkpoint_uses_current_lease_without_mutating_start_fence(self) -> None:
         delivery, wake_token = self._received_delegated_delivery(
             event_id="events/rotated-start-checkpoint"

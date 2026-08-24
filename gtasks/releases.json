@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.122",
+  "current_version": "V0.0.123",
   "releases": [
     {
       "version": "V0.0.1",
@@ -732,6 +732,12 @@
       "date": "2026-08-23",
       "title": "Replace terminal local inbox entries on retry",
       "summary": "Allows a verified newer server retry for the same Agent handoff to replace stale terminal local wake-inbox evidence, clearing old launch fences so the fixed-thread dispatcher can start the recovered work."
+    },
+    {
+      "version": "V0.0.123",
+      "date": "2026-08-23",
+      "title": "Recover stale received Agent handoffs",
+      "summary": "Extends bounded operator recovery to received Agent handoffs that never recorded an execution start, returning stale post-acknowledgement work to retry without changing the canonical task."
     }
   ]
 }
