@@ -6,7 +6,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from threading import Condition, Thread
 from time import monotonic
 from types import SimpleNamespace
@@ -588,7 +588,10 @@ class GoalExecutionEngine:
             raise ValueError("goal execution mode must be off, shadow, or canary")
         if mode == "canary" and (
             not isinstance(canary_goal_slug, str)
-            or not _is_canonical_goal_slug(canary_goal_slug)
+            or (
+                canary_goal_slug != "auto"
+                and not _is_canonical_goal_slug(canary_goal_slug)
+            )
         ):
             raise ValueError("canary mode requires one canonical Goal slug")
         self.adapter = adapter
@@ -645,12 +648,24 @@ class GoalExecutionEngine:
                 goal_slug=self.canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
             )
+        canary_goal_slug = (
+            self._auto_canary_goal_slug(
+                plan,
+                snapshot=snapshot,
+                handoff_status_by_task=handoff_status_by_task,
+            )
+            if self.canary_goal_slug == "auto"
+            else self.canary_goal_slug
+        )
         eligible = next(
             (
                 value
                 for value in plan.decisions
                 if value.reason == "auto_eligible"
-                and value.goal_slug == self.canary_goal_slug
+                and (
+                    canary_goal_slug is None
+                    or value.goal_slug == canary_goal_slug
+                )
             ),
             None,
         )
@@ -659,7 +674,7 @@ class GoalExecutionEngine:
                 plan,
                 snapshot=snapshot,
                 ran_at=now,
-                goal_slug=self.canary_goal_slug,
+                goal_slug=canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
             )
             if reconciled is not None:
@@ -669,7 +684,7 @@ class GoalExecutionEngine:
                 snapshot=snapshot,
                 mode=self.mode,
                 ran_at=now,
-                goal_slug=self.canary_goal_slug,
+                goal_slug=canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
             )
         try:
@@ -736,6 +751,57 @@ class GoalExecutionEngine:
             public_reason=reason,
             handoff=handoff,
         )
+
+    def _auto_canary_goal_slug(
+        self,
+        plan: GoalExecutionPlan,
+        *,
+        snapshot: GoalExecutionSnapshot,
+        handoff_status_by_task: Mapping[str, str | None],
+    ) -> str | None:
+        """Pick the one Goal whose canary state should be actioned or surfaced."""
+        for decision in plan.decisions:
+            if decision.reason == "auto_eligible" and decision.candidate is not None:
+                return decision.goal_slug
+        for decision in plan.decisions:
+            if (
+                decision.reason in {"duplicate", "recently_completed"}
+                and decision.existing_task_slug is not None
+                and handoff_status_by_task.get(decision.existing_task_slug)
+                in self._HANDOFF_ACCEPTED
+            ):
+                return decision.goal_slug
+        tasks_by_slug = {task.slug: task for task in snapshot.tasks}
+        completed = [
+            decision
+            for decision in plan.decisions
+            if decision.reason == "recently_completed"
+            and decision.existing_task_slug in tasks_by_slug
+        ]
+        if completed:
+            selected = max(
+                completed,
+                key=lambda decision: (
+                    tasks_by_slug[str(decision.existing_task_slug)].completed_at
+                    or tasks_by_slug[str(decision.existing_task_slug)].updated_at
+                    or tasks_by_slug[str(decision.existing_task_slug)].created_at
+                    or datetime.min.replace(tzinfo=timezone.utc)
+                ),
+            )
+            return selected.goal_slug
+        for decision in plan.decisions:
+            if decision.reason in {
+                "handoff_needs_repair",
+                "handoff_missing",
+                "task_needs_next_action",
+                "handoff_worker_unavailable",
+                "waiting_for_tony",
+            }:
+                return decision.goal_slug
+        for decision in plan.decisions:
+            if decision.reason in {"duplicate", "recently_completed"}:
+                return decision.goal_slug
+        return None
 
     def _task_has_verified_artifact(self, task_slug: str) -> bool:
         list_artifacts = getattr(self.adapter, "list_agent_artifacts", None)

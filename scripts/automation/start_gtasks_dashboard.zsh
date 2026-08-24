@@ -79,8 +79,8 @@ case "$MISSION_CONTROL_GOAL_EXECUTION_MODE" in
     ;;
 esac
 if [[ "$MISSION_CONTROL_GOAL_EXECUTION_MODE" = "canary" ]]; then
-  [[ "${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}" =~ '^goals/[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' ]] || {
-    print -u2 -- "Mission Control canary mode requires one canonical Goal slug"
+  [[ "${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}" = "auto" || "${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}" =~ '^goals/[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' ]] || {
+    print -u2 -- "Mission Control canary mode requires one canonical Goal slug or auto"
     exit 70
   }
 fi

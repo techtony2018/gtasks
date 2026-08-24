@@ -415,14 +415,18 @@ class GoalExecutionEngineTests(unittest.TestCase):
             tasks=(),
             activation_error: Exception | None = None,
             artifact_tasks: tuple[str, ...] = (),
+            snapshot_value: GoalExecutionSnapshot | None = None,
         ):
             self.tasks = list(tasks)
             self.activation_error = activation_error
             self.artifact_tasks = set(artifact_tasks)
+            self.snapshot_value = snapshot_value
             self.calls: list[tuple[str, object]] = []
 
         def read_goal_execution_snapshot(self, route_health):
             self.calls.append(("snapshot", dict(route_health)))
+            if self.snapshot_value is not None:
+                return self.snapshot_value
             return snapshot(tasks=tuple(self.tasks), route_health=dict(route_health))
 
         def create_or_adopt_derived_agent_task(self, candidate, now):
@@ -532,6 +536,247 @@ class GoalExecutionEngineTests(unittest.TestCase):
             mode="canary",
             canary_goal_slug=GOAL,
         )
+
+    def test_auto_canary_selects_next_eligible_goal_when_fixed_goal_completed(self) -> None:
+        primary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(projects=(project(),))
+        )
+        primary_candidate = primary_plan.decisions[0].candidate
+        self.assertIsNotNone(primary_candidate)
+        completed_primary = replace(
+            agent_task(
+                slug_identity="completed-primary-goal",
+                goal_slug=GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(primary_candidate.fingerprint),
+            title="Completed primary Goal Review",
+            summary="Completed primary Goal Review",
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=primary_candidate.fingerprint,
+                action_kind=primary_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=primary_candidate.goal_slug,
+                project_slug=primary_candidate.project_slug,
+                expected_evidence=primary_candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(
+            tasks=(completed_primary,),
+            snapshot_value=snapshot(
+                goals=(goal(), goal(OTHER_GOAL, title="Faith: daily review")),
+                projects=(
+                    project(),
+                    project(
+                        "projects/9df00c10-0000-4000-8000-000000000002",
+                        goals=(OTHER_GOAL,),
+                    ),
+                ),
+                agents=(agent(goals=(GOAL, OTHER_GOAL)),),
+                tasks=(completed_primary,),
+                route_health={AGENT: True},
+            ),
+        )
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=self.Bridge(),
+            mode="canary",
+            canary_goal_slug="auto",
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "activated")
+        self.assertEqual(result.agent_slug, AGENT)
+        self.assertNotEqual(result.task_slug, completed_primary.slug)
+        self.assertIn(("status", (result.task_slug, "active")), adapter.calls)
+        selected = [
+            decision
+            for decision in result.decisions
+            if decision.goal_slug == OTHER_GOAL
+        ]
+        self.assertEqual(selected[0].reason, "auto_eligible")
+
+    def test_auto_canary_surfaces_active_handoff_before_unrelated_waiting_goal(self) -> None:
+        secondary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(
+                goals=(goal(OTHER_GOAL, title="Faith: daily review"),),
+                projects=(
+                    project(
+                        "projects/9df00c10-0000-4000-8000-000000000002",
+                        goals=(OTHER_GOAL,),
+                    ),
+                ),
+                agents=(agent(goals=(OTHER_GOAL)),),
+            )
+        )
+        secondary_candidate = secondary_plan.decisions[0].candidate
+        self.assertIsNotNone(secondary_candidate)
+        waiting = replace(
+            agent_task(
+                slug_identity="waiting-primary-goal",
+                goal_slug=GOAL,
+                status="blocked",
+            ),
+            next_action="Which scope should the Agent use next?",
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/question-round-1",
+                waiting_on="people/tony-guan",
+                resume_owner=AGENT,
+                resume_action="Resume after Tony chooses the scope.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        executing = replace(
+            agent_task(
+                slug_identity="executing-secondary-goal",
+                goal_slug=OTHER_GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(secondary_candidate.fingerprint),
+            next_action="Publish the bounded Goal progress brief.",
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=secondary_candidate.fingerprint,
+                action_kind=secondary_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=secondary_candidate.goal_slug,
+                project_slug=secondary_candidate.project_slug,
+                expected_evidence=secondary_candidate.expected_evidence,
+            ),
+        )
+        bridge = self.Bridge()
+        bridge.latest_status = "actively_executing"
+        result = GoalExecutionEngine(
+            adapter=self.Adapter(
+                snapshot_value=snapshot(
+                    goals=(goal(), goal(OTHER_GOAL, title="Faith: daily review")),
+                    projects=(
+                        project(),
+                        project(
+                            "projects/9df00c10-0000-4000-8000-000000000002",
+                            goals=(OTHER_GOAL,),
+                        ),
+                    ),
+                    agents=(agent(goals=(GOAL, OTHER_GOAL)),),
+                    tasks=(waiting, executing),
+                    route_health={AGENT: True},
+                )
+            ),
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug="auto",
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "duplicate")
+        self.assertEqual(result.task_slug, executing.slug)
+        self.assertEqual(result.handoff_status, "actively_executing")
+
+    def test_auto_canary_surfaces_latest_completed_goal_before_unrelated_waiting_goal(self) -> None:
+        primary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(projects=(project(),))
+        )
+        primary_candidate = primary_plan.decisions[0].candidate
+        secondary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(
+                goals=(goal(OTHER_GOAL, title="Faith: daily review"),),
+                projects=(
+                    project(
+                        "projects/9df00c10-0000-4000-8000-000000000002",
+                        goals=(OTHER_GOAL,),
+                    ),
+                ),
+                agents=(agent(goals=(OTHER_GOAL)),),
+            )
+        )
+        secondary_candidate = secondary_plan.decisions[0].candidate
+        self.assertIsNotNone(primary_candidate)
+        self.assertIsNotNone(secondary_candidate)
+        waiting = replace(
+            agent_task(
+                slug_identity="waiting-primary-goal",
+                goal_slug=GOAL,
+                status="blocked",
+            ),
+            next_action="Which scope should the Agent use next?",
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/question-round-1",
+                waiting_on="people/tony-guan",
+                resume_owner=AGENT,
+                resume_action="Resume after Tony chooses the scope.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        older_completed = replace(
+            agent_task(
+                slug_identity="older-completed-goal",
+                goal_slug=GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(primary_candidate.fingerprint),
+            completed_at=NOW - timedelta(hours=1),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=primary_candidate.fingerprint,
+                action_kind=primary_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=primary_candidate.goal_slug,
+                project_slug=primary_candidate.project_slug,
+                expected_evidence=primary_candidate.expected_evidence,
+            ),
+        )
+        latest_completed = replace(
+            agent_task(
+                slug_identity="latest-completed-goal",
+                goal_slug=OTHER_GOAL,
+                status="completed",
+            ),
+            slug=derived_task_slug(secondary_candidate.fingerprint),
+            completed_at=NOW,
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=secondary_candidate.fingerprint,
+                action_kind=secondary_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=secondary_candidate.goal_slug,
+                project_slug=secondary_candidate.project_slug,
+                expected_evidence=secondary_candidate.expected_evidence,
+            ),
+        )
+
+        result = GoalExecutionEngine(
+            adapter=self.Adapter(
+                snapshot_value=snapshot(
+                    goals=(goal(), goal(OTHER_GOAL, title="Faith: daily review")),
+                    projects=(
+                        project(),
+                        project(
+                            "projects/9df00c10-0000-4000-8000-000000000002",
+                            goals=(OTHER_GOAL,),
+                        ),
+                    ),
+                    agents=(agent(goals=(GOAL, OTHER_GOAL)),),
+                    tasks=(waiting, older_completed, latest_completed),
+                    route_health={AGENT: True},
+                )
+            ),
+            bridge=self.Bridge(),
+            mode="canary",
+            canary_goal_slug="auto",
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "recently_completed")
+        self.assertEqual(result.task_slug, latest_completed.slug)
 
     def test_run_once_creates_planned_reads_back_activates_and_dispatches(self) -> None:
         adapter = self.Adapter()

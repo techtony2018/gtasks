@@ -120,7 +120,8 @@ class DashboardIntegrationTests(unittest.TestCase):
         )
         self.assertIn("off|shadow|canary", launcher)
         self.assertIn("MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL", launcher)
-        self.assertIn("canary mode requires one canonical Goal slug", launcher)
+        self.assertIn('"${MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL:-}" = "auto"', launcher)
+        self.assertIn("canary mode requires one canonical Goal slug or auto", launcher)
         completed = subprocess.run(
             ["zsh", "-n", str(PROJECT_ROOT / "scripts/automation/start_gtasks_dashboard.zsh")],
             capture_output=True,

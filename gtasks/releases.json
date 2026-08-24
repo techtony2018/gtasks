@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.161",
+  "current_version": "V0.0.162",
   "releases": [
     {
       "version": "V0.0.1",
@@ -966,6 +966,12 @@
       "date": "2026-08-24",
       "title": "Surface active Goal handoff status",
       "summary": "Goal execution now retains accepted dispatcher handoff status for selected duplicate/recent Goal tasks, so active work can render as delivering or executing instead of losing progress context."
+    },
+    {
+      "version": "V0.0.162",
+      "date": "2026-08-24",
+      "title": "Auto-advance Goal execution canary",
+      "summary": "Dashboard-managed canary mode can now use an explicit auto target to activate the first currently eligible Goal-derived Agent review, preserving the one-task safety boundary while avoiding a stale fixed canary after a prior Goal completes."
     }
   ]
 }
