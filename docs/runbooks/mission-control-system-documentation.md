@@ -627,3 +627,23 @@ V0.0.169 waiting-task context is also readback/display behavior. It gives the
 headline and Agents cold-load UI enough canonical task context to render the
 right link immediately, but it does not answer Tony's question, unblock the
 task, or prove any Timmy/Toddy local worker exists on this Mac.
+V0.0.170 through V0.0.173 were Mission Control read-path/UI consistency
+repairs: mention-only legacy Goal concepts are excluded from typed Goal reads,
+Projects uses a bounded last-verified cache, System Tickets avoids completed
+ticket hydration fan-out while preserving page readback, and Board/Goal views
+now lock the 3-day default window, one-week preset, actionable undated
+visibility, and slug-level Goal deduplication. These releases do not authorize
+creating replacement Goal pages, hiding valid System Tickets, or merging
+distinct canonical Goals by title.
+V0.0.174 recoverable Goal handoff recovery is narrowly scoped to the same
+active/planned Goal-derived task and the same existing owned handoff when the
+latest delivery state is a suppressed checkpoint/expiry. It requeues the
+fixed-route handoff as `retrying` and renders it as Delivering; it does not
+create a new task, infer a new Agent, bypass missing next actions, or recover
+arbitrary dead letters.
+V0.0.175 selection priority is also narrow. A verified recoverable handoff
+repair can outrank an unrelated `waiting_for_tony` blocker so system-actionable
+work is retried, while the waiting task remains blocked and visible. This does
+not answer Tony's question, remove `owner_missing`, install Timmy/Toddy locally,
+or complete the Agent task without later terminal handoff and exact Artifact
+readback.
