@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.172",
+  "current_version": "V0.0.173",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1032,6 +1032,12 @@
       "date": "2026-08-25",
       "title": "Reduce System Tickets read fan-out",
       "summary": "System Tickets now reuse verified snapshots for completed tickets and root backlink membership evidence for list reads, eliminating per-ticket link and reference fan-out while preserving canonical page readback and stale display filtering."
+    },
+    {
+      "version": "V0.0.173",
+      "date": "2026-08-25",
+      "title": "Refine Board date range and Goal dedup contracts",
+      "summary": "Board now defaults to the 3 Days Before and After Today range, adds the One Week Before and After Today preset, and keeps active, blocked, and undated tasks visible; Goal reads now lock slug-level root backlink deduplication without merging distinct canonical goals by title."
     }
   ]
 }

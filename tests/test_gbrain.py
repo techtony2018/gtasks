@@ -4887,6 +4887,46 @@ class GoalReadTests(unittest.TestCase):
         )
         self.assertNotIn("list_pages", [tool for tool, _ in runner.calls])
 
+    def test_goal_read_deduplicates_repeated_root_backlinks_by_slug(self) -> None:
+        goal = stored_goal("goals/one", "Same visible title")
+        distinct = stored_goal("goals/two", "Same visible title")
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": distinct["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "member_of",
+                        },
+                    ]
+                ],
+                "get_page": [goal, distinct],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_goals()
+
+        self.assertEqual(
+            [item.slug for item in result.goals],
+            [goal["slug"], distinct["slug"]],
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [goal["slug"], distinct["slug"]],
+        )
+        self.assertEqual(result.issues, ())
+
     def test_ignores_goal_like_concepts_that_only_mention_goal_root(self) -> None:
         goal = stored_goal("goals/one", "First goal")
         legacy_concept = {

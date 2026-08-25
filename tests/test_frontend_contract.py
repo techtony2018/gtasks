@@ -239,12 +239,18 @@ assert(state.goalExecutionError === "fixture unavailable", "failed refresh was n
         self.assertIn('landingSelect.id = "default-landing-view-preference"', javascript)
         self.assertIn("Explicit route and deep-link selection wins", javascript)
 
-    def test_board_default_window_is_two_weeks_each_side_and_keeps_actionable_undated_tasks(self) -> None:
+    def test_board_default_window_is_three_days_with_week_preset_and_keeps_actionable_undated_tasks(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('const BOARD_DATE_WINDOW_SESSION_KEY = "mission-control.board-date-window";', javascript)
         self.assertIn("function boardTaskIsVisible", javascript)
         self.assertIn("function boardDateWindowSummary", javascript)
-        self.assertIn("const BOARD_DATE_WINDOW_DEFAULT_DAYS = 14;", javascript)
+        self.assertIn("const BOARD_DATE_WINDOW_DEFAULT_DAYS = 3;", javascript)
+        self.assertIn('const BOARD_DATE_WINDOW_VALUES = new Set(["3", "7", "14", "30", "all"]);', javascript)
+        self.assertIn('return BOARD_DATE_WINDOW_VALUES.has(value) ? value : "3";', javascript)
+        self.assertIn('const windowValue = BOARD_DATE_WINDOW_VALUES.has(value) ? value : "3";', javascript)
+        self.assertIn('["3", "3 Days Before and After Today"]', javascript)
+        self.assertIn('["7", "One Week Before and After Today"]', javascript)
+        self.assertIn('setBoardDateWindowPreference("3")', javascript)
         self.assertIn('task.status === "active" || task.status === "blocked"', javascript)
         self.assertIn("Undated actionable tasks stay visible", javascript)
         self.assertIn('id = "board-date-window"', javascript)

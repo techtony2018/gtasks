@@ -294,8 +294,8 @@ const COMPLETION_CELEBRATION_PREFERENCE_KEY = "mission-control.completion-celebr
 const DEFAULT_LANDING_VIEW_PREFERENCE_KEY = "mission-control.default-landing-view";
 const DEFAULT_LANDING_VIEW = "board";
 const BOARD_DATE_WINDOW_SESSION_KEY = "mission-control.board-date-window";
-const BOARD_DATE_WINDOW_DEFAULT_DAYS = 14;
-const BOARD_DATE_WINDOW_VALUES = new Set(["14", "30", "all"]);
+const BOARD_DATE_WINDOW_DEFAULT_DAYS = 3;
+const BOARD_DATE_WINDOW_VALUES = new Set(["3", "7", "14", "30", "all"]);
 const DETAIL_WIDTH_PREFERENCE_KEY = "mission-control.detail-panel-width";
 const DETAIL_WIDTH_DEFAULT = 344;
 const DETAIL_WIDTH_MIN = 292;
@@ -348,14 +348,14 @@ function resolveInitialView(locationLike = window.location) {
 function readBoardDateWindowPreference() {
   try {
     const value = window.sessionStorage?.getItem(BOARD_DATE_WINDOW_SESSION_KEY);
-    return BOARD_DATE_WINDOW_VALUES.has(value) ? value : "14";
+    return BOARD_DATE_WINDOW_VALUES.has(value) ? value : "3";
   } catch (_) {
-    return "14";
+    return "3";
   }
 }
 
 function setBoardDateWindowPreference(value) {
-  const windowValue = BOARD_DATE_WINDOW_VALUES.has(value) ? value : "14";
+  const windowValue = BOARD_DATE_WINDOW_VALUES.has(value) ? value : "3";
   state.boardDateWindow = windowValue;
   try {
     window.sessionStorage?.setItem(BOARD_DATE_WINDOW_SESSION_KEY, windowValue);
@@ -3102,6 +3102,8 @@ function renderBoardDateWindowControl(allTasks, visibleTasks) {
   select.id = "board-date-window";
   select.setAttribute("aria-label", "Board task date range");
   [
+    ["3", "3 Days Before and After Today"],
+    ["7", "One Week Before and After Today"],
     ["14", "Two weeks before and after today"],
     ["30", "Thirty days before and after today"],
     ["all", "All dates"],
@@ -3119,7 +3121,7 @@ function renderBoardDateWindowControl(allTasks, visibleTasks) {
   const reset = node("button", "secondary-button board-date-window-reset", "Reset");
   reset.type = "button";
   reset.addEventListener("click", () => {
-    setBoardDateWindowPreference("14");
+    setBoardDateWindowPreference("3");
     render();
   });
   toolbar.append(label, reset, node("p", "board-date-window-summary", boardDateWindowSummary(allTasks, visibleTasks)));
