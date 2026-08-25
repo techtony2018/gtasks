@@ -6417,6 +6417,7 @@ function loadSystemTickets({ force = false, poll = false } = {}) {
 async function performSystemTicketLoad({ force = false } = {}) {
   state.systemTicketsLoading = !state.systemTickets.length;
   try {
+    const previousSystemTicketsRefreshing = Boolean(state.systemTicketsReadState?.refreshing);
     const options = { headers: { Accept: "application/json" }, cache: "no-store" };
     const response = force
       ? await fetch("/api/system-tickets?include_completed=0&refresh=1", options)
@@ -6429,6 +6430,16 @@ async function performSystemTicketLoad({ force = false } = {}) {
       state.systemTicketIssues = Array.isArray(payload.issues) ? payload.issues : [];
     }
     state.systemTicketsError = payload.read_state?.error || "";
+    if (
+      response.status === 200 &&
+      previousSystemTicketsRefreshing &&
+      !payload.read_state?.refreshing &&
+      state.showCompletedSystemTickets &&
+      state.completedSystemTickets.length &&
+      !state.completedSystemTicketsHasMore
+    ) {
+      state.completedSystemTicketsHasMore = true;
+    }
     if (payload.read_state?.refreshing) scheduleSurfacePoll("system_tickets");
   }
   catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
@@ -6460,7 +6471,7 @@ async function loadCompletedSystemTickets({ reset = false } = {}) {
       [...state.completedSystemTickets, ...page].map((ticket) => [ticket.slug, ticket]),
     );
     state.completedSystemTickets = [...bySlug.values()];
-    state.completedSystemTicketsOffset = offset + page.length;
+    state.completedSystemTicketsOffset = state.completedSystemTickets.length;
     state.completedSystemTicketsHasMore = Boolean(payload.pagination?.has_more);
   } catch (error) {
     state.completedSystemTicketsError =

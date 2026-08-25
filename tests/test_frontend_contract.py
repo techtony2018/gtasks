@@ -3657,6 +3657,90 @@ assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical 
             loader.index("completed_only=1"),
         )
 
+    def test_system_ticket_completed_pagination_recovers_after_fresh_refresh(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+state.activeView = "system-tickets";
+state.showCompletedSystemTickets = true;
+state.completedSystemTickets = Array.from({ length: 45 }, (_item, index) => ({
+  slug: `tasks/completed-${index}`,
+  title: `Completed ${index}`,
+  status: "completed",
+  target_subsystem: "mission_control",
+  priority: "normal",
+  implementation_receipts: [],
+  qa_receipts: [],
+}));
+state.completedSystemTicketsOffset = 45;
+state.completedSystemTicketsHasMore = false;
+state.systemTicketsReadState = { status: "refreshing", refreshing: true };
+render = () => {};
+let requested = null;
+globalThis.fetch = async (url) => {
+  requested = url;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      tickets: [
+        { slug: "tasks/open-1", title: "Open 1", status: "planned" },
+        { slug: "tasks/open-2", title: "Open 2", status: "active" },
+        { slug: "tasks/open-3", title: "Open 3", status: "planned" },
+      ],
+      issues: [],
+      read_state: { status: "fresh", refreshing: false },
+    }),
+  };
+};
+
+await performSystemTicketLoad();
+
+assert(requested === "/api/system-tickets?include_completed=0", `unexpected URL ${requested}`);
+assert(state.systemTickets.length === 3, "fresh open System Tickets did not reconcile");
+assert(state.completedSystemTicketsHasMore === true, "fresh refresh did not reopen completed pagination");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_completed_system_ticket_offset_tracks_unique_loaded_cards(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+state.activeView = "system-tickets";
+state.showCompletedSystemTickets = true;
+state.completedSystemTickets = [
+  { slug: "tasks/completed-a", title: "Completed A", status: "completed" },
+  { slug: "tasks/completed-b", title: "Completed B", status: "completed" },
+];
+state.completedSystemTicketsOffset = 2;
+render = () => {};
+let requested = null;
+globalThis.fetch = async (url) => {
+  requested = url;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      tickets: [
+        { slug: "tasks/completed-b", title: "Completed B fresh", status: "completed" },
+        { slug: "tasks/completed-c", title: "Completed C", status: "completed" },
+      ],
+      pagination: { has_more: true },
+    }),
+  };
+};
+
+await loadCompletedSystemTickets();
+
+assert(requested === "/api/system-tickets?completed_only=1&offset=2&limit=5", `unexpected URL ${requested}`);
+assert(state.completedSystemTickets.length === 3, "completed tickets were not de-duplicated");
+assert(state.completedSystemTicketsOffset === 3, `offset used raw page size: ${state.completedSystemTicketsOffset}`);
+assert(state.completedSystemTickets.some((ticket) => ticket.slug === "tasks/completed-c"), "new completed page item missing");
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_tooltips_use_one_fixed_hud_without_native_title_sources(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")

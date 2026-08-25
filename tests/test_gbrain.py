@@ -9985,6 +9985,64 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual(payload["tickets"][0]["verbatim_request"], ticket.verbatim_request)
         self.assertEqual(payload["tickets"][0]["display_markdown"], display)
 
+    def test_ticket_list_display_uses_stored_markdown_without_reference_fanout(self) -> None:
+        ticket = SystemTicket(
+            "tasks/system-tickets/display-reference-a1b2c3",
+            "Show referenced repair task",
+            "planned",
+            "Repair exact affected task tasks/business-reference-a1b2c3.",
+            "mission_control",
+            "normal",
+        )
+        display = render_system_ticket_body(ticket.title, ticket.verbatim_request)
+        page = {
+            "slug": ticket.slug,
+            "type": "task",
+            "title": ticket.title,
+            "compiled_markdown": display,
+            "frontmatter": {
+                "type": "task",
+                "markdown_contract": MARKDOWN_CONTRACT,
+                "title": ticket.title,
+                "status": ticket.status,
+                "priority": ticket.priority,
+                "verbatim_request": ticket.verbatim_request,
+                "target_subsystem": ticket.target_subsystem,
+                "links": [{"to": SYSTEM_TICKETS_ROOT, "type": "member_of"}],
+            },
+        }
+        edge = {
+            "from_slug": ticket.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+
+        class NoReferenceFanoutRunner:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, dict(params)))
+                if tool == "get_backlinks":
+                    return [edge]
+                if tool == "get_page":
+                    return page
+                if tool == "get_links":
+                    raise AssertionError(
+                        "System Ticket list display must not hydrate referenced tasks"
+                    )
+                raise AssertionError(f"unexpected tool {tool}")
+
+        runner = NoReferenceFanoutRunner()
+
+        payload = GBrainAdapter(runner).list_system_tickets().to_dict()
+
+        self.assertEqual(payload["tickets"][0]["display_markdown"], display)
+        self.assertEqual(
+            [tool for tool, _params in runner.calls if tool == "get_links"],
+            [],
+        )
+
     def test_default_ticket_read_skips_completed_before_link_and_display_hydration(self) -> None:
         planned = SystemTicket(
             "tasks/system-tickets/open-read-a1b2c3",
@@ -10063,7 +10121,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual([ticket["slug"] for ticket in payload["tickets"]], [planned.slug])
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
-            [planned.slug],
+            [],
         )
 
     def test_default_ticket_read_uses_verified_snapshot_to_skip_completed_page_hydration(self) -> None:
@@ -10116,7 +10174,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
-            [planned.slug],
+            [],
         )
 
     def test_include_completed_ticket_read_uses_snapshot_for_completed_and_hydrates_open_only(self) -> None:
@@ -10169,7 +10227,193 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
+            [],
+        )
+
+    def test_partial_verified_system_ticket_snapshot_only_hydrates_missing_slugs(self) -> None:
+        planned = SystemTicket(
+            "tasks/system-tickets/open-partial-a1b2c3",
+            "Open ticket",
+            "planned",
+            "Hydrate open tickets.",
+            "mission_control",
+            "high",
+        )
+        cached_completed = SystemTicket(
+            "tasks/system-tickets/cached-completed-a1b2c3",
+            "Cached completed ticket",
+            "completed",
+            "Serve this from the verified snapshot.",
+            "mission_control",
+            "normal",
+        )
+        missing_completed = SystemTicket(
+            "tasks/system-tickets/new-completed-a1b2c3",
+            "New completed ticket",
+            "completed",
+            "Hydrate only this missing member.",
+            "mission_control",
+            "normal",
+        )
+        tickets = (planned, cached_completed, missing_completed)
+        edges = [
+            {
+                "from_slug": ticket.slug,
+                "to_slug": SYSTEM_TICKETS_ROOT,
+                "link_type": "member_of",
+            }
+            for ticket in tickets
+        ]
+
+        class SlugAwareRunner:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, dict(params)))
+                if tool == "get_backlinks":
+                    return edges
+                slug = params["slug"]
+                if slug == cached_completed.slug:
+                    raise AssertionError(
+                        "cached completed System Ticket should not be hydrated"
+                    )
+                if tool == "get_page":
+                    return self_page[slug]
+                if tool == "get_links":
+                    return [
+                        edge for edge in edges if edge["from_slug"] == slug
+                    ]
+                raise AssertionError(f"unexpected tool {tool}")
+
+        self_page = {
+            planned.slug: self._system_ticket_page(planned),
+            missing_completed.slug: self._system_ticket_page(missing_completed),
+        }
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(
+                cache_path,
+                (planned, cached_completed),
+            )
+            runner = SlugAwareRunner()
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                payload = GBrainAdapter(runner).list_system_tickets(
+                    include_completed=True
+                ).to_dict()
+
+        self.assertEqual(
+            {ticket["slug"] for ticket in payload["tickets"]},
+            {ticket.slug for ticket in tickets},
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [planned.slug, missing_completed.slug],
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_links"],
+            [],
+        )
+
+    def test_include_completed_uses_root_backlink_when_page_read_shows_cached_open_ticket_completed(self) -> None:
+        stale_open = SystemTicket(
+            "tasks/system-tickets/stale-open-a1b2c3",
+            "Stale open ticket",
+            "active",
+            "The snapshot has not seen this completion yet.",
+            "mission_control",
+            "normal",
+        )
+        completed = replace(stale_open, status="completed")
+        edge = {
+            "from_slug": stale_open.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+
+        class NoCompletedLinksRunner:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, dict(params)))
+                if tool == "get_backlinks":
+                    return [edge]
+                if tool == "get_page":
+                    return self._page
+                if tool == "get_links":
+                    raise AssertionError(
+                        "completed System Ticket membership is already proven by the root backlink"
+                    )
+                raise AssertionError(f"unexpected tool {tool}")
+
+        runner = NoCompletedLinksRunner()
+        runner._page = self._system_ticket_page(completed)
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(cache_path, (stale_open,))
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                payload = GBrainAdapter(runner).list_system_tickets(
+                    include_completed=True
+                ).to_dict()
+
+        self.assertEqual(payload["tickets"][0]["slug"], completed.slug)
+        self.assertEqual(payload["tickets"][0]["status"], "completed")
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [completed.slug],
+        )
+        self.assertEqual(
+            [tool for tool, _params in runner.calls if tool == "get_links"],
+            [],
+        )
+
+    def test_system_ticket_list_uses_root_backlink_membership_without_per_ticket_link_read(self) -> None:
+        planned = SystemTicket(
+            "tasks/system-tickets/root-backlink-a1b2c3",
+            "Root backlink ticket",
+            "planned",
+            "The root backlink is the typed membership readback.",
+            "mission_control",
+            "normal",
+        )
+        edge = {
+            "from_slug": planned.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+
+        class RootBacklinkOnlyRunner:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def run(self, tool: str, params: dict) -> object:
+                self.calls.append((tool, dict(params)))
+                if tool == "get_backlinks":
+                    return [edge]
+                if tool == "get_page":
+                    return self._page
+                if tool == "get_links":
+                    raise AssertionError(
+                        "System Ticket list already verified membership through root backlinks"
+                    )
+                raise AssertionError(f"unexpected tool {tool}")
+
+        runner = RootBacklinkOnlyRunner()
+        runner._page = self._system_ticket_page(planned)
+
+        payload = GBrainAdapter(runner).list_system_tickets(
+            include_completed=False
+        ).to_dict()
+
+        self.assertEqual(payload["tickets"][0]["slug"], planned.slug)
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
             [planned.slug],
+        )
+        self.assertEqual(
+            [tool for tool, _params in runner.calls if tool == "get_links"],
+            [],
         )
 
     def test_verified_system_ticket_update_invalidates_ticket_snapshot_cache(self) -> None:

@@ -3171,6 +3171,37 @@ class GBrainAdapter:
             return None
         return expected
 
+    def _stored_system_ticket_display_markdown(
+        self, ticket: SystemTicket, page: Mapping[str, Any]
+    ) -> str | None:
+        """Return the canonical stored System Ticket markdown for list payloads.
+
+        List reads already verify the Task page itself and typed membership from
+        the System Tickets root backlink. Re-resolving every slug mentioned in
+        the ticket body turns ordinary repair evidence into a completed-ticket
+        fan-out, so the list surface uses the page's stored compiled markdown.
+        Mutating paths still render and verify the body before writing.
+        """
+        if not self._has_unified_markdown_contract(page):
+            return None
+        compiled = page.get("compiled_markdown")
+        if not isinstance(compiled, str) or not compiled.strip():
+            return None
+        try:
+            expected = render_system_ticket_body(
+                ticket.title,
+                ticket.verbatim_request,
+                acceptance_criteria=ticket.acceptance_criteria,
+                linked_evidence=ticket.linked_evidence,
+                implementation_receipts=ticket.implementation_receipts,
+                qa_receipts=ticket.qa_receipts,
+            )
+        except MarkdownContractError:
+            return None
+        if compiled.strip() != expected.strip():
+            return None
+        return expected
+
     @staticmethod
     def _verify_compiled_markdown_body(
         page: Mapping[str, Any], expected_body: str, *, label: str
@@ -6620,8 +6651,6 @@ class GBrainAdapter:
             markdown = item.get("display_markdown")
             if isinstance(markdown, str):
                 display[slug] = markdown
-        if any(slug not in tickets for slug in member_slugs):
-            return None
         return tickets, display
 
     def _invalidate_system_ticket_snapshot_cache(
@@ -6698,7 +6727,16 @@ class GBrainAdapter:
         raw_backlinks = self.runner.run("get_backlinks", {"slug": SYSTEM_TICKETS_ROOT})
         if not isinstance(raw_backlinks, list):
             raise GBrainProtocolError("system tickets get_backlinks did not return a list")
-        slugs = list(dict.fromkeys(str(link["from_slug"]) for link in raw_backlinks if isinstance(link, Mapping) and link.get("to_slug") == SYSTEM_TICKETS_ROOT and link.get("link_type") == "member_of" and isinstance(link.get("from_slug"), str) and str(link["from_slug"]).startswith("tasks/")))
+        root_edges = {
+            str(link["from_slug"]): dict(link)
+            for link in raw_backlinks
+            if isinstance(link, Mapping)
+            and link.get("to_slug") == SYSTEM_TICKETS_ROOT
+            and link.get("link_type") == "member_of"
+            and isinstance(link.get("from_slug"), str)
+            and str(link["from_slug"]).startswith("tasks/")
+        }
+        slugs = list(dict.fromkeys(root_edges))
         snapshot = self._load_verified_system_ticket_snapshot(slugs)
         cached_tickets: dict[str, SystemTicket] = {}
         cached_display: dict[str, str] = {}
@@ -6709,7 +6747,8 @@ class GBrainAdapter:
             read_slugs = [
                 slug
                 for slug in slugs
-                if cached_tickets[slug].status != "completed"
+                if slug not in cached_tickets
+                or cached_tickets[slug].status != "completed"
             ]
         def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
@@ -6725,11 +6764,14 @@ class GBrainAdapter:
                     and frontmatter.get("status") == "completed"
                 ):
                     return None, None, None
-                links = self.runner.run("get_links", {"slug": slug})
+                if slug in root_edges:
+                    links = [root_edges[slug]]
+                else:
+                    links = self.runner.run("get_links", {"slug": slug})
                 if not isinstance(page, Mapping) or not isinstance(links, list):
                     raise GBrainProtocolError("system ticket page or links were not structured")
                 ticket = SystemTicket.from_page(page, links)
-                display_markdown = self._validated_system_ticket_display_markdown(
+                display_markdown = self._stored_system_ticket_display_markdown(
                     ticket, page
                 )
                 if not include_completed and ticket.status == "completed":
@@ -6748,8 +6790,10 @@ class GBrainAdapter:
         if include_completed and cached_tickets:
             hydrated = {ticket.slug for ticket in tickets}
             for slug in slugs:
-                ticket = cached_tickets[slug]
-                if ticket.status == "completed" and slug not in hydrated:
+                if slug in hydrated:
+                    continue
+                ticket = cached_tickets.get(slug)
+                if ticket is not None and ticket.status == "completed":
                     tickets.append(ticket)
                     display_markdown = cached_display.get(slug)
                     if display_markdown is not None:

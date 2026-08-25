@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.171",
+  "current_version": "V0.0.172",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1026,6 +1026,12 @@
       "date": "2026-08-25",
       "title": "Cache Projects read path",
       "summary": "Adds a last-verified read cache for /api/projects, bounded loading/read_state handling, and Projects UI polling without weakening verified project mutation readbacks."
+    },
+    {
+      "version": "V0.0.172",
+      "date": "2026-08-25",
+      "title": "Reduce System Tickets read fan-out",
+      "summary": "System Tickets now reuse verified snapshots for completed tickets and root backlink membership evidence for list reads, eliminating per-ticket link and reference fan-out while preserving canonical page readback and stale display filtering."
     }
   ]
 }
