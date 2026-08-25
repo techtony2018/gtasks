@@ -4887,6 +4887,44 @@ class GoalReadTests(unittest.TestCase):
         )
         self.assertNotIn("list_pages", [tool for tool, _ in runner.calls])
 
+    def test_ignores_goal_like_concepts_that_only_mention_goal_root(self) -> None:
+        goal = stored_goal("goals/one", "First goal")
+        legacy_concept = {
+            "slug": "goals/friendship",
+            "type": "concept",
+            "title": "Friendship",
+            "compiled_truth": "# Friendship\n\nMentions [[collections/tonys-goals]].",
+            "frontmatter": {},
+        }
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": legacy_concept["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "mentions",
+                        },
+                        {
+                            "from_slug": goal["slug"],
+                            "to_slug": GOALS_ROOT,
+                            "link_type": "member_of",
+                        },
+                    ]
+                ],
+                "get_page": [goal],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_goals()
+
+        self.assertEqual([item.slug for item in result.goals], [goal["slug"]])
+        self.assertEqual(result.issues, ())
+        self.assertNotIn(
+            ("get_page", {"slug": legacy_concept["slug"]}),
+            runner.calls,
+        )
+
     def test_reads_reciprocal_task_slugs_only_for_selected_goal_detail(self) -> None:
         goal = stored_goal("goals/one", "First goal")
         runner = FakeRunner(

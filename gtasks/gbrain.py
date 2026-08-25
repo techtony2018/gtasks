@@ -6171,6 +6171,7 @@ class GBrainAdapter:
             and backlink.get("to_slug") == GOALS_ROOT
             and isinstance(backlink.get("from_slug"), str)
             and str(backlink["from_slug"]).startswith("goals/")
+            and backlink.get("link_type") in {"member_of", "", None}
         ]
         goal_slugs = list(dict.fromkeys(goal_slugs))
         if not goal_slugs:

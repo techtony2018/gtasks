@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.169",
+  "current_version": "V0.0.170",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1014,6 +1014,12 @@
       "date": "2026-08-24",
       "title": "Use populated Goal task before Agent Work reconciliation",
       "summary": "Agents now render the Goal execution task title and link from the verified goal-execution readback during a cold load, before the separate Agent Work cache has reconciled."
+    },
+    {
+      "version": "V0.0.170",
+      "date": "2026-08-25",
+      "title": "Exclude mention-only legacy goal concepts",
+      "summary": "Mission Control goal reads now only hydrate typed goal membership or legacy empty goal backlinks, excluding concept pages that merely mention Tony's Goals so they no longer surface false core_data goal errors."
     }
   ]
 }
