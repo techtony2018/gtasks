@@ -4048,7 +4048,7 @@ function goalExecutionState(decision) {
   const lastTask = state.goalExecution?.last_run?.task;
   const handoff = state.goalExecution?.last_run?.handoff;
   if (lastTask?.slug === decision?.task_slug) {
-    if (["queued", "leased"].includes(handoff?.status)) return "Delivering";
+    if (["queued", "leased", "retrying"].includes(handoff?.status)) return "Delivering";
     if (["received", "acknowledged", "processing", "agent_working", "actively_executing"].includes(handoff?.status)) {
       return "Executing";
     }

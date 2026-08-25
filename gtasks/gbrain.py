@@ -1568,6 +1568,21 @@ class CanonicalHandoffEventBridge:
             )
         return state
 
+    def retry_task_handoff_recovery(
+        self,
+        task_slug: str,
+        *,
+        mutation_id: str,
+        summary: str,
+        now: datetime,
+    ):
+        return self.dispatcher.store.retry_latest_task_handoff_recovery(
+            task_slug,
+            mutation_id=mutation_id,
+            summary=summary,
+            now=now.astimezone(timezone.utc),
+        )
+
     @staticmethod
     def _mapping(value: object) -> dict[str, Any]:
         if value is None:

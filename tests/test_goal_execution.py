@@ -513,7 +513,9 @@ class GoalExecutionEngineTests(unittest.TestCase):
             self.status = status
             self.latest_status: str | None = None
             self.latest_delivery_state: dict[str, object] | None = None
+            self.recovery_status: str = "retrying"
             self.calls: list[tuple[dict, dict, dict]] = []
+            self.recovery_calls: list[tuple[str, str]] = []
 
         def after_verified_mutation(self, before, after, receipt, now):
             self.calls.append((before, after, receipt))
@@ -528,6 +530,14 @@ class GoalExecutionEngineTests(unittest.TestCase):
 
         def latest_task_handoff_delivery_state(self, task_slug):
             return self.latest_delivery_state
+
+        def retry_task_handoff_recovery(self, task_slug, *, mutation_id, summary, now):
+            self.recovery_calls.append((task_slug, mutation_id))
+            return SimpleNamespace(
+                handoff_id="handoffs/goal-execution-canary",
+                status=self.recovery_status,
+                reason="system_dependency_recovered",
+            )
 
     def engine(self, adapter=None, bridge=None):
         return GoalExecutionEngine(
@@ -1095,6 +1105,30 @@ class GoalExecutionEngineTests(unittest.TestCase):
             ["snapshot", "create", "status", "snapshot"],
         )
         self.assertEqual(len(bridge.calls), 1)
+
+    def test_canary_requeues_recoverable_existing_handoff_repair(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        first = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "suppressed"
+        bridge.latest_delivery_state = {
+            "status": "suppressed",
+            "terminal_state": "checkpointed",
+            "claimed_at": (NOW - timedelta(minutes=10)).isoformat(),
+        }
+
+        recovered = self.engine(adapter, bridge).run_once(NOW + timedelta(minutes=11))
+
+        self.assertEqual(first.task_slug, recovered.task_slug)
+        self.assertEqual(recovered.public_reason, "activated")
+        self.assertEqual(recovered.handoff_status, "retrying")
+        self.assertEqual(
+            recovered.to_dict()["decisions"][0]["reason"],
+            "duplicate",
+        )
+        self.assertEqual(len(bridge.recovery_calls), 1)
+        self.assertEqual(bridge.recovery_calls[0][0], str(first.task_slug))
+        self.assertEqual([name for name, _value in adapter.calls].count("status"), 1)
 
     def test_existing_active_goal_task_without_handoff_reports_missing_handoff(self) -> None:
         first_plan = GoalExecutionPlanner().plan(snapshot(projects=(project(),)))

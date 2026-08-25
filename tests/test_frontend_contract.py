@@ -172,6 +172,8 @@ state.goalExecution = {
 };
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
+state.goalExecution.last_run.handoff.status = "retrying";
+assert(goalExecutionState(decision) === "Delivering", "retrying handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "received";
 assert(goalExecutionState(decision) === "Executing", "received handoff was not Executing");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "wip_full", task_slug: null }) === "Blocked", "WIP was not Blocked");

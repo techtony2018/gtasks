@@ -1342,6 +1342,34 @@ class DurableHandoffStore:
             return None
         return row["status"]
 
+    def retry_latest_task_handoff_recovery(
+        self,
+        task_slug: str,
+        *,
+        mutation_id: str,
+        summary: str,
+        now: datetime,
+    ) -> HandoffRecord:
+        _require_structured_id(task_slug, "task_slug")
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT handoff_id FROM handoffs
+                WHERE task_slug = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (task_slug,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(task_slug)
+        return self.retry_suppressed_execution_recovery(
+            row["handoff_id"],
+            mutation_id=mutation_id,
+            summary=summary,
+            now=now,
+        )
+
     def get_execution_claim(
         self, task_slug: str, *, include_terminal: bool = False
     ) -> ExecutionClaim | None:

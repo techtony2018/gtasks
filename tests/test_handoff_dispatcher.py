@@ -1527,6 +1527,73 @@ class HandoffDispatcherTests(unittest.TestCase):
         self.assertEqual(events.total, 1)
         self.assertEqual(events.events[0].execution_state, "active")
 
+    def test_canonical_bridge_retries_latest_task_handoff_recovery(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        record = dispatcher.record(
+            change(
+                canonical_event_id="events/bridge-owned-recovery",
+                task_status="active",
+                requested_operation="task_status",
+                trigger="task_activated",
+            ),
+            now=NOW,
+        )
+        delivery = self.store.claim(REGISTRATION_ID, now=NOW, lease_seconds=30)
+        wake_token = f"wake/{delivery.record.idempotency_key}"
+        self.store.authorize_wake(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            now=NOW + timedelta(seconds=1),
+        )
+        self.store.acknowledge(
+            delivery.handoff_id,
+            "received",
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            mutation_id="mutation-bridge-owned-received",
+            now=NOW + timedelta(seconds=2),
+        )
+        self.store.start_execution(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            wake_token=wake_token,
+            launch_id="launch/bridge-owned-checkpointed",
+            now=NOW + timedelta(seconds=3),
+        )
+        self.store.checkpoint_started_execution(
+            delivery.handoff_id,
+            registration_id=REGISTRATION_ID,
+            lease_token=delivery.lease_token,
+            lease_generation=delivery.lease_generation,
+            launch_id="launch/bridge-owned-checkpointed",
+            mutation_id="mutation-bridge-owned-checkpoint",
+            reason="Launch outcome requires recovery.",
+            now=NOW + timedelta(seconds=4),
+        )
+
+        reopened = CanonicalHandoffEventBridge(
+            dispatcher
+        ).retry_task_handoff_recovery(
+            TASK,
+            mutation_id="mutation-bridge-owned-operator-retry",
+            summary="Goal execution verified system dependency recovery.",
+            now=NOW + timedelta(seconds=5),
+        )
+
+        self.assertEqual(reopened.handoff_id, record.handoff_id)
+        self.assertEqual(reopened.status, "retrying")
+        self.assertEqual(reopened.reason, "system_dependency_recovered")
+
     def test_operator_recovery_requeues_expired_owned_execution(self) -> None:
         dispatcher = HandoffDispatcher(
             self.store,

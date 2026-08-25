@@ -441,6 +441,10 @@ class GoalExecutionBridge(Protocol):
         self, before: object, after: object, receipt: object, now: datetime
     ) -> Any: ...
 
+    def retry_task_handoff_recovery(
+        self, task_slug: str, *, mutation_id: str, summary: str, now: datetime
+    ) -> Any: ...
+
 
 @dataclass(frozen=True, slots=True)
 class GoalExecutionRun:
@@ -571,6 +575,7 @@ class GoalExecutionEngine:
             "execution_started",
             "active",
             "actively_executing",
+            "retrying",
         }
     )
     _HANDOFF_ATTENTION = frozenset({"dead_letter", "suppressed", "handed_back"})
@@ -679,6 +684,14 @@ class GoalExecutionEngine:
             )
             if reconciled is not None:
                 return reconciled
+            recovered = self._recover_selected_handoff_repair(
+                plan,
+                snapshot=snapshot,
+                ran_at=now,
+                goal_slug=canary_goal_slug,
+            )
+            if recovered is not None:
+                return recovered
             return self._run_from_plan(
                 plan,
                 snapshot=snapshot,
@@ -918,6 +931,111 @@ class GoalExecutionEngine:
             task=receipt.task,
             public_reason="completed_after_verified_handoff",
             handoff=SimpleNamespace(status="completed"),
+        )
+
+    def _recover_selected_handoff_repair(
+        self,
+        plan: GoalExecutionPlan,
+        *,
+        snapshot: GoalExecutionSnapshot,
+        ran_at: datetime,
+        goal_slug: str | None,
+    ) -> GoalExecutionRun | None:
+        selected = next(
+            (
+                decision
+                for decision in plan.decisions
+                if goal_slug is None or decision.goal_slug == goal_slug
+            ),
+            None,
+        )
+        if (
+            selected is None
+            or selected.reason != "handoff_needs_repair"
+            or selected.existing_task_slug is None
+        ):
+            return None
+        retry_recovery = getattr(self.bridge, "retry_task_handoff_recovery", None)
+        if not callable(retry_recovery):
+            return None
+        task = next(
+            (
+                item
+                for item in snapshot.tasks
+                if item.slug == selected.existing_task_slug
+            ),
+            None,
+        )
+        if (
+            task is None
+            or task.status not in {"planned", "active"}
+            or task.goal_derivation is None
+            or _is_waiting_for_tony(task)
+            or _needs_next_action(task)
+        ):
+            return None
+        latest_delivery_state = getattr(
+            self.bridge,
+            "latest_task_handoff_delivery_state",
+            None,
+        )
+        delivery_state = (
+            latest_delivery_state(task.slug)
+            if callable(latest_delivery_state)
+            else None
+        )
+        if not (
+            isinstance(delivery_state, Mapping)
+            and delivery_state.get("status") == "suppressed"
+            and delivery_state.get("terminal_state") in {"checkpointed", "expired"}
+        ):
+            return None
+        mutation_key = hashlib.sha256(
+            f"{task.slug}|{ran_at.date().isoformat()}|goal-execution-recovery".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:32]
+        try:
+            handoff = retry_recovery(
+                task.slug,
+                mutation_id=f"mutations/goal-execution-recovery-{mutation_key}",
+                summary="Goal execution verified system dependency recovery.",
+                now=ran_at,
+            )
+        except Exception:
+            return GoalExecutionRun.for_task(
+                plan,
+                mode="canary",
+                ran_at=ran_at,
+                task=task,
+                public_reason="handoff_needs_repair",
+                handoff=SimpleNamespace(status="repair_failed"),
+            )
+        if getattr(handoff, "status", None) not in self._HANDOFF_ACCEPTED:
+            return GoalExecutionRun.for_task(
+                plan,
+                mode="canary",
+                ran_at=ran_at,
+                task=task,
+                public_reason="handoff_needs_repair",
+                handoff=handoff,
+            )
+        revised_plan = GoalExecutionPlan(
+            plan.planner_version,
+            tuple(
+                replace(decision, reason="duplicate")
+                if decision is selected
+                else decision
+                for decision in plan.decisions
+            ),
+        )
+        return GoalExecutionRun.for_task(
+            revised_plan,
+            mode="canary",
+            ran_at=ran_at,
+            task=task,
+            public_reason="activated",
+            handoff=handoff,
         )
 
     def _annotate_handoff_attention(
