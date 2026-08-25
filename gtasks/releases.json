@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.170",
+  "current_version": "V0.0.171",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1020,6 +1020,12 @@
       "date": "2026-08-25",
       "title": "Exclude mention-only legacy goal concepts",
       "summary": "Mission Control goal reads now only hydrate typed goal membership or legacy empty goal backlinks, excluding concept pages that merely mention Tony's Goals so they no longer surface false core_data goal errors."
+    },
+    {
+      "version": "V0.0.171",
+      "date": "2026-08-25",
+      "title": "Cache Projects read path",
+      "summary": "Adds a last-verified read cache for /api/projects, bounded loading/read_state handling, and Projects UI polling without weakening verified project mutation readbacks."
     }
   ]
 }

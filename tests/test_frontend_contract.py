@@ -4030,10 +4030,16 @@ assert(
         self.assertIn("No tasks assigned yet", javascript)
         self.assertIn("state.projectIssues", javascript)
         self.assertIn("payload.issues", javascript)
+        self.assertIn("state.projectsReadState = payload.read_state || null", javascript)
+        self.assertIn('if (response.status === 202) scheduleSurfacePoll("projects")', javascript)
+        self.assertIn('surface === "projects"', javascript)
         projects_body = javascript[
             javascript.index("function renderProjectsView()")
             : javascript.index("async function loadProjects()")
         ]
+        self.assertIn("projectsColdLoading()", projects_body)
+        self.assertIn("const readState = state.projectsReadState", javascript)
+        self.assertIn('readState?.status === "loading"', javascript)
         self.assertNotIn("Needs Attention", projects_body)
         self.assertNotIn("projectIssues", projects_body)
         self.assertIn("typed <code>member_of</code>", html)

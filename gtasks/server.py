@@ -157,6 +157,7 @@ class AgentDelegationMutationLock:
 SNAPSHOT_CACHE_SECONDS = 30
 PROPOSAL_CACHE_SECONDS = 5 * 60
 SYSTEM_TICKET_CACHE_SECONDS = 5 * 60
+PROJECT_CACHE_SECONDS = 5 * 60
 DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     Path.home()
     / ".codex"
@@ -867,6 +868,9 @@ def _handler_class(
     def invalidate_system_tickets() -> None:
         active_read_cache.invalidate("system_tickets", "system_tickets_all")
 
+    def invalidate_projects() -> None:
+        active_read_cache.invalidate("projects")
+
     def wake_goal_execution(reason: str) -> None:
         if active_goal_execution_scheduler is None:
             return
@@ -1343,6 +1347,14 @@ def _handler_class(
                 include_completed=include_completed,
             ).to_dict(),
             ttl_seconds=SYSTEM_TICKET_CACHE_SECONDS,
+            force=force,
+        )
+
+    def read_projects(force: bool = False):
+        return active_read_cache.read(
+            "projects",
+            lambda: adapter.list_projects().to_dict(),
+            ttl_seconds=PROJECT_CACHE_SECONDS,
             force=force,
         )
 
@@ -2197,15 +2209,28 @@ def _handler_class(
                 self._json(HTTPStatus.OK, {"task": task_payload})
                 return
             if path == "/api/projects":
-                try:
-                    payload = adapter.list_projects().to_dict()
-                except GBrainError as exc:
+                force = urlsplit(self.path).query == "refresh=1"
+                result = read_projects(force=force)
+                if result.payload is None:
+                    if result.state.get("status") == "error":
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": result.state.get("error") or "The canonical GBrain project refresh failed.",
+                                "code": "gbrain_refresh_delayed",
+                                "read_state": result.state,
+                            },
+                        )
+                        return
                     self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
+                        HTTPStatus.ACCEPTED,
+                        {"read_state": result.state},
                     )
                     return
-                self._json(HTTPStatus.OK, decorate_issues(payload))
+                self._json(
+                    HTTPStatus.OK,
+                    decorate_issues({**result.payload, "read_state": result.state}),
+                )
                 return
             if path == "/api/ical-events":
                 query = parse_qs(urlsplit(self.path).query)
@@ -4496,6 +4521,7 @@ def _handler_class(
                     )
                     return
                 invalidate_snapshot()
+                invalidate_projects()
                 wake_goal_execution("project_created")
                 self._json(
                     HTTPStatus.CREATED,
@@ -5316,6 +5342,7 @@ def _handler_class(
                 except GBrainError as exc:
                     self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc), "code": "gbrain_unavailable"})
                     return
+                invalidate_projects()
                 wake_goal_execution("project_updated")
                 self._json(HTTPStatus.OK, {"project": project.to_dict(), "receipt": receipt.to_dict()})
                 return

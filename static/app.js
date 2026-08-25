@@ -443,6 +443,8 @@ const state = {
   projectsLoaded: false,
   projectsLoading: false,
   projectsLoadPromise: null,
+  projectsReadState: null,
+  projectSurfacePollTimer: null,
   projectsError: "",
   projectEditorSlug: null,
   goalAction: null,
@@ -1906,6 +1908,19 @@ function systemTicketsColdLoading() {
     !state.systemTicketIssues.length &&
     (
       state.systemTicketsLoading ||
+      readState?.status === "loading" ||
+      readState?.refreshing === true
+    )
+  );
+}
+
+function projectsColdLoading() {
+  const readState = state.projectsReadState;
+  return (
+    !state.projectsLoaded &&
+    !state.projects.length &&
+    (
+      state.projectsLoading ||
       readState?.status === "loading" ||
       readState?.refreshing === true
     )
@@ -4498,7 +4513,7 @@ function renderProjectsView() {
   create.addEventListener("click", openNewProject);
   heading.append(copy, create);
   fragment.append(heading);
-  if (state.projectsLoading) {
+  if (projectsColdLoading()) {
     fragment.append(node("div", "section-empty", "Reading Tony’s Projects…"));
     return fragment;
   }
@@ -4722,13 +4737,16 @@ function scheduleSurfacePoll(surface) {
     ? "taskSurfacePollTimer"
     : surface === "proposals"
       ? "proposalSurfacePollTimer"
-      : "systemTicketSurfacePollTimer";
+      : surface === "projects"
+        ? "projectSurfacePollTimer"
+        : "systemTicketSurfacePollTimer";
   if (state[timerKey] !== null) return;
   state[timerKey] = window.setTimeout(() => {
     state[timerKey] = null;
     if (document.hidden) return;
     if (surface === "tasks") void loadTasks({ reason: "poll" });
     else if (surface === "proposals") void loadProposals({ poll: true });
+    else if (surface === "projects") void loadProjects({ poll: true });
     else void loadSystemTickets({ poll: true });
   }, 1000);
 }
@@ -4781,24 +4799,36 @@ function loadProposals(options = {}) {
 }
 
 async function loadProjects() {
+  const { refresh = false, poll = false } = arguments[0] || {};
   if (state.projectsLoadPromise) return state.projectsLoadPromise;
   state.projectsLoadPromise = (async () => {
-    state.projectsLoading = true;
+    state.projectsLoading = !state.projects.length;
     state.projectsError = "";
     if (state.snapshot) render();
     try {
-      const response = await fetch("/api/projects", {
+      const options = {
         headers: { Accept: "application/json" },
         cache: "no-store",
-      });
+      };
+      const response = refresh
+        ? await fetch("/api/projects?refresh=1", options)
+        : await fetch("/api/projects", options);
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload.error || "Projects could not be read from GBrain.");
       }
-      state.projects = payload.projects;
-      state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
-      state.projectWarningStateError = payload.warning_state_error || "";
-      state.projectsLoaded = true;
+      state.projectsReadState = payload.read_state || null;
+      if (response.status === 200) {
+        state.projects = Array.isArray(payload.projects) ? payload.projects : [];
+        state.projectIssues = Array.isArray(payload.issues) ? payload.issues : [];
+        state.projectWarningStateError = payload.warning_state_error || "";
+        state.projectsLoaded = true;
+      }
+      if (payload.read_state?.error) {
+        state.projectsError = payload.read_state.error;
+      }
+      if (response.status === 202) scheduleSurfacePoll("projects");
+      if (payload.read_state?.refreshing) scheduleSurfacePoll("projects");
     } catch (error) {
       state.projectsError =
         error.message || "Projects could not be read from GBrain.";

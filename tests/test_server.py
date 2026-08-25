@@ -6687,6 +6687,76 @@ class ProjectApiTests(unittest.TestCase):
             ["projects/ship-product"],
         )
 
+    def test_cold_project_read_is_bounded_and_then_serves_labeled_last_verified_data(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SlowProjectAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_projects(self) -> ProjectRead:
+                self.read_count += 1
+                entered.set()
+                release.wait(timeout=2)
+                return super().list_projects()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(
+                ReadSnapshotStore(Path(temporary) / "reads.json"),
+                background=True,
+            )
+            adapter = SlowProjectAdapter(projects=(sample_project(),))
+            harness = ServerHarness(self, adapter, read_cache=cache)
+
+            cold_status, cold_payload, _ = harness.request("GET", "/api/projects")
+
+            self.assertEqual(cold_status, 202)
+            self.assertEqual(cold_payload["read_state"]["surface"], "projects")
+            self.assertEqual(cold_payload["read_state"]["status"], "loading")
+            self.assertTrue(entered.wait(timeout=1))
+
+            release.set()
+            self.assertTrue(cache.wait_for_idle("projects"))
+            warm_status, warm_payload, _ = harness.request("GET", "/api/projects")
+
+            self.assertEqual(warm_status, 200)
+            self.assertEqual(
+                [project["slug"] for project in warm_payload["projects"]],
+                ["projects/ship-product"],
+            )
+            self.assertEqual(warm_payload["read_state"]["surface"], "projects")
+            self.assertEqual(warm_payload["read_state"]["status"], "fresh")
+            self.assertEqual(adapter.read_count, 1)
+
+    def test_warm_project_read_uses_last_verified_snapshot_without_remote_projection(self) -> None:
+        class CountingProjectAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_projects(self) -> ProjectRead:
+                self.read_count += 1
+                return super().list_projects()
+
+        adapter = CountingProjectAdapter(projects=(sample_project(),))
+        harness = ServerHarness(self, adapter)
+
+        first_status, first_payload, _ = harness.request("GET", "/api/projects")
+        reads_after_first = adapter.read_count
+        second_status, second_payload, _ = harness.request("GET", "/api/projects")
+
+        self.assertEqual((first_status, second_status), (200, 200))
+        self.assertEqual(first_payload["issues"], [])
+        self.assertEqual(second_payload["issues"], [])
+        self.assertEqual(
+            [project["slug"] for project in first_payload["projects"]],
+            ["projects/ship-product"],
+        )
+        self.assertEqual(
+            [project["slug"] for project in second_payload["projects"]],
+            ["projects/ship-product"],
+        )
+        self.assertEqual(reads_after_first, 1)
+        self.assertEqual(adapter.read_count, reads_after_first)
+
     def test_creates_a_project_only_after_verified_adapter_receipt(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
