@@ -785,6 +785,16 @@ class GoalExecutionEngine:
             ):
                 return decision.goal_slug
         for decision in plan.decisions:
+            if (
+                decision.reason == "handoff_needs_repair"
+                and decision.existing_task_slug is not None
+                and self._recoverable_handoff_repair_task(
+                    decision.existing_task_slug,
+                    snapshot=snapshot,
+                )
+            ):
+                return decision.goal_slug
+        for decision in plan.decisions:
             if decision.reason in {
                 "handoff_needs_repair",
                 "handoff_missing",
@@ -974,21 +984,7 @@ class GoalExecutionEngine:
             or _needs_next_action(task)
         ):
             return None
-        latest_delivery_state = getattr(
-            self.bridge,
-            "latest_task_handoff_delivery_state",
-            None,
-        )
-        delivery_state = (
-            latest_delivery_state(task.slug)
-            if callable(latest_delivery_state)
-            else None
-        )
-        if not (
-            isinstance(delivery_state, Mapping)
-            and delivery_state.get("status") == "suppressed"
-            and delivery_state.get("terminal_state") in {"checkpointed", "expired"}
-        ):
+        if not self._recoverable_handoff_repair_task(task.slug, snapshot=snapshot):
             return None
         mutation_key = hashlib.sha256(
             f"{task.slug}|{ran_at.date().isoformat()}|goal-execution-recovery".encode(
@@ -1036,6 +1032,37 @@ class GoalExecutionEngine:
             task=task,
             public_reason="activated",
             handoff=handoff,
+        )
+
+    def _recoverable_handoff_repair_task(
+        self,
+        task_slug: str,
+        *,
+        snapshot: GoalExecutionSnapshot,
+    ) -> bool:
+        task = next((item for item in snapshot.tasks if item.slug == task_slug), None)
+        if (
+            task is None
+            or task.status not in {"planned", "active"}
+            or task.goal_derivation is None
+            or _is_waiting_for_tony(task)
+            or _needs_next_action(task)
+        ):
+            return False
+        latest_delivery_state = getattr(
+            self.bridge,
+            "latest_task_handoff_delivery_state",
+            None,
+        )
+        delivery_state = (
+            latest_delivery_state(task.slug)
+            if callable(latest_delivery_state)
+            else None
+        )
+        return (
+            isinstance(delivery_state, Mapping)
+            and delivery_state.get("status") == "suppressed"
+            and delivery_state.get("terminal_state") in {"checkpointed", "expired"}
         )
 
     def _annotate_handoff_attention(

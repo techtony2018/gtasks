@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.174",
+  "current_version": "V0.0.175",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1044,6 +1044,12 @@
       "date": "2026-08-25",
       "title": "Recover checkpointed Goal handoffs",
       "summary": "Goal execution canary mode now requeues a recoverable checkpointed owned handoff for the same active Goal-derived task after verified system dependency recovery, preserving the existing task and fixed Agent route instead of leaving actionable work stuck in handoff repair."
+    },
+    {
+      "version": "V0.0.175",
+      "date": "2026-08-25",
+      "title": "Prioritize recoverable Goal handoffs",
+      "summary": "Auto canary selection now gives verified recoverable Goal handoff repair precedence over Tony-waiting blockers, so system-actionable Agent work can be requeued while true waiting-for-Tony tasks remain blocked and visible."
     }
   ]
 }

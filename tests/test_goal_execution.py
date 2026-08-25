@@ -788,6 +788,98 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.public_reason, "waiting_for_tony")
         self.assertEqual(result.task_slug, waiting.slug)
 
+    def test_auto_canary_recovers_repairable_handoff_before_waiting_goal(self) -> None:
+        primary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(projects=(project(),))
+        )
+        primary_candidate = primary_plan.decisions[0].candidate
+        secondary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(
+                goals=(goal(OTHER_GOAL, title="Faith: daily review"),),
+                projects=(
+                    project(
+                        "projects/9df00c10-0000-4000-8000-000000000002",
+                        goals=(OTHER_GOAL,),
+                    ),
+                ),
+                agents=(agent(goals=(OTHER_GOAL)),),
+            )
+        )
+        secondary_candidate = secondary_plan.decisions[0].candidate
+        self.assertIsNotNone(primary_candidate)
+        self.assertIsNotNone(secondary_candidate)
+        waiting = replace(
+            agent_task(
+                slug_identity="waiting-primary-goal",
+                goal_slug=GOAL,
+                status="blocked",
+            ),
+            next_action="Which scope should the Agent use next?",
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/question-round-1",
+                waiting_on="people/tony-guan",
+                resume_owner=AGENT,
+                resume_action="Resume after Tony chooses the scope.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        repairable = replace(
+            agent_task(
+                slug_identity="repairable-secondary-goal",
+                goal_slug=OTHER_GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(secondary_candidate.fingerprint),
+            next_action="Publish the bounded Goal progress brief.",
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=secondary_candidate.fingerprint,
+                action_kind=secondary_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=secondary_candidate.goal_slug,
+                project_slug=secondary_candidate.project_slug,
+                expected_evidence=secondary_candidate.expected_evidence,
+            ),
+        )
+        bridge = self.Bridge()
+        bridge.latest_status = "suppressed"
+        bridge.latest_delivery_state = {
+            "status": "suppressed",
+            "terminal_state": "checkpointed",
+            "claimed_at": (NOW - timedelta(minutes=10)).isoformat(),
+        }
+
+        result = GoalExecutionEngine(
+            adapter=self.Adapter(
+                snapshot_value=snapshot(
+                    goals=(goal(), goal(OTHER_GOAL, title="Faith: daily review")),
+                    projects=(
+                        project(),
+                        project(
+                            "projects/9df00c10-0000-4000-8000-000000000002",
+                            goals=(OTHER_GOAL,),
+                        ),
+                    ),
+                    agents=(agent(goals=(GOAL, OTHER_GOAL)),),
+                    tasks=(waiting, repairable),
+                    route_health={AGENT: True},
+                )
+            ),
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug="auto",
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "activated")
+        self.assertEqual(result.task_slug, repairable.slug)
+        self.assertEqual(result.handoff_status, "retrying")
+        self.assertEqual(bridge.recovery_calls, [(repairable.slug, bridge.recovery_calls[0][1])])
+
     def test_run_once_creates_planned_reads_back_activates_and_dispatches(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge()
