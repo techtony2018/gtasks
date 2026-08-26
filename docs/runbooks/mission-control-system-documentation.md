@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.191`
+- Last verified pushed release: `V0.0.192`
 - Release commits:
-  `21aeac225d4b344a3a3c0ba1f984c1f5b6769668`
+  `3ad6ea396c26a2c4073eb27e782991313ccbc19f`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -726,6 +726,31 @@ to the reviewed source before updating relationships.
   `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, `summary.total_goals=7`, and
   action queue entries for `answer_question` and Entrepreneurship
   `assign_goal_owner`.
+- V0.0.192 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.192`; release commit
+  `3ad6ea396c26a2c4073eb27e782991313ccbc19f`; release evidence file
+  `docs/release-evidence/v0.0.192.md`; independent QA PASS at
+  `artifacts/qa/v0.0.192-independent/gate-report.md` with frozen aggregate
+  `f96790cc11fcda7278bbac2bba4f2344e2baec96691f86b71ab93e7806f8715f`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.192 behavior: Goal execution missing-owner summaries and
+  Tony-owned `assign_goal_owner` Action queue entries now include verified
+  Codex Agent `candidate_owners` metadata. Postdeploy `/api/goal-execution`
+  retained `last_run=true`, `last_error=null`,
+  `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and
+  `summary.total_goals=7`. The Entrepreneurship `assign_goal_owner` row for
+  Goal `goals/d837ac94-36f5-4735-93bb-d84c69b45435` included Timmy with
+  verified `default_goal_count=1`, `recommended=true`, and recommendation
+  `recommended: lowest verified Codex Goal load`, plus Toddy count 2 and Tammy
+  count 3. Desktop 1440 and genuine mobile 390 QA showed the recommended label
+  in the primary Action queue and Missing owner detail controls, no OpenClaw
+  assignment controls, no automatic `default_agent_for` mutation, no-write
+  intercepted assignment POST, V0.0.190 answer regression preserved, and clean
+  console/network checks.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -884,3 +909,8 @@ owner assignment flow closer to the primary Tony queue item. They remain
 explicit Codex-only controls and must not be treated as automatic owner
 selection, OpenClaw assignment, or completed repair without verified
 `default-goals` readback.
+V0.0.192 recommended-owner labels are readback guidance, not assignment.
+Lowest-load candidate metadata can help Tony choose an explicit Codex owner,
+but it must not create `default_agent_for`, infer a default Agent, expose
+OpenClaw assignment, or mark the missing-owner repair complete without
+verified `default-goals` readback after Tony activates a control.

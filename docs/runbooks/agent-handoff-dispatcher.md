@@ -824,6 +824,15 @@ existing verified `POST /api/agents/<agent>/default-goals` contract with
 `{goal_slug, action: "assign"}`. The separate Missing owner detail row keeps
 its controls, OpenClaw remains excluded, and no owner is inferred by the
 dispatcher.
+V0.0.192 enriches missing-owner and Action queue assignment controls with
+verified Codex candidate-owner metadata. The dispatcher reports each
+candidate's verified default Goal count and marks exactly one lowest-load
+Codex Agent as recommended. Current live readback for the Entrepreneurship
+Goal shows Timmy count 1 recommended with
+`recommended: lowest verified Codex Goal load`, Toddy count 2, and Tammy count
+3. The recommendation is guidance only: no `default_agent_for` link is created
+until Tony explicitly activates a verified Codex assignment control, OpenClaw
+remains excluded, and the dispatcher still must not infer owners.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

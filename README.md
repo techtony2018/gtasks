@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.191 at commit
-`21aeac225d4b344a3a3c0ba1f984c1f5b6769668`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.192 at commit
+`3ad6ea396c26a2c4073eb27e782991313ccbc19f`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -305,6 +305,14 @@ Codex-only inline assignment controls in the primary Action queue:
 the existing verified `POST /api/agents/<agent>/default-goals` contract with
 `{goal_slug, action: "assign"}`. OpenClaw assignment remains excluded, and the
 separate Missing owner detail row keeps its own preserved assignment controls.
+V0.0.192 adds verified Codex Agent candidate-owner metadata to missing-owner
+summaries and `assign_goal_owner` Action queue entries. The current
+Entrepreneurship missing-owner row labels Timmy as
+`Assign to Timmy (recommended: lowest verified Codex Goal load)` because Timmy
+has 1 verified default Goal, while Toddy has 2 and Tammy has 3. The
+recommendation is readback guidance only: no `default_agent_for` relationship
+is created until Tony explicitly activates a verified Codex assignment
+control, and OpenClaw assignment remains excluded.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -412,6 +420,12 @@ Codex assignment buttons in the Action queue itself. The controls are the same
 explicit verified `default-goals` assignment path used by the preserved Missing
 owner detail row; they do not infer a default Agent and they never expose
 OpenClaw assignment.
+V0.0.192+ includes `candidate_owners` metadata on missing-owner summaries and
+Action queue `assign_goal_owner` entries. Candidate entries identify each
+eligible Codex Agent, verified `default_goal_count`, `recommended`, and the
+recommendation copy; the UI labels exactly one recommended owner by lowest
+verified Codex Goal load. This recommendation is guidance for Tony's explicit
+click, not automatic ownership repair or dispatcher mutation.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface
