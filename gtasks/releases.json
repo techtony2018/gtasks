@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.176",
+  "current_version": "V0.0.177",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1056,6 +1056,12 @@
       "date": "2026-08-25",
       "title": "Surface stale retrying Goal handoffs as worker unavailable",
       "summary": "Goal execution now treats stale retrying handoffs like stale queued handoffs: after the worker attention window, Mission Control surfaces a Needs attention state instead of continuing to show Delivering for work that no remote Agent has leased."
+    },
+    {
+      "version": "V0.0.177",
+      "date": "2026-08-25",
+      "title": "Project current Goal execution at API top level",
+      "summary": "The Goal execution status endpoint now mirrors the latest public reason, task slug, and handoff state at the response top level while preserving the full last_run payload, making monitors and integrations less likely to misread active Agent work as empty."
     }
   ]
 }

@@ -1332,11 +1332,22 @@ class GoalExecutionScheduler:
                 )
             else:
                 next_in = max(0.0, self._next_reconcile_mono - now)
+            last_run = dict(self._last_run) if self._last_run else None
+            task = last_run.get("task") if isinstance(last_run, Mapping) else None
+            task_slug = task.get("slug") if isinstance(task, Mapping) else None
+            handoff = last_run.get("handoff") if isinstance(last_run, Mapping) else None
             return {
                 "mode": self.engine.mode,
                 "planner_version": PLANNER_VERSION,
                 "running": self._thread is not None and self._thread.is_alive(),
-                "last_run": dict(self._last_run) if self._last_run else None,
+                "last_run": last_run,
+                "public_reason": (
+                    last_run.get("public_reason")
+                    if isinstance(last_run, Mapping)
+                    else None
+                ),
+                "task_slug": task_slug if isinstance(task_slug, str) else None,
+                "handoff": dict(handoff) if isinstance(handoff, Mapping) else None,
                 "last_error": self._last_error,
                 "next_run_in_seconds": round(next_in, 3),
             }

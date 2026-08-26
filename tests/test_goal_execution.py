@@ -1594,6 +1594,39 @@ class GoalExecutionSchedulerTests(unittest.TestCase):
         self.assertIsNone(status["last_run"])
         self.assertGreaterEqual(status["next_run_in_seconds"], 29)
 
+    def test_status_projects_latest_public_decision_for_readers(self) -> None:
+        class Engine:
+            mode = "canary"
+
+            def run_once(self, now):
+                return SimpleNamespace(
+                    to_dict=lambda: {
+                        "mode": "canary",
+                        "ran_at": now.isoformat(),
+                        "planner_version": "goal-execution-v1",
+                        "public_reason": "duplicate",
+                        "task": {
+                            "slug": "tasks/current",
+                            "title": "Current Goal task",
+                            "status": "active",
+                            "agent_slug": "agents/toddy",
+                        },
+                        "handoff": {"status": "execution_started"},
+                    }
+                )
+
+        engine = Engine()
+        scheduler = GoalExecutionScheduler(engine)
+
+        scheduler.start()
+        time.sleep(0.05)
+        status = scheduler.status()
+        scheduler.stop()
+
+        self.assertEqual(status["public_reason"], "duplicate")
+        self.assertEqual(status["task_slug"], "tasks/current")
+        self.assertEqual(status["handoff"], {"status": "execution_started"})
+
 
 if __name__ == "__main__":
     unittest.main()
