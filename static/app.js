@@ -4082,7 +4082,7 @@ function goalExecutionReasonCopy(decision) {
     handoff_missing: "The canonical task is active, but no verified Agent handoff is recorded yet.",
     task_needs_next_action: "The canonical task is active, but it has no explicit next action for the assigned Agent.",
     waiting_for_tony: "The canonical task is blocked waiting for Tony's answer before the assigned Agent can continue.",
-    handoff_worker_unavailable: "The canonical task is active and queued, but no verified Agent worker has leased it yet. Verify the Agent host dispatcher and private route.",
+    handoff_worker_unavailable: "The canonical task is active and queued or retrying, but no verified Agent worker has leased it yet. Verify the Agent host dispatcher and private route.",
     completed_after_verified_handoff: "Mission Control completed the canonical task after verified Agent handoff and Artifact readback.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
     shadow: "Shadow mode evaluates safe work without creating or activating a task.",

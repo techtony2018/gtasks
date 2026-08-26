@@ -235,12 +235,12 @@ def _parse_aware_datetime(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _stale_queued_handoff(delivery_state: object, now: datetime) -> bool:
+def _stale_unclaimed_handoff(delivery_state: object, now: datetime) -> bool:
     if not isinstance(delivery_state, Mapping):
         return False
     status = delivery_state.get("status")
     terminal_state = delivery_state.get("terminal_state")
-    if status != "queued" or terminal_state not in {None, ""}:
+    if status not in {"queued", "retrying"} or terminal_state not in {None, ""}:
         return False
     claimed_at = _parse_aware_datetime(delivery_state.get("claimed_at"))
     if claimed_at is None:
@@ -1098,9 +1098,9 @@ class GoalExecutionEngine:
                 changed = True
                 continue
             if (
-                status == "queued"
+                status in {"queued", "retrying"}
                 and callable(latest_delivery_state)
-                and _stale_queued_handoff(latest_delivery_state(task_slug), now)
+                and _stale_unclaimed_handoff(latest_delivery_state(task_slug), now)
             ):
                 revised.append(replace(decision, reason="handoff_worker_unavailable"))
                 changed = True

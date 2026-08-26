@@ -1374,6 +1374,32 @@ class GoalExecutionEngineTests(unittest.TestCase):
             "handoff_worker_unavailable",
         )
 
+    def test_shadow_mode_reports_stale_retrying_handoff_as_worker_attention(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        canary = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "retrying"
+        bridge.latest_delivery_state = {
+            "status": "retrying",
+            "claimed_at": (NOW - timedelta(minutes=7)).isoformat(),
+            "terminal_state": None,
+        }
+
+        shadow = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(shadow.task_slug, canary.task_slug)
+        self.assertEqual(shadow.public_reason, "handoff_worker_unavailable")
+        self.assertEqual(shadow.handoff_status, "retrying")
+        self.assertEqual(
+            shadow.to_dict()["decisions"][0]["reason"],
+            "handoff_worker_unavailable",
+        )
+
     def test_shadow_mode_keeps_fresh_queued_handoff_delivering(self) -> None:
         adapter = self.Adapter()
         bridge = self.Bridge()
