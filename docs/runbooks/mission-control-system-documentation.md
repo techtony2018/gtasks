@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.183`
+- Last verified pushed release: `V0.0.184`
 - Release commits:
-  `fc3e5296a263a1a29dc00b4c86e82a8178550cf0`
+  `525e23119c4484f97c9bd816ea8b0af03729d3ac`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -566,6 +566,23 @@ to the reviewed source before updating relationships.
   readback still reported `total_goals=7`, `needs_attention=2`,
   `waiting_for_tony=1`, `owner_missing=1`, `in_flight=1`, and
   `recently_completed=3`.
+- V0.0.184 evidence: dashboard-managed health readback `V0.0.184`; release
+  commit `525e23119c4484f97c9bd816ea8b0af03729d3ac`; release evidence file
+  `docs/release-evidence/v0.0.184.md`; independent QA PASS at
+  `artifacts/qa/v0.0.184-independent/gate-report.md` with frozen aggregate
+  `c2f7c7769335285fa4dd5ac6f1b19cb7d58d6767b9d1e4a8279a2e39bc14c1b8`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS. Developer
+  verification reported focused `3` OK and
+  `python3 -m unittest discover -s tests` as `1394` OK with `5` skipped.
+- Verified V0.0.184 behavior: `/api/goal-execution` summary and
+  `last_run.summary` include `blocking_questions` for waiting-for-Tony
+  decisions when the exact canonical question TODO is available. Postdeploy
+  readback had `last_error=null` and one blocking question: task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, Agent `agents/toddy`,
+  question `Which family-care scope, outcomes, constraints, and first action should Toddy use next?`.
+  Agents > Goal execution visibly rendered the same question with the
+  `Question:` prefix while preserving the V0.0.183 next action and counts.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -690,3 +707,8 @@ V0.0.183 visible summary rendering keeps the same boundary. Seeing the
 `Next action:` line and counts in Agents helps operators choose the next owner
 to inspect, but it does not perform that owner action, dispatch a worker, or
 replace canonical Task/handoff/Artifact readback.
+V0.0.184 blocking-question rendering is also readback/display behavior. Showing
+the canonical `Question:` text in Agents does not answer it, remove
+`people/tony-guan` as blocker, acknowledge the handoff, wake Toddy, or create
+replacement family-care work; the same canonical task must be answered and
+handed back through the verified answer flow.

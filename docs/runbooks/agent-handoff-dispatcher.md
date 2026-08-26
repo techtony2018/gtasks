@@ -770,6 +770,15 @@ total Goals, Needs attention, Waiting for Tony, Missing owner, In flight, and
 Recently completed, matching `/api/goal-execution.summary` after scheduler
 readback. This is operator-facing display only; it does not change dispatcher
 authority, local worker boundaries, or completion gates.
+V0.0.184 extends that summary with `blocking_questions` at both top level and
+`last_run.summary` for waiting-for-Tony decisions whose canonical question TODO
+is available. The Agents > Goal execution panel renders the exact canonical
+question with a `Question:` prefix. For the current Family/Toddy blocker, the
+canonical readback is task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, Agent `agents/toddy`, and
+question `Which family-care scope, outcomes, constraints, and first action should Toddy use next?`.
+This projection helps Tony find the blocker; it is not a dispatcher wake,
+handoff acknowledgement, answer, or completion receipt.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

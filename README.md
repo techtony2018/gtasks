@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.183 at commit
-`fc3e5296a263a1a29dc00b4c86e82a8178550cf0`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.184 at commit
+`525e23119c4484f97c9bd816ea8b0af03729d3ac`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -245,6 +245,13 @@ Needs attention, Waiting for Tony, Missing owner, In flight, and Recently
 completed. The rendered summary remains read-only display context; it does
 not mutate Goal ownership, answer Tony's blocker, wake a worker, or complete a
 task.
+V0.0.184 adds `blocking_questions` to the Goal execution summary and renders
+the current waiting-for-Tony question in Agents > Goal execution. The live
+Family/Toddy blocker now appears as
+`Question: Which family-care scope, outcomes, constraints, and first action should Toddy use next?`,
+backed by canonical task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and
+question TODO `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`. The question is
+display/readback context only until Tony answers and hands back the same task.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -303,6 +310,12 @@ total Goals, Needs attention, Waiting for Tony, Missing owner, In flight, and
 Recently completed. The visible panel must match `/api/goal-execution.summary`
 after readback and must not expose credentials, fixed-thread ids, or private
 worker routes.
+V0.0.184+ includes `summary.blocking_questions` and
+`last_run.summary.blocking_questions` for waiting-for-Tony decisions when the
+canonical question TODO can be read. Each entry carries the Goal, Task, TODO,
+Agent, question text, and detail. Agents > Goal execution renders the question
+with a `Question:` prefix so Tony can identify the exact blocker; it still
+does not answer the question, remove the blocker, or authorize new Agent work.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface
