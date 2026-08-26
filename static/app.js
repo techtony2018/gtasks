@@ -4472,7 +4472,22 @@ function renderGoalExecutionActionQueue(summary) {
       submit.type = "submit";
       const error = node("p", "form-error is-hidden");
       error.setAttribute("role", "alert");
-      form.append(textarea, submit, error);
+      const answerTemplateText = String(action?.answer_template || "");
+      if (answerTemplateText.trim()) {
+        const templateButton = node(
+          "button",
+          "secondary-button goal-execution-answer-template",
+          "Insert answer template",
+        );
+        templateButton.type = "button";
+        templateButton.addEventListener("click", () => {
+          textarea.value = answerTemplateText;
+          textarea.focus();
+        });
+        form.append(textarea, templateButton, submit, error);
+      } else {
+        form.append(textarea, submit, error);
+      }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         try {

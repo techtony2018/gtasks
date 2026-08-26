@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.194",
+  "current_version": "V0.0.195",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1164,6 +1164,12 @@
       "date": "2026-08-25",
       "title": "Make Goal next action exact",
       "summary": "Goal execution next-action copy now names the exact waiting Agent question and recommended missing-owner assignment, so Tony sees the concrete actions that unblock Goal-derived work instead of generic waiting/owner-missing guidance."
+    },
+    {
+      "version": "V0.0.195",
+      "date": "2026-08-25",
+      "title": "Add Agent answer templates",
+      "summary": "Goal execution waiting-question actions now provide an editable answer template beside the inline answer form, so Tony can unblock Agents with a structured draft while preserving explicit submission and no automatic GBrain mutation."
     }
   ]
 }

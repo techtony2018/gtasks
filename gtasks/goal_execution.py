@@ -154,6 +154,7 @@ def _goal_execution_summary(
                 "agent_slug": question.get("agent_slug"),
                 "summary": question.get("question"),
                 "detail": question.get("detail"),
+                "answer_template": _goal_execution_answer_template(question),
             }
         )
     for missing_owner in missing_owners:
@@ -221,6 +222,21 @@ def _goal_execution_answer_instruction(
     agent = _agent_label(action.get("agent_slug"))
     question = _concise_label(action.get("summary"), fallback="the waiting Agent question")
     return f"Answer the {agent} question for {question}"
+
+
+def _goal_execution_answer_template(
+    question: Mapping[str, object],
+) -> str:
+    provided = question.get("answer_template")
+    if isinstance(provided, str) and provided.strip():
+        return provided
+    return (
+        "Scope categories: [accepted/revised]\n"
+        "Desired outcomes: [accepted/revised]\n"
+        "Constraints: [accepted/revised]\n"
+        "First action: [approved/revised/declined]\n"
+        "Notes: "
+    )
 
 
 def _goal_execution_owner_instruction(
