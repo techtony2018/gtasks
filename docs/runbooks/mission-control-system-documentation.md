@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.194`
+- Last verified pushed release: `V0.0.195`
 - Release commits:
-  `06446ef40abba67eac8b8f9732fb0408a2643b04`
+  `05de4cb5eb1db55bda0ec5b263f0d7956244323e`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -795,6 +795,32 @@ to the reviewed source before updating relationships.
   preserved Timmy/Toddy/Tammy owner controls with no OpenClaw assignment,
   intercepted answer POST before live network, and confirmed no live GBrain
   mutation.
+- V0.0.195 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.195`; release commit
+  `05de4cb5eb1db55bda0ec5b263f0d7956244323e`; release evidence file
+  `docs/release-evidence/v0.0.195.md`; independent QA PASS at
+  `artifacts/qa/v0.0.195-independent/gate-report.md` with frozen aggregate
+  `e85953c50dac2e00848550bd4fb616a2c53ae4a3747b316ba8dccb16ab1f3310`.
+  Developer verification reported the focused Goal execution/frontend
+  contract as `2` OK, the combined focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK, and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.195 behavior: Tony-owned waiting-question Action queue entries
+  now include `answer_template`, and Agents renders an editable
+  `Insert answer template` button beside the inline answer textarea.
+  Postdeploy `/api/goal-execution` retained `last_run=true`,
+  `last_error=null`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`; the `answer_question` action
+  included template lines for Scope categories, Desired outcomes, Constraints,
+  First action, and Notes. Desktop 1440 and genuine mobile 390 QA showed one
+  accessible template button per view; clicking inserted the exact draft,
+  focused the textarea, generated zero non-GET requests, did not submit, and
+  did not mutate GBrain. Intercepted answer-submit regression still used the
+  verified TODO answer endpoint with `expected_updated_at`,
+  `actor=people/tony-guan`, source `mission_control`, and UUID
+  idempotency key; canonical readback remained blocked/not_done with answer
+  null.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -968,3 +994,8 @@ the exact question and recommended owner assignment to reduce operator
 ambiguity, but documentation and readers must not treat the sentence as proof
 of a submitted answer, completed ownership repair, dispatcher wake, handoff
 acknowledgement, task completion, or GBrain mutation.
+V0.0.195 answer templates are editable drafts only. Inserting the template
+into the inline textarea does not submit the answer, clear `waiting_for_input`,
+acknowledge a handoff, wake a worker, assign a Goal owner, complete a task, or
+mutate GBrain; only the separate verified answer submission flow may do that
+after Tony reviews and submits the text.

@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.194 at commit
-`06446ef40abba67eac8b8f9732fb0408a2643b04`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.195 at commit
+`05de4cb5eb1db55bda0ec5b263f0d7956244323e`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -328,6 +328,12 @@ and the recommended Entrepreneurship owner assignment to Timmy with
 delivered Agent work can continue. The sentence is still guidance only: it
 does not answer, assign, acknowledge, wake, complete, or mutate GBrain without
 Tony activating the existing verified controls.
+V0.0.195 adds an editable `Insert answer template` button beside the Goal
+execution waiting-question inline answer textarea. The verified
+`answer_question` Action queue entry carries `answer_template` lines for
+Scope categories, Desired outcomes, Constraints, First action, and Notes; the
+button inserts that structured draft into the textarea and focuses it. This
+does not submit, answer, assign, acknowledge, wake, complete, or mutate GBrain.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -451,6 +457,11 @@ names the exact waiting Agent question and the recommended missing-owner
 assignment when both are present. Readers should treat this as a compact
 operator instruction line backed by the existing queue entries, not as a
 mutation receipt or proof that Tony already answered or assigned ownership.
+V0.0.195+ includes `answer_template` on Tony-owned `answer_question` Action
+queue entries and renders `Insert answer template` beside the inline answer
+textarea. Activating the button only copies the draft into the editable
+textarea; answer submission remains the separate verified
+`/api/todos/<todo>/answer` POST path.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

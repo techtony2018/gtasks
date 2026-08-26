@@ -849,6 +849,13 @@ Family/Toddy question and assigning the Entrepreneurship Goal to Timmy with
 the lowest-load recommendation. This remains operator guidance only; it is not
 an answer, owner assignment, dispatcher wake, handoff acknowledgement,
 completion receipt, or GBrain mutation.
+V0.0.195 adds an editable answer template affordance to Tony-owned
+`answer_question` Action queue entries. The backend includes an
+`answer_template` draft with Scope categories, Desired outcomes, Constraints,
+First action, and Notes lines, and the Agents panel renders `Insert answer
+template` beside the inline answer textarea. Activating the button fills and
+focuses the textarea only; it does not submit an answer, acknowledge a
+handoff, wake a worker, complete a task, assign ownership, or mutate GBrain.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
