@@ -755,6 +755,15 @@ public status surfaces actionable blockers before `recently_completed`
 history. The blocker states are `waiting_for_tony`,
 `handoff_needs_repair`, `handoff_missing`, `task_needs_next_action`, and
 `handoff_worker_unavailable`.
+V0.0.182 adds a compact reader summary to `/api/goal-execution` at both the
+top level and `last_run.summary`: `total_goals`, `needs_attention`,
+`waiting_for_tony`, `owner_missing`, `ready`, `in_flight`,
+`recently_completed`, per-reason `reasons`, and bounded `next_action`
+guidance. It is a read-only projection for dashboards and lightweight
+integrations. Do not treat the summary as authority to create ownership links,
+answer Tony questions, wake a worker, or mark Goal work complete; callers must
+still inspect the named canonical Task, handoff, Artifact, and next-owner
+evidence before taking action.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.169 at commit
-`066bca00433deb313b79b2383b0156677c38c2e6`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.182 at commit
+`94e383595b0e7d6f991fa333a87596fc5c8d02d0`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -231,6 +231,14 @@ exact blocked Task link immediately. Live readback showed task
 `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, title
 `Prepare family-care goal map and weekly review brief`, status `blocked`, and
 agent `agents/toddy`.
+V0.0.182 adds a compact Goal execution reader summary at both top-level
+`/api/goal-execution.summary` and `last_run.summary`. It counts
+`total_goals`, `needs_attention`, `waiting_for_tony`, `owner_missing`,
+`ready`, `in_flight`, `recently_completed`, includes per-reason counts under
+`reasons`, and carries bounded `next_action` guidance for lightweight readers.
+Postdeploy readback showed `total_goals=7`, `needs_attention=2`,
+`waiting_for_tony=1`, `owner_missing=1`, `in_flight=1`,
+`recently_completed=3`, and a present `next_action`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -276,6 +284,13 @@ Delivering or Executing state when the latest verified dispatcher status is
 `queued` or `actively_executing`. This is readback context for already-selected
 work; it does not broaden canary scope, mark all Goals automated, or replace
 the completion requirements below.
+V0.0.182+ mirrors the compact Goal execution summary at the response top level
+and in `last_run.summary`. Readers can use `summary.needs_attention`,
+`summary.waiting_for_tony`, `summary.owner_missing`, `summary.in_flight`,
+`summary.recently_completed`, `summary.reasons`, and `summary.next_action` for
+status dashboards without walking every decision row. The summary is read-only
+projection data; it does not create ownership links, answer Tony-blocked work,
+lease a worker, or complete a task.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

@@ -135,11 +135,11 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-24`
+- Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.166`
+- Last verified pushed release: `V0.0.182`
 - Release commits:
-  `7b57e945afa70ed47761d20f62be156bb785ee33`
+  `94e383595b0e7d6f991fa333a87596fc5c8d02d0`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -532,6 +532,22 @@ to the reviewed source before updating relationships.
   `agents/tammy` and `agents/tammy-oc` local configs. Documentation must not
   describe Timmy/Toddy as local workers; their workers must be verified or
   repaired on their own remote hosts.
+- V0.0.182 evidence: dashboard-managed health and releases readback
+  `V0.0.182`; release commit
+  `94e383595b0e7d6f991fa333a87596fc5c8d02d0`; release evidence file
+  `docs/release-evidence/v0.0.182.md`; independent QA PASS at
+  `artifacts/qa/v0.0.182-independent/gate-report.md` with frozen aggregate
+  `3c6aa4eaa08f3e88ba682437e6ca11697d94c2401e62764e861808640995c335`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS. Developer
+  verification reported `python3 -m unittest discover -s tests` as `1393` OK
+  with `5` skipped.
+- Verified V0.0.182 behavior: `/api/goal-execution` exposes a compact reader
+  summary at both top level and `last_run.summary` with `total_goals`,
+  `needs_attention`, `waiting_for_tony`, `owner_missing`, `ready`,
+  `in_flight`, `recently_completed`, per-reason `reasons`, and bounded
+  `next_action` guidance. Postdeploy readback reported `total_goals=7`,
+  `needs_attention=2`, `waiting_for_tony=1`, `owner_missing=1`,
+  `in_flight=1`, `recently_completed=3`, and `next_action` present.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -647,3 +663,8 @@ work is retried, while the waiting task remains blocked and visible. This does
 not answer Tony's question, remove `owner_missing`, install Timmy/Toddy locally,
 or complete the Agent task without later terminal handoff and exact Artifact
 readback.
+V0.0.182 compact Goal execution summary is also read-only projection data for
+readers. Its counts and `next_action` do not create missing Goal owners,
+answer Tony-blocked work, prove Timmy/Toddy local worker availability, or
+complete any Agent task without the existing canonical handoff and Artifact
+evidence.
