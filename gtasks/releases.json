@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.177",
+  "current_version": "V0.0.178",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1062,6 +1062,12 @@
       "date": "2026-08-25",
       "title": "Project current Goal execution at API top level",
       "summary": "The Goal execution status endpoint now mirrors the latest public reason, task slug, and handoff state at the response top level while preserving the full last_run payload, making monitors and integrations less likely to misread active Agent work as empty."
+    },
+    {
+      "version": "V0.0.178",
+      "date": "2026-08-25",
+      "title": "Bound Agent Work refresh latency",
+      "summary": "Agent Work reads now serve labeled last-verified data while slow canonical refreshes run in the background, and completed/cancelled history no longer hydrates TODO backlinks; current work, open TODOs, and recent-completion context remain visible."
     }
   ]
 }

@@ -6994,6 +6994,119 @@ class ActivatedOpenClawWorkIntegrationTests(unittest.TestCase):
             [item["slug"] for item in result.tasks],
         )
 
+    def test_agent_work_skips_todo_hydration_for_terminal_history(self) -> None:
+        now = datetime(2026, 8, 25, 9, 0, tzinfo=timezone.utc)
+        active = new_task(
+            title="Current agent task",
+            now=now,
+            identity="agentactive",
+        )
+        completed = replace(
+            new_task(
+                title="Completed agent task",
+                now=now,
+                identity="agentdone",
+            ),
+            status="completed",
+            completed_at=now,
+        )
+        active_page = stored_page(active)
+        active_page["frontmatter"]["links"] = [
+            {"to": "collections/toddys-tasks", "type": "member_of"},
+            {"to": "agents/toddy", "type": "assigned_to"},
+        ]
+        completed_page = stored_page(completed)
+        completed_page["frontmatter"]["completed_at"] = now.isoformat()
+        completed_page["frontmatter"]["links"] = [
+            {"to": "collections/toddys-tasks", "type": "member_of"},
+            {"to": "agents/toddy", "type": "assigned_to"},
+        ]
+        agent_pages = [
+            {
+                "slug": f"agents/{name}",
+                "type": "agent",
+                "title": f"Agent {name.title()}",
+                "compiled_truth": "",
+                "frontmatter": {},
+            }
+            for name in ("toddy", "timmy", "tammy")
+        ]
+        runner = FakeRunner(
+            {
+                "get_page": [
+                    agent_pages[0],
+                    agent_pages[1],
+                    agent_pages[2],
+                    active_page,
+                    completed_page,
+                ],
+                "get_links": [
+                    [],
+                    [],
+                    [],
+                    [
+                        {
+                            "from_slug": active.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": active.slug,
+                            "to_slug": "agents/toddy",
+                            "link_type": "assigned_to",
+                        },
+                    ],
+                    [
+                        {
+                            "from_slug": completed.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": completed.slug,
+                            "to_slug": "agents/toddy",
+                            "link_type": "assigned_to",
+                        },
+                    ],
+                ],
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": active.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        },
+                        {
+                            "from_slug": completed.slug,
+                            "to_slug": "collections/toddys-tasks",
+                            "link_type": "member_of",
+                        },
+                    ],
+                    [],
+                    [],
+                    [],
+                    [],
+                ],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_agent_work()
+
+        self.assertEqual(
+            [task["slug"] for task in result.tasks],
+            [active.slug, completed.slug],
+        )
+        self.assertEqual(result.tasks[0]["open_todos"], [])
+        self.assertEqual(result.tasks[1]["open_todos"], [])
+        self.assertIn(
+            ("get_backlinks", {"slug": active.slug}),
+            runner.calls,
+        )
+        self.assertNotIn(
+            ("get_backlinks", {"slug": completed.slug}),
+            runner.calls,
+        )
+
     def test_reports_malformed_typed_agent_member_without_hiding_other_work(
         self,
     ) -> None:

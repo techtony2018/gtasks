@@ -469,6 +469,8 @@ const state = {
   agentWorkLoaded: false,
   agentWorkLoading: false,
   agentWorkLoadPromise: null,
+  agentWorkReadState: null,
+  agentWorkSurfacePollTimer: null,
   agentWorkError: "",
   goalExecution: null,
   goalExecutionLoaded: false,
@@ -1927,6 +1929,19 @@ function projectsColdLoading() {
   );
 }
 
+function agentWorkColdLoading() {
+  const readState = state.agentWorkReadState;
+  return (
+    !state.agentWorkLoaded &&
+    !state.agentTasks.length &&
+    (
+      state.agentWorkLoading ||
+      readState?.status === "loading" ||
+      readState?.refreshing === true
+    )
+  );
+}
+
 function currentWeekStart() {
   if (!state.snapshot) return null;
   return state.weekStart || weekStartFor(state.snapshot.as_of);
@@ -1958,6 +1973,9 @@ function renderNavigation() {
 function inContextCountLabel(view) {
   if (view === "system-tickets" && systemTicketsColdLoading()) {
     return "Reading System Tickets…";
+  }
+  if (view === "agent-work" && agentWorkColdLoading()) {
+    return "Reading Agent Work…";
   }
   const count = navCounts()[view] || 0;
   const noun = {
@@ -4347,6 +4365,10 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     const card = node("article", "agent-profile-card");
     const profile = actionIcon("⋯", `Open ${agent.name} profile`, { className: "agent-card-profile-button" });
     profile.addEventListener("click", () => openAgentProfile(agent));
+    const allWork = agentWorkFor(agent);
+    const coldAgentWorkLoading = !state.agentWorkLoaded &&
+      !allWork.length &&
+      (state.agentWorkLoading || state.agentWorkReadState?.refreshing);
     const heading = node("div", "agent-profile-heading");
     heading.append(
       ownerBadge({
@@ -4356,7 +4378,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       node(
         "span",
         "agent-work-count",
-        `${state.agentTasks.filter((task) => task.owner?.slug === agent.slug).length} work items`,
+        coldAgentWorkLoading ? "Reading work…" : `${allWork.length} work items`,
       ),
       profile,
     );
@@ -4372,7 +4394,6 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       item.append(button);
       goalList.append(item);
     });
-    const allWork = agentWorkFor(agent);
     const delegatedWork = state.agentTasks.filter(
       (task) => activeTemporaryExecution(task)?.executor_agent === agent.slug,
     );
@@ -4384,7 +4405,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
     workSummary.append(node("span", "agent-work-kind", "Owned work"));
-    workSummary.append(node("strong", "", work.length ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed` : "No authorized work yet"));
+    workSummary.append(node("strong", "", coldAgentWorkLoading ? "Reading typed agent task collections…" : work.length ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed` : "No authorized work yet"));
     const openTodoCount = work.reduce(
       (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
       0,
@@ -4395,11 +4416,13 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
         document.createTextNode(`${todoSummary(nextWork)} · ${openTodoCount} open TODO${openTodoCount === 1 ? "" : "s"} · `),
         taskDetailLink(nextWork, nextWork.title || nextWork.summary || nextWork.slug),
       );
+    } else if (coldAgentWorkLoading) {
+      nextLine.textContent = "Reading current tasks and open TODOs from GBrain…";
     } else {
       nextLine.textContent = "No current task or open TODO recorded.";
     }
     workSummary.append(nextLine);
-    workSummary.append(node("span", "", recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
+    workSummary.append(node("span", "", coldAgentWorkLoading ? "Reading verified completion history…" : recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
     const delegatedSummary = node("div", "agent-work-summary delegated-work-summary");
     delegatedSummary.append(
       node("h3", "", "Additional delegated work"),
@@ -4716,12 +4739,19 @@ function loadAgentWork() {
       if (!response.ok) {
         throw new Error(payload.error || "Agent work could not be read.");
       }
-      state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
-      state.agentWorkIssues = Array.isArray(payload.issues)
-        ? payload.issues
-        : [];
-      syncAgentIssues();
-      state.agentWorkLoaded = true;
+      state.agentWorkReadState = payload.read_state || null;
+      if (response.status === 200) {
+        state.agentTasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+        state.agentWorkIssues = Array.isArray(payload.issues)
+          ? payload.issues
+          : [];
+        syncAgentIssues();
+        state.agentWorkLoaded = true;
+      }
+      if (payload.read_state?.error) {
+        state.agentWorkError = payload.read_state.error;
+      }
+      if (payload.read_state?.refreshing) scheduleSurfacePoll("agent_work");
     } catch (error) {
       state.agentWorkError = error.message || "Agent work could not be read.";
     } finally {
@@ -4741,7 +4771,9 @@ function scheduleSurfacePoll(surface) {
       ? "proposalSurfacePollTimer"
       : surface === "projects"
         ? "projectSurfacePollTimer"
-        : "systemTicketSurfacePollTimer";
+        : surface === "agent_work"
+          ? "agentWorkSurfacePollTimer"
+          : "systemTicketSurfacePollTimer";
   if (state[timerKey] !== null) return;
   state[timerKey] = window.setTimeout(() => {
     state[timerKey] = null;
@@ -4749,6 +4781,7 @@ function scheduleSurfacePoll(surface) {
     if (surface === "tasks") void loadTasks({ reason: "poll" });
     else if (surface === "proposals") void loadProposals({ poll: true });
     else if (surface === "projects") void loadProjects({ poll: true });
+    else if (surface === "agent_work") void loadAgentWork({ poll: true });
     else void loadSystemTickets({ poll: true });
   }, 1000);
 }

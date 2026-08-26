@@ -5978,6 +5978,68 @@ class AgentApiTests(unittest.TestCase):
         self.assertEqual(adapter.created, [])
         self.assertEqual(adapter.status_updates, [])
 
+    def test_cold_agent_work_read_is_bounded_and_then_serves_labeled_last_verified_data(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        agent = sample_agent()
+        task = new_inbox_task(
+            "Draft wellbeing check-in",
+            datetime.fromisoformat("2026-07-30T09:00:00-07:00"),
+            "agent01",
+        ).to_dict()
+        task.update(
+            {
+                "owner": {
+                    "slug": agent.slug,
+                    "name": agent.name,
+                    "avatar": {"kind": "initials", "value": "TO"},
+                },
+                "agent_work": True,
+                "read_only": True,
+            }
+        )
+
+        class SlowAgentWorkAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_agent_work(self) -> AgentWorkRead:
+                self.read_count += 1
+                entered.set()
+                release.wait(timeout=2)
+                return super().list_agent_work()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(
+                ReadSnapshotStore(Path(temporary) / "reads.json"),
+                background=True,
+            )
+            adapter = SlowAgentWorkAdapter(agents=(agent,), agent_work=(task,))
+            harness = ServerHarness(self, adapter, read_cache=cache)
+
+            cold_status, cold_payload, _ = harness.request("GET", "/api/agent-work")
+
+            self.assertEqual(cold_status, 202)
+            self.assertEqual(cold_payload["read_state"]["surface"], "agent_work")
+            self.assertEqual(cold_payload["read_state"]["status"], "loading")
+            self.assertTrue(entered.wait(timeout=1))
+
+            release.set()
+            self.assertTrue(cache.wait_for_idle("agent_work"))
+            warm_status, warm_payload, _ = harness.request("GET", "/api/agent-work")
+
+            self.assertEqual(warm_status, 200)
+            self.assertEqual(
+                [item["slug"] for item in warm_payload["tasks"]],
+                [task["slug"]],
+            )
+            self.assertEqual(warm_payload["read_state"]["surface"], "agent_work")
+            self.assertEqual(warm_payload["read_state"]["status"], "fresh")
+
+            second_status, second_payload, _ = harness.request("GET", "/api/agent-work")
+            self.assertEqual(second_status, 200)
+            self.assertEqual(second_payload["read_state"]["status"], "fresh")
+            self.assertEqual(adapter.read_count, 1)
+
     def test_profiles_expose_public_runtime_without_private_session_material(self) -> None:
         agents = tuple(
             AgentProfile(

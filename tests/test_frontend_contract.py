@@ -2203,7 +2203,13 @@ const exact = {
   detail: "Canonical detail",
   display_markdown: "# Exact canonical Task\n\n## 详情\n\nCanonical detail",
 };
-state.snapshot = { tasks: [], goals: [], views: {} };
+state.snapshot = {
+  as_of: "2026-08-25",
+  tasks: [],
+  goals: [],
+  today: { in_progress: [], todays_actions: [], overdue: [], waiting_and_blocked: [] },
+  views: { inbox: [], completed: [], blocked: [], projects: [] },
+};
 state.agentTasks = [fallback];
 state.agents = [];
 const requested = [];
@@ -3294,6 +3300,48 @@ assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical 
         self.assertIn('node("h3", "", "Current work")', agent_work)
         self.assertIn("No authorized work yet", agent_work)
         self.assertIn("No current task or open TODO recorded.", agent_work)
+
+    def test_agents_cards_show_loading_instead_of_false_empty_during_cold_agent_work_read(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const flatten = (node) => {
+  if (!node) return "";
+  const own = typeof node.textContent === "string" ? node.textContent : "";
+  return own + (node.children || []).map(flatten).join("");
+};
+state.agents = [{
+  slug: "agents/toddy",
+  name: "Toddy",
+  avatar: { kind: "initials", value: "TO" },
+  default_goal_slugs: [],
+  runtime: "codex",
+}];
+state.agentTasks = [];
+state.agentWorkLoading = true;
+state.agentWorkLoaded = false;
+state.agentWorkError = "";
+state.goalExecution = null;
+state.snapshot = {
+  as_of: "2026-08-25",
+  tasks: [],
+  goals: [],
+  today: { in_progress: [], todays_actions: [], overdue: [], waiting_and_blocked: [] },
+  views: { inbox: [], completed: [], blocked: [], projects: [] },
+};
+state.delegations = [];
+state.handoffLogEvents = [];
+state.handoffLogLoading = false;
+state.handoffLogError = "";
+const text = flatten(renderAgentWorkView());
+assert(text.includes("Reading typed agent task collections"), `missing loading copy: ${text}`);
+assert(!text.includes("No authorized work yet"), `false empty authorized copy rendered: ${text}`);
+assert(!text.includes("No current task or open TODO recorded"), `false empty TODO copy rendered: ${text}`);
+assert(!text.includes("No verified completion yet"), `false empty completion copy rendered: ${text}`);
+assert(inContextCountLabel("agent-work") === "Reading Agent Work…", `false count label rendered: ${inContextCountLabel("agent-work")}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_agents_route_is_unified_handoff_surface_without_coordinator_copy(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")

@@ -158,6 +158,7 @@ SNAPSHOT_CACHE_SECONDS = 30
 PROPOSAL_CACHE_SECONDS = 5 * 60
 SYSTEM_TICKET_CACHE_SECONDS = 5 * 60
 PROJECT_CACHE_SECONDS = 5 * 60
+AGENT_WORK_CACHE_SECONDS = 5 * 60
 DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     Path.home()
     / ".codex"
@@ -863,7 +864,7 @@ def _handler_class(
         # Keep the last verified projection usable while the authoritative
         # refresh runs. Mutations mark both task and proposal projections stale
         # because an agent proposal decision changes the same canonical task.
-        active_read_cache.invalidate("tasks", "proposals")
+        active_read_cache.invalidate("tasks", "proposals", "agent_work")
 
     def invalidate_system_tickets() -> None:
         active_read_cache.invalidate("system_tickets", "system_tickets_all")
@@ -1355,6 +1356,14 @@ def _handler_class(
             "projects",
             lambda: adapter.list_projects().to_dict(),
             ttl_seconds=PROJECT_CACHE_SECONDS,
+            force=force,
+        )
+
+    def read_agent_work(force: bool = False):
+        return active_read_cache.read(
+            "agent_work",
+            lambda: adapter.list_agent_work().to_dict(),
+            ttl_seconds=AGENT_WORK_CACHE_SECONDS,
             force=force,
         )
 
@@ -1910,17 +1919,33 @@ def _handler_class(
                 self._json(HTTPStatus.OK, decorate_issues(payload))
                 return
             if path == "/api/agent-work":
-                try:
-                    payload = decorate_agent_work_execution(
-                        adapter.list_agent_work().to_dict()
-                    )
-                except GBrainError as exc:
+                force = urlsplit(self.path).query == "refresh=1"
+                result = read_agent_work(force=force)
+                if result.payload is None:
+                    if result.state.get("status") == "error":
+                        self._json(
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                            {
+                                "error": result.state.get("error") or "The canonical GBrain Agent Work refresh failed.",
+                                "code": "gbrain_refresh_delayed",
+                                "read_state": result.state,
+                            },
+                        )
+                        return
                     self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
+                        HTTPStatus.ACCEPTED,
+                        {
+                            "tasks": [],
+                            "issues": [],
+                            "read_state": result.state,
+                        },
                     )
                     return
-                self._json(HTTPStatus.OK, decorate_issues(payload))
+                payload = decorate_agent_work_execution(result.payload)
+                self._json(
+                    HTTPStatus.OK,
+                    decorate_issues({**payload, "read_state": result.state}),
+                )
                 return
             if path == "/api/proposals":
                 force = urlsplit(self.path).query == "refresh=1"

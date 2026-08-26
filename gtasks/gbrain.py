@@ -5822,7 +5822,7 @@ class GBrainAdapter:
                         raise DomainValidationError(
                             "agent task owner does not match its typed work collection"
                         )
-                    if include_todos:
+                    if include_todos and task.status not in {"completed", "cancelled"}:
                         todo_read = self._list_task_todos_for_task(task, limit=100)
                         issues.extend(
                             replace(issue, owner_agent=agent.slug)
