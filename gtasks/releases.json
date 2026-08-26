@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.180",
+  "current_version": "V0.0.181",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1080,6 +1080,12 @@
       "date": "2026-08-25",
       "title": "Surface Agent card handoff repair",
       "summary": "Agent cards now surface terminal dispatcher handoff states as Needs attention with the latest dispatcher status, so active Agent work that needs recovery is visible without opening Task detail."
+    },
+    {
+      "version": "V0.0.181",
+      "date": "2026-08-25",
+      "title": "Ignore terminal Agent handoff history noise",
+      "summary": "Agent cards now ignore dispatcher repair statuses attached only to completed or cancelled history rows, while still surfacing non-terminal Agent work that genuinely needs handoff recovery."
     }
   ]
 }

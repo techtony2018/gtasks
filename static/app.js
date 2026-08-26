@@ -3557,6 +3557,7 @@ function agentStatusCounts(work) {
 
 function taskDispatcherAttention(task) {
   const status = task?.dispatcher_handoff?.status;
+  if (!["planned", "active", "blocked"].includes(task?.status)) return null;
   if (["dead_letter", "suppressed", "handed_back"].includes(status)) {
     return {
       state: "Needs attention",

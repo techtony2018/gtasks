@@ -3400,6 +3400,54 @@ assert(!text.includes("1 active · 0 proposed"), `ordinary active count hid disp
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_agent_card_ignores_terminal_history_dispatcher_status(self) -> None:
+        result = run_app_runtime_probe(
+            r"""
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const flatten = (node) => {
+  if (!node) return "";
+  const own = typeof node.textContent === "string" ? node.textContent : "";
+  return own + (node.children || []).map(flatten).join("");
+};
+state.snapshot = {
+  as_of: "2026-08-25",
+  tasks: [],
+  goals: [],
+  today: { in_progress: [], todays_actions: [], overdue: [], waiting_and_blocked: [] },
+  views: { inbox: [], completed: [], blocked: [], projects: [] },
+};
+state.agents = [{
+  slug: "agents/tammy",
+  name: "Tammy",
+  avatar: { kind: "initials", value: "TA" },
+  default_goal_slugs: [],
+  runtime: "codex",
+}];
+state.agentTasks = [{
+  slug: "tasks/terminal-history",
+  title: "Old completed dispatcher record",
+  status: "cancelled",
+  owner: { slug: "agents/tammy", name: "Tammy", avatar: { kind: "initials", value: "TA" } },
+  owner_agent: "agents/tammy",
+  open_todos: [],
+  dispatcher_handoff: { status: "suppressed" },
+  updated_at: "2026-08-25T12:00:00Z",
+}];
+state.agentWorkLoaded = true;
+state.agentWorkLoading = false;
+state.goalExecution = null;
+state.delegations = [];
+state.handoffLogEvents = [];
+state.handoffLogLoading = false;
+state.handoffLogError = "";
+const text = flatten(renderAgentWorkView());
+assert(!text.includes("Needs attention · Verified Agent handoff needs system review"), `terminal history created false attention: ${text}`);
+assert(!text.includes("Latest dispatcher status: suppressed"), `terminal history exposed stale dispatcher repair copy: ${text}`);
+assert(text.includes("0 active · 0 proposed · 0 blocked · 0 completed"), `ordinary summary was not preserved: ${text}`);
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_agents_route_is_unified_handoff_surface_without_coordinator_copy(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
