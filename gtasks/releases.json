@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.184",
+  "current_version": "V0.0.185",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1104,6 +1104,12 @@
       "date": "2026-08-25",
       "title": "Expose Goal execution blocking question",
       "summary": "Goal execution summaries now include exact waiting-for-Tony question TODOs, and the Agents Goal execution panel surfaces the current blocking question beside the next-action guidance so Tony can unblock Agent work directly."
+    },
+    {
+      "version": "V0.0.185",
+      "date": "2026-08-25",
+      "title": "Expose missing Goal owners",
+      "summary": "Goal execution summaries now list the exact Goals missing a verified default_agent_for relationship, and the Agents Goal execution panel shows a compact Missing owner line so Tony can see which Goal needs owner assignment before Agent-derived work can proceed."
     }
   ]
 }

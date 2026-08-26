@@ -4288,6 +4288,9 @@ function renderGoalExecutionSummary() {
   const blockingQuestions = Array.isArray(summary.blocking_questions)
     ? summary.blocking_questions
     : [];
+  const missingOwners = Array.isArray(summary.missing_owners)
+    ? summary.missing_owners
+    : [];
   const metrics = [
     pluralizeCount(Number(summary.total_goals) || 0, "total goal"),
     pluralizeCount(Number(summary.needs_attention) || 0, "need attention", "need attention"),
@@ -4306,6 +4309,18 @@ function renderGoalExecutionSummary() {
     const question = String(item?.question || "").trim();
     if (!question) return;
     panel.append(node("p", "goal-execution-blocking-question", `Question: ${question}`));
+  });
+  missingOwners.slice(0, 2).forEach((item) => {
+    const title = String(item?.goal_title || item?.goal_slug || "").trim();
+    const relationship = String(item?.required_relationship || "default_agent_for").trim();
+    if (!title) return;
+    panel.append(
+      node(
+        "p",
+        "goal-execution-missing-owner",
+        `Missing owner: ${title} — add ${relationship}`,
+      ),
+    );
   });
   return panel;
 }

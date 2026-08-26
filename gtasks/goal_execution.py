@@ -122,6 +122,7 @@ def _goal_execution_summary(
     public_reason: str,
     *,
     blocking_questions: tuple[Mapping[str, object], ...] = (),
+    missing_owners: tuple[Mapping[str, object], ...] = (),
 ) -> dict[str, object]:
     counts: dict[str, int] = {}
     for decision in decisions:
@@ -173,6 +174,7 @@ def _goal_execution_summary(
         "recently_completed": counts.get("recently_completed", 0),
         "reasons": counts,
         "blocking_questions": [dict(question) for question in blocking_questions],
+        "missing_owners": [dict(owner) for owner in missing_owners],
         "next_action": next_action,
     }
 
@@ -206,6 +208,31 @@ def _goal_execution_blocking_questions(
             }
         )
     return tuple(questions)
+
+
+def _goal_execution_missing_owners(
+    plan: GoalExecutionPlan,
+    snapshot: GoalExecutionSnapshot,
+) -> tuple[Mapping[str, object], ...]:
+    goals_by_slug = {goal.slug: goal for goal in snapshot.goals}
+    missing: list[dict[str, object]] = []
+    for decision in plan.decisions:
+        if decision.reason != "owner_missing":
+            continue
+        goal = goals_by_slug.get(decision.goal_slug)
+        missing.append(
+            {
+                "goal_slug": decision.goal_slug,
+                "goal_title": goal.title if goal is not None else decision.goal_slug,
+                "required_relationship": "default_agent_for",
+                "message": (
+                    "Assign exactly one Codex Agent with a verified "
+                    "default_agent_for link before Mission Control can derive "
+                    "work from this Goal."
+                ),
+            }
+        )
+    return tuple(missing)
 
 
 def derived_task_slug(fingerprint: str) -> str:
@@ -577,6 +604,7 @@ class GoalExecutionRun:
     handoff_id: str | None = None
     handoff_status: str | None = None
     blocking_questions: tuple[Mapping[str, object], ...] = ()
+    missing_owners: tuple[Mapping[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         public_decisions = []
@@ -601,6 +629,7 @@ class GoalExecutionRun:
                 self.decisions,
                 self.public_reason,
                 blocking_questions=self.blocking_questions,
+                missing_owners=self.missing_owners,
             ),
             "task": (
                 {
@@ -628,6 +657,7 @@ class GoalExecutionRun:
         ran_at: datetime,
         goal_slug: str | None = None,
         blocking_questions: tuple[Mapping[str, object], ...] = (),
+        missing_owners: tuple[Mapping[str, object], ...] = (),
     ) -> "GoalExecutionRun":
         selected = next(
             (
@@ -653,6 +683,7 @@ class GoalExecutionRun:
             public_reason=reason,
             task_slug=selected.existing_task_slug if selected else None,
             blocking_questions=blocking_questions,
+            missing_owners=missing_owners,
         )
 
     @classmethod
@@ -666,6 +697,7 @@ class GoalExecutionRun:
         public_reason: str,
         handoff: object | None = None,
         blocking_questions: tuple[Mapping[str, object], ...] = (),
+        missing_owners: tuple[Mapping[str, object], ...] = (),
     ) -> "GoalExecutionRun":
         return cls(
             mode=mode,
@@ -688,6 +720,7 @@ class GoalExecutionRun:
                 else None
             ),
             blocking_questions=blocking_questions,
+            missing_owners=missing_owners,
         )
 
 
@@ -772,6 +805,7 @@ class GoalExecutionEngine:
             now=now,
         )
         blocking_questions = _goal_execution_blocking_questions(plan, snapshot)
+        missing_owners = _goal_execution_missing_owners(plan, snapshot)
         if self.mode != "canary":
             return self._run_from_plan(
                 plan,
@@ -781,6 +815,7 @@ class GoalExecutionEngine:
                 goal_slug=self.canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         canary_goal_slug = (
             self._auto_canary_goal_slug(
@@ -829,6 +864,7 @@ class GoalExecutionEngine:
                 goal_slug=canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         try:
             planned = self.adapter.create_or_adopt_derived_agent_task(
@@ -845,6 +881,7 @@ class GoalExecutionEngine:
                 task_slug=derived_task_slug(eligible.candidate.fingerprint),
                 agent_slug=eligible.candidate.agent_slug,
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         if planned.status != "planned":
             return GoalExecutionRun.for_task(
@@ -854,6 +891,7 @@ class GoalExecutionEngine:
                 task=planned,
                 public_reason="adopted",
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         try:
             activated = self.adapter.set_task_status(planned.slug, "active", now)
@@ -865,6 +903,7 @@ class GoalExecutionEngine:
                 task=planned,
                 public_reason="system_repair_required",
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         if activated.verified is not True or activated.task.status != "active":
             return GoalExecutionRun.for_task(
@@ -874,6 +913,7 @@ class GoalExecutionEngine:
                 task=activated.task,
                 public_reason="system_repair_required",
                 blocking_questions=blocking_questions,
+                missing_owners=missing_owners,
             )
         handoff = self.bridge.after_verified_mutation(
             planned.to_dict(),
@@ -898,6 +938,7 @@ class GoalExecutionEngine:
             public_reason=reason,
             handoff=handoff,
             blocking_questions=blocking_questions,
+            missing_owners=missing_owners,
         )
 
     def _auto_canary_goal_slug(
@@ -1279,6 +1320,7 @@ class GoalExecutionEngine:
         goal_slug: str | None,
         handoff_status_by_task: Mapping[str, str | None],
         blocking_questions: tuple[Mapping[str, object], ...] = (),
+        missing_owners: tuple[Mapping[str, object], ...] = (),
     ) -> GoalExecutionRun:
         selected = next(
             (
@@ -1324,6 +1366,7 @@ class GoalExecutionEngine:
                     public_reason=selected.reason,
                     handoff=handoff,
                     blocking_questions=blocking_questions,
+                    missing_owners=missing_owners,
                 )
         if (
             selected is not None
@@ -1362,6 +1405,7 @@ class GoalExecutionEngine:
                     public_reason="handoff_missing",
                     handoff=SimpleNamespace(status="missing"),
                     blocking_questions=blocking_questions,
+                    missing_owners=missing_owners,
                 )
         if (
             goal_slug is not None
@@ -1398,6 +1442,7 @@ class GoalExecutionEngine:
                     public_reason=public_reason,
                     handoff=handoff,
                     blocking_questions=blocking_questions,
+                    missing_owners=missing_owners,
                 )
         return GoalExecutionRun.from_plan(
             plan,
@@ -1405,6 +1450,7 @@ class GoalExecutionEngine:
             ran_at=ran_at,
             goal_slug=goal_slug,
             blocking_questions=blocking_questions,
+            missing_owners=missing_owners,
         )
 
 

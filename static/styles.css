@@ -2513,6 +2513,10 @@ body.is-resizing-detail {
   color: #ffd89a;
 }
 
+.goal-execution-missing-owner {
+  color: #f7b8ff;
+}
+
 .goal-execution-metrics {
   font-size: 0.88rem;
 }

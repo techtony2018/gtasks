@@ -617,6 +617,17 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(rendered["summary"]["waiting_for_tony"], 1)
         self.assertEqual(rendered["summary"]["owner_missing"], 1)
         self.assertEqual(
+            rendered["summary"]["missing_owners"],
+            [
+                {
+                    "goal_slug": "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "goal_title": "Entrepreneurship",
+                    "required_relationship": "default_agent_for",
+                    "message": "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
+                }
+            ],
+        )
+        self.assertEqual(
             rendered["summary"]["blocking_questions"],
             [
                 {

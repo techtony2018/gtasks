@@ -177,6 +177,12 @@ state.goalExecution = {
       question: "Which family-care scope should Toddy use next?",
       detail: "Choose the scope and first bounded action.",
     }],
+    missing_owners: [{
+      goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+      goal_title: "Entrepreneurship",
+      required_relationship: "default_agent_for",
+      message: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
+    }],
     next_action: "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
   },
   last_run: {
@@ -195,6 +201,8 @@ assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution su
 assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
 assert(goalExecutionSurfaceText.includes("1 in flight"), "Goal execution surface did not expose in-flight count");
 assert(goalExecutionSurfaceText.includes("Question: Which family-care scope should Toddy use next?"), "Goal execution surface did not expose the exact blocking question");
+assert(goalExecutionSurfaceText.includes("Missing owner: Entrepreneurship"), "Goal execution surface did not expose the exact missing owner title");
+assert(goalExecutionSurfaceText.includes("default_agent_for"), "Goal execution surface did not expose the missing owner repair relationship");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";
