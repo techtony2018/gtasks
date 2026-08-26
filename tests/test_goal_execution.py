@@ -2174,6 +2174,46 @@ class GoalExecutionSchedulerTests(unittest.TestCase):
         self.assertIsNone(status["last_run"])
         self.assertGreaterEqual(status["next_run_in_seconds"], 29)
 
+    def test_status_reports_cold_run_as_loading_instead_of_blank(self) -> None:
+        class BlockingEngine:
+            mode = "canary"
+
+            def __init__(self) -> None:
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def run_once(self, now):
+                self.started.set()
+                self.release.wait(timeout=2)
+                return SimpleNamespace(
+                    to_dict=lambda: {
+                        "mode": "canary",
+                        "ran_at": now.isoformat(),
+                        "planner_version": "goal-execution-v1",
+                        "public_reason": "shadow",
+                    }
+                )
+
+        engine = BlockingEngine()
+        scheduler = GoalExecutionScheduler(engine)
+
+        scheduler.start()
+        self.assertTrue(engine.started.wait(timeout=1))
+        status = scheduler.status()
+        engine.release.set()
+        scheduler.stop()
+
+        self.assertIsNone(status["last_run"])
+        self.assertEqual(
+            status["read_state"],
+            {
+                "surface": "goal_execution",
+                "status": "loading",
+                "refreshing": True,
+                "last_valid_at": None,
+            },
+        )
+
     def test_status_projects_latest_public_decision_for_readers(self) -> None:
         class Engine:
             mode = "canary"

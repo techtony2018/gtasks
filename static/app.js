@@ -4716,7 +4716,14 @@ function renderGoalExecutionSurface() {
   list.id = "agent-goal-execution-list";
   const summary = renderGoalExecutionSummary();
   const lastRun = state.goalExecution?.last_run;
-  if (state.goalExecutionLoading && !state.goalExecution) {
+  const goalExecutionReadState = state.goalExecution?.read_state;
+  if (
+    !lastRun &&
+    goalExecutionReadState?.surface === "goal_execution" &&
+    goalExecutionReadState?.status === "loading"
+  ) {
+    status.textContent = "Reading Goal execution…";
+  } else if (state.goalExecutionLoading && !state.goalExecution) {
     status.textContent = "Reading Goal execution…";
   } else if (state.goalExecutionError && state.goalExecution) {
     status.textContent = "Last verified Goal execution remains visible; refresh failed.";

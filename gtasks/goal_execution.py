@@ -1822,6 +1822,7 @@ class GoalExecutionScheduler:
         self._stopping = False
         self._pending = True
         self._last_started_mono: float | None = None
+        self._active_started_mono: float | None = None
         self._next_reconcile_mono = self._monotonic()
         self._last_run: dict[str, object] | None = None
         self._last_error: str | None = None
@@ -1881,6 +1882,14 @@ class GoalExecutionScheduler:
             task_slug = task.get("slug") if isinstance(task, Mapping) else None
             handoff = last_run.get("handoff") if isinstance(last_run, Mapping) else None
             summary = last_run.get("summary") if isinstance(last_run, Mapping) else None
+            read_state: dict[str, object] | None = None
+            if self._active_started_mono is not None:
+                read_state = {
+                    "surface": "goal_execution",
+                    "status": "refreshing" if last_run else "loading",
+                    "refreshing": True,
+                    "last_valid_at": last_run.get("ran_at") if last_run else None,
+                }
             return {
                 "mode": self.engine.mode,
                 "planner_version": PLANNER_VERSION,
@@ -1896,6 +1905,7 @@ class GoalExecutionScheduler:
                 "summary": dict(summary) if isinstance(summary, Mapping) else None,
                 "last_error": self._last_error,
                 "next_run_in_seconds": round(next_in, 3),
+                "read_state": read_state,
             }
 
     def _loop(self) -> None:
@@ -1914,6 +1924,7 @@ class GoalExecutionScheduler:
                     if minimum_due and (self._pending or reconcile_due):
                         self._pending = False
                         self._last_started_mono = now
+                        self._active_started_mono = now
                         self._next_reconcile_mono = (
                             now + self.reconcile_interval_seconds
                         )
@@ -1937,7 +1948,9 @@ class GoalExecutionScheduler:
                 with self._condition:
                     self._last_error = type(exc).__name__
                     self._pending = True
+                    self._active_started_mono = None
             else:
                 with self._condition:
                     self._last_run = dict(rendered)
                     self._last_error = None
+                    self._active_started_mono = None

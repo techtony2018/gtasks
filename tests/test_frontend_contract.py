@@ -226,6 +226,24 @@ state.goalExecution = {
 state.goalExecution.last_run.summary = state.goalExecution.summary;
 const goalExecutionSurface = renderGoalExecutionSurface();
 const goalExecutionSurfaceText = flattenText(goalExecutionSurface);
+const verifiedGoalExecution = state.goalExecution;
+state.goalExecution = {
+  mode: "canary",
+  read_state: {
+    surface: "goal_execution",
+    status: "loading",
+    refreshing: true,
+    last_valid_at: null,
+  },
+  last_run: null,
+  summary: null,
+  last_error: null,
+};
+state.goalExecutionLoading = false;
+const coldGoalExecutionSurfaceText = flattenText(renderGoalExecutionSurface());
+assert(coldGoalExecutionSurfaceText.includes("Reading Goal execution"), "cold scheduler read state did not render an honest loading state");
+assert(!coldGoalExecutionSurfaceText.includes("Waiting for the first bounded Goal execution readback"), "cold scheduler read state rendered stale first-read waiting copy");
+state.goalExecution = verifiedGoalExecution;
 function walkElements(root, predicate, matches = []) {
   if (!root) return matches;
   if (predicate(root)) matches.push(root);

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.207",
+  "current_version": "V0.0.208",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1242,6 +1242,12 @@
       "date": "2026-08-26",
       "title": "Artifact-backed terminal WIP reconciliation",
       "summary": "Goal execution now prioritizes active derived tasks with suppressed handoff release and exact produced_for Artifact readback as terminal completion candidates, freeing Agent WIP capacity before surfacing unrelated in-flight work."
+    },
+    {
+      "version": "V0.0.208",
+      "date": "2026-08-26",
+      "title": "Honest cold Goal execution read state",
+      "summary": "Goal execution status now exposes cold scheduler reads as an explicit loading read_state, and the UI renders Reading Goal execution instead of a blank first-read waiting state while remote readback is still in progress."
     }
   ]
 }
