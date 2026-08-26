@@ -159,6 +159,8 @@ state.snapshot = {
     { slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", title: "Entrepreneurship" },
   ],
   tasks: [{ slug: taskSlug, title: "Review Civic progress", status: "active", owner_agent: "agents/timmy", project: null }],
+  today: { in_progress: [], todays_actions: [], waiting_and_blocked: [], overdue: [] },
+  views: { today: [], inbox: [], active: [], blocked: [], completed: [], all: [], in_progress: [] },
 };
 state.agents = [
   { slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] },
@@ -229,6 +231,15 @@ assert(goalExecutionSurfaceText.includes("Tony action required"), "Goal executio
 assert(goalExecutionSurfaceText.includes("Agent active"), "Goal execution surface did not distinguish active Agent work");
 assert(goalExecutionSurfaceText.includes("Answer Agent question"), "Goal execution surface did not include question action");
 assert(goalExecutionSurfaceText.includes("Assign Goal owner"), "Goal execution surface did not include owner assignment action");
+const answerActions = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-answer-action") &&
+  element.dataset?.taskSlug === taskSlug &&
+  element.dataset?.todoSlug === "todos/question");
+assert(answerActions.length === 1, "action queue did not expose one direct Answer Agent question action");
+assert(
+  answerActions[0].dataset?.goalExecutionOrigin === "summary:action:answer_question:tasks_22222222-2222-4222-8222-222222222222:todos_question",
+  "direct question action lacks immutable Goal execution origin identity",
+);
 const questionLinks = walkElements(goalExecutionSurface, (element) =>
   String(element.className || "").includes("goal-execution-blocking-question") &&
   walkElements(element, (child) =>
@@ -272,6 +283,60 @@ assert(assignmentRequest.url === "/api/agents/agents%2Ftammy/default-goals", "su
 assert(assignmentRequest.method === "POST", "summary assignment did not POST");
 assert(assignmentRequest.body.goal_slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435", "summary assignment sent wrong Goal");
 assert(assignmentRequest.body.action === "assign", "summary assignment was not an explicit assign action");
+let selectedQuestion = null;
+const originalSelectTask = selectTask;
+selectTask = (slug, fallback, origin, options = {}) => {
+  selectedQuestion = { slug, fallback, origin, options };
+};
+openGoalExecutionQuestionAction(taskSlug, "todos/question", answerActions[0]);
+selectTask = originalSelectTask;
+assert(selectedQuestion?.slug === taskSlug, "direct question action opened the wrong task");
+assert(selectedQuestion?.origin === answerActions[0], "direct question action did not preserve exact origin");
+assert(selectedQuestion?.options?.focusTarget === "handoff-answer", "direct question action did not request answer focus");
+assert(selectedQuestion?.options?.todoSlug === "todos/question", "direct question action did not preserve TODO identity");
+const rerenderedAnswerAction = new FakeElement("button");
+rerenderedAnswerAction.dataset.slug = taskSlug;
+rerenderedAnswerAction.dataset.goalExecutionOrigin = answerActions[0].dataset.goalExecutionOrigin;
+document.querySelector = (selector) => selector === `[data-goal-execution-origin="${CSS.escape(rerenderedAnswerAction.dataset.goalExecutionOrigin)}"]`
+  ? rerenderedAnswerAction
+  : null;
+document.querySelectorAll = (selector) => selector === ".inline-task-link" ? [new FakeElement("button")] : [];
+assert(
+  detailFocusReturnTarget({ element: new FakeElement("button"), slug: taskSlug, goalExecutionOrigin: answerActions[0].dataset.goalExecutionOrigin }) === rerenderedAnswerAction,
+  "close restoration did not prefer exact direct question action origin over same-slug links",
+);
+const hydratedQuestionTask = {
+  slug: taskSlug,
+  title: "Review Civic progress",
+  summary: "Review Civic progress",
+  status: "blocked",
+  priority: "normal",
+  due_day: "2026-08-25",
+  display_markdown: "Question task",
+  owner_agent: "agents/timmy",
+  project: null,
+  goal: goalSlug,
+  todos: [{
+    slug: "todos/question",
+    parent_task: taskSlug,
+    status: "not_done",
+    kind: "question",
+    text: "Which family-care scope should Toddy use next?",
+    detail: "Choose the scope and first bounded action.",
+    updated_at: "todo-v1",
+    comments: [],
+    events: [],
+  }],
+  handoff: {
+    state: "waiting_for_input",
+    question_todo: "todos/question",
+    resume_owner: "agents/timmy",
+    resume_action: "Continue after Tony answers.",
+  },
+};
+state.snapshot.tasks = [hydratedQuestionTask];
+selectTask(taskSlug, hydratedQuestionTask, answerActions[0], { exactHydrated: true, focusTarget: "handoff-answer", todoSlug: "todos/question" });
+assert(elements.taskHandoffAnswer.focused, "hydrated question task did not focus the handoff answer textarea");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";
@@ -2288,7 +2353,7 @@ assert(appShell.getAttribute("aria-hidden") === "false", "app shell stayed hidde
         self.assertIn("function selectTask(\n  slug,\n  taskFallback = null", javascript)
         self.assertIn("const knownTask = findTaskBySlug(slug)", javascript)
         self.assertIn("const task = knownTask || taskFallback", javascript)
-        self.assertIn("selectTaskWithCanonicalRead(slug, returnFocus, task)", javascript)
+        self.assertIn("selectTaskWithCanonicalRead(slug, returnFocus, task, { focusTarget, todoSlug })", javascript)
 
     def test_all_fallback_task_selections_require_one_exact_detail_hydration(self) -> None:
         result = run_app_runtime_probe(
@@ -2404,7 +2469,8 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
         self.assertIn('id="detail-title" tabindex="-1"', html)
         self.assertIn('window.matchMedia("(max-width: 760px)").matches', body)
         self.assertIn('elements.detailPanel.scrollIntoView', body)
-        self.assertIn('elements.detailTitle.focus({ preventScroll: true })', body)
+        self.assertIn('focusTaskDetailTarget(task, { focusTarget, todoSlug })', body)
+        self.assertIn('elements.detailTitle.focus({ preventScroll: true })', javascript)
 
     def test_proposal_keyboard_detail_focuses_heading_and_returns_to_origin(self) -> None:
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
@@ -2424,7 +2490,8 @@ assert(state.agentTasks[0].display_markdown === exact.display_markdown, "exact p
         self.assertIn("card.dataset.slug = proposal.slug", proposal_card)
         self.assertIn("selectTask(proposal.slug, null, card)", proposal_card)
         self.assertIn("state.detailReturnFocus", select_task)
-        self.assertIn("elements.detailTitle.focus({ preventScroll: true })", select_task)
+        self.assertIn("focusTaskDetailTarget(task, { focusTarget, todoSlug })", select_task)
+        self.assertIn("elements.detailTitle.focus({ preventScroll: true })", javascript)
         self.assertIn('document.querySelectorAll(".proposal-card")', close_details)
         self.assertIn("candidate.dataset.slug === anchor.slug", close_details)
         self.assertIn("detailFocusReturnTarget(anchor)?.focus({ preventScroll: true })", close_details)

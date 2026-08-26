@@ -4306,6 +4306,14 @@ function goalExecutionActionOwnerLabel(owner) {
   return "Action";
 }
 
+function openGoalExecutionQuestionAction(taskSlug, todoSlug, originControl = null) {
+  if (!taskSlug || !todoSlug) return;
+  selectTask(taskSlug, null, originControl, {
+    focusTarget: "handoff-answer",
+    todoSlug,
+  });
+}
+
 function renderGoalExecutionActionQueue(summary) {
   const actions = Array.isArray(summary.action_queue)
     ? summary.action_queue
@@ -4316,11 +4324,28 @@ function renderGoalExecutionActionQueue(summary) {
   const list = node("ul", "");
   actions.slice(0, 4).forEach((action) => {
     const item = node("li", "");
+    const label = String(action?.label || "Action");
     item.append(
       node("span", "goal-execution-action-owner", goalExecutionActionOwnerLabel(action?.owner)),
       document.createTextNode(" · "),
-      node("span", "goal-execution-action-label", String(action?.label || "Action")),
     );
+    if (action?.kind === "answer_question" && action?.task_slug && action?.todo_slug) {
+      const answer = node("button", "goal-execution-action-label goal-execution-answer-action", label);
+      answer.type = "button";
+      answer.dataset.taskSlug = action.task_slug;
+      answer.dataset.todoSlug = action.todo_slug;
+      answer.dataset.slug = action.task_slug;
+      answer.dataset.goalExecutionOrigin = `summary:action:answer_question:${CSS.escape(action.task_slug)}:${CSS.escape(action.todo_slug)}`;
+      answer.setAttribute("aria-label", `${label}: ${action.summary || action.task_slug}`);
+      answer.addEventListener("click", () => openGoalExecutionQuestionAction(
+        action.task_slug,
+        action.todo_slug,
+        answer,
+      ));
+      item.append(answer);
+    } else {
+      item.append(node("span", "goal-execution-action-label", label));
+    }
     const summaryText = String(action?.summary || "").trim();
     if (summaryText) {
       item.append(document.createTextNode(` — ${summaryText}`));
@@ -8596,7 +8621,22 @@ function retryTaskDetailRead() {
   );
 }
 
-function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) {
+function focusTaskDetailTarget(task, { focusTarget = null, todoSlug = null } = {}) {
+  if (
+    focusTarget === "handoff-answer" &&
+    isActiveHandoffQuestion(
+      (Array.isArray(task?.todos) ? task.todos : []).find((todo) => todo.slug === todoSlug),
+      task,
+    ) &&
+    !elements.taskHandoffAnswerForm.classList.contains("is-hidden")
+  ) {
+    elements.taskHandoffAnswer.focus({ preventScroll: true });
+    return;
+  }
+  elements.detailTitle.focus({ preventScroll: true });
+}
+
+function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null, options = {}) {
   if (
     state.taskDetailReadSlug === slug &&
     state.taskDetailReadPromise
@@ -8611,7 +8651,12 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) 
     ) {
       openTaskDetailLoading(slug, returnFocus, fallback);
     }
-    return state.taskDetailReadPromise;
+    return state.taskDetailReadPromise.then((task) => {
+      if (task && state.selectedSlug === slug && state.selectedKind === "task") {
+        window.requestAnimationFrame(() => focusTaskDetailTarget(task, options));
+      }
+      return task;
+    });
   }
   if (state.taskDetailReadPromise) {
     cancelTaskDetailRead({ invalidate: true });
@@ -8638,7 +8683,7 @@ function selectTaskWithCanonicalRead(slug, returnFocus = null, fallback = null) 
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
         return null;
       }
-      selectTask(slug, task, returnFocus, { exactHydrated: true });
+      selectTask(slug, task, returnFocus, { exactHydrated: true, ...options });
       return task;
     } catch (error) {
       if (state.taskDetailReadToken !== token || state.selectedSlug !== slug) {
@@ -8667,7 +8712,7 @@ function selectTask(
   slug,
   taskFallback = null,
   returnFocus = null,
-  { exactHydrated = false } = {},
+  { exactHydrated = false, focusTarget = null, todoSlug = null } = {},
 ) {
   const knownTask = findTaskBySlug(slug);
   if (knownTask && taskFallback?.slug === knownTask.slug) {
@@ -8677,8 +8722,8 @@ function selectTask(
   if (
     !exactHydrated &&
     (!task || !Object.prototype.hasOwnProperty.call(task, "display_markdown"))
-  ) return selectTaskWithCanonicalRead(slug, returnFocus, task);
-  if (!task) return selectTaskWithCanonicalRead(slug, returnFocus);
+  ) return selectTaskWithCanonicalRead(slug, returnFocus, task, { focusTarget, todoSlug });
+  if (!task) return selectTaskWithCanonicalRead(slug, returnFocus, null, { focusTarget, todoSlug });
   state.detailReturnFocus = returnFocus
     ? detailReturnFocusAnchor(returnFocus, slug)
     : null;
@@ -8791,7 +8836,7 @@ function selectTask(
     if (window.matchMedia("(max-width: 760px)").matches) {
       elements.detailPanel.scrollIntoView({ block: "start", behavior: "auto" });
     }
-    elements.detailTitle.focus({ preventScroll: true });
+    focusTaskDetailTarget(task, { focusTarget, todoSlug });
   });
 }
 

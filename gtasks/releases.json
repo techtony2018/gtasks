@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.188",
+  "current_version": "V0.0.189",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1128,6 +1128,12 @@
       "date": "2026-08-25",
       "title": "Classify Goal execution action ownership",
       "summary": "Goal execution summaries now include an action_queue that separates Tony-owned actions from Agent-active and system-action states, and the Agents summary renders the queue so blockers are grouped by who can move them forward."
+    },
+    {
+      "version": "V0.0.189",
+      "date": "2026-08-25",
+      "title": "Focus Goal question actions on answers",
+      "summary": "Goal execution action queue entries for Agent questions now open the exact Task and focus the verified Answer field after canonical readback, reducing the steps required to unblock waiting Agents."
     }
   ]
 }

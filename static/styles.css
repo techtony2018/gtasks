@@ -2560,6 +2560,25 @@ body.is-resizing-detail {
   font-weight: 700;
 }
 
+.goal-execution-answer-action {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #bdeeff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-answer-action:focus-visible {
+  outline: 2px solid rgba(103, 218, 255, 0.8);
+  outline-offset: 2px;
+}
+
 .goal-execution-list {
   display: grid;
   gap: 7px;
