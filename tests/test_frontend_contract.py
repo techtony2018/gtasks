@@ -154,7 +154,10 @@ const goalSlug = "goals/11111111-1111-4111-8111-111111111111";
 const taskSlug = "tasks/22222222-2222-4222-8222-222222222222";
 state.snapshot = {
   as_of: "2026-08-23",
-  goals: [{ slug: goalSlug, title: "Civic: Verified Goal" }],
+  goals: [
+    { slug: goalSlug, title: "Civic: Verified Goal" },
+    { slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", title: "Entrepreneurship" },
+  ],
   tasks: [{ slug: taskSlug, title: "Review Civic progress", status: "active", owner_agent: "agents/timmy", project: null }],
 };
 state.agents = [{ slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] }];
@@ -194,15 +197,38 @@ state.goalExecution = {
   },
 };
 state.goalExecution.last_run.summary = state.goalExecution.summary;
-const goalExecutionSurfaceText = flattenText(renderGoalExecutionSurface());
+const goalExecutionSurface = renderGoalExecutionSurface();
+const goalExecutionSurfaceText = flattenText(goalExecutionSurface);
+function walkElements(root, predicate, matches = []) {
+  if (!root) return matches;
+  if (predicate(root)) matches.push(root);
+  (root.children || []).forEach((child) => walkElements(child, predicate, matches));
+  return matches;
+}
 assert(goalExecutionSurfaceText.includes("Next action: Answer Tony questions and assign missing default_agent_for owners"), "Goal execution surface did not expose the summary next action");
 assert(goalExecutionSurfaceText.includes("7 total goals"), "Goal execution surface did not expose total Goal count");
 assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution surface did not expose attention count");
 assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
 assert(goalExecutionSurfaceText.includes("1 in flight"), "Goal execution surface did not expose in-flight count");
-assert(goalExecutionSurfaceText.includes("Question: Which family-care scope should Toddy use next?"), "Goal execution surface did not expose the exact blocking question");
-assert(goalExecutionSurfaceText.includes("Missing owner: Entrepreneurship"), "Goal execution surface did not expose the exact missing owner title");
+assert(goalExecutionSurfaceText.includes("Question:"), "Goal execution surface did not expose the blocking question label");
+assert(goalExecutionSurfaceText.includes("Which family-care scope should Toddy use next?"), "Goal execution surface did not expose the exact blocking question");
+assert(goalExecutionSurfaceText.includes("Missing owner:"), "Goal execution surface did not expose the missing owner label");
+assert(goalExecutionSurfaceText.includes("Entrepreneurship"), "Goal execution surface did not expose the exact missing owner title");
 assert(goalExecutionSurfaceText.includes("default_agent_for"), "Goal execution surface did not expose the missing owner repair relationship");
+const questionLinks = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-blocking-question") &&
+  walkElements(element, (child) =>
+    String(child.className || "").includes("inline-task-link") &&
+    child.dataset?.slug === taskSlug).length === 1);
+assert(questionLinks.length === 1, "summary blocking question did not expose one exact Task link");
+const missingOwnerLinks = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-missing-owner") &&
+  walkElements(element, (child) =>
+    String(child.className || "").includes("goal-execution-link") &&
+    String(child.className || "").includes("goal") &&
+    child.dataset?.slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435" &&
+    child.dataset?.goalExecutionOrigin === "summary:missing-owner:goals/d837ac94-36f5-4735-93bb-d84c69b45435").length === 1);
+assert(missingOwnerLinks.length === 1, "summary missing owner did not expose one exact Goal link");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";

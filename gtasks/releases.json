@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.185",
+  "current_version": "V0.0.186",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1110,6 +1110,12 @@
       "date": "2026-08-25",
       "title": "Expose missing Goal owners",
       "summary": "Goal execution summaries now list the exact Goals missing a verified default_agent_for relationship, and the Agents Goal execution panel shows a compact Missing owner line so Tony can see which Goal needs owner assignment before Agent-derived work can proceed."
+    },
+    {
+      "version": "V0.0.186",
+      "date": "2026-08-25",
+      "title": "Link Goal execution action items",
+      "summary": "Goal execution summary action items now include exact clickable links: waiting-for-Tony questions open the canonical Task detail, and missing-owner entries open the canonical Goal detail so blockers can be resolved without copying slugs."
     }
   ]
 }

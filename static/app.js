@@ -4307,20 +4307,39 @@ function renderGoalExecutionSummary() {
   panel.append(node("p", "goal-execution-metrics", metrics.join(" · ")));
   blockingQuestions.slice(0, 2).forEach((item) => {
     const question = String(item?.question || "").trim();
+    const taskSlug = String(item?.task_slug || "").trim();
     if (!question) return;
-    panel.append(node("p", "goal-execution-blocking-question", `Question: ${question}`));
+    const row = node("p", "goal-execution-blocking-question");
+    row.append(document.createTextNode("Question: "));
+    if (taskSlug) {
+      const taskLink = taskDetailLink({ slug: taskSlug, title: question }, question);
+      taskLink.dataset.goalExecutionOrigin = `summary:blocking-question:${taskSlug}`;
+      row.append(taskLink);
+    } else {
+      row.append(document.createTextNode(question));
+    }
+    panel.append(row);
   });
   missingOwners.slice(0, 2).forEach((item) => {
     const title = String(item?.goal_title || item?.goal_slug || "").trim();
+    const goalSlug = String(item?.goal_slug || "").trim();
     const relationship = String(item?.required_relationship || "default_agent_for").trim();
     if (!title) return;
-    panel.append(
-      node(
-        "p",
-        "goal-execution-missing-owner",
-        `Missing owner: ${title} — add ${relationship}`,
-      ),
-    );
+    const row = node("p", "goal-execution-missing-owner");
+    row.append(document.createTextNode("Missing owner: "));
+    if (goalSlug) {
+      row.append(goalExecutionButton(
+        title,
+        "goal",
+        goalSlug,
+        (origin) => selectGoal(goalSlug, origin),
+        `summary:missing-owner:${goalSlug}`,
+      ));
+    } else {
+      row.append(document.createTextNode(title));
+    }
+    row.append(document.createTextNode(` — add ${relationship}`));
+    panel.append(row);
   });
   return panel;
 }
