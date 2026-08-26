@@ -18,6 +18,7 @@ from gtasks.goal_execution import (
     GoalExecutionPlanner,
     GoalExecutionScheduler,
     GoalExecutionSnapshot,
+    _goal_execution_summary,
     derived_task_slug,
 )
 from gtasks.gbrain import PartialMutationError, StatusMutationReceipt, TaskEditReceipt
@@ -409,6 +410,42 @@ class GoalExecutionPlannerTests(unittest.TestCase):
 
 
 class GoalExecutionEngineTests(unittest.TestCase):
+    def test_goal_execution_private_credential_questions_do_not_get_synthetic_answer_templates(self) -> None:
+        rendered = _goal_execution_summary(
+            tuple(),
+            "waiting_for_tony",
+            blocking_questions=(
+                {
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/private-token",
+                    "todo_slug": "todos/private-token",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": AGENT,
+                    "question": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
+                    "detail": "This requires Tony's private credential input.",
+                },
+            ),
+        )
+
+        self.assertEqual(
+            rendered["action_queue"],
+            [
+                {
+                    "owner": "tony",
+                    "kind": "answer_question",
+                    "label": "Answer Agent question",
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/private-token",
+                    "todo_slug": "todos/private-token",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": AGENT,
+                    "summary": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
+                    "detail": "This requires Tony's private credential input.",
+                    "private_input_required": True,
+                }
+            ],
+        )
+
     class Adapter:
         def __init__(
             self,

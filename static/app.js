@@ -4515,7 +4515,15 @@ function renderGoalExecutionActionQueue(summary) {
     if (detailText) {
       item.append(node("p", "goal-execution-action-detail", detailText));
     }
-    if (action?.kind === "answer_question" && action?.todo_slug && action?.todo_updated_at) {
+    if (action?.kind === "answer_question" && action?.private_input_required) {
+      item.append(
+        node(
+          "p",
+          "goal-execution-private-input",
+          "Private input required. Open the task and answer directly; Mission Control will not generate or prefill private credentials.",
+        ),
+      );
+    } else if (action?.kind === "answer_question" && action?.todo_slug && action?.todo_updated_at) {
       const form = node("form", "goal-execution-answer-form");
       const textarea = document.createElement("textarea");
       textarea.className = "goal-execution-answer-input";

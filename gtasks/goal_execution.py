@@ -142,21 +142,23 @@ def _goal_execution_summary(
     )
     action_queue: list[dict[str, object]] = []
     for question in blocking_questions:
-        action_queue.append(
-            {
-                "owner": "tony",
-                "kind": "answer_question",
-                "label": "Answer Agent question",
-                "goal_slug": question.get("goal_slug"),
-                "task_slug": question.get("task_slug"),
-                "todo_slug": question.get("todo_slug"),
-                "todo_updated_at": question.get("todo_updated_at"),
-                "agent_slug": question.get("agent_slug"),
-                "summary": question.get("question"),
-                "detail": question.get("detail"),
-                "answer_template": _goal_execution_answer_template(question),
-            }
-        )
+        action = {
+            "owner": "tony",
+            "kind": "answer_question",
+            "label": "Answer Agent question",
+            "goal_slug": question.get("goal_slug"),
+            "task_slug": question.get("task_slug"),
+            "todo_slug": question.get("todo_slug"),
+            "todo_updated_at": question.get("todo_updated_at"),
+            "agent_slug": question.get("agent_slug"),
+            "summary": question.get("question"),
+            "detail": question.get("detail"),
+        }
+        if _goal_execution_question_requires_private_input(question):
+            action["private_input_required"] = True
+        else:
+            action["answer_template"] = _goal_execution_answer_template(question)
+        action_queue.append(action)
     for missing_owner in missing_owners:
         title = str(
             missing_owner.get("goal_title")
@@ -237,6 +239,25 @@ def _goal_execution_answer_template(
         "First action: approved\n"
         "Notes: Keep the work bounded to the stated scope, outcomes, constraints, and first action."
     )
+
+
+def _goal_execution_question_requires_private_input(
+    question: Mapping[str, object],
+) -> bool:
+    text = " ".join(
+        str(question.get(key) or "")
+        for key in ("question", "detail", "summary")
+    ).casefold()
+    private_terms = (
+        "token",
+        "credential",
+        "private key",
+        "secret",
+        "password",
+        "api key",
+        "oauth",
+    )
+    return any(term in text for term in private_terms)
 
 
 def _goal_execution_owner_instruction(
