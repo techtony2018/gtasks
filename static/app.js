@@ -4664,6 +4664,10 @@ function renderGoalExecutionInboxActions() {
       "These Tony actions unblock Goal-derived Agent work. Template insertion is local until Submit answer is pressed.",
     ),
   );
+  const nextAction = String(summary.next_action || "").trim();
+  if (nextAction) {
+    details.append(node("p", "goal-execution-next-action", `Next action: ${nextAction}`));
+  }
   const plan = recommendedGoalExecutionUnblockPlan(summary);
   if (plan) {
     const planActions = node("div", "attention-actions goal-execution-plan-actions");

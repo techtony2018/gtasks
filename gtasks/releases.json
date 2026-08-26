@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.199",
+  "current_version": "V0.0.200",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1194,6 +1194,12 @@
       "date": "2026-08-26",
       "title": "Keep private credentials out of unblock plans",
       "summary": "Goal execution now detects private credential or token questions, labels them as private input required, avoids synthetic answer templates for them, and excludes them from recommended unblock plans so one-click progress never fabricates secrets."
+    },
+    {
+      "version": "V0.0.200",
+      "date": "2026-08-26",
+      "title": "Name private blockers in Goal next action",
+      "summary": "Goal execution next-action copy now names private-input blockers alongside ordinary answer and owner actions, so Tony can see every reason Agents remain blocked without generating or autofilling secrets."
     }
   ]
 }

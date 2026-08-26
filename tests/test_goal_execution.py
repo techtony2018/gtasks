@@ -14,6 +14,7 @@ from gtasks.domain import (
     new_task,
 )
 from gtasks.goal_execution import (
+    GoalExecutionDecision,
     GoalExecutionEngine,
     GoalExecutionPlanner,
     GoalExecutionScheduler,
@@ -412,7 +413,13 @@ class GoalExecutionPlannerTests(unittest.TestCase):
 class GoalExecutionEngineTests(unittest.TestCase):
     def test_goal_execution_private_credential_questions_do_not_get_synthetic_answer_templates(self) -> None:
         rendered = _goal_execution_summary(
-            tuple(),
+            (
+                GoalExecutionDecision(
+                    GOAL,
+                    "waiting_for_tony",
+                    existing_task_slug="tasks/family",
+                ),
+            ),
             "waiting_for_tony",
             blocking_questions=(
                 {
@@ -444,6 +451,51 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "private_input_required": True,
                 }
             ],
+        )
+
+    def test_goal_execution_next_action_names_private_input_blockers(self) -> None:
+        rendered = _goal_execution_summary(
+            (
+                GoalExecutionDecision(
+                    GOAL,
+                    "waiting_for_tony",
+                    existing_task_slug="tasks/family",
+                ),
+            ),
+            "waiting_for_tony",
+            blocking_questions=(
+                {
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/family",
+                    "todo_slug": "todos/family",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": "agents/toddy",
+                    "question": "Which family-care scope should Toddy use next?",
+                    "detail": "Choose the scope and first bounded action.",
+                },
+                {
+                    "goal_slug": OTHER_GOAL,
+                    "task_slug": "tasks/private-token",
+                    "todo_slug": "todos/private-token",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": "agents/tammy",
+                    "question": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
+                    "detail": "This requires Tony's private credential input.",
+                },
+            ),
+        )
+
+        self.assertIn(
+            "Answer the Toddy question for Which family-care scope should Toddy use next?",
+            rendered["next_action"],
+        )
+        self.assertIn(
+            "provide private input for the Tammy question",
+            rendered["next_action"],
+        )
+        self.assertIn(
+            "Please provide the Tammy artifact publisher token for this fixed Codex worker",
+            rendered["next_action"],
         )
 
     class Adapter:

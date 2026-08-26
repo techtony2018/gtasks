@@ -215,15 +215,32 @@ def _goal_execution_summary(
 def _goal_execution_answer_instruction(
     action_queue: list[dict[str, object]],
 ) -> str:
+    answer_actions = [
+        item for item in action_queue if item.get("kind") == "answer_question"
+    ]
     action = next(
-        (item for item in action_queue if item.get("kind") == "answer_question"),
+        (item for item in answer_actions if not item.get("private_input_required")),
         None,
     )
-    if action is None:
+    private_action = next(
+        (item for item in answer_actions if item.get("private_input_required")),
+        None,
+    )
+    if action is None and private_action is None:
         return "Answer Tony questions"
-    agent = _agent_label(action.get("agent_slug"))
-    question = _concise_label(action.get("summary"), fallback="the waiting Agent question")
-    return f"Answer the {agent} question for {question}"
+    parts: list[str] = []
+    if action is not None:
+        agent = _agent_label(action.get("agent_slug"))
+        question = _concise_label(action.get("summary"), fallback="the waiting Agent question")
+        parts.append(f"Answer the {agent} question for {question}")
+    if private_action is not None:
+        agent = _agent_label(private_action.get("agent_slug"))
+        question = _concise_label(
+            private_action.get("summary"),
+            fallback="the private Agent question",
+        )
+        parts.append(f"provide private input for the {agent} question: {question}")
+    return " and ".join(parts)
 
 
 def _goal_execution_answer_template(

@@ -210,7 +210,7 @@ state.goalExecution = {
       ] },
       { owner: "agent", kind: "monitor_active_handoff", label: "Agent is executing", goal_slug: goalSlug, task_slug: taskSlug, agent_slug: "agents/timmy", summary: "Review Civic progress" },
     ],
-    next_action: "Answer the Timmy question for Which family-care scope should Toddy use next? and assign Entrepreneurship to Tammy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
+    next_action: "Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for the Tammy question: Please provide the Tammy artifact publisher token for this fixed Codex worker and assign Entrepreneurship to Tammy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
   },
   last_run: {
     ran_at: "2026-08-23T12:00:00Z",
@@ -229,7 +229,7 @@ function walkElements(root, predicate, matches = []) {
   (root.children || []).forEach((child) => walkElements(child, predicate, matches));
   return matches;
 }
-assert(goalExecutionSurfaceText.includes("Next action: Answer the Timmy question for Which family-care scope should Toddy use next? and assign Entrepreneurship to Tammy"), "Goal execution surface did not expose the exact summary next action");
+assert(goalExecutionSurfaceText.includes("Next action: Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for the Tammy question"), "Goal execution surface did not expose the exact summary next action");
 assert(goalExecutionSurfaceText.includes("7 total goals"), "Goal execution surface did not expose total Goal count");
 assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution surface did not expose attention count");
 assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
@@ -307,6 +307,8 @@ assert(
 const inboxGoalActions = renderGoalExecutionInboxActions();
 const inboxGoalActionsText = flattenText(inboxGoalActions);
 assert(inboxGoalActionsText.includes("Goal execution actions"), "Inbox did not expose Goal execution actions");
+assert(inboxGoalActionsText.includes("Next action:"), "Inbox Goal execution actions omitted the next-action summary");
+assert(inboxGoalActionsText.includes("provide private input for the Tammy question"), "Inbox Goal execution actions omitted private-input next-action copy");
 assert(inboxGoalActionsText.includes("Answer Agent question"), "Inbox Goal execution actions omitted the answer action");
 assert(inboxGoalActionsText.includes("Insert answer template"), "Inbox Goal execution actions omitted the answer template control");
 assert(inboxGoalActionsText.includes("Assign Goal owner"), "Inbox Goal execution actions omitted the owner action");
