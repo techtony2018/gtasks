@@ -797,6 +797,13 @@ missing-owner summary item: `Assign to Tammy`, `Assign to Timmy`, and
 `{goal_slug, action: "assign"}` only after user activation. No OpenClaw
 assignment controls are exposed, and no owner is inferred or assigned
 automatically by the dispatcher.
+V0.0.188 adds structured `action_queue` entries to the same summary and
+`last_run.summary`. The queue groups next actions by owner and currently
+contains Tony-owned `answer_question` for the Family/Toddy Task/TODO plus
+Tony-owned `assign_goal_owner` for the Entrepreneurship Goal. Agents > Goal
+execution renders `Action queue:`, `Tony action required`,
+`Answer Agent question`, and `Assign Goal owner` so operators can see who must
+act next without treating the dispatcher as the owner of Tony repairs.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

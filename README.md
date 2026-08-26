@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.187 at commit
-`a68b8febbd7874999ea5f61d3439a5d34bd69fc5`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.188 at commit
+`7484f86ae95fd0dbc496f0e41f9b4376397af202`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -274,6 +274,15 @@ missing-owner summary item: `Assign to Tammy`, `Assign to Timmy`, and
 `{goal_slug, action: "assign"}` only after explicit user activation. The UI
 does not infer or automatically mutate ownership, and it exposes no OpenClaw
 assignment controls.
+V0.0.188 adds `summary.action_queue` and `last_run.summary.action_queue` so
+Goal execution next actions are grouped by owner. The current live queue has
+two Tony-owned actions: `answer_question` for the Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, plus
+`assign_goal_owner` for Entrepreneurship Goal
+`goals/d837ac94-36f5-4735-93bb-d84c69b45435`. Agents > Goal execution renders
+`Action queue:`, `Tony action required`, `Answer Agent question`, and
+`Assign Goal owner` while preserving the V0.0.187 explicit assignment buttons.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -356,6 +365,13 @@ items. `Assign to Tammy`, `Assign to Timmy`, and `Assign to Toddy` call
 only after the operator activates a button and only for non-OpenClaw Agents.
 These controls are a verified mutation path when activated; they are not
 automatic owner inference, background repair, or OpenClaw assignment.
+V0.0.188+ includes `summary.action_queue` and
+`last_run.summary.action_queue` for owner-classified next actions. Queue
+entries include `owner`, `kind`, `label`, relevant Goal/Task/TODO/Agent slugs,
+and a bounded `summary`. The Agents panel renders the queue with owner labels
+such as `Tony action required` so operators can distinguish Tony-owned
+unblockers from Agent-active or system-action states without reading decision
+rows directly.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

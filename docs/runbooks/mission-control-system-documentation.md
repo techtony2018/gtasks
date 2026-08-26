@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.187`
+- Last verified pushed release: `V0.0.188`
 - Release commits:
-  `a68b8febbd7874999ea5f61d3439a5d34bd69fc5`
+  `7484f86ae95fd0dbc496f0e41f9b4376397af202`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -639,6 +639,25 @@ to the reviewed source before updating relationships.
   live readback remained missing-owner, proving no live GBrain mutation during
   QA. No OpenClaw assignment controls appeared. V0.0.186 Task/Goal action links
   and exact-origin focus restoration remained intact.
+- V0.0.188 evidence: dashboard-managed health readback `V0.0.188`; release
+  commit `7484f86ae95fd0dbc496f0e41f9b4376397af202`; release evidence file
+  `docs/release-evidence/v0.0.188.md`; independent QA PASS at
+  `artifacts/qa/v0.0.188-independent/gate-report.md` with frozen aggregate
+  `7be6883d45ada59030d0db7c9509244a339828f96cca1a7ee32a005196958697`.
+  Developer verification reported focused `238` OK and
+  `python3 -m unittest discover -s tests` as `1394` OK with `5` skipped.
+- Verified V0.0.188 behavior: `/api/goal-execution.summary` and
+  `last_run.summary` include structured `action_queue` entries grouped by
+  owner. Postdeploy readback was terminal with `last_run` present,
+  `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, `last_error=null`, and
+  `summary.action_queue` length `2`: Tony-owned `answer_question` for Family
+  task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` / TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, and Tony-owned
+  `assign_goal_owner` for Entrepreneurship Goal
+  `goals/d837ac94-36f5-4735-93bb-d84c69b45435`. Agents > Goal execution
+  visibly rendered `Action queue:`, `Tony action required`,
+  `Answer Agent question`, and `Assign Goal owner`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -781,3 +800,7 @@ repair path, not background automation. They must not be exposed for OpenClaw,
 must not infer an owner from the summary alone, and must not be treated as
 completed until the verified `default_goals` API readback confirms the
 `default_agent_for` relationship.
+V0.0.188 action queues are owner-classification readback. A Tony-owned
+`answer_question` or `assign_goal_owner` item means Tony or a verified
+user-activated repair path must act; it does not make the dispatcher, a local
+worker, or OpenClaw responsible for that repair.
