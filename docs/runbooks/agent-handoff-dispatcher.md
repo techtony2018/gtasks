@@ -912,6 +912,17 @@ question even when the task detail payload differs, and strips the remaining
 V0.0.203 readback showed one Tammy private action with
 `blocked_goal_count=3`, owner assignment still present, and no
 `. and assign`, `?. and`, or `.; assign` grammar.
+V0.0.204 routes Artifact publisher identity mismatch blockers out of Tony's
+private-input lane and into system-owned
+`repair_artifact_publisher_identity` Action queue rows. These rows are for
+dashboard Artifact publisher credential/identity repair, including
+`artifact_identity_mismatch`, and render as `System action required` /
+`Repair Artifact publisher identity` with `blocked_goal_count`. They are not
+Tony `answer_question` rows, do not render answer/template controls, and are
+excluded from recommended-plan writes. The safe business question and
+missing-owner assignment remain visible, and the recommended unblock plan
+still writes only the safe TODO answer followed by recommended Timmy owner
+assignment.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

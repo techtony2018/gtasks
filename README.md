@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.203 at commit
-`f09d72bc566a1dc8e6d1966432df62b7539762c2`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.204 at commit
+`6293a5bc77f20053f69513ea584be0f2bc771e43`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -390,6 +390,14 @@ private blockers even when detail text differs, and strips the remaining
 V0.0.203 showed one Tammy private action with `blocked_goal_count=3`, the
 owner action still present, and `next_action` naming
 `3 Tammy private-input blockers`.
+V0.0.204 routes Artifact publisher identity mismatch blockers, including
+`artifact_identity_mismatch`, to system-owned
+`repair_artifact_publisher_identity` Action queue rows instead of Tony
+private-input answer rows. The queue keeps safe business questions and owner
+assignment visible, and `summary.next_action` can now say:
+`Answer ...; repair Tammy Artifact publisher identity for 3 blocked Goals; assign Entrepreneurship...`.
+Recommended plans remain limited to the safe answer plus recommended Timmy
+owner assignment; there is no system/private auto-write.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -555,6 +563,13 @@ key because the live Tammy credential blockers share the same question but
 carry task-specific detail payloads. Grouping is a display/readback
 compression only; it does not make private input answerable by template or
 eligible for recommended plans.
+V0.0.204+ classifies Artifact publisher identity mismatches as system-owned
+`repair_artifact_publisher_identity` actions. These rows should render
+`System action required` / `Repair Artifact publisher identity`, carry
+`blocked_goal_count`, and remain excluded from Tony answer controls and
+recommended-plan writes. They identify dashboard Artifact publisher credential
+or identity repair work, not a request for Tony to paste secrets into an Agent
+question.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

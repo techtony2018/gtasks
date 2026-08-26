@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.203`
+- Last verified pushed release: `V0.0.204`
 - Release commits:
-  `f09d72bc566a1dc8e6d1966432df62b7539762c2`
+  `6293a5bc77f20053f69513ea584be0f2bc771e43`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1001,6 +1001,32 @@ to the reviewed source before updating relationships.
   related private-input blockers, the safe Family answer, the Entrepreneurship
   owner assignment with Codex-only Timmy/Toddy/Tammy controls, no OpenClaw
   owner control, zero private POST attempts, and no live GBrain mutation.
+- V0.0.204 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.204`; release commit
+  `6293a5bc77f20053f69513ea584be0f2bc771e43`; release evidence file
+  `docs/release-evidence/v0.0.204.md`; independent QA PASS at
+  `artifacts/qa/v0.0.204-independent/gate-report.md` with frozen aggregate
+  `8f5b6462ca83330736c6b8086094f7b136fb3547bd07cab597ef2f734dfd08e1`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1398` OK with `5` skipped.
+- Verified V0.0.204 behavior: Goal execution now routes Artifact publisher
+  identity mismatch blockers such as `artifact_identity_mismatch` to
+  system-owned `repair_artifact_publisher_identity` actions instead of Tony
+  private-input `answer_question` rows. Postdeploy `/api/goal-execution` read
+  back `public_reason=actively_executing`; `next_action` included
+  `Answer ...; repair Tammy Artifact publisher identity for 3 blocked Goals; assign Entrepreneurship...`;
+  the Action queue had a Tony-owned `answer_question`, a system-owned
+  `repair_artifact_publisher_identity` with `blocked_goal_count=3`, and a
+  Tony-owned `assign_goal_owner`; `private_input_actions=0`,
+  `system_repair_actions=1`, `dot_and_assign=false`, and
+  `semicolon_period_assign=false`. Independent desktop 1440 and genuine mobile
+  390 QA verified Agents and Inbox each rendered one grouped system repair
+  item with `System action required` and `Repair Artifact publisher identity`,
+  no `Private input required`, no answer form, no answer template button, no
+  raw TODO version, no synthetic secret-like content, safe answer and owner
+  assignment still visible, recommended plan writes limited to safe TODO answer
+  then Timmy owner assignment, zero system/private POST attempts, and no live
+  GBrain mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1209,3 +1235,7 @@ only. Grouping repeated private credential prompts must not be documented as a
 credential answer, secret generation, plan eligibility change, ownership
 repair, or GBrain mutation; it simply keeps Agents and Inbox readable while
 preserving safe answer plus recommended-owner controls.
+V0.0.204 Artifact publisher identity repairs are system-owned operational
+repair items, not Tony private-input questions. Documentation must not
+describe them as private-answer prompts, template-fill candidates,
+recommended-plan writes, submitted credentials, or GBrain mutation receipts.
