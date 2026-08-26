@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.179",
+  "current_version": "V0.0.180",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1074,6 +1074,12 @@
       "date": "2026-08-25",
       "title": "Expose active Goal handoff state",
       "summary": "Goal execution now reports delivering and actively executing handoffs at the public API headline and in Agent-card copy instead of flattening already-delivered work into a generic duplicate state, making live Agent progress easier to distinguish from blocked or pending work."
+    },
+    {
+      "version": "V0.0.180",
+      "date": "2026-08-25",
+      "title": "Surface Agent card handoff repair",
+      "summary": "Agent cards now surface terminal dispatcher handoff states as Needs attention with the latest dispatcher status, so active Agent work that needs recovery is visible without opening Task detail."
     }
   ]
 }

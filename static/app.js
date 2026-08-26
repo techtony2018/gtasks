@@ -3555,6 +3555,18 @@ function agentStatusCounts(work) {
   };
 }
 
+function taskDispatcherAttention(task) {
+  const status = task?.dispatcher_handoff?.status;
+  if (["dead_letter", "suppressed", "handed_back"].includes(status)) {
+    return {
+      state: "Needs attention",
+      summary: "Verified Agent handoff needs system review",
+      detail: `Latest dispatcher status: ${status}. Inspect Handoff History for execution recovery evidence before retrying.`,
+    };
+  }
+  return null;
+}
+
 function latestTaskByStatus(work, status) {
   return work
     .filter((task) => task.status === status)
@@ -4413,11 +4425,23 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     const work = allWork.filter((task) => task.status !== "proposed");
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
     const recentCompletion = latestTaskByStatus(allWork, "completed");
+    const dispatcherAttention = work.find((task) => taskDispatcherAttention(task));
+    const dispatcherAttentionCopy = taskDispatcherAttention(dispatcherAttention);
     const nextWork = work.find((task) => Array.isArray(task.open_todos) && task.open_todos.length) || latest;
     const workSummary = node("div", "agent-work-summary");
     workSummary.append(node("h3", "", "Current work"));
     workSummary.append(node("span", "agent-work-kind", "Owned work"));
-    workSummary.append(node("strong", "", coldAgentWorkLoading ? "Reading typed agent task collections…" : work.length ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed` : "No authorized work yet"));
+    workSummary.append(node(
+      "strong",
+      "",
+      dispatcherAttentionCopy
+        ? `${dispatcherAttentionCopy.state} · ${dispatcherAttentionCopy.summary}`
+        : coldAgentWorkLoading
+          ? "Reading typed agent task collections…"
+          : work.length
+            ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed`
+            : "No authorized work yet",
+    ));
     const openTodoCount = work.reduce(
       (count, task) => count + (Array.isArray(task.open_todos) ? task.open_todos.length : 0),
       0,
@@ -4434,7 +4458,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       nextLine.textContent = "No current task or open TODO recorded.";
     }
     workSummary.append(nextLine);
-    workSummary.append(node("span", "", coldAgentWorkLoading ? "Reading verified completion history…" : recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
+    workSummary.append(node("span", "", dispatcherAttentionCopy ? dispatcherAttentionCopy.detail : coldAgentWorkLoading ? "Reading verified completion history…" : recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
     const delegatedSummary = node("div", "agent-work-summary delegated-work-summary");
     delegatedSummary.append(
       node("h3", "", "Additional delegated work"),
