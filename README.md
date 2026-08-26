@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.196 at commit
-`78e57d2313690544a2f34957f947bea08640c310`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.197 at commit
+`2a6de54f1f4892d1ea096ddae3007642907fad5b`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -340,6 +340,15 @@ accepted, Constraints accepted, First action approved, and Notes asking to
 keep the work bounded to the stated scope, outcomes, constraints, and first
 action. The button still only fills and focuses the textarea; Tony must
 explicitly submit the answer before any GBrain mutation can occur.
+V0.0.197 surfaces the same Tony-owned Goal execution Action queue in Inbox as
+a dedicated expanded `Goal execution actions` section, so waiting Agent
+questions and missing Goal-owner repairs appear in the central Needs Attention
+flow as well as Agents. The section reuses the same explicit answer/template
+and Codex-only assignment controls; it does not automatically answer, assign,
+acknowledge, wake, complete, or mutate GBrain.
+Phase note: this closes the current broad Goal-execution improvement pass.
+V0.0.195 added editable answer templates, V0.0.196 made the template concrete,
+and V0.0.197 moved the same actions into Inbox for central triage.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -472,6 +481,11 @@ V0.0.196+ changes the default `answer_template` from placeholder options to a
 concrete approval draft. Readers should still treat template insertion as
 local editable text preparation only, not a submitted answer or mutation
 receipt.
+V0.0.197+ renders `summary.action_queue` in Inbox under `Goal execution
+actions` when Tony-owned actions are present. The Inbox section is a central
+surface for the same queue entries and controls already used in Agents; its
+presence is not a separate mutation path or proof that the actions have been
+completed.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

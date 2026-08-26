@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.196`
+- Last verified pushed release: `V0.0.197`
 - Release commits:
-  `78e57d2313690544a2f34957f947bea08640c310`
+  `2a6de54f1f4892d1ea096ddae3007642907fad5b`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -845,6 +845,34 @@ to the reviewed source before updating relationships.
   emitted zero POST/non-GET requests, did not submit, and did not mutate data.
   Answer-submit, Timmy recommendation, Codex-only owner controls, direct-answer
   focus restoration, and clean console/network regressions remained intact.
+- V0.0.197 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.197`; release commit
+  `2a6de54f1f4892d1ea096ddae3007642907fad5b`; release evidence file
+  `docs/release-evidence/v0.0.197.md`; independent QA PASS at
+  `artifacts/qa/v0.0.197-independent/gate-report.md` with frozen aggregate
+  `3a10f27b6b651d1a5ae3484ec7eeb15959134918b1a44905e0edb090df96d562`.
+  Developer verification reported the focused frontend contract as `1` OK,
+  the combined focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK, and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.197 behavior: Inbox now renders a dedicated expanded
+  `Goal execution actions` Needs Attention section for Tony-owned Goal
+  execution actions, reusing the same `answer_question` and `assign_goal_owner`
+  controls from Agents. Postdeploy `/api/goal-execution` after bounded
+  scheduler warmup retained `last_run=true`,
+  `public_reason=actively_executing`, `last_error=null`, and Action queue
+  kinds `answer_question` plus `assign_goal_owner`. Independent desktop 1440
+  and genuine mobile 390 QA showed one Inbox section with two actions, the
+  full Artifact-backed question detail, one inline answer form, the concrete
+  `Insert answer template`, Timmy/Toddy/Tammy Codex-only assignment controls,
+  exactly one Timmy recommendation, no OpenClaw assignment, intercepted answer
+  and assignment POSTs only, unchanged live canonical readback, and clean
+  console/network checks.
+- Phase summary: V0.0.195 added editable answer templates, V0.0.196 made the
+  template concrete, and V0.0.197 moved Goal execution actions into Inbox.
+  This stops the current broad Goal-execution improvement pass; future work
+  should be scoped as a new pass instead of continuing this one by default.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1026,3 +1054,7 @@ after Tony reviews and submits the text.
 V0.0.196 concrete approval templates keep the same boundary. Replacing
 placeholder choices with accepted/approved draft language reduces typing but
 does not reduce the required human review and explicit Submit answer gate.
+V0.0.197 Inbox action surfacing keeps the same boundary. Showing Goal
+execution actions in Inbox centralizes triage but does not create a second
+mutation path, automatically submit answers, assign owners, acknowledge
+handoffs, wake workers, complete tasks, or mutate GBrain.

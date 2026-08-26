@@ -862,6 +862,14 @@ Constraints accepted, First action approved, and Notes to keep the work
 bounded to the stated scope, outcomes, constraints, and first action. The
 template remains local text preparation only until Tony reviews and submits
 through the verified TODO answer contract.
+V0.0.197 surfaces the same Tony-owned Goal execution Action queue in Inbox as
+an expanded `Goal execution actions` Needs Attention section. It reuses the
+same explicit answer/template and Codex-only owner-assignment controls already
+rendered in Agents, so Inbox becomes the central triage surface without adding
+automatic answer, assignment, handoff acknowledgement, worker wake, completion,
+or GBrain mutation behavior. This stops the current broad Goal-execution
+improvement pass: V0.0.195 added editable answer templates, V0.0.196 made
+them concrete, and V0.0.197 moved the resulting actions into Inbox.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
