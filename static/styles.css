@@ -2558,6 +2558,13 @@ body.is-resizing-detail {
   overflow-wrap: anywhere;
 }
 
+.goal-execution-action-detail {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .goal-execution-action-owner {
   color: #9ee7ff;
   font-weight: 700;

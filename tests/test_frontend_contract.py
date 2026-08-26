@@ -193,7 +193,7 @@ state.goalExecution = {
       message: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
     }],
     action_queue: [
-      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?" },
+      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?", detail: "Choose the scope and first bounded action." },
       { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for", candidate_owners: [
         { agent_slug: "agents/tammy", agent_name: "Tammy", default_goal_count: 0, recommended: true, recommendation: "recommended: lowest verified Codex Goal load" },
         { agent_slug: "agents/timmy", agent_name: "Timmy", default_goal_count: 1, recommended: false, recommendation: "1 verified default Goal" },
@@ -234,6 +234,7 @@ assert(goalExecutionSurfaceText.includes("Tony action required"), "Goal executio
 assert(goalExecutionSurfaceText.includes("Agent active"), "Goal execution surface did not distinguish active Agent work");
 assert(goalExecutionSurfaceText.includes("Answer Agent question"), "Goal execution surface did not include question action");
 assert(goalExecutionSurfaceText.includes("Assign Goal owner"), "Goal execution surface did not include owner assignment action");
+assert(goalExecutionSurfaceText.includes("Choose the scope and first bounded action."), "Goal execution action queue did not expose the question detail near the answer form");
 const answerActions = walkElements(goalExecutionSurface, (element) =>
   String(element.className || "").includes("goal-execution-answer-action") &&
   element.dataset?.taskSlug === taskSlug &&

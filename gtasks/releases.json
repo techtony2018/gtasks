@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.192",
+  "current_version": "V0.0.193",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1152,6 +1152,12 @@
       "date": "2026-08-25",
       "title": "Recommend Goal owner assignments",
       "summary": "Goal execution missing-owner summaries now include verified Codex Agent assignment candidates and label the lowest-load Agent as recommended in the Action queue, so Tony can unblock owner-missing Goals with an explicit informed click instead of guessing."
+    },
+    {
+      "version": "V0.0.193",
+      "date": "2026-08-25",
+      "title": "Show Agent question detail in action queue",
+      "summary": "Goal execution answer-question actions now carry and render the verified question detail next to the inline answer box, so Tony can answer waiting Agent blockers directly from the Action queue without opening the Task first."
     }
   ]
 }

@@ -649,6 +649,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "todo_updated_at": NOW.isoformat(),
                     "agent_slug": AGENT,
                     "summary": "Which family-care scope should Toddy use next?",
+                    "detail": "Choose the scope and first bounded action.",
                 },
                 {
                     "owner": "tony",

@@ -177,6 +177,7 @@ def _goal_execution_summary(
                 "todo_updated_at": question.get("todo_updated_at"),
                 "agent_slug": question.get("agent_slug"),
                 "summary": question.get("question"),
+                "detail": question.get("detail"),
             }
         )
     for missing_owner in missing_owners:

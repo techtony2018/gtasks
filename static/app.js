@@ -4455,6 +4455,10 @@ function renderGoalExecutionActionQueue(summary) {
     if (summaryText) {
       item.append(document.createTextNode(` — ${summaryText}`));
     }
+    const detailText = String(action?.detail || "").trim();
+    if (detailText) {
+      item.append(node("p", "goal-execution-action-detail", detailText));
+    }
     if (action?.kind === "answer_question" && action?.todo_slug && action?.todo_updated_at) {
       const form = node("form", "goal-execution-answer-form");
       const textarea = document.createElement("textarea");
