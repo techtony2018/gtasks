@@ -192,6 +192,7 @@ def _goal_execution_summary(
                 "label": "Assign Goal owner",
                 "goal_slug": missing_owner.get("goal_slug"),
                 "agent_slug": None,
+                "candidate_owners": missing_owner.get("candidate_owners") or [],
                 "summary": f"{title} — add {missing_owner.get('required_relationship') or 'default_agent_for'}",
             }
         )
@@ -263,9 +264,48 @@ def _goal_execution_missing_owners(
                     "default_agent_for link before Mission Control can derive "
                     "work from this Goal."
                 ),
+                "candidate_owners": _goal_execution_owner_candidates(
+                    decision.goal_slug,
+                    snapshot,
+                ),
             }
         )
     return tuple(missing)
+
+
+def _goal_execution_owner_candidates(
+    goal_slug: str,
+    snapshot: GoalExecutionSnapshot,
+) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for agent in snapshot.agents:
+        if agent.runtime != "codex" or goal_slug in agent.default_goal_slugs:
+            continue
+        candidates.append(
+            {
+                "agent_slug": agent.slug,
+                "agent_name": agent.name,
+                "default_goal_count": len(agent.default_goal_slugs),
+                "recommended": False,
+                "recommendation": f"{len(agent.default_goal_slugs)} verified default Goal"
+                if len(agent.default_goal_slugs) == 1
+                else f"{len(agent.default_goal_slugs)} verified default Goals",
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            int(item["default_goal_count"]),
+            str(item["agent_name"]).lower(),
+            str(item["agent_slug"]),
+        )
+    )
+    if candidates:
+        candidates[0] = {
+            **candidates[0],
+            "recommended": True,
+            "recommendation": "recommended: lowest verified Codex Goal load",
+        }
+    return candidates
 
 
 def derived_task_slug(fingerprint: str) -> str:

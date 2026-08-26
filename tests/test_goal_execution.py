@@ -624,6 +624,15 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "goal_title": "Entrepreneurship",
                     "required_relationship": "default_agent_for",
                     "message": "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
+                    "candidate_owners": [
+                        {
+                            "agent_slug": AGENT,
+                            "agent_name": "Timmy",
+                            "default_goal_count": 2,
+                            "recommended": True,
+                            "recommendation": "recommended: lowest verified Codex Goal load",
+                        }
+                    ],
                 }
             ],
         )
@@ -647,6 +656,15 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "label": "Assign Goal owner",
                     "goal_slug": "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
                     "agent_slug": None,
+                    "candidate_owners": [
+                        {
+                            "agent_slug": AGENT,
+                            "agent_name": "Timmy",
+                            "default_goal_count": 2,
+                            "recommended": True,
+                            "recommendation": "recommended: lowest verified Codex Goal load",
+                        }
+                    ],
                     "summary": "Entrepreneurship — add default_agent_for",
                 },
             ],

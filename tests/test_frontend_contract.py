@@ -194,7 +194,10 @@ state.goalExecution = {
     }],
     action_queue: [
       { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?" },
-      { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for" },
+      { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for", candidate_owners: [
+        { agent_slug: "agents/tammy", agent_name: "Tammy", default_goal_count: 0, recommended: true, recommendation: "recommended: lowest verified Codex Goal load" },
+        { agent_slug: "agents/timmy", agent_name: "Timmy", default_goal_count: 1, recommended: false, recommendation: "1 verified default Goal" },
+      ] },
       { owner: "agent", kind: "monitor_active_handoff", label: "Agent is executing", goal_slug: goalSlug, task_slug: taskSlug, agent_slug: "agents/timmy", summary: "Review Civic progress" },
     ],
     next_action: "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
@@ -276,6 +279,10 @@ assert(actionQueueOwnerAssignButtons.every((button) =>
   "action queue owner assignment buttons did not preserve the exact Goal slug");
 assert(actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "action queue owner assignment omitted Tammy assignment");
 assert(!actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "action queue owner assignment exposed OpenClaw assignment");
+assert(
+  actionQueueOwnerAssignButtons.some((button) => flattenText(button).includes("recommended") && button.dataset?.agentSlug === "agents/tammy"),
+  "action queue owner assignment did not label the recommended Codex Agent",
+);
 const originalFetch = globalThis.fetch;
 const originalLoadAgents = loadAgents;
 const originalLoadGoalExecution = loadGoalExecution;

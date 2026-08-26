@@ -3503,16 +3503,44 @@ async function assignGoalOwnerFromSummary(goalSlug, agentSlug) {
   showToast(`Default Goal owner verified: ${agent.name}.`);
 }
 
-function goalOwnerAssignmentCandidates(goalSlug) {
-  return state.agents.filter((agent) =>
-    agent.runtime !== "openclaw" &&
-    Array.isArray(agent.default_goal_slugs) &&
-    !agent.default_goal_slugs.includes(goalSlug));
+function goalOwnerAssignmentCandidates(goalSlug, candidateOwners = null) {
+  if (Array.isArray(candidateOwners) && candidateOwners.length) {
+    return candidateOwners
+      .filter((candidate) => {
+        const agentSlug = String(candidate?.agent_slug || "").trim();
+        const agent = state.agents.find((item) => item.slug === agentSlug);
+        return agentSlug && agent && agent.runtime !== "openclaw";
+      })
+      .map((candidate) => {
+        const agentSlug = String(candidate.agent_slug);
+        const agent = state.agents.find((item) => item.slug === agentSlug);
+        return {
+          slug: agentSlug,
+          name: String(candidate.agent_name || agent?.name || agentSlug),
+          recommended: Boolean(candidate.recommended),
+          recommendation: String(candidate.recommendation || "").trim(),
+        };
+      });
+  }
+  return state.agents
+    .filter((agent) =>
+      agent.runtime !== "openclaw" &&
+      Array.isArray(agent.default_goal_slugs) &&
+      !agent.default_goal_slugs.includes(goalSlug))
+    .map((agent) => ({
+      slug: agent.slug,
+      name: agent.name,
+      recommended: false,
+      recommendation: "",
+    }));
 }
 
-function appendGoalOwnerAssignmentButtons(parent, goalSlug, className) {
-  goalOwnerAssignmentCandidates(goalSlug).forEach((agent) => {
-    const assign = node("button", className, `Assign to ${agent.name}`);
+function appendGoalOwnerAssignmentButtons(parent, goalSlug, className, candidateOwners = null) {
+  goalOwnerAssignmentCandidates(goalSlug, candidateOwners).forEach((agent) => {
+    const label = agent.recommended
+      ? `Assign to ${agent.name} (${agent.recommendation || "recommended"})`
+      : `Assign to ${agent.name}`;
+    const assign = node("button", className, label);
     assign.type = "button";
     assign.dataset.slug = goalSlug;
     assign.dataset.agentSlug = agent.slug;
@@ -4457,6 +4485,7 @@ function renderGoalExecutionActionQueue(summary) {
         item,
         String(action.goal_slug),
         "goal-execution-action-owner-assign",
+        action.candidate_owners,
       );
     }
     list.append(item);
@@ -4525,7 +4554,7 @@ function renderGoalExecutionSummary() {
       row.append(document.createTextNode(title));
     }
     row.append(document.createTextNode(` — add ${relationship}`));
-    appendGoalOwnerAssignmentButtons(row, goalSlug, "goal-execution-owner-assign");
+    appendGoalOwnerAssignmentButtons(row, goalSlug, "goal-execution-owner-assign", item.candidate_owners);
     panel.append(row);
   });
   return panel;

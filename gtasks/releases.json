@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.191",
+  "current_version": "V0.0.192",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1146,6 +1146,12 @@
       "date": "2026-08-25",
       "title": "Assign Goal owners from action queue",
       "summary": "Goal execution action queue entries for missing default_agent_for owners now expose the same Codex-only Assign controls inline with the primary Tony action, so owner-missing Goals can be unblocked directly from the queue while preserving explicit verified GBrain assignment."
+    },
+    {
+      "version": "V0.0.192",
+      "date": "2026-08-25",
+      "title": "Recommend Goal owner assignments",
+      "summary": "Goal execution missing-owner summaries now include verified Codex Agent assignment candidates and label the lowest-load Agent as recommended in the Action queue, so Tony can unblock owner-missing Goals with an explicit informed click instead of guessing."
     }
   ]
 }
