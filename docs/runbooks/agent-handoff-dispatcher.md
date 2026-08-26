@@ -785,6 +785,11 @@ decisions. Each entry carries the exact Goal slug/title, required relationship
 Agents > Goal execution renders a compact `Missing owner: <Goal title> — add
 default_agent_for` line. This is not a dispatcher action; repair still belongs
 to the supported Goal ownership relationship workflow.
+V0.0.186 links those summary action items as exact read-only controls: the
+waiting-for-Tony question opens the canonical Task detail, the missing-owner
+Goal title opens the canonical Goal detail, and Close restores focus to the
+originating summary control. This is navigation only; it is not a dispatcher
+wake, handoff acknowledgement, Tony answer, owner repair, or mutation.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

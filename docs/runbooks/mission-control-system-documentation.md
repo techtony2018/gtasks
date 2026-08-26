@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.185`
+- Last verified pushed release: `V0.0.186`
 - Release commits:
-  `67fae3692e97b6c6a5b644686f1a2d9697c06996`
+  `84e624464d302f4f7cdc503f81c1e93dab22ec76`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -602,6 +602,25 @@ to the reviewed source before updating relationships.
   `Missing owner: Entrepreneurship: create a company and start running business, compound over time — add default_agent_for`
   line. V0.0.184 `blocking_questions[0]` still matched the Family/Toddy
   canonical question.
+- V0.0.186 evidence: dashboard-managed health readback `V0.0.186`; release
+  commit `84e624464d302f4f7cdc503f81c1e93dab22ec76`; release evidence file
+  `docs/release-evidence/v0.0.186.md`; independent QA PASS at
+  `artifacts/qa/v0.0.186-independent/gate-report.md` with frozen aggregate
+  `c9a0bb8fd4f84ea45e6fd5c1e1214690f77ebe022f13a6accf435cb79d878f18`.
+  Developer verification reported the focused frontend contract OK and
+  `python3 -m unittest discover -s tests` as `1394` OK with `5` skipped.
+- Verified V0.0.186 behavior: Agents > Goal execution summary action items are
+  exact read-only controls. The Family/Toddy question opens Task detail for
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`; the Entrepreneurship
+  missing-owner title opens Goal detail for
+  `goals/d837ac94-36f5-4735-93bb-d84c69b45435`; Close restores focus to the
+  exact summary origin. Postdeploy `/api/goal-execution` had
+  `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, `last_error=null`, counts
+  `total_goals=7`, `needs_attention=2`, `waiting_for_tony=1`,
+  `owner_missing=1`, `in_flight=1`, `recently_completed=3`, the same
+  `default_agent_for` missing owner, and the same Family/Toddy blocking
+  question task.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -735,3 +754,7 @@ V0.0.185 missing-owner rendering is also readback/display behavior. Showing a
 `Missing owner:` line does not create the `default_agent_for` edge, choose an
 Agent, or authorize derived work for that Goal. The repair remains exactly one
 verified Codex Agent `default_agent_for` relationship on the named Goal.
+V0.0.186 linked summary controls are navigation only. Opening the canonical
+Task or Goal detail from the summary does not answer Tony, create the
+`default_agent_for` edge, acknowledge or wake a worker, or mutate state; use
+the verified answer and Goal ownership flows for those repairs.
