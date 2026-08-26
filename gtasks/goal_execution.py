@@ -167,7 +167,6 @@ def _goal_execution_summary(
                     and item.get("private_input_required")
                     and item.get("agent_slug") == action.get("agent_slug")
                     and item.get("summary") == action.get("summary")
-                    and item.get("detail") == action.get("detail")
                 ),
                 None,
             )
@@ -263,6 +262,7 @@ def _goal_execution_answer_instruction(
             private_action.get("summary"),
             fallback="the private Agent question",
         )
+        question = _strip_trailing_sentence_period(question)
         blocked_goal_count = int(private_action.get("blocked_goal_count") or 0)
         if blocked_goal_count > 1:
             parts.append(
@@ -350,6 +350,10 @@ def _goal_execution_owner_instruction(
     if reason:
         return f"assign {goal} to {name} ({reason})"
     return f"assign {goal} to {name}"
+
+
+def _strip_trailing_sentence_period(value: str) -> str:
+    return value[:-1] if value.endswith(".") else value
 
 
 def _agent_label(value: object) -> str:

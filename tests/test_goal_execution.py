@@ -570,7 +570,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "todo_updated_at": NOW.isoformat(),
                     "agent_slug": "agents/tammy",
                     "question": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
-                    "detail": "This requires Tony's private credential input.",
+                    "detail": "This requires Tony's private credential input for Finance.",
                 },
             ),
             missing_owners=(
@@ -603,6 +603,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
             ["tasks/faith-token", "tasks/finance-token"],
         )
         self.assertIn("2 Tammy private-input blockers", rendered["next_action"])
+        self.assertNotIn(".; assign", rendered["next_action"])
         self.assertIn("; assign Entrepreneurship", rendered["next_action"])
 
     class Adapter:

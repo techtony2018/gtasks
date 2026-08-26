@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.202",
+  "current_version": "V0.0.203",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1212,6 +1212,12 @@
       "date": "2026-08-26",
       "title": "Group repeated private Goal blockers",
       "summary": "Goal execution now groups duplicate private-input blockers for the same Agent question, keeps the grouped blocker count visible in Agents and Inbox, and prevents repeated private credential prompts from crowding out actionable owner-assignment controls."
+    },
+    {
+      "version": "V0.0.203",
+      "date": "2026-08-26",
+      "title": "Group live private blockers by question",
+      "summary": "Goal execution now groups repeated private-input blockers by Agent and question even when each blocked task has different detail text, keeping live Tammy credential blockers compact and removing awkward punctuation before owner-assignment next actions."
     }
   ]
 }
