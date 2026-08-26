@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.197",
+  "current_version": "V0.0.198",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1182,6 +1182,12 @@
       "date": "2026-08-25",
       "title": "Surface Goal actions in Inbox",
       "summary": "Inbox now surfaces Goal execution Tony action controls so waiting Agent questions and missing Goal owners are visible from the central Needs Attention flow, while reusing the same explicit submit/assign controls and no automatic mutation."
+    },
+    {
+      "version": "V0.0.198",
+      "date": "2026-08-26",
+      "title": "Add recommended Goal unblock plan",
+      "summary": "Inbox Goal execution actions now offer one explicit recommended unblock plan when a concrete Agent answer draft and recommended Codex Goal owner are available, sequencing the verified answer and owner assignment so Tony can unblock multiple Goal-derived Agent states with one reviewed action."
     }
   ]
 }

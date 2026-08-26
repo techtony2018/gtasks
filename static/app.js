@@ -3557,6 +3557,62 @@ function appendGoalOwnerAssignmentButtons(parent, goalSlug, className, candidate
   });
 }
 
+function recommendedGoalExecutionUnblockPlan(summary) {
+  const actions = Array.isArray(summary?.action_queue)
+    ? summary.action_queue
+    : [];
+  const answerAction = actions.find((action) =>
+    action?.kind === "answer_question" &&
+    action?.todo_slug &&
+    action?.todo_updated_at &&
+    String(action?.answer_template || "").trim());
+  const ownerAction = actions.find((action) =>
+    action?.kind === "assign_goal_owner" &&
+    action?.goal_slug);
+  if (!answerAction || !ownerAction) return null;
+  const recommendedOwner = goalOwnerAssignmentCandidates(
+    String(ownerAction.goal_slug),
+    ownerAction.candidate_owners,
+  ).find((candidate) => candidate.recommended);
+  if (!recommendedOwner) return null;
+  return { answerAction, ownerAction, recommendedOwner };
+}
+
+async function applyGoalExecutionRecommendedActions(summary, button = null, errorNode = null) {
+  const plan = recommendedGoalExecutionUnblockPlan(summary);
+  if (!plan) throw new Error("No complete recommended Goal execution unblock plan is available.");
+  if (errorNode) {
+    errorNode.textContent = "";
+    errorNode.classList.add("is-hidden");
+  }
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Running recommended plan…";
+  }
+  try {
+    await answerGoalExecutionQuestionFromSummary(
+      plan.answerAction,
+      plan.answerAction.answer_template,
+    );
+    await assignGoalOwnerFromSummary(
+      String(plan.ownerAction.goal_slug),
+      plan.recommendedOwner.slug,
+    );
+    showToast("Recommended Goal execution unblock plan verified.");
+  } catch (error) {
+    if (errorNode) {
+      errorNode.textContent = error.message || "Recommended Goal execution unblock plan failed.";
+      errorNode.classList.remove("is-hidden");
+    }
+    throw error;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Run recommended unblock plan";
+    }
+  }
+}
+
 function clearAgentAvatarPreview() {
   if (state.avatarPreviewUrl) URL.revokeObjectURL(state.avatarPreviewUrl);
   state.avatarPreviewUrl = null;
@@ -4600,6 +4656,23 @@ function renderGoalExecutionInboxActions() {
       "These Tony actions unblock Goal-derived Agent work. Template insertion is local until Submit answer is pressed.",
     ),
   );
+  const plan = recommendedGoalExecutionUnblockPlan(summary);
+  if (plan) {
+    const planActions = node("div", "attention-actions goal-execution-plan-actions");
+    const runPlan = node("button", "secondary-button goal-execution-unblock-plan", "Run recommended unblock plan");
+    runPlan.type = "button";
+    const planError = node("p", "form-error is-hidden");
+    planError.setAttribute("role", "alert");
+    runPlan.addEventListener("click", async () => {
+      try {
+        await applyGoalExecutionRecommendedActions(summary, runPlan, planError);
+      } catch (_error) {
+        // Error copy is rendered inline.
+      }
+    });
+    planActions.append(runPlan);
+    details.append(planActions, planError);
+  }
   const queue = renderGoalExecutionActionQueue(summary);
   if (queue) details.append(queue);
   return details;

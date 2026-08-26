@@ -316,12 +316,63 @@ assert(inboxAnswerInputs.length === 1, "Inbox Goal execution action did not expo
 inboxTemplateButtons[0].click();
 assert(inboxAnswerInputs[0].value.includes("Scope categories: accepted"), "Inbox answer template did not fill the concrete draft");
 assert(!inboxAnswerInputs[0].value.includes("[accepted/revised]"), "Inbox answer template exposed placeholder copy");
+const inboxUnblockButtons = walkElements(inboxGoalActions, (element) =>
+  String(element.className || "").includes("goal-execution-unblock-plan"));
+assert(inboxUnblockButtons.length === 1, "Inbox Goal execution actions did not expose one recommended unblock plan button");
+assert(flattenText(inboxUnblockButtons[0]).includes("Run recommended unblock plan"), "Inbox recommended unblock plan button had unclear copy");
 const originalFetch = globalThis.fetch;
 const originalLoadAgents = loadAgents;
 const originalLoadGoalExecution = loadGoalExecution;
 const originalLoadAgentWork = loadAgentWork;
 const originalRender = render;
 const originalShowToast = showToast;
+let planRequests = [];
+globalThis.fetch = async (url, options = {}) => {
+  planRequests.push({ url: String(url), method: options.method, body: JSON.parse(options.body || "{}") });
+  if (String(url).includes("/answer")) {
+    return { ok: true, json: async () => ({ verified: true, next_owner: "agents/timmy", todo: {
+      slug: "todos/question",
+      parent_task: taskSlug,
+      status: "done",
+      kind: "question",
+      text: "Which family-care scope should Toddy use next?",
+      updated_at: "todo-v2",
+      comments: [{ body: "Scope categories: accepted", author: "people/tony-guan" }],
+      events: [],
+    }, task: {
+      slug: taskSlug,
+      title: "Review Civic progress",
+      summary: "Review Civic progress",
+      status: "blocked",
+      priority: "normal",
+      due_day: "2026-08-25",
+      display_markdown: "Question task",
+      owner_agent: "agents/timmy",
+      project: null,
+      goal: goalSlug,
+      todos: [],
+      handoff: { state: "ready_for_agent", resume_owner: "agents/timmy", resume_action: "Continue after Tony answers." },
+    } }) };
+  }
+  return { ok: true, json: async () => ({ verified: true, agent: { slug: "agents/tammy" } }) };
+};
+loadAgents = async () => {};
+loadGoalExecution = async () => {};
+loadAgentWork = async () => {};
+render = () => {};
+showToast = () => {};
+await applyGoalExecutionRecommendedActions(state.goalExecution.summary, new FakeElement("button"), new FakeElement("p"));
+globalThis.fetch = originalFetch;
+loadAgents = originalLoadAgents;
+loadGoalExecution = originalLoadGoalExecution;
+loadAgentWork = originalLoadAgentWork;
+render = originalRender;
+showToast = originalShowToast;
+assert(planRequests.length === 2, "recommended unblock plan did not perform exactly two explicit writes");
+assert(planRequests[0].url === "/api/todos/todos%2Fquestion/answer", "recommended unblock plan did not answer first");
+assert(planRequests[0].body.answer.includes("Scope categories: accepted"), "recommended unblock plan did not use the concrete answer draft");
+assert(planRequests[1].url === "/api/agents/agents%2Ftammy/default-goals", "recommended unblock plan did not assign the recommended Codex owner second");
+assert(planRequests[1].body.goal_slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435", "recommended unblock plan assigned the wrong Goal");
 let assignmentRequest = null;
 globalThis.fetch = async (url, options = {}) => {
   assignmentRequest = { url: String(url), method: options.method, body: JSON.parse(options.body || "{}") };
