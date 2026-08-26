@@ -833,6 +833,14 @@ Goal shows Timmy count 1 recommended with
 3. The recommendation is guidance only: no `default_agent_for` link is created
 until Tony explicitly activates a verified Codex assignment control, OpenClaw
 remains excluded, and the dispatcher still must not infer owners.
+V0.0.193 carries the verified question detail from waiting-for-Tony TODOs into
+Tony-owned `answer_question` Action queue entries. The Agents panel renders
+that detail beside the inline answer form, so Tony can review the full
+decision context and submit an answer without first opening the Task. This is
+display/readback context plus the existing explicit answer submission path
+only; no automatic answer, handoff acknowledgement, worker wake, completion,
+or GBrain mutation occurs until Tony submits through the verified TODO answer
+contract.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

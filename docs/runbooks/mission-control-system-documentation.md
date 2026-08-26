@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.192`
+- Last verified pushed release: `V0.0.193`
 - Release commits:
-  `3ad6ea396c26a2c4073eb27e782991313ccbc19f`
+  `bdf197b7000eec23d783f04756d3d17da7d81345`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -751,6 +751,28 @@ to the reviewed source before updating relationships.
   assignment controls, no automatic `default_agent_for` mutation, no-write
   intercepted assignment POST, V0.0.190 answer regression preserved, and clean
   console/network checks.
+- V0.0.193 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.193`; release commit
+  `bdf197b7000eec23d783f04756d3d17da7d81345`; release evidence file
+  `docs/release-evidence/v0.0.193.md`; independent QA PASS at
+  `artifacts/qa/v0.0.193-independent/gate-report.md` with frozen aggregate
+  `c46acb37d259f543397a81ff5592a7c0233bc43cebe4951bfb62bf34f399b7eb`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.193 behavior: Tony-owned `answer_question` Action queue
+  entries now carry verified question `detail` and render it beside the inline
+  answer form. Postdeploy `/api/goal-execution` retained `last_run=true`,
+  `last_error=null`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and
+  `summary.total_goals=7`; the Family/Toddy `answer_question` detail began
+  `Based on Artifact artifacts/0e0323e7-f5b8-4833-881a-018507ac7e2a`. Desktop
+  1440 and genuine mobile 390 QA showed exactly one labeled inline answer form
+  with the short question and full detail visible, preserved the V0.0.192
+  Timmy recommendation and no-OpenClaw assignment boundary, intercepted the
+  TODO answer POST before live network, and confirmed canonical readback
+  remained blocked/not_done with no live GBrain mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -914,3 +936,8 @@ Lowest-load candidate metadata can help Tony choose an explicit Codex owner,
 but it must not create `default_agent_for`, infer a default Agent, expose
 OpenClaw assignment, or mark the missing-owner repair complete without
 verified `default-goals` readback after Tony activates a control.
+V0.0.193 Action queue question detail is also readback guidance. Rendering the
+full TODO detail near the inline composer helps Tony answer without opening
+the Task first, but it must not be treated as an automatic answer, handoff
+acknowledgement, worker wake, task completion, or GBrain mutation before Tony
+submits through the verified `/api/todos/<todo>/answer` flow.

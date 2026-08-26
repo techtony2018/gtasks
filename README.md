@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.192 at commit
-`3ad6ea396c26a2c4073eb27e782991313ccbc19f`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.193 at commit
+`bdf197b7000eec23d783f04756d3d17da7d81345`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -313,6 +313,13 @@ has 1 verified default Goal, while Toddy has 2 and Tammy has 3. The
 recommendation is readback guidance only: no `default_agent_for` relationship
 is created until Tony explicitly activates a verified Codex assignment
 control, and OpenClaw assignment remains excluded.
+V0.0.193 carries the verified waiting-for-Tony question detail into
+`answer_question` Action queue entries and renders that detail beside the
+inline answer form. The Family/Toddy action now shows the detail beginning
+`Based on Artifact artifacts/0e0323e7-f5b8-4833-881a-018507ac7e2a...`, so
+Tony can answer from the Action queue without opening the Task first. This is
+readback guidance plus explicit user answer submission only; it does not
+automatically answer the TODO or mutate GBrain.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -426,6 +433,11 @@ eligible Codex Agent, verified `default_goal_count`, `recommended`, and the
 recommendation copy; the UI labels exactly one recommended owner by lowest
 verified Codex Goal load. This recommendation is guidance for Tony's explicit
 click, not automatic ownership repair or dispatcher mutation.
+V0.0.193+ includes verified question `detail` on Tony-owned `answer_question`
+Action queue entries and displays it near the inline answer composer. The
+detail is the decision context Tony needs before submitting an answer through
+the existing `/api/todos/<todo>/answer` flow; showing it does not itself
+answer, acknowledge, wake, complete, or mutate anything.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface
