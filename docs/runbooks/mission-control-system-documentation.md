@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.214`
+- Last verified pushed release: `V0.0.216`
 - Release commits:
-  `0a35c1e667a9148426f473075a865047335ea144`
+  `98a70502226dc2cd7181218d22172c3bd179b8e5`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1223,6 +1223,30 @@ to the reviewed source before updating relationships.
   no owner assignment controls, no OpenClaw controls, and passed active-claim
   precedence plus generic repair, Artifact/private, and Codex-owner
   regressions.
+- V0.0.215 evidence: release commit
+  `9288e5d4e1c06cdc9b445f1fd7d489854b2e226e`; release evidence file
+  `docs/release-evidence/v0.0.215.md`. V0.0.215 lets a verified completed
+  wake-inbox result supersede an older pending `still_blocked`
+  acknowledgement for the same remote handoff, so fixing remote worker
+  credentials can unblock the Goal-derived task instead of leaving the Agent
+  pinned to stale local state.
+- V0.0.216 evidence: dashboard-managed `/api/health` and `/api/releases`
+  readback `V0.0.216`; release commit
+  `98a70502226dc2cd7181218d22172c3bd179b8e5`; release evidence file
+  `docs/release-evidence/v0.0.216.md`; release catalog tests cover the
+  completed wake-inbox precedence and pinned Agent claim contract.
+- Verified V0.0.216 behavior: remote handoff workers now detect a completed
+  local wake-inbox result before retrying an older pending `still_blocked`
+  acknowledgement, submit the verified completed ack, and clear the pinned
+  Agent claim so the next Goal-derived task can proceed. This is the expected
+  result after restoring the remote worker's private dispatcher credentials
+  and Artifact publisher token/config. The remote worker fleet verifier command
+  remains `python3 scripts/verify_handoff_worker_fleet.py --inventory
+  config/handoff-dispatcher/remote-workers.json`; expected PASS means each
+  remote Codex worker verifies on its own host with `ok: true`, expected
+  `hosts/<agent>` route, current repo HEAD, preflight verification, and
+  required private Artifact publisher token/config. Local supervisor scope
+  remains Tammy/Tammy-OC only; Timmy/Toddy stay remote/non-local.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1478,3 +1502,9 @@ dispatcher or private route must be restored and delivery recovered; it is not
 a Tony answer, owner assignment, OpenClaw assignment, private credential form,
 or automatic worker repair. Active non-terminal claim leases still take
 precedence and should render Delivering rather than Needs attention.
+V0.0.215/V0.0.216 stale `still_blocked` ack recovery is a remote-worker
+completion reconciliation, not local supervisor expansion. A verified
+completed wake-inbox result may override and clear stale blocked local state
+only after canonical readback; it does not permit Timmy/Toddy local workers,
+skip Artifact publisher token/config on the remote hosts, or complete work
+without a verified completed acknowledgement.

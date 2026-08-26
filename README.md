@@ -458,6 +458,15 @@ queue now surfaces a system-owned `restore_agent_worker` item with label
 `Restore verified Agent worker` and next action
 `restore verified Agent worker for 1 blocked Goal`, while active-claim
 precedence remains intact.
+V0.0.215/V0.0.216 complete the remote-worker recovery path after credential or
+host repair. A verified completed wake-inbox result can supersede an older
+pending `still_blocked` acknowledgement, and V0.0.216 checks that completed
+inbox receipt before retrying stale blocked acks so it can submit the verified
+completed ack and clear the pinned Agent claim. This is remote-host recovery:
+Timmy/Toddy remain remote-only workers, this Mac's local supervisor remains
+Tammy/Tammy-OC only, and remote workers still require the private dispatcher
+configuration plus Artifact publisher token/config before they can complete
+Artifact-backed Goal work.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -663,6 +672,13 @@ Agents and Inbox should render `System action required` /
 `Restore verified Agent worker` with no Tony answer form/template, no owner
 assignment controls, and no OpenClaw controls; the repair target is the
 assigned Agent host dispatcher/private route.
+V0.0.215+ lets a verified completed wake-inbox result supersede an older
+pending `still_blocked` acknowledgement for the same remote handoff, so
+credential/config recovery can unblock the Goal-derived task instead of
+leaving the Agent pinned to stale local state. V0.0.216+ gives that completed
+wake-inbox result precedence before retrying the stale blocked ack, submits the
+verified completed acknowledgement, and clears the pinned Agent claim so later
+Goal-derived work can proceed.
 V0.0.207 supersedes the earlier paused stash boundary by shipping the
 scheduler-selection-ordering repair as a verified release. Do not apply the
 old `stash@{0}` entry as if it were still the source of truth; start from
@@ -779,6 +795,17 @@ For fleet checks, use `scripts/verify_handoff_worker_fleet.py` with
 the current `ok=1 failed=1` report verifies Timmy and preserves Toddy as a
 host-access blocker, not as a recovered worker and not as permission to install
 Toddy locally on this Mac.
+After V0.0.216 remote-worker recovery, the expected fleet readback command is:
+
+```bash
+python3 scripts/verify_handoff_worker_fleet.py \
+  --inventory config/handoff-dispatcher/remote-workers.json
+```
+
+Expected PASS means each configured remote Codex worker reports `ok: true`
+from its own host with the expected `hosts/<agent>` route, current repo HEAD,
+preflight verification, and required private Artifact publisher token/config.
+It does not move Timmy or Toddy onto this Mac.
 
 V0.0.166+ preserves Goal execution availability around hidden malformed Agent
 work only when that item is already surfaced as an Inbox data-quality issue and

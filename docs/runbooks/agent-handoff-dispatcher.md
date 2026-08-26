@@ -983,6 +983,14 @@ host dispatcher and private route, then recover delivery.`, and next-action
 copy `restore verified Agent worker for 1 blocked Goal`. Keep active-claim
 precedence: a suppressed row plus recent/future non-terminal execution claim
 still renders Delivering, not Needs attention.
+V0.0.215 lets a remote worker's verified completed wake-inbox result supersede
+an older pending `still_blocked` acknowledgement for the same handoff. V0.0.216
+checks for that completed local wake-inbox result before retrying the stale
+blocked ack, submits the verified completed acknowledgement, and clears the
+pinned Agent claim. This is the expected recovery after fixing a remote
+worker's private dispatcher credentials or Artifact publisher token/config;
+it does not grant permission to run Timmy/Toddy locally or to bypass verified
+completed wake-inbox readback.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
@@ -1111,6 +1119,15 @@ exactly `d7622b7`; Toddy returned `ok: false` with issue `ssh_unreachable` for
 `toddy@100.117.212.20`. Keep this distinction explicit: Timmy is verified,
 Toddy is host-access blocked, and local Toddy worker installation remains
 forbidden.
+
+After V0.0.216 remote-worker recovery, use the same fleet verifier command as
+the post-repair readback gate. Expected PASS means every configured remote
+Codex worker verifies on its own host with `ok: true`, the expected
+`hosts/<agent>` private route, current repo HEAD, preflight verification,
+LaunchAgent readback when configured, and required private Artifact publisher
+token/config. This is a remote-host requirement: do not install Timmy or Toddy
+on this Mac to make the fleet green. This Mac's local supervisor remains
+Tammy/Tammy-OC only.
 
 Fleet verifier improvement commit
 `8d4f31b458286ac9750b4b1e3a9f1b375189ff96` changed omitted
