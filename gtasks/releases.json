@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.187",
+  "current_version": "V0.0.188",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1122,6 +1122,12 @@
       "date": "2026-08-25",
       "title": "Assign missing Goal owners from summary",
       "summary": "Goal execution missing-owner action items now offer explicit Codex-only Assign to Tammy/Timmy/Toddy controls that use the verified default-goals API after user activation, reducing owner-missing blockers without inferring or mutating Goal ownership automatically."
+    },
+    {
+      "version": "V0.0.188",
+      "date": "2026-08-25",
+      "title": "Classify Goal execution action ownership",
+      "summary": "Goal execution summaries now include an action_queue that separates Tony-owned actions from Agent-active and system-action states, and the Agents summary renders the queue so blockers are grouped by who can move them forward."
     }
   ]
 }

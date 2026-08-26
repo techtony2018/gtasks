@@ -628,6 +628,29 @@ class GoalExecutionEngineTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            rendered["summary"]["action_queue"],
+            [
+                {
+                    "owner": "tony",
+                    "kind": "answer_question",
+                    "label": "Answer Agent question",
+                    "goal_slug": OTHER_GOAL,
+                    "task_slug": waiting_task.slug,
+                    "todo_slug": "todos/question",
+                    "agent_slug": AGENT,
+                    "summary": "Which family-care scope should Toddy use next?",
+                },
+                {
+                    "owner": "tony",
+                    "kind": "assign_goal_owner",
+                    "label": "Assign Goal owner",
+                    "goal_slug": "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "agent_slug": None,
+                    "summary": "Entrepreneurship — add default_agent_for",
+                },
+            ],
+        )
+        self.assertEqual(
             rendered["summary"]["blocking_questions"],
             [
                 {

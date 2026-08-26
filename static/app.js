@@ -4299,6 +4299,38 @@ function pluralizeCount(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function goalExecutionActionOwnerLabel(owner) {
+  if (owner === "tony") return "Tony action required";
+  if (owner === "agent") return "Agent active";
+  if (owner === "system") return "System action required";
+  return "Action";
+}
+
+function renderGoalExecutionActionQueue(summary) {
+  const actions = Array.isArray(summary.action_queue)
+    ? summary.action_queue
+    : [];
+  if (!actions.length) return null;
+  const wrapper = node("div", "goal-execution-action-queue");
+  wrapper.append(node("strong", "", "Action queue:"));
+  const list = node("ul", "");
+  actions.slice(0, 4).forEach((action) => {
+    const item = node("li", "");
+    item.append(
+      node("span", "goal-execution-action-owner", goalExecutionActionOwnerLabel(action?.owner)),
+      document.createTextNode(" · "),
+      node("span", "goal-execution-action-label", String(action?.label || "Action")),
+    );
+    const summaryText = String(action?.summary || "").trim();
+    if (summaryText) {
+      item.append(document.createTextNode(` — ${summaryText}`));
+    }
+    list.append(item);
+  });
+  wrapper.append(list);
+  return wrapper;
+}
+
 function renderGoalExecutionSummary() {
   const summary = goalExecutionSummaryPayload();
   if (!summary) return null;
@@ -4323,6 +4355,8 @@ function renderGoalExecutionSummary() {
     panel.append(node("p", "goal-execution-next-action", `Next action: ${nextAction}`));
   }
   panel.append(node("p", "goal-execution-metrics", metrics.join(" · ")));
+  const actionQueue = renderGoalExecutionActionQueue(summary);
+  if (actionQueue) panel.append(actionQueue);
   blockingQuestions.slice(0, 2).forEach((item) => {
     const question = String(item?.question || "").trim();
     const taskSlug = String(item?.task_slug || "").trim();

@@ -190,6 +190,11 @@ state.goalExecution = {
       required_relationship: "default_agent_for",
       message: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
     }],
+    action_queue: [
+      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?" },
+      { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for" },
+      { owner: "agent", kind: "monitor_active_handoff", label: "Agent is executing", goal_slug: goalSlug, task_slug: taskSlug, agent_slug: "agents/timmy", summary: "Review Civic progress" },
+    ],
     next_action: "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
   },
   last_run: {
@@ -219,6 +224,11 @@ assert(goalExecutionSurfaceText.includes("Which family-care scope should Toddy u
 assert(goalExecutionSurfaceText.includes("Missing owner:"), "Goal execution surface did not expose the missing owner label");
 assert(goalExecutionSurfaceText.includes("Entrepreneurship"), "Goal execution surface did not expose the exact missing owner title");
 assert(goalExecutionSurfaceText.includes("default_agent_for"), "Goal execution surface did not expose the missing owner repair relationship");
+assert(goalExecutionSurfaceText.includes("Action queue:"), "Goal execution surface did not expose the action queue");
+assert(goalExecutionSurfaceText.includes("Tony action required"), "Goal execution surface did not label Tony-owned actions");
+assert(goalExecutionSurfaceText.includes("Agent active"), "Goal execution surface did not distinguish active Agent work");
+assert(goalExecutionSurfaceText.includes("Answer Agent question"), "Goal execution surface did not include question action");
+assert(goalExecutionSurfaceText.includes("Assign Goal owner"), "Goal execution surface did not include owner assignment action");
 const questionLinks = walkElements(goalExecutionSurface, (element) =>
   String(element.className || "").includes("goal-execution-blocking-question") &&
   walkElements(element, (child) =>

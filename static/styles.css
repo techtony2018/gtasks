@@ -2538,6 +2538,28 @@ body.is-resizing-detail {
   font-size: 0.88rem;
 }
 
+.goal-execution-action-queue {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.goal-execution-action-queue ul {
+  display: grid;
+  gap: 0.2rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.goal-execution-action-queue li {
+  overflow-wrap: anywhere;
+}
+
+.goal-execution-action-owner {
+  color: #9ee7ff;
+  font-weight: 700;
+}
+
 .goal-execution-list {
   display: grid;
   gap: 7px;

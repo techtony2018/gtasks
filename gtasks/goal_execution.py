@@ -164,6 +164,36 @@ def _goal_execution_summary(
         )
     else:
         next_action = "No immediate Goal execution action is required."
+    action_queue: list[dict[str, object]] = []
+    for question in blocking_questions:
+        action_queue.append(
+            {
+                "owner": "tony",
+                "kind": "answer_question",
+                "label": "Answer Agent question",
+                "goal_slug": question.get("goal_slug"),
+                "task_slug": question.get("task_slug"),
+                "todo_slug": question.get("todo_slug"),
+                "agent_slug": question.get("agent_slug"),
+                "summary": question.get("question"),
+            }
+        )
+    for missing_owner in missing_owners:
+        title = str(
+            missing_owner.get("goal_title")
+            or missing_owner.get("goal_slug")
+            or ""
+        )
+        action_queue.append(
+            {
+                "owner": "tony",
+                "kind": "assign_goal_owner",
+                "label": "Assign Goal owner",
+                "goal_slug": missing_owner.get("goal_slug"),
+                "agent_slug": None,
+                "summary": f"{title} — add {missing_owner.get('required_relationship') or 'default_agent_for'}",
+            }
+        )
     return {
         "total_goals": len(decisions),
         "needs_attention": needs_attention,
@@ -175,6 +205,7 @@ def _goal_execution_summary(
         "reasons": counts,
         "blocking_questions": [dict(question) for question in blocking_questions],
         "missing_owners": [dict(owner) for owner in missing_owners],
+        "action_queue": action_queue,
         "next_action": next_action,
     }
 
