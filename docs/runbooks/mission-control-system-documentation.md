@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.200`
+- Last verified pushed release: `V0.0.201`
 - Release commits:
-  `5560d8f342674e29a3eac97dec3c3ce3f566027f`
+  `36ccddd1139f3651805aa311c91eb709d281be8a`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -953,6 +953,25 @@ to the reviewed source before updating relationships.
   recommended plan still produced only the safe Family TODO answer and Timmy
   Goal-owner assignment, with zero private TODO POST attempts and no live
   GBrain mutation.
+- V0.0.201 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.201`; release commit
+  `36ccddd1139f3651805aa311c91eb709d281be8a`; release evidence file
+  `docs/release-evidence/v0.0.201.md`; independent QA PASS at
+  `artifacts/qa/v0.0.201-independent/gate-report.md` with frozen aggregate
+  `9fcc5ac8663d96726bb0f5251dc36e658d0ad04ac5d86b6ac4b4cd265679dfc6`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1396` OK with `5` skipped.
+- Verified V0.0.201 behavior: Goal execution next-action copy now separates
+  ordinary answer, private-input blocker, and owner-assignment clauses with
+  clear semicolon grammar. Independent desktop 1440 and genuine mobile 390 QA
+  verified Agents and Inbox both rendered the three-part `Next action:` for
+  ordinary Family/Toddy answer, Tammy private-input blocker with the exact
+  token-question summary, and recommended Entrepreneurship-to-Timmy owner
+  assignment. Neither `. and assign` nor `?. and` appeared. Private rows still
+  had no form, template, raw TODO version, synthetic credential value, or plan
+  write; the explicit recommended plan still emitted only the safe Family
+  answer POST followed by the Timmy owner POST on both widths, with zero
+  private TODO POST attempts and no live GBrain mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1152,3 +1171,7 @@ V0.0.200 next-action private blocker copy is visibility only. It can tell Tony
 to provide private input, but must not be treated as a generated secret,
 answer submission, recommended-plan eligibility, dispatcher wake, task
 completion, ownership repair, or GBrain mutation.
+V0.0.201 grammar repairs are also display-only. Semicolon-separated
+next-action copy improves readability but does not change which actions are
+eligible for recommended plans, does not make private input autofillable, and
+does not create any mutation receipt.

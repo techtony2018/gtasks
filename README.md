@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.200 at commit
-`5560d8f342674e29a3eac97dec3c3ce3f566027f`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.201 at commit
+`36ccddd1139f3651805aa311c91eb709d281be8a`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -373,6 +373,12 @@ initially caught Inbox omitting the `Next action:` line; the repaired retest
 verified Inbox renders it on desktop and mobile. This is visibility only for
 private blockers: Mission Control still does not generate, prefill, or submit
 secrets.
+V0.0.201 fixes the resulting next-action grammar so ordinary answer,
+private-input blocker, and owner-assignment clauses are separated with clear
+semicolons. Agents and Inbox keep all three blockers visible without producing
+misleading `. and assign` or `?. and` copy; private input remains
+non-autofilled and excluded from plan writes, while the safe Family answer
+plus recommended Timmy owner plan behavior is preserved.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -526,6 +532,10 @@ same `Next action:` line in `Goal execution actions` as Agents, so central
 triage sees private blockers too. Treat that copy as operator guidance only,
 not generated private input, a submitted answer, plan eligibility, or a
 mutation receipt.
+V0.0.201+ formats that combined `summary.next_action` as separate clauses:
+ordinary answer guidance, private-input guidance, owner assignment guidance,
+then the continuing-work note. The copy must remain readable operator
+guidance, without `. and assign` sentence breaks or implied secret autofill.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

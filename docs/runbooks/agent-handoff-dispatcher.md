@@ -894,6 +894,13 @@ three: answer the safe question, provide private input for the private
 question, and assign the recommended owner. Inbox also renders
 `summary.next_action` in `Goal execution actions` after the MC200-001 repair.
 Private rows remain no-template, no-form, and no-plan.
+V0.0.201 tightens that combined next-action copy by separating the ordinary
+answer, private-input blocker, and owner-assignment clauses with semicolons.
+Agents and Inbox should never render awkward `. and assign` or `?. and`
+grammar for this state. The grammar fix is display-only: private input remains
+non-autofilled and excluded from recommended-plan writes, while the safe
+answer plus recommended Timmy owner plan still uses the same explicit
+reviewed controls.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
