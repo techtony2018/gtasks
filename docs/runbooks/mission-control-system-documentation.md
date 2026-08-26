@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.190`
+- Last verified pushed release: `V0.0.191`
 - Release commits:
-  `f7fd08dc17cd48ad80edfcc166ce3b147e4e7c28`
+  `21aeac225d4b344a3a3c0ba1f984c1f5b6769668`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -701,6 +701,31 @@ to the reviewed source before updating relationships.
   independent check. Postdeploy `/api/goal-execution` retained `last_run`,
   `public_reason=actively_executing`, selected task
   `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and `last_error=null`.
+- V0.0.191 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.191`; release commit
+  `21aeac225d4b344a3a3c0ba1f984c1f5b6769668`; release evidence file
+  `docs/release-evidence/v0.0.191.md`; independent QA PASS at
+  `artifacts/qa/v0.0.191-independent/gate-report.md` with frozen aggregate
+  `9e2486934841d4a59b1c0789f1c718b3945624372e2334081847d313ee71c299`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.191 behavior: Tony-owned `assign_goal_owner` Action queue
+  entries render Codex-only inline assignment controls directly in the primary
+  Action queue: `Assign to Tammy`, `Assign to Toddy`, and `Assign to Timmy`.
+  Each uses the existing verified
+  `POST /api/agents/<agent>/default-goals` contract with
+  `{goal_slug, action: "assign"}`. QA intercepted assignment POSTs before live
+  network and confirmed desktop Tammy endpoint
+  `/api/agents/agents%2Ftammy/default-goals`, mobile Timmy endpoint
+  `/api/agents/agents%2Ftimmy/default-goals`, and the exact Entrepreneurship
+  Goal body. Direct live readback after QA still showed no owner, proving no
+  live GBrain mutation. Postdeploy `/api/goal-execution` retained `last_run`,
+  `last_error=null`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, `summary.total_goals=7`, and
+  action queue entries for `answer_question` and Entrepreneurship
+  `assign_goal_owner`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -854,3 +879,8 @@ V0.0.190 inline composers expose that existing answer submission flow in the
 Goal execution summary. They require the verified TODO update timestamp and a
 human-entered answer; stale or unverified answer attempts must fail rather than
 silently clear a blocker.
+V0.0.191 action-queue assignment buttons expose the existing verified Goal
+owner assignment flow closer to the primary Tony queue item. They remain
+explicit Codex-only controls and must not be treated as automatic owner
+selection, OpenClaw assignment, or completed repair without verified
+`default-goals` readback.

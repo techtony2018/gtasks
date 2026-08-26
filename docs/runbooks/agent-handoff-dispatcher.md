@@ -817,6 +817,13 @@ the existing canonical `/api/todos/<todo>/answer` endpoint with
 a UUID `idempotency_key`. Verified response reconciliation refreshes Goal
 execution and Agent Work. This is a Tony answer path, not a dispatcher wake,
 Agent handoff acknowledgement, or OpenClaw assignment.
+V0.0.191 adds inline owner-assignment controls to the primary Action queue for
+Tony-owned `assign_goal_owner` entries. The buttons are still Codex-only
+`Assign to Tammy`, `Assign to Toddy`, and `Assign to Timmy`, and they use the
+existing verified `POST /api/agents/<agent>/default-goals` contract with
+`{goal_slug, action: "assign"}`. The separate Missing owner detail row keeps
+its controls, OpenClaw remains excluded, and no owner is inferred by the
+dispatcher.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
