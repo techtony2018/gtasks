@@ -140,30 +140,6 @@ def _goal_execution_summary(
         and public_reason not in _GOAL_ATTENTION_REASONS
         else 0
     )
-    if waiting_for_tony and owner_missing:
-        next_action = (
-            "Answer Tony questions and assign missing default_agent_for owners; "
-            "executing or delivered Agent work can continue."
-        )
-    elif waiting_for_tony:
-        next_action = (
-            "Answer Tony questions so the assigned Agent can resume blocked Goal work."
-        )
-    elif owner_missing:
-        next_action = (
-            "Assign missing default_agent_for owners before Mission Control can derive "
-            "that Goal work."
-        )
-    elif needs_attention:
-        next_action = (
-            "Repair Goal execution attention states before more automatic work can proceed."
-        )
-    elif in_flight:
-        next_action = (
-            "Monitor the active Agent handoff; no Tony action is required for the selected work."
-        )
-    else:
-        next_action = "No immediate Goal execution action is required."
     action_queue: list[dict[str, object]] = []
     for question in blocking_questions:
         action_queue.append(
@@ -197,6 +173,26 @@ def _goal_execution_summary(
                 "summary": f"{title} — add {missing_owner.get('required_relationship') or 'default_agent_for'}",
             }
         )
+    if waiting_for_tony and owner_missing:
+        next_action = (
+            f"{_goal_execution_answer_instruction(action_queue)} and "
+            f"{_goal_execution_owner_instruction(action_queue)}; "
+            "executing or delivered Agent work can continue."
+        )
+    elif waiting_for_tony:
+        next_action = f"{_goal_execution_answer_instruction(action_queue)} so the assigned Agent can resume blocked Goal work."
+    elif owner_missing:
+        next_action = f"{_goal_execution_owner_instruction(action_queue)} before Mission Control can derive that Goal work."
+    elif needs_attention:
+        next_action = (
+            "Repair Goal execution attention states before more automatic work can proceed."
+        )
+    elif in_flight:
+        next_action = (
+            "Monitor the active Agent handoff; no Tony action is required for the selected work."
+        )
+    else:
+        next_action = "No immediate Goal execution action is required."
     return {
         "total_goals": len(decisions),
         "needs_attention": needs_attention,
@@ -211,6 +207,68 @@ def _goal_execution_summary(
         "action_queue": action_queue,
         "next_action": next_action,
     }
+
+
+def _goal_execution_answer_instruction(
+    action_queue: list[dict[str, object]],
+) -> str:
+    action = next(
+        (item for item in action_queue if item.get("kind") == "answer_question"),
+        None,
+    )
+    if action is None:
+        return "Answer Tony questions"
+    agent = _agent_label(action.get("agent_slug"))
+    question = _concise_label(action.get("summary"), fallback="the waiting Agent question")
+    return f"Answer the {agent} question for {question}"
+
+
+def _goal_execution_owner_instruction(
+    action_queue: list[dict[str, object]],
+) -> str:
+    action = next(
+        (item for item in action_queue if item.get("kind") == "assign_goal_owner"),
+        None,
+    )
+    if action is None:
+        return "assign missing default_agent_for owners"
+    goal = _concise_label(
+        str(action.get("summary") or "").split(" — ", 1)[0],
+        fallback="the missing-owner Goal",
+    )
+    candidates = [
+        candidate
+        for candidate in action.get("candidate_owners") or []
+        if isinstance(candidate, Mapping)
+    ]
+    recommended = next(
+        (candidate for candidate in candidates if candidate.get("recommended") is True),
+        candidates[0] if candidates else None,
+    )
+    if not recommended:
+        return f"assign {goal} to one verified Codex Agent"
+    name = _concise_label(
+        recommended.get("agent_name") or recommended.get("agent_slug"),
+        fallback="the recommended Codex Agent",
+    )
+    reason = str(recommended.get("recommendation") or "").strip()
+    if reason:
+        return f"assign {goal} to {name} ({reason})"
+    return f"assign {goal} to {name}"
+
+
+def _agent_label(value: object) -> str:
+    text = str(value or "").strip()
+    if text.startswith("agents/"):
+        text = text.split("/", 1)[1]
+    return text[:1].upper() + text[1:] if text else "assigned Agent"
+
+
+def _concise_label(value: object, *, fallback: str) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return fallback
+    return text[:117] + "..." if len(text) > 120 else text
 
 
 def _goal_execution_blocking_questions(

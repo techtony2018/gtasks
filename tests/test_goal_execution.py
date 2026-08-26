@@ -686,7 +686,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         )
         self.assertEqual(
             rendered["summary"]["next_action"],
-            "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
+            "Answer the Timmy question for Which family-care scope should Toddy use next? and assign Entrepreneurship to Timmy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
         )
 
     def test_auto_canary_selects_next_eligible_goal_when_fixed_goal_completed(self) -> None:

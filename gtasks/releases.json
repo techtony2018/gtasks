@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.193",
+  "current_version": "V0.0.194",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1158,6 +1158,12 @@
       "date": "2026-08-25",
       "title": "Show Agent question detail in action queue",
       "summary": "Goal execution answer-question actions now carry and render the verified question detail next to the inline answer box, so Tony can answer waiting Agent blockers directly from the Action queue without opening the Task first."
+    },
+    {
+      "version": "V0.0.194",
+      "date": "2026-08-25",
+      "title": "Make Goal next action exact",
+      "summary": "Goal execution next-action copy now names the exact waiting Agent question and recommended missing-owner assignment, so Tony sees the concrete actions that unblock Goal-derived work instead of generic waiting/owner-missing guidance."
     }
   ]
 }
