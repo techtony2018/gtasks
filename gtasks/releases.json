@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.181",
+  "current_version": "V0.0.182",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1086,6 +1086,12 @@
       "date": "2026-08-25",
       "title": "Ignore terminal Agent handoff history noise",
       "summary": "Agent cards now ignore dispatcher repair statuses attached only to completed or cancelled history rows, while still surfacing non-terminal Agent work that genuinely needs handoff recovery."
+    },
+    {
+      "version": "V0.0.182",
+      "date": "2026-08-25",
+      "title": "Goal execution reader summary",
+      "summary": "Add a compact Goal execution summary with attention counts and next action guidance for API/readback consumers."
     }
   ]
 }

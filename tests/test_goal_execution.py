@@ -547,6 +547,62 @@ class GoalExecutionEngineTests(unittest.TestCase):
             canary_goal_slug=GOAL,
         )
 
+    def test_run_summary_counts_actionable_goal_states_for_readers(self) -> None:
+        run = GoalExecutionEngine(
+            adapter=self.Adapter(
+                snapshot_value=snapshot(
+                    goals=(
+                        goal(GOAL),
+                        goal(OTHER_GOAL, title="Faith: daily review"),
+                        goal(
+                            "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                            title="Entrepreneurship",
+                        ),
+                    ),
+                    agents=(agent(goals=(GOAL, OTHER_GOAL)),),
+                    tasks=(
+                        replace(
+                            agent_task(slug_identity="active", goal_slug=GOAL, status="active"),
+                            next_action="Publish the bounded Goal progress brief.",
+                        ),
+                        replace(
+                            agent_task(
+                                slug_identity="waiting",
+                                goal_slug=OTHER_GOAL,
+                                status="blocked",
+                            ),
+                            handoff=TaskHandoff(
+                                state="waiting_for_input",
+                                waiting_on="people/tony-guan",
+                                question_todo="todos/question",
+                                resume_owner=AGENT,
+                                resume_action="Use Tony's answer.",
+                                requested_at=NOW,
+                                answered_at=None,
+                                acknowledged_at=None,
+                                round=1,
+                            ),
+                        ),
+                    ),
+                    route_health={AGENT: True},
+                )
+            ),
+            bridge=self.Bridge(),
+            mode="shadow",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        rendered = run.to_dict()
+
+        self.assertEqual(rendered["summary"]["total_goals"], 3)
+        self.assertEqual(rendered["summary"]["needs_attention"], 2)
+        self.assertEqual(rendered["summary"]["waiting_for_tony"], 1)
+        self.assertEqual(rendered["summary"]["owner_missing"], 1)
+        self.assertEqual(
+            rendered["summary"]["next_action"],
+            "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
+        )
+
     def test_auto_canary_selects_next_eligible_goal_when_fixed_goal_completed(self) -> None:
         primary_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
             snapshot(projects=(project(),))
@@ -1612,6 +1668,11 @@ class GoalExecutionSchedulerTests(unittest.TestCase):
                             "agent_slug": "agents/toddy",
                         },
                         "handoff": {"status": "execution_started"},
+                        "summary": {
+                            "total_goals": 7,
+                            "needs_attention": 2,
+                            "next_action": "Answer Tony questions.",
+                        },
                     }
                 )
 
@@ -1626,7 +1687,14 @@ class GoalExecutionSchedulerTests(unittest.TestCase):
         self.assertEqual(status["public_reason"], "duplicate")
         self.assertEqual(status["task_slug"], "tasks/current")
         self.assertEqual(status["handoff"], {"status": "execution_started"})
-
+        self.assertEqual(
+            status["summary"],
+            {
+                "total_goals": 7,
+                "needs_attention": 2,
+                "next_action": "Answer Tony questions.",
+            },
+        )
 
 if __name__ == "__main__":
     unittest.main()

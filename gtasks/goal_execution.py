@@ -91,6 +91,89 @@ class GoalExecutionPlan:
         }
 
 
+_GOAL_ATTENTION_REASONS = frozenset(
+    {
+        "owner_missing",
+        "owner_ambiguous",
+        "project_ambiguous",
+        "route_unavailable",
+        "runtime_not_allowed",
+        "handoff_needs_repair",
+        "handoff_missing",
+        "handoff_worker_unavailable",
+        "task_needs_next_action",
+        "system_repair_required",
+        "waiting_for_tony",
+    }
+)
+_GOAL_WORK_IN_FLIGHT_REASONS = frozenset(
+    {
+        "activated",
+        "adopted",
+        "delivering",
+        "actively_executing",
+        "duplicate",
+    }
+)
+
+
+def _goal_execution_summary(
+    decisions: tuple[GoalExecutionDecision, ...],
+    public_reason: str,
+) -> dict[str, object]:
+    counts: dict[str, int] = {}
+    for decision in decisions:
+        counts[decision.reason] = counts.get(decision.reason, 0) + 1
+    waiting_for_tony = counts.get("waiting_for_tony", 0)
+    owner_missing = counts.get("owner_missing", 0)
+    needs_attention = sum(
+        count
+        for reason, count in counts.items()
+        if reason in _GOAL_ATTENTION_REASONS
+    )
+    in_flight = (
+        1
+        if public_reason in _GOAL_WORK_IN_FLIGHT_REASONS
+        and public_reason not in _GOAL_ATTENTION_REASONS
+        else 0
+    )
+    if waiting_for_tony and owner_missing:
+        next_action = (
+            "Answer Tony questions and assign missing default_agent_for owners; "
+            "executing or delivered Agent work can continue."
+        )
+    elif waiting_for_tony:
+        next_action = (
+            "Answer Tony questions so the assigned Agent can resume blocked Goal work."
+        )
+    elif owner_missing:
+        next_action = (
+            "Assign missing default_agent_for owners before Mission Control can derive "
+            "that Goal work."
+        )
+    elif needs_attention:
+        next_action = (
+            "Repair Goal execution attention states before more automatic work can proceed."
+        )
+    elif in_flight:
+        next_action = (
+            "Monitor the active Agent handoff; no Tony action is required for the selected work."
+        )
+    else:
+        next_action = "No immediate Goal execution action is required."
+    return {
+        "total_goals": len(decisions),
+        "needs_attention": needs_attention,
+        "waiting_for_tony": waiting_for_tony,
+        "owner_missing": owner_missing,
+        "ready": counts.get("auto_eligible", 0),
+        "in_flight": in_flight,
+        "recently_completed": counts.get("recently_completed", 0),
+        "reasons": counts,
+        "next_action": next_action,
+    }
+
+
 def derived_task_slug(fingerprint: str) -> str:
     if not isinstance(fingerprint, str) or len(fingerprint) != 64:
         raise ValueError("derived task fingerprint must be sha256")
@@ -479,6 +562,7 @@ class GoalExecutionRun:
             "planner_version": self.planner_version,
             "decisions": public_decisions,
             "public_reason": self.public_reason,
+            "summary": _goal_execution_summary(self.decisions, self.public_reason),
             "task": (
                 {
                     "slug": self.task_slug,
@@ -1356,6 +1440,7 @@ class GoalExecutionScheduler:
             task = last_run.get("task") if isinstance(last_run, Mapping) else None
             task_slug = task.get("slug") if isinstance(task, Mapping) else None
             handoff = last_run.get("handoff") if isinstance(last_run, Mapping) else None
+            summary = last_run.get("summary") if isinstance(last_run, Mapping) else None
             return {
                 "mode": self.engine.mode,
                 "planner_version": PLANNER_VERSION,
@@ -1368,6 +1453,7 @@ class GoalExecutionScheduler:
                 ),
                 "task_slug": task_slug if isinstance(task_slug, str) else None,
                 "handoff": dict(handoff) if isinstance(handoff, Mapping) else None,
+                "summary": dict(summary) if isinstance(summary, Mapping) else None,
                 "last_error": self._last_error,
                 "next_run_in_seconds": round(next_in, 3),
             }
