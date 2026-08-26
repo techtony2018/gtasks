@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.212",
+  "current_version": "V0.0.213",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1272,6 +1272,12 @@
       "date": "2026-08-26",
       "title": "Respect active handoff claims in Goal status",
       "summary": "Goal execution now treats an active non-terminal Agent execution claim as in-flight even when a later suppressed handoff row exists, avoiding false handoff repair attention while the remote Agent still has the lease."
+    },
+    {
+      "version": "V0.0.213",
+      "date": "2026-08-26",
+      "title": "Queue concrete Goal handoff repair actions",
+      "summary": "Goal execution now turns verified handoff repair attention into an explicit system-owned action queue item and concrete next action, so blocked Goal work points to Handoff History recovery instead of a generic repair message."
     }
   ]
 }

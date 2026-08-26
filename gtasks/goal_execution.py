@@ -237,6 +237,47 @@ def _goal_execution_summary(
                 "summary": f"{title} — add {missing_owner.get('required_relationship') or 'default_agent_for'}",
             }
         )
+    for decision in decisions:
+        if decision.reason != "handoff_needs_repair":
+            continue
+        action = {
+            "owner": "system",
+            "kind": "repair_agent_handoff",
+            "label": "Repair verified Agent handoff",
+            "goal_slug": decision.goal_slug,
+            "task_slug": decision.existing_task_slug,
+            "summary": "Inspect Handoff History and recover the verified Agent delivery state.",
+            "detail": "The canonical task is active, but verified Agent handoff or execution needs system review.",
+            "blocked_goal_count": 1,
+            "related_repairs": [
+                {
+                    "goal_slug": decision.goal_slug,
+                    "task_slug": decision.existing_task_slug,
+                    "reason": decision.reason,
+                }
+            ],
+        }
+        existing = next(
+            (
+                item
+                for item in action_queue
+                if item.get("kind") == "repair_agent_handoff"
+            ),
+            None,
+        )
+        if existing is not None:
+            related = existing.setdefault("related_repairs", [])
+            if isinstance(related, list):
+                related.append(
+                    {
+                        "goal_slug": decision.goal_slug,
+                        "task_slug": decision.existing_task_slug,
+                        "reason": decision.reason,
+                    }
+                )
+                existing["blocked_goal_count"] = len(related)
+            continue
+        action_queue.append(action)
     if waiting_for_tony and owner_missing:
         parts = [_goal_execution_answer_instruction(action_queue)]
         system_repair = _goal_execution_system_repair_instruction(action_queue)
@@ -255,7 +296,7 @@ def _goal_execution_summary(
     elif owner_missing:
         next_action = f"{_goal_execution_owner_instruction(action_queue)} before Mission Control can derive that Goal work."
     elif needs_attention:
-        next_action = (
+        next_action = _goal_execution_system_repair_instruction(action_queue) or (
             "Repair Goal execution attention states before more automatic work can proceed."
         )
     elif in_flight:
@@ -379,7 +420,7 @@ def _goal_execution_question_is_artifact_publisher_identity_repair(
 def _goal_execution_system_repair_instruction(
     action_queue: list[dict[str, object]],
 ) -> str:
-    action = next(
+    artifact_action = next(
         (
             item
             for item in action_queue
@@ -387,16 +428,32 @@ def _goal_execution_system_repair_instruction(
         ),
         None,
     )
-    if action is None:
-        return ""
-    agent = _agent_label(action.get("agent_slug"))
-    blocked_goal_count = int(action.get("blocked_goal_count") or 0)
-    if blocked_goal_count > 1:
-        return (
-            f"repair {agent} Artifact publisher identity for "
-            f"{blocked_goal_count} blocked Goals"
+    handoff_action = next(
+        (
+            item
+            for item in action_queue
+            if item.get("kind") == "repair_agent_handoff"
+        ),
+        None,
+    )
+    parts: list[str] = []
+    if artifact_action is not None:
+        agent = _agent_label(artifact_action.get("agent_slug"))
+        blocked_goal_count = int(artifact_action.get("blocked_goal_count") or 0)
+        if blocked_goal_count > 1:
+            parts.append(
+                f"repair {agent} Artifact publisher identity for "
+                f"{blocked_goal_count} blocked Goals"
+            )
+        else:
+            parts.append(f"repair {agent} Artifact publisher identity")
+    if handoff_action is not None:
+        blocked_goal_count = int(handoff_action.get("blocked_goal_count") or 0)
+        goal_label = "Goal" if blocked_goal_count == 1 else "Goals"
+        parts.append(
+            f"repair verified Agent handoff for {blocked_goal_count or 1} blocked {goal_label}"
         )
-    return f"repair {agent} Artifact publisher identity"
+    return " and ".join(parts)
 
 
 def _goal_execution_owner_instruction(

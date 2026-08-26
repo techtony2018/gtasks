@@ -694,6 +694,55 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertIn("repair Tammy Artifact publisher identity for 2 blocked Goals", rendered["next_action"])
         self.assertIn("; assign Entrepreneurship", rendered["next_action"])
 
+    def test_goal_execution_routes_handoff_repair_attention_to_system_action(self) -> None:
+        rendered = _goal_execution_summary(
+            (
+                GoalExecutionDecision(
+                    GOAL,
+                    "handoff_needs_repair",
+                    existing_task_slug="tasks/family",
+                ),
+                GoalExecutionDecision(
+                    OTHER_GOAL,
+                    "recently_completed",
+                    existing_task_slug="tasks/faith",
+                ),
+            ),
+            "actively_executing",
+        )
+
+        self.assertEqual(rendered["needs_attention"], 1)
+        self.assertEqual(
+            rendered["action_queue"],
+            [
+                {
+                    "owner": "system",
+                    "kind": "repair_agent_handoff",
+                    "label": "Repair verified Agent handoff",
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/family",
+                    "summary": "Inspect Handoff History and recover the verified Agent delivery state.",
+                    "detail": "The canonical task is active, but verified Agent handoff or execution needs system review.",
+                    "blocked_goal_count": 1,
+                    "related_repairs": [
+                        {
+                            "goal_slug": GOAL,
+                            "task_slug": "tasks/family",
+                            "reason": "handoff_needs_repair",
+                        }
+                    ],
+                }
+            ],
+        )
+        self.assertIn(
+            "repair verified Agent handoff for 1 blocked Goal",
+            rendered["next_action"],
+        )
+        self.assertNotEqual(
+            rendered["next_action"],
+            "Repair Goal execution attention states before more automatic work can proceed.",
+        )
+
     class Adapter:
         def __init__(
             self,
