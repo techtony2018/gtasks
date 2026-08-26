@@ -4201,6 +4201,7 @@ function goalExecutionState(decision) {
   if (!decision) return "Ready";
   const reason = decision.reason;
   if (GOAL_EXECUTION_ATTENTION_REASONS.has(reason)) return "Needs attention";
+  if (reason === "recently_completed" || reason === "completed_after_verified_handoff") return "Recently completed";
   if (reason === "waiting_for_tony") return "Blocked";
   if (reason === "wip_full" || reason === "goal_paused") return "Blocked";
   const task = goalExecutionTask(decision);
@@ -4254,6 +4255,7 @@ function goalExecutionReasonCopy(decision) {
     task_needs_next_action: "The canonical task is active, but it has no explicit next action for the assigned Agent.",
     waiting_for_tony: "The canonical task is blocked waiting for Tony's answer before the assigned Agent can continue.",
     handoff_worker_unavailable: "The canonical task is active and queued or retrying, but no verified Agent worker has leased it yet. Verify the Agent host dispatcher and private route.",
+    recently_completed: "The assigned Agent completed this Goal work recently; Mission Control is waiting for the next cycle before deriving another task.",
     completed_after_verified_handoff: "Mission Control completed the canonical task after verified Agent handoff and Artifact readback.",
     activated: "The canonical task is active and entering the fixed Agent handoff.",
     shadow: "Shadow mode evaluates safe work without creating or activating a task.",

@@ -1266,6 +1266,30 @@ class GoalExecutionEngine:
                 return decision.goal_slug
         for decision in plan.decisions:
             if (
+                decision.reason in {"duplicate", "handoff_needs_repair"}
+                and decision.existing_task_slug is not None
+                and self._task_has_verified_completion_signal(
+                    decision.existing_task_slug,
+                    handoff_status_by_task=handoff_status_by_task,
+                )
+            ):
+                task = next(
+                    (
+                        item
+                        for item in snapshot.tasks
+                        if item.slug == decision.existing_task_slug
+                    ),
+                    None,
+                )
+                if (
+                    task is not None
+                    and task.status == "active"
+                    and task.goal_derivation is not None
+                    and self._task_has_verified_artifact(task.slug)
+                ):
+                    return decision.goal_slug
+        for decision in plan.decisions:
+            if (
                 decision.reason in {"duplicate", "recently_completed"}
                 and decision.existing_task_slug is not None
                 and handoff_status_by_task.get(decision.existing_task_slug)
@@ -1337,6 +1361,8 @@ class GoalExecutionEngine:
             return True
         if status != "suppressed":
             return False
+        if self._task_has_verified_artifact(task_slug):
+            return True
         latest_delivery_state = getattr(
             self.bridge,
             "latest_task_handoff_delivery_state",

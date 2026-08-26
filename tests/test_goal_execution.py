@@ -1573,6 +1573,152 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertIn(("artifacts", active.slug), adapter.calls)
         self.assertIn(("status", (active.slug, "completed")), adapter.calls)
 
+    def test_canary_reconciles_suppressed_handoff_with_verified_artifact(self) -> None:
+        first_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(snapshot())
+        candidate = first_plan.decisions[0].candidate
+        self.assertIsNotNone(candidate)
+        active = replace(
+            agent_task(
+                slug_identity="suppressed-handoff-goal-work",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=candidate.fingerprint,
+                action_kind=candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=candidate.goal_slug,
+                project_slug=candidate.project_slug,
+                expected_evidence=candidate.expected_evidence,
+            ),
+        )
+        adapter = self.Adapter(tasks=(active,), artifact_tasks=(active.slug,))
+        bridge = self.Bridge()
+        bridge.latest_status = "suppressed"
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=bridge,
+            mode="canary",
+            canary_goal_slug=GOAL,
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "completed_after_verified_handoff")
+        self.assertEqual(result.task_slug, active.slug)
+        self.assertEqual(result.task_status, "completed")
+        self.assertIn(("artifacts", active.slug), adapter.calls)
+        self.assertIn(("status", (active.slug, "completed")), adapter.calls)
+
+    def test_auto_canary_reconciles_artifact_backed_terminal_wip_before_in_flight_work(self) -> None:
+        toddy = agent(
+            slug="agents/toddy",
+            goals=(OTHER_GOAL,),
+        )
+        repair_plan = GoalExecutionPlanner(cycle_day=NOW.date()).plan(
+            snapshot(
+                goals=(goal(slug=OTHER_GOAL, title="Family"), goal()),
+                agents=(toddy, agent()),
+                route_health={"agents/toddy": True, AGENT: True},
+            )
+        )
+        repair_candidate = next(
+            decision.candidate
+            for decision in repair_plan.decisions
+            if decision.goal_slug == GOAL
+        )
+        self.assertIsNotNone(repair_candidate)
+        in_flight = replace(
+            agent_task(
+                slug_identity="active-family-work",
+                goal_slug=OTHER_GOAL,
+                status="active",
+                owner="agents/toddy",
+            ),
+            next_action="Continue the already executing family work.",
+        )
+        waiting_base = agent_task(
+            slug_identity="waiting-family-question-control",
+            goal_slug="goals/waiting-question-control",
+            status="blocked",
+            owner="agents/toddy",
+        )
+        waiting = replace(
+            waiting_base,
+            blockers=("people/tony-guan",),
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                question_todo="todos/family-question",
+                waiting_on="people/tony-guan",
+                resume_owner="agents/toddy",
+                resume_action="Resume family work after Tony answers.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        repairable = replace(
+            agent_task(
+                slug_identity="suppressed-terminal-civic-work",
+                goal_slug=GOAL,
+                status="active",
+            ),
+            slug=derived_task_slug(repair_candidate.fingerprint),
+            goal_derivation=GoalDerivationReceipt(
+                planner_version="goal-execution-v1",
+                fingerprint=repair_candidate.fingerprint,
+                action_kind=repair_candidate.action_kind,
+                authority_class="auto_eligible",
+                goal_slug=repair_candidate.goal_slug,
+                project_slug=repair_candidate.project_slug,
+                expected_evidence=repair_candidate.expected_evidence,
+            ),
+        )
+
+        class Adapter(self.Adapter):
+            def read_goal_execution_snapshot(self, route_health):
+                self.calls.append(("snapshot", dict(route_health)))
+                return snapshot(
+                    goals=(
+                        goal(slug=OTHER_GOAL, title="Family"),
+                        goal(),
+                        goal(slug="goals/waiting-question-control", title="Waiting Control"),
+                    ),
+                    agents=(toddy, agent()),
+                    tasks=(in_flight, repairable, waiting),
+                    route_health={"agents/toddy": True, AGENT: True},
+                )
+
+        class Bridge(self.Bridge):
+            def latest_task_handoff_status(self, task_slug):
+                if task_slug == repairable.slug:
+                    return "suppressed"
+                if task_slug == in_flight.slug:
+                    return "actively_executing"
+                return None
+
+        adapter = Adapter(tasks=(in_flight, repairable, waiting), artifact_tasks=(repairable.slug,))
+
+        result = GoalExecutionEngine(
+            adapter=adapter,
+            bridge=Bridge(),
+            mode="canary",
+            canary_goal_slug="auto",
+        ).run_once(NOW)
+
+        self.assertEqual(result.public_reason, "completed_after_verified_handoff")
+        self.assertEqual(result.task_slug, repairable.slug)
+        self.assertEqual(result.task_status, "completed")
+        self.assertIn(("status", (repairable.slug, "completed")), adapter.calls)
+        decisions = {
+            decision["goal_slug"]: decision["reason"]
+            for decision in result.to_dict()["decisions"]
+        }
+        self.assertEqual(decisions[OTHER_GOAL], "duplicate")
+        self.assertEqual(decisions[GOAL], "completed_after_verified_handoff")
+
     def test_canary_does_not_complete_handoff_without_verified_artifact(self) -> None:
         first_plan = GoalExecutionPlanner().plan(snapshot())
         candidate = first_plan.decisions[0].candidate

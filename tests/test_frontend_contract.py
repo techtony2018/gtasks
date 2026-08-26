@@ -535,6 +535,8 @@ assert(goalExecutionState({ goal_slug: goalSlug, reason: "task_needs_next_action
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "task_needs_next_action", task_slug: taskSlug }).includes("no explicit next action"), "missing next action copy was not explicit");
 assert(goalExecutionState({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }) === "Blocked", "waiting for Tony was not Blocked");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "waiting_for_tony", task_slug: taskSlug }).includes("waiting for Tony"), "waiting for Tony copy was not explicit");
+assert(goalExecutionState({ goal_slug: goalSlug, reason: "recently_completed", task_slug: taskSlug }) === "Recently completed", "recently completed Goal work was not surfaced as completed");
+assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "recently_completed", task_slug: taskSlug }).includes("completed this Goal work"), "recently completed copy was not explicit");
 assert(goalExecutionReasonCopy({ goal_slug: goalSlug, reason: "completed_after_verified_handoff", task_slug: taskSlug }).includes("Artifact readback"), "completed handoff reconciliation copy was not explicit");
 state.agentTasks = [{
   slug: taskSlug,
