@@ -683,7 +683,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
             canary_goal_slug="auto",
         ).run_once(NOW)
 
-        self.assertEqual(result.public_reason, "duplicate")
+        self.assertEqual(result.public_reason, "actively_executing")
         self.assertEqual(result.task_slug, executing.slug)
         self.assertEqual(result.handoff_status, "actively_executing")
 
@@ -1419,7 +1419,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         ).run_once(NOW)
 
         self.assertEqual(shadow.task_slug, canary.task_slug)
-        self.assertEqual(shadow.public_reason, "duplicate")
+        self.assertEqual(shadow.public_reason, "delivering")
         self.assertEqual(shadow.handoff_status, "queued")
         self.assertEqual(shadow.to_dict()["decisions"][0]["reason"], "duplicate")
 
@@ -1437,7 +1437,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         ).run_once(NOW)
 
         self.assertEqual(shadow.task_slug, canary.task_slug)
-        self.assertEqual(shadow.public_reason, "duplicate")
+        self.assertEqual(shadow.public_reason, "actively_executing")
         self.assertEqual(shadow.handoff_status, "actively_executing")
         self.assertEqual(shadow.to_dict()["handoff"]["status"], "actively_executing")
 

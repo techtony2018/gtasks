@@ -1121,6 +1121,20 @@ class GoalExecutionEngine:
         return GoalExecutionPlan(plan.planner_version, tuple(revised)), handoff_status_by_task
 
     @staticmethod
+    def _public_reason_for_existing_handoff(status: str | None) -> str | None:
+        if status in {"queued", "leased", "retrying"}:
+            return "delivering"
+        if status in {
+            "received",
+            "acknowledged",
+            "processing",
+            "agent_working",
+            "actively_executing",
+        }:
+            return "actively_executing"
+        return None
+
+    @staticmethod
     def _run_from_plan(
         plan: GoalExecutionPlan,
         *,
@@ -1227,6 +1241,12 @@ class GoalExecutionEngine:
             )
             if task is not None:
                 status = handoff_status_by_task.get(task.slug)
+                public_reason = selected.reason
+                if selected.reason == "duplicate":
+                    public_reason = (
+                        GoalExecutionEngine._public_reason_for_existing_handoff(status)
+                        or selected.reason
+                    )
                 handoff = (
                     SimpleNamespace(status=status)
                     if status is not None
@@ -1237,7 +1257,7 @@ class GoalExecutionEngine:
                     mode=mode,
                     ran_at=ran_at,
                     task=task,
-                    public_reason=selected.reason,
+                    public_reason=public_reason,
                     handoff=handoff,
                 )
         return GoalExecutionRun.from_plan(

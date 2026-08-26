@@ -4083,6 +4083,18 @@ function goalExecutionReasonCopy(decision) {
     return "No owned Goal is currently eligible for bounded automatic work.";
   }
   const reason = decision.reason;
+  if (reason === "duplicate") {
+    const lastTask = state.goalExecution?.last_run?.task;
+    const handoff = state.goalExecution?.last_run?.handoff;
+    if (lastTask?.slug === decision?.task_slug) {
+      if (["queued", "leased", "retrying"].includes(handoff?.status)) {
+        return "Mission Control has delivered this Goal work to the assigned Agent and is waiting for a verified worker lease.";
+      }
+      if (["received", "acknowledged", "processing", "agent_working", "actively_executing"].includes(handoff?.status)) {
+        return "The assigned Agent is actively executing this Goal work.";
+      }
+    }
+  }
   const copy = {
     auto_eligible: "One bounded internal review is eligible; no external action is authorized.",
     duplicate: "A canonical task already represents this Goal work.",

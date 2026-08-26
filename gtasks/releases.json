@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.178",
+  "current_version": "V0.0.179",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1068,6 +1068,12 @@
       "date": "2026-08-25",
       "title": "Bound Agent Work refresh latency",
       "summary": "Agent Work reads now serve labeled last-verified data while slow canonical refreshes run in the background, and completed/cancelled history no longer hydrates TODO backlinks; current work, open TODOs, and recent-completion context remain visible."
+    },
+    {
+      "version": "V0.0.179",
+      "date": "2026-08-25",
+      "title": "Expose active Goal handoff state",
+      "summary": "Goal execution now reports delivering and actively executing handoffs at the public API headline and in Agent-card copy instead of flattening already-delivered work into a generic duplicate state, making live Agent progress easier to distinguish from blocked or pending work."
     }
   ]
 }
