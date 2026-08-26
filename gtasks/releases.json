@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.201",
+  "current_version": "V0.0.202",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1206,6 +1206,12 @@
       "date": "2026-08-26",
       "title": "Fix Goal next-action grammar",
       "summary": "Goal execution next-action copy now separates ordinary answer, private-input, and owner-assignment actions with clear semicolons, avoiding misleading '. and assign' grammar while preserving every blocker in the same summary."
+    },
+    {
+      "version": "V0.0.202",
+      "date": "2026-08-26",
+      "title": "Group repeated private Goal blockers",
+      "summary": "Goal execution now groups duplicate private-input blockers for the same Agent question, keeps the grouped blocker count visible in Agents and Inbox, and prevents repeated private credential prompts from crowding out actionable owner-assignment controls."
     }
   ]
 }

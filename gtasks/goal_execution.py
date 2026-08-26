@@ -142,6 +142,9 @@ def _goal_execution_summary(
     )
     action_queue: list[dict[str, object]] = []
     for question in blocking_questions:
+        requires_private_input = _goal_execution_question_requires_private_input(
+            question
+        )
         action = {
             "owner": "tony",
             "kind": "answer_question",
@@ -154,8 +157,29 @@ def _goal_execution_summary(
             "summary": question.get("question"),
             "detail": question.get("detail"),
         }
-        if _goal_execution_question_requires_private_input(question):
+        if requires_private_input:
             action["private_input_required"] = True
+            existing = next(
+                (
+                    item
+                    for item in action_queue
+                    if item.get("kind") == "answer_question"
+                    and item.get("private_input_required")
+                    and item.get("agent_slug") == action.get("agent_slug")
+                    and item.get("summary") == action.get("summary")
+                    and item.get("detail") == action.get("detail")
+                ),
+                None,
+            )
+            if existing is not None:
+                related = existing.setdefault(
+                    "related_questions",
+                    [_goal_execution_related_question(existing)],
+                )
+                if isinstance(related, list):
+                    related.append(_goal_execution_related_question(action))
+                    existing["blocked_goal_count"] = len(related)
+                continue
         else:
             action["answer_template"] = _goal_execution_answer_template(question)
         action_queue.append(action)
@@ -239,8 +263,25 @@ def _goal_execution_answer_instruction(
             private_action.get("summary"),
             fallback="the private Agent question",
         )
-        parts.append(f"provide private input for the {agent} question: {question}")
+        blocked_goal_count = int(private_action.get("blocked_goal_count") or 0)
+        if blocked_goal_count > 1:
+            parts.append(
+                f"provide private input for {blocked_goal_count} {agent} private-input blockers: {question}"
+            )
+        else:
+            parts.append(f"provide private input for the {agent} question: {question}")
     return " and ".join(parts)
+
+
+def _goal_execution_related_question(
+    action: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "goal_slug": action.get("goal_slug"),
+        "task_slug": action.get("task_slug"),
+        "todo_slug": action.get("todo_slug"),
+        "todo_updated_at": action.get("todo_updated_at"),
+    }
 
 
 def _goal_execution_answer_template(

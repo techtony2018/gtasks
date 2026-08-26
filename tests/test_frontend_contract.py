@@ -203,14 +203,17 @@ state.goalExecution = {
     }],
     action_queue: [
       { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?", detail: "Choose the scope and first bounded action.", answer_template: "Scope categories: accepted\nDesired outcomes: accepted\nConstraints: accepted\nFirst action: approved\nNotes: Keep the work bounded to the stated scope, outcomes, constraints, and first action." },
-      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: "goals/private-token", task_slug: "tasks/private-token", todo_slug: "todos/private-token", todo_updated_at: "todo-private-v1", agent_slug: "agents/tammy", summary: "Please provide the Tammy artifact publisher token for this fixed Codex worker.", detail: "This requires Tony's private credential input.", private_input_required: true },
+      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: "goals/private-token", task_slug: "tasks/private-token", todo_slug: "todos/private-token", todo_updated_at: "todo-private-v1", agent_slug: "agents/tammy", summary: "Please provide the Tammy artifact publisher token for this fixed Codex worker.", detail: "This requires Tony's private credential input.", private_input_required: true, blocked_goal_count: 2, related_questions: [
+        { goal_slug: "goals/private-token", task_slug: "tasks/private-token", todo_slug: "todos/private-token", todo_updated_at: "todo-private-v1" },
+        { goal_slug: "goals/private-token-2", task_slug: "tasks/private-token-2", todo_slug: "todos/private-token-2", todo_updated_at: "todo-private-v2" },
+      ] },
       { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for", candidate_owners: [
         { agent_slug: "agents/tammy", agent_name: "Tammy", default_goal_count: 0, recommended: true, recommendation: "recommended: lowest verified Codex Goal load" },
         { agent_slug: "agents/timmy", agent_name: "Timmy", default_goal_count: 1, recommended: false, recommendation: "1 verified default Goal" },
       ] },
       { owner: "agent", kind: "monitor_active_handoff", label: "Agent is executing", goal_slug: goalSlug, task_slug: taskSlug, agent_slug: "agents/timmy", summary: "Review Civic progress" },
     ],
-    next_action: "Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for the Tammy question: Please provide the Tammy artifact publisher token for this fixed Codex worker and assign Entrepreneurship to Tammy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
+    next_action: "Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for 2 Tammy private-input blockers: Please provide the Tammy artifact publisher token for this fixed Codex worker; assign Entrepreneurship to Tammy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
   },
   last_run: {
     ran_at: "2026-08-23T12:00:00Z",
@@ -229,7 +232,7 @@ function walkElements(root, predicate, matches = []) {
   (root.children || []).forEach((child) => walkElements(child, predicate, matches));
   return matches;
 }
-assert(goalExecutionSurfaceText.includes("Next action: Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for the Tammy question"), "Goal execution surface did not expose the exact summary next action");
+assert(goalExecutionSurfaceText.includes("Next action: Answer the Timmy question for Which family-care scope should Toddy use next? and provide private input for 2 Tammy private-input blockers"), "Goal execution surface did not expose the exact grouped private next action");
 assert(goalExecutionSurfaceText.includes("7 total goals"), "Goal execution surface did not expose total Goal count");
 assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution surface did not expose attention count");
 assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
@@ -244,6 +247,7 @@ assert(goalExecutionSurfaceText.includes("Tony action required"), "Goal executio
 assert(goalExecutionSurfaceText.includes("Agent active"), "Goal execution surface did not distinguish active Agent work");
 assert(goalExecutionSurfaceText.includes("Answer Agent question"), "Goal execution surface did not include question action");
 assert(goalExecutionSurfaceText.includes("Private input required"), "Goal execution surface did not label private credential questions");
+assert(goalExecutionSurfaceText.includes("2 related private-input blockers"), "Goal execution surface did not expose grouped private blocker count");
 assert(goalExecutionSurfaceText.includes("Assign Goal owner"), "Goal execution surface did not include owner assignment action");
 assert(goalExecutionSurfaceText.includes("Choose the scope and first bounded action."), "Goal execution action queue did not expose the question detail near the answer form");
 const answerActions = walkElements(goalExecutionSurface, (element) =>
@@ -308,7 +312,8 @@ const inboxGoalActions = renderGoalExecutionInboxActions();
 const inboxGoalActionsText = flattenText(inboxGoalActions);
 assert(inboxGoalActionsText.includes("Goal execution actions"), "Inbox did not expose Goal execution actions");
 assert(inboxGoalActionsText.includes("Next action:"), "Inbox Goal execution actions omitted the next-action summary");
-assert(inboxGoalActionsText.includes("provide private input for the Tammy question"), "Inbox Goal execution actions omitted private-input next-action copy");
+assert(inboxGoalActionsText.includes("provide private input for 2 Tammy private-input blockers"), "Inbox Goal execution actions omitted grouped private-input next-action copy");
+assert(inboxGoalActionsText.includes("2 related private-input blockers"), "Inbox Goal execution actions omitted grouped private blocker count");
 assert(inboxGoalActionsText.includes("Answer Agent question"), "Inbox Goal execution actions omitted the answer action");
 assert(inboxGoalActionsText.includes("Insert answer template"), "Inbox Goal execution actions omitted the answer template control");
 assert(inboxGoalActionsText.includes("Assign Goal owner"), "Inbox Goal execution actions omitted the owner action");

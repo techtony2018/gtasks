@@ -4516,6 +4516,16 @@ function renderGoalExecutionActionQueue(summary) {
       item.append(node("p", "goal-execution-action-detail", detailText));
     }
     if (action?.kind === "answer_question" && action?.private_input_required) {
+      const blockedGoalCount = Number(action?.blocked_goal_count) || 0;
+      if (blockedGoalCount > 1) {
+        item.append(
+          node(
+            "p",
+            "goal-execution-private-input",
+            pluralizeCount(blockedGoalCount, "related private-input blocker"),
+          ),
+        );
+      }
       item.append(
         node(
           "p",
