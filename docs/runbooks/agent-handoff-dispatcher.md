@@ -841,6 +841,14 @@ display/readback context plus the existing explicit answer submission path
 only; no automatic answer, handoff acknowledgement, worker wake, completion,
 or GBrain mutation occurs until Tony submits through the verified TODO answer
 contract.
+V0.0.194 derives `summary.next_action` from the verified Tony-owned Action
+queue instead of generic count-based copy. When both a waiting Agent question
+and a missing-owner repair are present, the line names the exact question and
+the recommended Codex owner assignment, for example answering the Toddy
+Family/Toddy question and assigning the Entrepreneurship Goal to Timmy with
+the lowest-load recommendation. This remains operator guidance only; it is not
+an answer, owner assignment, dispatcher wake, handoff acknowledgement,
+completion receipt, or GBrain mutation.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.193 at commit
-`bdf197b7000eec23d783f04756d3d17da7d81345`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.194 at commit
+`06446ef40abba67eac8b8f9732fb0408a2643b04`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -320,6 +320,14 @@ inline answer form. The Family/Toddy action now shows the detail beginning
 Tony can answer from the Action queue without opening the Task first. This is
 readback guidance plus explicit user answer submission only; it does not
 automatically answer the TODO or mutate GBrain.
+V0.0.194 makes `summary.next_action` name the exact Tony-owned work instead of
+generic guidance. Current postdeploy readback names the Toddy question
+`Which family-care scope, outcomes, constraints, and first action should Toddy use next?`
+and the recommended Entrepreneurship owner assignment to Timmy with
+`recommended: lowest verified Codex Goal load`, while noting executing or
+delivered Agent work can continue. The sentence is still guidance only: it
+does not answer, assign, acknowledge, wake, complete, or mutate GBrain without
+Tony activating the existing verified controls.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -438,6 +446,11 @@ Action queue entries and displays it near the inline answer composer. The
 detail is the decision context Tony needs before submitting an answer through
 the existing `/api/todos/<todo>/answer` flow; showing it does not itself
 answer, acknowledge, wake, complete, or mutate anything.
+V0.0.194+ derives `summary.next_action` from the verified Action queue, so it
+names the exact waiting Agent question and the recommended missing-owner
+assignment when both are present. Readers should treat this as a compact
+operator instruction line backed by the existing queue entries, not as a
+mutation receipt or proof that Tony already answered or assigned ownership.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.193`
+- Last verified pushed release: `V0.0.194`
 - Release commits:
-  `bdf197b7000eec23d783f04756d3d17da7d81345`
+  `06446ef40abba67eac8b8f9732fb0408a2643b04`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -773,6 +773,28 @@ to the reviewed source before updating relationships.
   Timmy recommendation and no-OpenClaw assignment boundary, intercepted the
   TODO answer POST before live network, and confirmed canonical readback
   remained blocked/not_done with no live GBrain mutation.
+- V0.0.194 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.194`; release commit
+  `06446ef40abba67eac8b8f9732fb0408a2643b04`; release evidence file
+  `docs/release-evidence/v0.0.194.md`; independent QA PASS at
+  `artifacts/qa/v0.0.194-independent/gate-report.md` with frozen aggregate
+  `c83433e7bf9169b453651f948d9d83ef3b7738f38978e61a250a0db782ae3e0e`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.194 behavior: Goal execution `summary.next_action` now names
+  exact Tony-owned Action queue work instead of generic guidance. Current
+  postdeploy `/api/goal-execution` retained `last_run=true`,
+  `last_error=null`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and
+  `summary.total_goals=7`; `summary.next_action` read back exactly
+  `Answer the Toddy question for Which family-care scope, outcomes, constraints, and first action should Toddy use next? and assign Entrepreneurship: create a company and start running business, compound over time to Timmy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.`
+  Independent desktop 1440 and genuine mobile 390 QA rendered the same text,
+  retained the V0.0.193 question detail beside the single inline answer form,
+  preserved Timmy/Toddy/Tammy owner controls with no OpenClaw assignment,
+  intercepted answer POST before live network, and confirmed no live GBrain
+  mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -941,3 +963,8 @@ full TODO detail near the inline composer helps Tony answer without opening
 the Task first, but it must not be treated as an automatic answer, handoff
 acknowledgement, worker wake, task completion, or GBrain mutation before Tony
 submits through the verified `/api/todos/<todo>/answer` flow.
+V0.0.194 exact `next_action` copy is also guidance, not execution. It may name
+the exact question and recommended owner assignment to reduce operator
+ambiguity, but documentation and readers must not treat the sentence as proof
+of a submitted answer, completed ownership repair, dispatcher wake, handoff
+acknowledgement, task completion, or GBrain mutation.
