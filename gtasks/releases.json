@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.204",
+  "current_version": "V0.0.206",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1224,6 +1224,18 @@
       "date": "2026-08-26",
       "title": "Route Artifact identity blockers to system repair",
       "summary": "Goal execution now classifies Artifact publisher identity mismatches as system-owned repair actions instead of Tony private-input answers, keeping dashboard credential provisioning separate from business questions while preserving safe answer and owner-assignment actions."
+    },
+    {
+      "version": "V0.0.205",
+      "date": "2026-08-26",
+      "title": "Terminal handoff reconciliation",
+      "summary": "Completed Agent handoff tasks now reconcile stale ready-for-agent handoff frontmatter when terminal status is verified, preventing canonical task details from failing after Artifact publication completes."
+    },
+    {
+      "version": "V0.0.206",
+      "date": "2026-08-26",
+      "title": "Status repair endpoint for terminal handoffs",
+      "summary": "Status updates now allow completed-task repair to proceed when the pre-mutation task snapshot contains stale ready-for-agent handoff data, waking Goal execution without blocking canonical reconciliation."
     }
   ]
 }

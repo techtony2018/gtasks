@@ -5929,7 +5929,10 @@ def _handler_class(
                     return
                 try:
                     if active_handoff_event_bridge is not None:
-                        before_snapshot = mutation_snapshot(adapter.get_task(task_slug))
+                        try:
+                            before_snapshot = mutation_snapshot(adapter.get_task(task_slug))
+                        except (DomainValidationError, ValueError):
+                            before_snapshot = None
                     receipt = adapter.set_task_status(
                         task_slug,
                         requested_status,
@@ -5966,12 +5969,15 @@ def _handler_class(
                     )
                     return
                 receipt_value = canonical_mapping(receipt)
-                after_canonical_mutation(
-                    before_snapshot,
-                    mutation_snapshot(receipt_value.get("task")),
-                    receipt_value,
-                    mutation_kind="task_status",
-                )
+                if before_snapshot is None:
+                    wake_goal_execution("task_status")
+                else:
+                    after_canonical_mutation(
+                        before_snapshot,
+                        mutation_snapshot(receipt_value.get("task")),
+                        receipt_value,
+                        mutation_kind="task_status",
+                    )
                 invalidate_snapshot()
                 self._json(HTTPStatus.OK, {"receipt": receipt.to_dict()})
                 return

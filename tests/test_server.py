@@ -5215,6 +5215,26 @@ class TaskStatusApiTests(unittest.TestCase):
         self.assertEqual(adapter.status_updates[0][0:2], ("tasks/ship-gtasks", "active"))
         self.assertIsNotNone(adapter.status_updates[0][2].tzinfo)
 
+    def test_completed_status_repair_continues_when_before_snapshot_is_invalid(self) -> None:
+        class InvalidBeforeSnapshotAdapter(FakeAdapter):
+            def get_task(self, task_slug: str) -> Task:
+                raise DomainValidationError("agent-ready handoff requires active task status")
+
+        adapter = InvalidBeforeSnapshotAdapter()
+        bridge = HandoffMutationBridgeTests.RecordingBridge()
+        harness = ServerHarness(self, adapter, handoff_event_bridge=bridge)
+
+        status, payload, _ = harness.request(
+            "PATCH",
+            "/api/tasks/tasks%2Fship-gtasks/status",
+            {"status": "completed"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["receipt"]["status"], "completed")
+        self.assertEqual(adapter.status_updates[0][0:2], ("tasks/ship-gtasks", "completed"))
+        self.assertEqual(bridge.calls, [])
+
     def test_rejects_an_unsupported_status_before_mutation(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)

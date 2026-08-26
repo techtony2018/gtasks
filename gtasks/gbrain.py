@@ -9156,7 +9156,7 @@ class GBrainAdapter:
                 and isinstance(raw_frontmatter, Mapping)
                 and raw_frontmatter.get("status") == status
                 and isinstance(raw_handoff, Mapping)
-                and raw_handoff.get("state") == "agent_working"
+                and raw_handoff.get("state") in {"ready_for_agent", "agent_working"}
             ):
                 raise ValueError(str(exc)) from exc
             recovery_page = deepcopy(dict(normalized_page))
@@ -9212,7 +9212,7 @@ class GBrainAdapter:
         if (
             status == "completed"
             and task.handoff is not None
-            and task.handoff.state == "agent_working"
+            and task.handoff.state in {"ready_for_agent", "agent_working"}
         ):
             frontmatter["handoff"] = None
 
