@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.214",
+  "current_version": "V0.0.215",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1284,6 +1284,12 @@
       "date": "2026-08-26",
       "title": "Classify unavailable Goal workers separately",
       "summary": "Goal execution now preserves dispatcher claim-unavailable reasons, classifies stale or expired Agent execution claims as worker-unavailable instead of generic handoff repair, and surfaces a concrete system action to restore the verified Agent worker."
+    },
+    {
+      "version": "V0.0.215",
+      "date": "2026-08-26",
+      "title": "Let verified completion supersede stale blocked acks",
+      "summary": "Remote handoff workers now let a verified completed wake-inbox result supersede an older pending still-blocked acknowledgement, so fixing worker credentials can unblock the same Goal-derived task without leaving the Agent pinned to stale local state."
     }
   ]
 }

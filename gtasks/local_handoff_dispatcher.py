@@ -617,6 +617,15 @@ class PrivateClaimStore:
         pending = state["pending_ack"]
         if pending is not None:
             if pending["status"] != status or pending["detail"] != detail:
+                if status == "completed" and pending["status"] != "completed":
+                    sequence = max(state["next_ack_sequence"], pending["sequence"] + 1)
+                    state["pending_ack"] = {
+                        "sequence": sequence,
+                        "status": status,
+                        "detail": detail,
+                    }
+                    self._write(state)
+                    return sequence
                 raise ValueError("a different acknowledgement is still pending retry")
             return pending["sequence"]
         sequence = state["next_ack_sequence"]

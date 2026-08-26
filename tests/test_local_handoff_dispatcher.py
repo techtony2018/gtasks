@@ -5316,6 +5316,22 @@ class InstalledAcknowledgementHelperTests(unittest.TestCase):
             self.assertFalse(applied)
             self.assertFalse(store.path.exists())
 
+    def test_completed_ack_supersedes_stale_pending_blocked_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing"))
+            blocked = store.prepare_ack(
+                "still_blocked",
+                "Artifact publisher credential was unavailable before repair.",
+            )
+
+            completed = store.prepare_ack("completed", None)
+
+            self.assertGreater(completed, blocked)
+            applied = store.complete_ack(completed, {"status": "completed"})
+            self.assertTrue(applied)
+            self.assertFalse(store.path.exists())
+
     def test_recovery_intent_is_persisted_before_request_and_stable_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "active-claim.json"
