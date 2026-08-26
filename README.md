@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.208 at commit
-`f723be89ea2fbcc66390d97e29db324c9e124936`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.211 at commit
+`pending`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -421,6 +421,20 @@ recently_completed as dashboard-managed background execution continued.
 V0.0.208 adds explicit Goal execution `read_state` for cold or long scheduler
 reads, so the UI renders `Reading Goal execution…` instead of blank/null
 first-read waiting while the scheduler is still loading.
+V0.0.209 adds an explicit answer-only recommended action for Goal execution:
+when the sole safe blocker is a concrete Agent question draft, Inbox can show
+`Submit recommended answer` without requiring a separate owner-assignment
+action. The answer still requires Tony's click and verified canonical
+readback; Mission Control does not auto-answer business questions.
+V0.0.210 keeps the multi-step recommended unblock plan writes contiguous:
+when both a safe answer draft and recommended Codex owner are available, the
+UI performs the reviewed answer and owner-assignment writes before refreshing
+Goal/Agent read surfaces, preventing the second action from stalling behind a
+bounded reconciliation request.
+V0.0.211 makes that owner-assignment step resilient when the Agent profile
+surface is still hydrating: it uses the verified Codex owner candidate carried
+by the Goal execution action queue, while continuing to reject OpenClaw owners
+for automatic owner assignment.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded

@@ -3485,8 +3485,12 @@ async function saveAgentGoalAssignment(goalSlug, action) {
   }
 }
 
-async function assignGoalOwnerFromSummary(goalSlug, agentSlug) {
-  const agent = state.agents.find((item) => item.slug === agentSlug && item.runtime !== "openclaw");
+async function assignGoalOwnerFromSummary(goalSlug, agentSlug, options = {}) {
+  const agent = state.agents.find((item) => item.slug === agentSlug && item.runtime !== "openclaw") || (
+    options.verifiedCandidateName && isCodexGoalOwnerSlug(agentSlug)
+      ? { slug: agentSlug, name: String(options.verifiedCandidateName), runtime: "codex" }
+      : null
+  );
   if (!agent || !goalSlug) return;
   const response = await fetch(`/api/agents/${encodeURIComponent(agent.slug)}/default-goals`, {
     method: "POST",
@@ -3497,9 +3501,11 @@ async function assignGoalOwnerFromSummary(goalSlug, agentSlug) {
   if (!response.ok || !result.verified || !result.agent) {
     throw new Error(result.error || "Goal owner assignment did not receive canonical readback.");
   }
-  await loadAgents();
-  await loadGoalExecution({ force: true });
-  render();
+  if (!options.deferRefresh) {
+    await loadAgents();
+    await loadGoalExecution({ force: true });
+    render();
+  }
   showToast(`Default Goal owner verified: ${agent.name}.`);
 }
 
@@ -3557,6 +3563,10 @@ function appendGoalOwnerAssignmentButtons(parent, goalSlug, className, candidate
   });
 }
 
+function isCodexGoalOwnerSlug(agentSlug) {
+  return ["agents/tammy", "agents/timmy", "agents/toddy"].includes(String(agentSlug || ""));
+}
+
 function recommendedGoalExecutionUnblockPlan(summary) {
   const actions = Array.isArray(summary?.action_queue)
     ? summary.action_queue
@@ -3569,46 +3579,80 @@ function recommendedGoalExecutionUnblockPlan(summary) {
   const ownerAction = actions.find((action) =>
     action?.kind === "assign_goal_owner" &&
     action?.goal_slug);
-  if (!answerAction || !ownerAction) return null;
+  if (!answerAction) return null;
+  if (!ownerAction) {
+    return {
+      answerAction,
+      ownerAction: null,
+      recommendedOwner: null,
+      buttonLabel: "Submit recommended answer",
+      pendingLabel: "Submitting recommended answer…",
+      successLabel: "Recommended Goal execution answer verified.",
+    };
+  }
   const recommendedOwner = goalOwnerAssignmentCandidates(
     String(ownerAction.goal_slug),
     ownerAction.candidate_owners,
-  ).find((candidate) => candidate.recommended);
+  ).find((candidate) => candidate.recommended) || (Array.isArray(ownerAction.candidate_owners)
+    ? ownerAction.candidate_owners
+      .filter((candidate) => candidate?.recommended && isCodexGoalOwnerSlug(candidate?.agent_slug))
+      .map((candidate) => ({
+        slug: String(candidate.agent_slug),
+        name: String(candidate.agent_name || candidate.agent_slug),
+        recommended: true,
+        recommendation: String(candidate.recommendation || "recommended"),
+      }))[0]
+    : null);
   if (!recommendedOwner) return null;
-  return { answerAction, ownerAction, recommendedOwner };
+  return {
+    answerAction,
+    ownerAction,
+    recommendedOwner,
+    buttonLabel: "Run recommended unblock plan",
+    pendingLabel: "Running recommended plan…",
+    successLabel: "Recommended Goal execution unblock plan verified.",
+  };
 }
 
 async function applyGoalExecutionRecommendedActions(summary, button = null, errorNode = null) {
   const plan = recommendedGoalExecutionUnblockPlan(summary);
-  if (!plan) throw new Error("No complete recommended Goal execution unblock plan is available.");
+  if (!plan) throw new Error("No recommended Goal execution action is available.");
   if (errorNode) {
     errorNode.textContent = "";
     errorNode.classList.add("is-hidden");
   }
   if (button) {
     button.disabled = true;
-    button.textContent = "Running recommended plan…";
+    button.textContent = plan.pendingLabel;
   }
   try {
     await answerGoalExecutionQuestionFromSummary(
       plan.answerAction,
       plan.answerAction.answer_template,
+      null,
+      null,
+      { deferRefresh: Boolean(plan.ownerAction && plan.recommendedOwner) },
     );
-    await assignGoalOwnerFromSummary(
-      String(plan.ownerAction.goal_slug),
-      plan.recommendedOwner.slug,
-    );
-    showToast("Recommended Goal execution unblock plan verified.");
+    if (plan.ownerAction && plan.recommendedOwner) {
+      await assignGoalOwnerFromSummary(
+        String(plan.ownerAction.goal_slug),
+        plan.recommendedOwner.slug,
+        { deferRefresh: true, verifiedCandidateName: plan.recommendedOwner.name },
+      );
+      await Promise.all([loadAgents(), loadGoalExecution({ force: true }), loadAgentWork()]);
+      render();
+    }
+    showToast(plan.successLabel);
   } catch (error) {
     if (errorNode) {
-      errorNode.textContent = error.message || "Recommended Goal execution unblock plan failed.";
+      errorNode.textContent = error.message || "Recommended Goal execution action failed.";
       errorNode.classList.remove("is-hidden");
     }
     throw error;
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = "Run recommended unblock plan";
+      button.textContent = plan.buttonLabel;
     }
   }
 }
@@ -4426,7 +4470,7 @@ function openGoalExecutionQuestionAction(taskSlug, todoSlug, originControl = nul
   });
 }
 
-async function answerGoalExecutionQuestionFromSummary(action, answer, submit = null, errorNode = null) {
+async function answerGoalExecutionQuestionFromSummary(action, answer, submit = null, errorNode = null, options = {}) {
   const todoSlug = String(action?.todo_slug || "").trim();
   const expectedUpdatedAt = String(action?.todo_updated_at || "").trim();
   const responseText = String(answer || "").trim();
@@ -4463,7 +4507,9 @@ async function answerGoalExecutionQuestionFromSummary(action, answer, submit = n
       throw error;
     }
     reconcileVerifiedTask(mergeVerifiedTodoIntoTask(receipt.task, receipt.todo));
-    await Promise.all([loadGoalExecution({ force: true }), loadAgentWork()]);
+    if (!options.deferRefresh) {
+      await Promise.all([loadGoalExecution({ force: true }), loadAgentWork()]);
+    }
     showToast(`Answer verified. ${agentDisplayName(receipt.next_owner, receipt.task)} can resume this task.`);
     return receipt;
   } catch (error) {
@@ -4683,7 +4729,7 @@ function renderGoalExecutionInboxActions() {
   const plan = recommendedGoalExecutionUnblockPlan(summary);
   if (plan) {
     const planActions = node("div", "attention-actions goal-execution-plan-actions");
-    const runPlan = node("button", "secondary-button goal-execution-unblock-plan", "Run recommended unblock plan");
+    const runPlan = node("button", "secondary-button goal-execution-unblock-plan", plan.buttonLabel);
     runPlan.type = "button";
     const planError = node("p", "form-error is-hidden");
     planError.setAttribute("role", "alert");

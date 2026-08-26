@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.208",
+  "current_version": "V0.0.211",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1248,6 +1248,24 @@
       "date": "2026-08-26",
       "title": "Honest cold Goal execution read state",
       "summary": "Goal execution status now exposes cold scheduler reads as an explicit loading read_state, and the UI renders Reading Goal execution instead of a blank first-read waiting state while remote readback is still in progress."
+    },
+    {
+      "version": "V0.0.209",
+      "date": "2026-08-26",
+      "title": "Submit answer-only Goal unblock recommendations",
+      "summary": "Inbox Goal execution actions now offer an explicit Submit recommended answer button when the only safe blocker is a concrete Agent question draft, reducing waiting without assigning owners or mutating anything until Tony clicks the reviewed action."
+    },
+    {
+      "version": "V0.0.210",
+      "date": "2026-08-26",
+      "title": "Keep recommended Goal plan writes contiguous",
+      "summary": "Recommended Goal execution unblock plans now perform the reviewed answer and owner-assignment writes contiguously before refreshing read surfaces, so bounded UI execution cannot stall between the first and second verified action."
+    },
+    {
+      "version": "V0.0.211",
+      "date": "2026-08-26",
+      "title": "Use verified owner candidates in Goal unblock plans",
+      "summary": "Recommended Goal execution unblock plans now use the verified Codex owner candidate carried by the action queue when Agent hydration is sparse, preserving the owner-assignment step while still excluding OpenClaw owners."
     }
   ]
 }
