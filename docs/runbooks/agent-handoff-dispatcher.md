@@ -779,6 +779,12 @@ canonical readback is task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d`, TODO
 question `Which family-care scope, outcomes, constraints, and first action should Toddy use next?`.
 This projection helps Tony find the blocker; it is not a dispatcher wake,
 handoff acknowledgement, answer, or completion receipt.
+V0.0.185 adds `missing_owners` to the same summary for `owner_missing`
+decisions. Each entry carries the exact Goal slug/title, required relationship
+`default_agent_for`, and message `Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.`
+Agents > Goal execution renders a compact `Missing owner: <Goal title> — add
+default_agent_for` line. This is not a dispatcher action; repair still belongs
+to the supported Goal ownership relationship workflow.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

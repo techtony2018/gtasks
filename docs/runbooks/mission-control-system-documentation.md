@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.184`
+- Last verified pushed release: `V0.0.185`
 - Release commits:
-  `525e23119c4484f97c9bd816ea8b0af03729d3ac`
+  `67fae3692e97b6c6a5b644686f1a2d9697c06996`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -583,6 +583,25 @@ to the reviewed source before updating relationships.
   question `Which family-care scope, outcomes, constraints, and first action should Toddy use next?`.
   Agents > Goal execution visibly rendered the same question with the
   `Question:` prefix while preserving the V0.0.183 next action and counts.
+- V0.0.185 evidence: dashboard-managed health readback `V0.0.185`; release
+  commit `67fae3692e97b6c6a5b644686f1a2d9697c06996`; release evidence file
+  `docs/release-evidence/v0.0.185.md`; independent QA PASS at
+  `artifacts/qa/v0.0.185-independent/gate-report.md` with frozen aggregate
+  `0c54b279ea130cec6198e383d2f83b840d25de1a38dcc97da32980fd53b56616`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS. Developer
+  verification reported focused post-QA `2` OK and
+  `python3 -m unittest discover -s tests` as `1394` OK with `5` skipped.
+- Verified V0.0.185 behavior: `/api/goal-execution` summary and
+  `last_run.summary` include `missing_owners` for `owner_missing` decisions.
+  Postdeploy readback had `last_error=null`; `missing_owners[0]` named Goal
+  `goals/d837ac94-36f5-4735-93bb-d84c69b45435`, title
+  `Entrepreneurship: create a company and start running business, compound over time`,
+  required relationship `default_agent_for`, and the exact repair message
+  `Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.`
+  Agents > Goal execution visibly rendered a compact
+  `Missing owner: Entrepreneurship: create a company and start running business, compound over time — add default_agent_for`
+  line. V0.0.184 `blocking_questions[0]` still matched the Family/Toddy
+  canonical question.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -712,3 +731,7 @@ the canonical `Question:` text in Agents does not answer it, remove
 `people/tony-guan` as blocker, acknowledge the handoff, wake Toddy, or create
 replacement family-care work; the same canonical task must be answered and
 handed back through the verified answer flow.
+V0.0.185 missing-owner rendering is also readback/display behavior. Showing a
+`Missing owner:` line does not create the `default_agent_for` edge, choose an
+Agent, or authorize derived work for that Goal. The repair remains exactly one
+verified Codex Agent `default_agent_for` relationship on the named Goal.

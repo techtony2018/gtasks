@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.184 at commit
-`525e23119c4484f97c9bd816ea8b0af03729d3ac`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.185 at commit
+`67fae3692e97b6c6a5b644686f1a2d9697c06996`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -252,6 +252,13 @@ Family/Toddy blocker now appears as
 backed by canonical task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` and
 question TODO `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`. The question is
 display/readback context only until Tony answers and hands back the same task.
+V0.0.185 adds `missing_owners` to the same Goal execution summary and renders
+compact missing-owner rows in Agents > Goal execution. The current
+Entrepreneurship owner gap appears as
+`Missing owner: Entrepreneurship: create a company and start running business, compound over time — add default_agent_for`,
+backed by Goal `goals/d837ac94-36f5-4735-93bb-d84c69b45435`. The repair is
+still exactly one verified `default_agent_for` relationship to a Codex Agent;
+the summary does not create or infer that owner.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -316,6 +323,12 @@ canonical question TODO can be read. Each entry carries the Goal, Task, TODO,
 Agent, question text, and detail. Agents > Goal execution renders the question
 with a `Question:` prefix so Tony can identify the exact blocker; it still
 does not answer the question, remove the blocker, or authorize new Agent work.
+V0.0.185+ includes `summary.missing_owners` and
+`last_run.summary.missing_owners` for `owner_missing` decisions. Each entry
+carries `goal_slug`, `goal_title`, `required_relationship:
+default_agent_for`, and a repair message. Agents > Goal execution renders
+`Missing owner: <Goal title> — add default_agent_for`; this is a visible
+repair pointer, not a write, assignment, or ownership inference.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface
