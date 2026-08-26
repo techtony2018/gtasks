@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.186",
+  "current_version": "V0.0.187",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1116,6 +1116,12 @@
       "date": "2026-08-25",
       "title": "Link Goal execution action items",
       "summary": "Goal execution summary action items now include exact clickable links: waiting-for-Tony questions open the canonical Task detail, and missing-owner entries open the canonical Goal detail so blockers can be resolved without copying slugs."
+    },
+    {
+      "version": "V0.0.187",
+      "date": "2026-08-25",
+      "title": "Assign missing Goal owners from summary",
+      "summary": "Goal execution missing-owner action items now offer explicit Codex-only Assign to Tammy/Timmy/Toddy controls that use the verified default-goals API after user activation, reducing owner-missing blockers without inferring or mutating Goal ownership automatically."
     }
   ]
 }

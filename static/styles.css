@@ -2517,6 +2517,23 @@ body.is-resizing-detail {
   color: #f7b8ff;
 }
 
+.goal-execution-owner-assign {
+  border: 1px solid rgba(247, 184, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(247, 184, 255, 0.12);
+  color: #ffe9ff;
+  font: inherit;
+  font-size: 0.78rem;
+  margin-inline-start: 0.35rem;
+  padding: 0.16rem 0.5rem;
+}
+
+.goal-execution-owner-assign:hover,
+.goal-execution-owner-assign:focus-visible {
+  border-color: rgba(255, 255, 255, 0.8);
+  background: rgba(247, 184, 255, 0.22);
+}
+
 .goal-execution-metrics {
   font-size: 0.88rem;
 }

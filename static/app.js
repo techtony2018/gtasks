@@ -3485,6 +3485,24 @@ async function saveAgentGoalAssignment(goalSlug, action) {
   }
 }
 
+async function assignGoalOwnerFromSummary(goalSlug, agentSlug) {
+  const agent = state.agents.find((item) => item.slug === agentSlug && item.runtime !== "openclaw");
+  if (!agent || !goalSlug) return;
+  const response = await fetch(`/api/agents/${encodeURIComponent(agent.slug)}/default-goals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ goal_slug: goalSlug, action: "assign" }),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.verified || !result.agent) {
+    throw new Error(result.error || "Goal owner assignment did not receive canonical readback.");
+  }
+  await loadAgents();
+  await loadGoalExecution({ force: true });
+  render();
+  showToast(`Default Goal owner verified: ${agent.name}.`);
+}
+
 function clearAgentAvatarPreview() {
   if (state.avatarPreviewUrl) URL.revokeObjectURL(state.avatarPreviewUrl);
   state.avatarPreviewUrl = null;
@@ -4339,6 +4357,26 @@ function renderGoalExecutionSummary() {
       row.append(document.createTextNode(title));
     }
     row.append(document.createTextNode(` — add ${relationship}`));
+    const candidates = state.agents.filter((agent) =>
+      agent.runtime !== "openclaw" &&
+      Array.isArray(agent.default_goal_slugs) &&
+      !agent.default_goal_slugs.includes(goalSlug));
+    candidates.forEach((agent) => {
+      const assign = node("button", "goal-execution-owner-assign", `Assign to ${agent.name}`);
+      assign.type = "button";
+      assign.dataset.slug = goalSlug;
+      assign.dataset.agentSlug = agent.slug;
+      assign.addEventListener("click", async () => {
+        assign.disabled = true;
+        try {
+          await assignGoalOwnerFromSummary(goalSlug, agent.slug);
+        } catch (error) {
+          showToast(error.message || "Goal owner assignment failed.");
+          assign.disabled = false;
+        }
+      });
+      row.append(document.createTextNode(" "), assign);
+    });
     panel.append(row);
   });
   return panel;

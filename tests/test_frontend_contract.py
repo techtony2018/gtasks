@@ -160,7 +160,11 @@ state.snapshot = {
   ],
   tasks: [{ slug: taskSlug, title: "Review Civic progress", status: "active", owner_agent: "agents/timmy", project: null }],
 };
-state.agents = [{ slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] }];
+state.agents = [
+  { slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] },
+  { slug: "agents/tammy", name: "Tammy", runtime: "codex", default_goal_slugs: [] },
+  { slug: "agents/tammy-oc", name: "Tammy-OC", runtime: "openclaw", default_goal_slugs: [] },
+];
 state.projects = [];
 state.goalExecution = {
   mode: "canary",
@@ -229,6 +233,35 @@ const missingOwnerLinks = walkElements(goalExecutionSurface, (element) =>
     child.dataset?.slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435" &&
     child.dataset?.goalExecutionOrigin === "summary:missing-owner:goals/d837ac94-36f5-4735-93bb-d84c69b45435").length === 1);
 assert(missingOwnerLinks.length === 1, "summary missing owner did not expose one exact Goal link");
+const ownerAssignButtons = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-owner-assign"));
+assert(ownerAssignButtons.length === 2, "summary missing owner did not expose Codex-only assignment buttons");
+assert(ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "summary missing owner omitted Tammy assignment");
+assert(!ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "summary missing owner exposed OpenClaw assignment");
+const originalFetch = globalThis.fetch;
+const originalLoadAgents = loadAgents;
+const originalLoadGoalExecution = loadGoalExecution;
+const originalRender = render;
+const originalShowToast = showToast;
+let assignmentRequest = null;
+globalThis.fetch = async (url, options = {}) => {
+  assignmentRequest = { url: String(url), method: options.method, body: JSON.parse(options.body || "{}") };
+  return { ok: true, json: async () => ({ verified: true, agent: { slug: "agents/tammy" } }) };
+};
+loadAgents = async () => {};
+loadGoalExecution = async () => {};
+render = () => {};
+showToast = () => {};
+await assignGoalOwnerFromSummary("goals/d837ac94-36f5-4735-93bb-d84c69b45435", "agents/tammy");
+globalThis.fetch = originalFetch;
+loadAgents = originalLoadAgents;
+loadGoalExecution = originalLoadGoalExecution;
+render = originalRender;
+showToast = originalShowToast;
+assert(assignmentRequest.url === "/api/agents/agents%2Ftammy/default-goals", "summary assignment used wrong endpoint");
+assert(assignmentRequest.method === "POST", "summary assignment did not POST");
+assert(assignmentRequest.body.goal_slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435", "summary assignment sent wrong Goal");
+assert(assignmentRequest.body.action === "assign", "summary assignment was not an explicit assign action");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";
