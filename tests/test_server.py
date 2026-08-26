@@ -940,6 +940,7 @@ class ServerHarness:
         goal_execution_scheduler=None,
         clock=None,
         delegation_lock_path: Path | None = None,
+        gbrain_version_provider=None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -1000,6 +1001,9 @@ class ServerHarness:
             delegation_lock_path=(
                 delegation_lock_path
                 or runtime_path / "agent-delegations.lock"
+            ),
+            gbrain_version_provider=(
+                gbrain_version_provider or (lambda: "gbrain-test 1.2.3")
             ),
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -4054,6 +4058,19 @@ class HealthApiTests(unittest.TestCase):
             ],
         )
         self.assertEqual(payload["version"], server_module.release_payload()["current_version"])
+        self.assertEqual(payload["gbrain_version"], "gbrain-test 1.2.3")
+
+    def test_health_uses_safe_fallback_when_gbrain_version_is_unavailable(self) -> None:
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            gbrain_version_provider=lambda: None,
+        )
+
+        status, payload, _ = harness.request("GET", "/api/health")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["gbrain_version"], "unavailable")
 
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())

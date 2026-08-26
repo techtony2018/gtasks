@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import sqlite3
+import subprocess
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -121,6 +122,25 @@ def default_agent_delegation_lock_path() -> Path:
         / "GTasks"
         / "agent-delegations.lock"
     )
+
+
+def gbrain_version_string(
+    *, executable: str = "gbrain", timeout_seconds: float = 2.0
+) -> str:
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    if result.returncode != 0:
+        return "unavailable"
+    value = " ".join((result.stdout or result.stderr or "").split())
+    return value or "unavailable"
 
 
 class AgentDelegationMutationLock:
@@ -812,6 +832,7 @@ def _handler_class(
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
     delegation_lock_path: Path | None = None,
+    gbrain_version_provider: Callable[[], str | None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
@@ -834,6 +855,17 @@ def _handler_class(
     active_delegation_lock = AgentDelegationMutationLock(
         delegation_lock_path or default_agent_delegation_lock_path()
     )
+    active_gbrain_version_provider = gbrain_version_provider or gbrain_version_string
+
+    def safe_gbrain_version() -> str:
+        try:
+            value = active_gbrain_version_provider()
+        except Exception:
+            return "unavailable"
+        if not isinstance(value, str):
+            return "unavailable"
+        normalized = " ".join(value.split())
+        return normalized or "unavailable"
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -1783,6 +1815,7 @@ def _handler_class(
                     {
                         "status": "ok",
                         "version": __version__,
+                        "gbrain_version": safe_gbrain_version(),
                         "canonical_store": "gbrain",
                         "default_due_day": "task_creation_day",
                         "default_goal_target_day": "end_of_creation_quarter",
@@ -6131,6 +6164,7 @@ def build_server(
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
     delegation_lock_path: Path | None = None,
+    gbrain_version_provider: Callable[[], str | None] | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -6159,6 +6193,7 @@ def build_server(
         handoff_event_bridge,
         goal_execution_scheduler,
         delegation_lock_path,
+        gbrain_version_provider,
     )
     return ThreadingHTTPServer((host, port), handler)
 

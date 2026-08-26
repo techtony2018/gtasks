@@ -92,6 +92,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_217_records_gbrain_runtime_version_visibility(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.217")
+
+        self.assertIn("GBrain runtime versions", release["title"])
+        for contract in (
+            "GBrain runtime version",
+            "health",
+            "footer",
+            "About dialog",
+            "unavailable",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.100")
 

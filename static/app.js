@@ -419,6 +419,7 @@ const state = {
   completionCelebrationLastFullAt: 0,
   completionCelebrationSequence: 0,
   loading: true,
+  health: null,
   releases: null,
   aboutReturnFocus: null,
   logsReturnFocus: null,
@@ -1171,9 +1172,11 @@ const elements = {
   aboutButton: document.querySelector("#about-button"),
   settingsButton: document.querySelector("#settings-button"),
   sidebarVersion: document.querySelector("#sidebar-version"),
+  sidebarGbrainVersion: document.querySelector("#sidebar-gbrain-version"),
   aboutDialog: document.querySelector("#about-dialog"),
   aboutClose: document.querySelector("#about-close"),
   aboutCurrentVersion: document.querySelector("#about-current-version"),
+  aboutGbrainVersion: document.querySelector("#about-gbrain-version"),
   releaseHistory: document.querySelector("#release-history"),
   logsButton: document.querySelector("#logs-button"),
   logsDialog: document.querySelector("#logs-dialog"),
@@ -1469,6 +1472,7 @@ function renderReleaseHistory() {
   if (!state.releases) return;
   elements.sidebarVersion.textContent = state.releases.current_version;
   elements.aboutCurrentVersion.textContent = state.releases.current_version;
+  renderGbrainVersion();
   const fragment = document.createDocumentFragment();
   state.releases.releases.forEach((release) => {
     const article = node("article", "release-entry");
@@ -1487,6 +1491,17 @@ function renderReleaseHistory() {
   elements.releaseHistory.replaceChildren(fragment);
 }
 
+function formatGbrainVersion(value) {
+  const version = typeof value === "string" && value.trim() ? value.trim() : "unavailable";
+  return `GBrain: ${version}`;
+}
+
+function renderGbrainVersion() {
+  const label = formatGbrainVersion(state.health?.gbrain_version);
+  elements.sidebarGbrainVersion.textContent = label;
+  elements.aboutGbrainVersion.textContent = label;
+}
+
 async function loadReleases() {
   try {
     const response = await fetch("/api/releases", {
@@ -1502,6 +1517,21 @@ async function loadReleases() {
       node("p", "release-loading", "Release history is temporarily unavailable."),
     );
   }
+}
+
+async function loadHealth() {
+  try {
+    const response = await fetch("/api/health", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Mission Control health unavailable.");
+    state.health = payload;
+  } catch (_error) {
+    state.health = { gbrain_version: "unavailable" };
+  }
+  renderGbrainVersion();
 }
 
 function openAboutDialog() {
@@ -10649,6 +10679,7 @@ document.addEventListener("keydown", (event) => {
 bindHudTooltipEvents();
 initializeDetailPanelResize();
 initializeMobileDetailSheet();
+loadHealth();
 loadReleases();
 loadGoalExecution();
 loadAgentWork();

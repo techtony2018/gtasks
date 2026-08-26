@@ -5067,6 +5067,13 @@ a:focus-visible {
   font-size: 9px;
   letter-spacing: 0.045em;
   text-decoration: none;
+  white-space: nowrap;
+}
+
+.mission-gbrain-version {
+  left: calc(100% + 60px);
+  min-width: max-content;
+  text-align: left;
 }
 
 .mission-version-link:hover,
@@ -6447,6 +6454,15 @@ button:active {
     grid-column: 1;
     grid-row: 1;
     justify-self: center;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0 8px;
+    max-width: 100%;
+  }
+
+  .mission-art-center .mission-word-art {
+    flex: 0 0 100%;
   }
 
   .footer-controls-left,
@@ -6476,12 +6492,13 @@ button:active {
   }
 
   .mission-version-link {
-    left: auto;
-    right: 0;
-    top: 100%;
-    bottom: auto;
+    position: static;
     margin-top: 2px;
     min-height: 24px;
+  }
+
+  .mission-gbrain-version {
+    min-width: 0;
   }
 
   .topbar {
