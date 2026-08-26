@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.200",
+  "current_version": "V0.0.201",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1200,6 +1200,12 @@
       "date": "2026-08-26",
       "title": "Name private blockers in Goal next action",
       "summary": "Goal execution next-action copy now names private-input blockers alongside ordinary answer and owner actions, so Tony can see every reason Agents remain blocked without generating or autofilling secrets."
+    },
+    {
+      "version": "V0.0.201",
+      "date": "2026-08-26",
+      "title": "Fix Goal next-action grammar",
+      "summary": "Goal execution next-action copy now separates ordinary answer, private-input, and owner-assignment actions with clear semicolons, avoiding misleading '. and assign' grammar while preserving every blocker in the same summary."
     }
   ]
 }

@@ -461,6 +461,10 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "waiting_for_tony",
                     existing_task_slug="tasks/family",
                 ),
+                GoalExecutionDecision(
+                    "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "owner_missing",
+                ),
             ),
             "waiting_for_tony",
             blocking_questions=(
@@ -483,6 +487,22 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "detail": "This requires Tony's private credential input.",
                 },
             ),
+            missing_owners=(
+                {
+                    "goal_slug": "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "goal_title": "Entrepreneurship",
+                    "required_relationship": "default_agent_for",
+                    "candidate_owners": [
+                        {
+                            "agent_slug": AGENT,
+                            "agent_name": "Timmy",
+                            "default_goal_count": 1,
+                            "recommended": True,
+                            "recommendation": "recommended: lowest verified Codex Goal load",
+                        }
+                    ],
+                },
+            ),
         )
 
         self.assertIn(
@@ -497,6 +517,8 @@ class GoalExecutionEngineTests(unittest.TestCase):
             "Please provide the Tammy artifact publisher token for this fixed Codex worker",
             rendered["next_action"],
         )
+        self.assertNotIn(". and assign", rendered["next_action"])
+        self.assertIn("; assign", rendered["next_action"])
 
     class Adapter:
         def __init__(
@@ -782,7 +804,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         )
         self.assertEqual(
             rendered["summary"]["next_action"],
-            "Answer the Timmy question for Which family-care scope should Toddy use next? and assign Entrepreneurship to Timmy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
+            "Answer the Timmy question for Which family-care scope should Toddy use next?; assign Entrepreneurship to Timmy (recommended: lowest verified Codex Goal load); executing or delivered Agent work can continue.",
         )
 
     def test_auto_canary_selects_next_eligible_goal_when_fixed_goal_completed(self) -> None:

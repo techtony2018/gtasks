@@ -178,7 +178,7 @@ def _goal_execution_summary(
         )
     if waiting_for_tony and owner_missing:
         next_action = (
-            f"{_goal_execution_answer_instruction(action_queue)} and "
+            f"{_goal_execution_answer_instruction(action_queue)}; "
             f"{_goal_execution_owner_instruction(action_queue)}; "
             "executing or delivered Agent work can continue."
         )
