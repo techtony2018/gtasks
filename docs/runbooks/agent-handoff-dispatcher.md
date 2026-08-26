@@ -887,6 +887,13 @@ drafts, do not render inline answer/template controls, and are excluded from
 recommended unblock plans. Safe answer questions with concrete templates and a
 recommended Codex owner assignment still use the explicit reviewed plan; the
 dispatcher must never fabricate or prefill private credential answers.
+V0.0.200 includes private-input blockers in `summary.next_action` instead of
+letting the safe answer/owner plan hide them. When the queue has a safe
+answer, a private answer, and owner assignment, the next-action text names all
+three: answer the safe question, provide private input for the private
+question, and assign the recommended owner. Inbox also renders
+`summary.next_action` in `Goal execution actions` after the MC200-001 repair.
+Private rows remain no-template, no-form, and no-plan.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

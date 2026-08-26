@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.199 at commit
-`f7682905ea5dd5fdb104c558e1e74e9928101b9e`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.200 at commit
+`5560d8f342674e29a3eac97dec3c3ce3f566027f`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -364,6 +364,15 @@ recommended unblock plans. Safe answer questions with concrete templates and a
 recommended Codex owner assignment still use the explicit recommended plan;
 Mission Control never generates, prefills, or one-click submits private
 credential values.
+V0.0.200 includes those private-input blockers in verified
+`summary.next_action` copy alongside ordinary answer and owner actions. Inbox
+and Agents now show every reason Goal-derived Agent work is blocked, including
+that Tony must provide private input for credential/token questions, while
+still showing safe answer and recommended owner-assignment work. MC200-001
+initially caught Inbox omitting the `Next action:` line; the repaired retest
+verified Inbox renders it on desktop and mobile. This is visibility only for
+private blockers: Mission Control still does not generate, prefill, or submit
+secrets.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -511,6 +520,12 @@ V0.0.199+ marks credential/token-like `answer_question` actions with
 only, without `answer_template`, inline answer form, template insertion, or
 recommended-plan participation; Tony must open the Task and answer directly
 through the verified private-input path.
+V0.0.200+ derives `summary.next_action` from safe answer actions, private
+answer blockers, and recommended owner assignment together. Inbox renders the
+same `Next action:` line in `Goal execution actions` as Agents, so central
+triage sees private blockers too. Treat that copy as operator guidance only,
+not generated private input, a submitted answer, plan eligibility, or a
+mutation receipt.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

@@ -135,11 +135,11 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-25`
+- Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.199`
+- Last verified pushed release: `V0.0.200`
 - Release commits:
-  `f7682905ea5dd5fdb104c558e1e74e9928101b9e`
+  `5560d8f342674e29a3eac97dec3c3ce3f566027f`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -924,6 +924,35 @@ to the reviewed source before updating relationships.
   recommended-plan answer plus Timmy assignment only, all-private and
   OpenClaw-only plan suppression, no generated secret/token copy, no live
   GBrain mutation, and clean console/network checks.
+- V0.0.200 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.200`; release commit
+  `5560d8f342674e29a3eac97dec3c3ce3f566027f`; release evidence file
+  `docs/release-evidence/v0.0.200.md`; independent QA initially failed
+  MC200-001 because Inbox omitted `next_action`, then repaired retest passed
+  with frozen aggregate
+  `8672a12899cf49ce341a6e0caff1ce082604328bfb46ff812da080557042b3d3` at
+  `artifacts/qa/v0.0.200-independent/gate-report-retest.md`. Developer
+  verification reported focused repair coverage as `2` OK, the combined
+  focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `240` OK, and `python3 -m unittest discover -s tests` as `1396` OK with
+  `5` skipped.
+- Verified V0.0.200 behavior: Goal execution `summary.next_action` now names
+  private-input blockers alongside ordinary safe answer and owner-assignment
+  actions, so Inbox and Agents show every reason Goal-derived Agent work is
+  blocked without generating or autofilling secrets. Postdeploy
+  `/api/goal-execution` after bounded warmup retained `last_run=true`,
+  `last_error=null`, `public_reason=actively_executing`, and
+  `next_action_has_private=true`. Repaired independent desktop 1440 and
+  genuine mobile 390 QA verified both surfaces render the exact `Next action:`
+  copy including the ordinary Family/Toddy question, `provide private input for
+  the Tammy question`, and the private summary
+  `Provide the production API access token and OAuth client secret.` Private
+  rows still had no answer form, template button, raw TODO version, synthetic
+  credential value, or recommended-plan participation; the explicit
+  recommended plan still produced only the safe Family TODO answer and Timmy
+  Goal-owner assignment, with zero private TODO POST attempts and no live
+  GBrain mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1119,3 +1148,7 @@ not describe credential/token/private questions as eligible for generated
 templates, inline synthetic answer forms, recommended unblock plans, or any
 prefilled secret value; Tony must open the Task and answer private prompts
 directly.
+V0.0.200 next-action private blocker copy is visibility only. It can tell Tony
+to provide private input, but must not be treated as a generated secret,
+answer submission, recommended-plan eligibility, dispatcher wake, task
+completion, ownership repair, or GBrain mutation.
