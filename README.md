@@ -434,13 +434,14 @@ repository source.
 While the page is open, GTasks performs a read-only refresh every 30 minutes.
 The interval is shown beside the sync state, requests are coalesced with manual
 Refresh, and a hidden tab defers work until it becomes visible again.
-The server also coalesces duplicate task and proposal reads, caps aggregate
-GBrain command concurrency to prevent multi-tab request stampedes, and stores
-the last verified projections in a private `0600` local file. Slow refreshes
-run in the background: each surface shows its own explicit refreshing, stale,
-or error state while independently available data remains usable. Manual and
-automatic Refresh explicitly invalidate the relevant projection; verified
-mutations invalidate task and proposal projections together.
+The server also coalesces duplicate task, proposal, Project, System Ticket,
+and Agent Work reads, caps aggregate GBrain command concurrency to prevent
+multi-tab request stampedes, and stores the last verified projections in a
+private `0600` local file. Slow refreshes run in the background: each surface
+shows its own explicit refreshing, stale, or error state while independently
+available data remains usable. Manual and automatic Refresh explicitly
+invalidate the relevant projection; verified task mutations invalidate task,
+proposal, and Agent Work projections together.
 
 Independent UI QA fixtures must never be created in Tony's Tasks or an Agent
 work root. Their explicit contract is one typed `member_of` relationship to
@@ -595,6 +596,14 @@ store has a latest dispatcher status but the canonical task `handoff` field is
 empty. The projection helps operators see recovery evidence in Agents and
 fallback Task details; it never overwrites canonical handoff data, and
 completed rows suppress it.
+
+V0.0.178 keeps `/api/agent-work` on the same bounded last-verified cache model
+as the other slow read surfaces: cold Agent Work reads return `202`/`loading`,
+warm reads keep labeled verified data while refresh runs, and task mutations
+invalidate the Agent Work projection. Completed and cancelled Agent-owned
+history remains visible, but terminal history rows skip TODO backlink
+hydration so old work does not dominate refresh latency; current
+non-terminal Agent work still hydrates open TODOs.
 
 ### Agent question and answer handoff
 
