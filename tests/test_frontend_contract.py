@@ -202,7 +202,7 @@ state.goalExecution = {
       message: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
     }],
     action_queue: [
-      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?", detail: "Choose the scope and first bounded action.", answer_template: "Scope categories: [accepted/revised]\nDesired outcomes: [accepted/revised]\nConstraints: [accepted/revised]\nFirst action: [approved/revised/declined]\nNotes: " },
+      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?", detail: "Choose the scope and first bounded action.", answer_template: "Scope categories: accepted\nDesired outcomes: accepted\nConstraints: accepted\nFirst action: approved\nNotes: Keep the work bounded to the stated scope, outcomes, constraints, and first action." },
       { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for", candidate_owners: [
         { agent_slug: "agents/tammy", agent_name: "Tammy", default_goal_count: 0, recommended: true, recommendation: "recommended: lowest verified Codex Goal load" },
         { agent_slug: "agents/timmy", agent_name: "Timmy", default_goal_count: 1, recommended: false, recommendation: "1 verified default Goal" },
@@ -263,8 +263,9 @@ assert(inlineAnswerSubmits.length === 1, "inline answer form did not expose one 
 assert(inlineAnswerTemplateButtons.length === 1, "inline answer form did not expose one answer-template button");
 assert(flattenText(inlineAnswerTemplateButtons[0]).includes("Insert answer template"), "inline answer template button had unclear copy");
 inlineAnswerTemplateButtons[0].click();
-assert(inlineAnswerInputs[0].value.includes("Scope categories: [accepted/revised]"), "answer template button did not fill the editable textarea");
-assert(inlineAnswerInputs[0].value.includes("First action: [approved/revised/declined]"), "answer template omitted the first-action decision line");
+assert(inlineAnswerInputs[0].value.includes("Scope categories: accepted"), "answer template button did not fill a concrete scope decision");
+assert(inlineAnswerInputs[0].value.includes("First action: approved"), "answer template omitted the concrete first-action decision line");
+assert(!inlineAnswerInputs[0].value.includes("[accepted/revised]"), "answer template still exposed placeholder decision copy");
 assert(
   answerActions[0].dataset?.goalExecutionOrigin === "summary:action:answer_question:tasks_22222222-2222-4222-8222-222222222222:todos_question",
   "direct question action lacks immutable Goal execution origin identity",

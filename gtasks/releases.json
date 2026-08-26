@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.195",
+  "current_version": "V0.0.196",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1170,6 +1170,12 @@
       "date": "2026-08-25",
       "title": "Add Agent answer templates",
       "summary": "Goal execution waiting-question actions now provide an editable answer template beside the inline answer form, so Tony can unblock Agents with a structured draft while preserving explicit submission and no automatic GBrain mutation."
+    },
+    {
+      "version": "V0.0.196",
+      "date": "2026-08-25",
+      "title": "Make Agent answer template concrete",
+      "summary": "Goal execution waiting-question actions now insert an editable concrete approval draft instead of placeholder choices, reducing Tony's effort to unblock Agents while still requiring explicit review and Submit answer before any GBrain mutation."
     }
   ]
 }

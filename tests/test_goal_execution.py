@@ -650,7 +650,13 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     "agent_slug": AGENT,
                     "summary": "Which family-care scope should Toddy use next?",
                     "detail": "Choose the scope and first bounded action.",
-                    "answer_template": "Scope categories: [accepted/revised]\nDesired outcomes: [accepted/revised]\nConstraints: [accepted/revised]\nFirst action: [approved/revised/declined]\nNotes: ",
+                    "answer_template": (
+                        "Scope categories: accepted\n"
+                        "Desired outcomes: accepted\n"
+                        "Constraints: accepted\n"
+                        "First action: approved\n"
+                        "Notes: Keep the work bounded to the stated scope, outcomes, constraints, and first action."
+                    ),
                 },
                 {
                     "owner": "tony",

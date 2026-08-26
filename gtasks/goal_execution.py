@@ -231,11 +231,11 @@ def _goal_execution_answer_template(
     if isinstance(provided, str) and provided.strip():
         return provided
     return (
-        "Scope categories: [accepted/revised]\n"
-        "Desired outcomes: [accepted/revised]\n"
-        "Constraints: [accepted/revised]\n"
-        "First action: [approved/revised/declined]\n"
-        "Notes: "
+        "Scope categories: accepted\n"
+        "Desired outcomes: accepted\n"
+        "Constraints: accepted\n"
+        "First action: approved\n"
+        "Notes: Keep the work bounded to the stated scope, outcomes, constraints, and first action."
     )
 
 
