@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.212`
+- Last verified pushed release: `V0.0.213`
 - Release commits:
-  `a48fe8e6abb5cb38e1dead64482bfd9871e2f6bb`
+  `b405d642dc61812ba983ed822e362b3868384411`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1171,6 +1171,31 @@ to the reviewed source before updating relationships.
   `handoff_needs_repair`, not an active-claim fixture. Preserve the local
   worker boundary: local workers are Tammy/Tammy-OC only; Timmy/Toddy are
   remote/non-local.
+- V0.0.213 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.213`; release commit
+  `b405d642dc61812ba983ed822e362b3868384411`; release evidence file
+  `docs/release-evidence/v0.0.213.md`; independent QA PASS at
+  `artifacts/qa/v0.0.213-independent/gate-report.md` with frozen aggregate
+  `edd57f5ab7f4248fe72b0b03a6a870cf19d503052c587b3aee22fe301396e072`.
+  Developer verification reported focused coverage as `328` OK and
+  `python3 -m unittest discover -s tests` as `1405` OK with `5` skipped; QA
+  focused regression reported `1` OK.
+- Verified V0.0.213 behavior: Goal execution now converts
+  `handoff_needs_repair` attention into an explicit system-owned Action queue
+  item with `owner=system`, `kind=repair_agent_handoff`, label
+  `Repair verified Agent handoff`, summary
+  `Inspect Handoff History and recover the verified Agent delivery state.`,
+  and next-action copy `repair verified Agent handoff for 1 blocked Goal`.
+  Live readback returned `public_reason=actively_executing` for
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, summary `total_goals=7`,
+  `needs_attention=1`, `waiting_for_tony=0`, `in_flight=1`,
+  `recently_completed=5`, and exactly one `repair_agent_handoff` action for
+  Family task `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` / Goal
+  `goals/2c86f86c-c9fb-5f49-96d0-e4d63f489fc8`. Independent QA verified
+  desktop 1440 and mobile 390 Agents+Inbox rendered `System action required`
+  / `Repair verified Agent handoff`, the exact summary/detail, and no Tony
+  answer form, answer template, owner assignment, or OpenClaw controls for the
+  system repair row. Health/Toddy `actively_executing` remained visible.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1414,3 +1439,9 @@ only while a verified non-terminal execution claim is active; once the claim is
 missing, terminal, or stale, the existing handoff repair or worker-unavailable
 attention classifications still apply. This does not make Timmy/Toddy local
 workers or complete work without terminal handoff and Artifact readback.
+V0.0.213 handoff repair Action queue items are system-owned recovery guidance,
+not Tony business-question or ownership controls. Rendering
+`repair_agent_handoff` should point operators to inspect Handoff History and
+recover verified Agent delivery state; it must not render answer forms,
+answer templates, owner assignment controls, OpenClaw controls, or imply an
+automatic repair mutation without separate verified recovery action.

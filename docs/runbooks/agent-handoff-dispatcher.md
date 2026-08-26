@@ -966,6 +966,14 @@ handoffs without that active claim remain `handoff_needs_repair`, stale
 retrying non-terminal delivery remains `handoff_worker_unavailable`, and the
 local worker boundary remains Tammy/Tammy-OC only; Timmy/Toddy are remote and
 non-local.
+V0.0.213 makes the remaining handoff repair attention explicit in the Action
+queue. `handoff_needs_repair` should emit one system-owned
+`repair_agent_handoff` item with label `Repair verified Agent handoff`,
+summary `Inspect Handoff History and recover the verified Agent delivery
+state.`, and next-action copy `repair verified Agent handoff for 1 blocked
+Goal`. Agents and Inbox should render `System action required` for this row,
+with no Tony answer form/template, no owner assignment controls, and no
+OpenClaw controls.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

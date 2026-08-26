@@ -443,6 +443,14 @@ active non-terminal execution claim with recent `claimed_at`, future
 claim still render handoff repair attention, stale retrying delivery still
 renders worker-unavailable attention, and the local worker boundary remains
 Tammy/Tammy-OC only; Timmy and Toddy are remote/non-local.
+V0.0.213 turns verified handoff repair attention into a concrete system-owned
+Action queue item. `handoff_needs_repair` now produces
+`owner=system`, `kind=repair_agent_handoff`, label
+`Repair verified Agent handoff`, and summary
+`Inspect Handoff History and recover the verified Agent delivery state.`
+Agents and Inbox render `System action required` without Tony answer forms,
+answer templates, owner assignment controls, or OpenClaw assignment controls
+for this system repair item.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -637,6 +645,11 @@ claim lease remains `in_flight` / `delivering` and should not ask for handoff
 repair. Suppressed handoffs without an active claim still surface
 `handoff_needs_repair`, and stale retrying delivery still surfaces
 `handoff_worker_unavailable`.
+V0.0.213+ routes `handoff_needs_repair` into `summary.action_queue` as a
+system-owned `repair_agent_handoff` row with the concrete next action
+`repair verified Agent handoff for 1 blocked Goal`. This is operator recovery
+guidance for Handoff History review, not a Tony answer, owner assignment,
+OpenClaw action, or automatic repair mutation.
 V0.0.207 supersedes the earlier paused stash boundary by shipping the
 scheduler-selection-ordering repair as a verified release. Do not apply the
 old `stash@{0}` entry as if it were still the source of truth; start from
