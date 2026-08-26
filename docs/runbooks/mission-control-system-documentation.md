@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.182`
+- Last verified pushed release: `V0.0.183`
 - Release commits:
-  `94e383595b0e7d6f991fa333a87596fc5c8d02d0`
+  `fc3e5296a263a1a29dc00b4c86e82a8178550cf0`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -548,6 +548,24 @@ to the reviewed source before updating relationships.
   `next_action` guidance. Postdeploy readback reported `total_goals=7`,
   `needs_attention=2`, `waiting_for_tony=1`, `owner_missing=1`,
   `in_flight=1`, `recently_completed=3`, and `next_action` present.
+- V0.0.183 evidence: dashboard-managed health and releases readback
+  `V0.0.183`; release commit
+  `fc3e5296a263a1a29dc00b4c86e82a8178550cf0`; release evidence file
+  `docs/release-evidence/v0.0.183.md`; independent repair QA PASS at
+  `artifacts/qa/v0.0.183-repair-independent/gate-report.md` with frozen
+  aggregate
+  `7d4d2b1e0f4423c6cac621fcffccfdfd8e1627c205ca36fecfd54dc1915a2715`;
+  desktop `1440x1000` and genuine mobile `390x844` PASS. Developer
+  verification reported focused/release `136` OK and
+  `python3 -m unittest discover -s tests` as `1393` OK with `5` skipped.
+- Verified V0.0.183 behavior: Agents > Goal execution visibly renders the
+  verified Goal execution summary next action and counts for total Goals,
+  Needs attention, Waiting for Tony, Missing owner, In flight, and Recently
+  completed. Repair QA closed MC183-001 by verifying the full visible summary
+  text on desktop and mobile. Postdeploy `/api/goal-execution` summary
+  readback still reported `total_goals=7`, `needs_attention=2`,
+  `waiting_for_tony=1`, `owner_missing=1`, `in_flight=1`, and
+  `recently_completed=3`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -668,3 +686,7 @@ readers. Its counts and `next_action` do not create missing Goal owners,
 answer Tony-blocked work, prove Timmy/Toddy local worker availability, or
 complete any Agent task without the existing canonical handoff and Artifact
 evidence.
+V0.0.183 visible summary rendering keeps the same boundary. Seeing the
+`Next action:` line and counts in Agents helps operators choose the next owner
+to inspect, but it does not perform that owner action, dispatch a worker, or
+replace canonical Task/handoff/Artifact readback.

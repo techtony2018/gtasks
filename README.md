@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.182 at commit
-`94e383595b0e7d6f991fa333a87596fc5c8d02d0`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.183 at commit
+`fc3e5296a263a1a29dc00b4c86e82a8178550cf0`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -239,6 +239,12 @@ V0.0.182 adds a compact Goal execution reader summary at both top-level
 Postdeploy readback showed `total_goals=7`, `needs_attention=2`,
 `waiting_for_tony=1`, `owner_missing=1`, `in_flight=1`,
 `recently_completed=3`, and a present `next_action`.
+V0.0.183 renders that verified summary directly in Agents > Goal execution:
+the panel shows the `Next action:` line plus visible counts for total Goals,
+Needs attention, Waiting for Tony, Missing owner, In flight, and Recently
+completed. The rendered summary remains read-only display context; it does
+not mutate Goal ownership, answer Tony's blocker, wake a worker, or complete a
+task.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -291,6 +297,12 @@ and in `last_run.summary`. Readers can use `summary.needs_attention`,
 status dashboards without walking every decision row. The summary is read-only
 projection data; it does not create ownership links, answer Tony-blocked work,
 lease a worker, or complete a task.
+V0.0.183+ also renders that same verified summary in the Agents view's Goal
+execution panel, including `Next action:` guidance and the key counts:
+total Goals, Needs attention, Waiting for Tony, Missing owner, In flight, and
+Recently completed. The visible panel must match `/api/goal-execution.summary`
+after readback and must not expose credentials, fixed-thread ids, or private
+worker routes.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

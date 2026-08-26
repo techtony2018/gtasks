@@ -764,6 +764,12 @@ integrations. Do not treat the summary as authority to create ownership links,
 answer Tony questions, wake a worker, or mark Goal work complete; callers must
 still inspect the named canonical Task, handoff, Artifact, and next-owner
 evidence before taking action.
+V0.0.183 renders the same verified summary inside the Agents > Goal execution
+panel. The visible panel should show the `Next action:` line plus counts for
+total Goals, Needs attention, Waiting for Tony, Missing owner, In flight, and
+Recently completed, matching `/api/goal-execution.summary` after scheduler
+readback. This is operator-facing display only; it does not change dispatcher
+authority, local worker boundaries, or completion gates.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
