@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.197`
+- Last verified pushed release: `V0.0.198`
 - Release commits:
-  `2a6de54f1f4892d1ea096ddae3007642907fad5b`
+  `3dfe196b0a0dd2688ca94561268c236fc7c86814`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -873,6 +873,32 @@ to the reviewed source before updating relationships.
   template concrete, and V0.0.197 moved Goal execution actions into Inbox.
   This stops the current broad Goal-execution improvement pass; future work
   should be scoped as a new pass instead of continuing this one by default.
+- V0.0.198 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.198`; release commit
+  `3dfe196b0a0dd2688ca94561268c236fc7c86814`; release evidence file
+  `docs/release-evidence/v0.0.198.md`; independent QA PASS at
+  `artifacts/qa/v0.0.198-independent/gate-report.md` with frozen aggregate
+  `328fdf1ffa8622b075dca0cfceb93ae4c453c88628300cee0b25e29017798a4d`.
+  Developer verification reported the focused frontend contract as `1` OK,
+  the combined focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK, and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.198 behavior: Inbox Goal execution actions now include an
+  explicit `Run recommended unblock plan` button when a concrete answer draft
+  and recommended Codex owner assignment exist. The control sequences the
+  existing answer POST first and the recommended owner assignment POST second
+  from one reviewed user click; it does not run automatically and does not
+  appear in Agents. Independent desktop 1440 and genuine mobile 390 QA verified
+  the button is suppressed for blank template, no recommended owner, and
+  OpenClaw-only recommendation fixtures; the successful plan produced exactly
+  two intercepted writes in order, with exact answer and Timmy assignment
+  bodies, and no live GBrain mutation. Postdeploy `/api/goal-execution` after
+  bounded warmup retained `last_run=true`, `last_error=null`, and
+  `public_reason=actively_executing`.
+- Next slice note: current live `action_queue` now contains two
+  `answer_question` actions plus one `assign_goal_owner`, so the next product
+  slice is expanding the recommended plan to cover all answerable questions.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1058,3 +1084,8 @@ V0.0.197 Inbox action surfacing keeps the same boundary. Showing Goal
 execution actions in Inbox centralizes triage but does not create a second
 mutation path, automatically submit answers, assign owners, acknowledge
 handoffs, wake workers, complete tasks, or mutate GBrain.
+V0.0.198 recommended unblock plans are explicit reviewed mutation shortcuts,
+not automation. The button may sequence existing verified answer and
+assignment endpoints only after Tony clicks it, and the current implementation
+handles the first answerable question plus recommended owner assignment rather
+than every answerable question in the queue.

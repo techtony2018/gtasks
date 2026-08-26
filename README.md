@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.197 at commit
-`2a6de54f1f4892d1ea096ddae3007642907fad5b`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.198 at commit
+`3dfe196b0a0dd2688ca94561268c236fc7c86814`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -349,6 +349,14 @@ acknowledge, wake, complete, or mutate GBrain.
 Phase note: this closes the current broad Goal-execution improvement pass.
 V0.0.195 added editable answer templates, V0.0.196 made the template concrete,
 and V0.0.197 moved the same actions into Inbox for central triage.
+V0.0.198 adds an explicit Inbox-only `Run recommended unblock plan` button
+when the Goal execution Action queue has both a concrete answer draft and a
+recommended Codex owner assignment. One reviewed click sequences the verified
+answer POST first, then the recommended owner assignment POST; it never runs
+automatically and does not mutate GBrain unless Tony clicks it. Current live
+readback now has two `answer_question` actions plus `assign_goal_owner`, so
+the next product slice is expanding the recommended plan to cover all
+answerable questions.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -486,6 +494,11 @@ actions` when Tony-owned actions are present. The Inbox section is a central
 surface for the same queue entries and controls already used in Agents; its
 presence is not a separate mutation path or proof that the actions have been
 completed.
+V0.0.198+ may render `Run recommended unblock plan` in that Inbox section only
+when one answerable question has a concrete `answer_template` and an
+`assign_goal_owner` action has a recommended Codex Agent. The plan is an
+explicit reviewed mutation shortcut, not automation: it uses the existing
+answer and default-goals endpoints in sequence only after Tony activates it.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

@@ -870,6 +870,15 @@ automatic answer, assignment, handoff acknowledgement, worker wake, completion,
 or GBrain mutation behavior. This stops the current broad Goal-execution
 improvement pass: V0.0.195 added editable answer templates, V0.0.196 made
 them concrete, and V0.0.197 moved the resulting actions into Inbox.
+V0.0.198 adds an Inbox-only `Run recommended unblock plan` control when the
+verified Action queue contains both a concrete answer draft and a recommended
+Codex owner assignment. The plan sequences the existing TODO answer POST, then
+the recommended `default-goals` assignment POST, from one explicit reviewed
+click. It is not automatic, does not appear in Agents, is suppressed without a
+concrete template or recommended Codex owner, and must not be treated as a new
+dispatcher mutation path. Live readback now has two answerable questions plus
+one missing-owner assignment, so the next product slice is to expand the
+recommended plan beyond the first answerable question.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
