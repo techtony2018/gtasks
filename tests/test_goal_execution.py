@@ -743,6 +743,45 @@ class GoalExecutionEngineTests(unittest.TestCase):
             "Repair Goal execution attention states before more automatic work can proceed.",
         )
 
+    def test_goal_execution_routes_worker_unavailable_attention_to_system_action(self) -> None:
+        rendered = _goal_execution_summary(
+            (
+                GoalExecutionDecision(
+                    GOAL,
+                    "handoff_worker_unavailable",
+                    existing_task_slug="tasks/family",
+                ),
+            ),
+            "handoff_worker_unavailable",
+        )
+
+        self.assertEqual(
+            rendered["action_queue"],
+            [
+                {
+                    "owner": "system",
+                    "kind": "restore_agent_worker",
+                    "label": "Restore verified Agent worker",
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/family",
+                    "summary": "Verify the assigned Agent host dispatcher and private route, then recover delivery.",
+                    "detail": "The canonical task is queued or retrying, but no verified Agent worker has leased it.",
+                    "blocked_goal_count": 1,
+                    "related_repairs": [
+                        {
+                            "goal_slug": GOAL,
+                            "task_slug": "tasks/family",
+                            "reason": "handoff_worker_unavailable",
+                        }
+                    ],
+                }
+            ],
+        )
+        self.assertEqual(
+            rendered["next_action"],
+            "restore verified Agent worker for 1 blocked Goal",
+        )
+
     class Adapter:
         def __init__(
             self,
@@ -1873,6 +1912,31 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(
             second.to_dict()["decisions"][0]["reason"],
             "duplicate",
+        )
+        self.assertEqual(len(bridge.recovery_calls), 0)
+
+    def test_suppressed_claim_unavailable_with_stale_claim_reports_worker_unavailable(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        first = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "suppressed"
+        bridge.latest_delivery_state = {
+            "status": "suppressed",
+            "reason": "execution_claim_unavailable",
+            "executor_agent": AGENT,
+            "permanent_owner": AGENT,
+            "claimed_at": (NOW - timedelta(minutes=10)).isoformat(),
+            "expires_at": (NOW + timedelta(minutes=50)).isoformat(),
+            "terminal_state": None,
+        }
+
+        second = self.engine(adapter, bridge).run_once(NOW)
+
+        self.assertEqual(first.task_slug, second.task_slug)
+        self.assertEqual(second.public_reason, "handoff_worker_unavailable")
+        self.assertEqual(
+            second.to_dict()["decisions"][0]["reason"],
+            "handoff_worker_unavailable",
         )
         self.assertEqual(len(bridge.recovery_calls), 0)
 

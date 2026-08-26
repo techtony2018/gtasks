@@ -2487,6 +2487,30 @@ class DurableHandoffStoreTests(unittest.TestCase):
         self.assertEqual(state["terminal_state"], "checkpointed")
         self.assertEqual(state["executor_agent"], AGENT)
 
+    def test_canonical_bridge_reports_claim_unavailable_reason_with_existing_claim(self) -> None:
+        dispatcher = HandoffDispatcher(
+            self.store,
+            registrations=(registration(),),
+            delegations=(),
+        )
+        dispatcher.record(
+            change(canonical_event_id="events/first", canonical_version="1"),
+            now=NOW,
+        )
+        dispatcher.record(
+            change(canonical_event_id="events/second", canonical_version="2"),
+            now=NOW + timedelta(seconds=1),
+        )
+
+        state = CanonicalHandoffEventBridge(
+            dispatcher
+        ).latest_task_handoff_delivery_state(TASK)
+
+        self.assertEqual(state["status"], "suppressed")
+        self.assertEqual(state["reason"], "execution_claim_unavailable")
+        self.assertEqual(state["terminal_state"], None)
+        self.assertEqual(state["executor_agent"], AGENT)
+
     def test_canonical_bridge_persists_one_verified_record_or_attention_event(self) -> None:
         bridge = CanonicalHandoffEventBridge(self.dispatcher)
         snapshot = {

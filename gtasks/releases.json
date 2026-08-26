@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.213",
+  "current_version": "V0.0.214",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1278,6 +1278,12 @@
       "date": "2026-08-26",
       "title": "Queue concrete Goal handoff repair actions",
       "summary": "Goal execution now turns verified handoff repair attention into an explicit system-owned action queue item and concrete next action, so blocked Goal work points to Handoff History recovery instead of a generic repair message."
+    },
+    {
+      "version": "V0.0.214",
+      "date": "2026-08-26",
+      "title": "Classify unavailable Goal workers separately",
+      "summary": "Goal execution now preserves dispatcher claim-unavailable reasons, classifies stale or expired Agent execution claims as worker-unavailable instead of generic handoff repair, and surfaces a concrete system action to restore the verified Agent worker."
     }
   ]
 }

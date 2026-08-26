@@ -238,30 +238,51 @@ def _goal_execution_summary(
             }
         )
     for decision in decisions:
-        if decision.reason != "handoff_needs_repair":
+        if decision.reason not in {"handoff_needs_repair", "handoff_worker_unavailable"}:
             continue
-        action = {
-            "owner": "system",
-            "kind": "repair_agent_handoff",
-            "label": "Repair verified Agent handoff",
-            "goal_slug": decision.goal_slug,
-            "task_slug": decision.existing_task_slug,
-            "summary": "Inspect Handoff History and recover the verified Agent delivery state.",
-            "detail": "The canonical task is active, but verified Agent handoff or execution needs system review.",
-            "blocked_goal_count": 1,
-            "related_repairs": [
-                {
-                    "goal_slug": decision.goal_slug,
-                    "task_slug": decision.existing_task_slug,
-                    "reason": decision.reason,
-                }
-            ],
-        }
+        if decision.reason == "handoff_worker_unavailable":
+            action_kind = "restore_agent_worker"
+            action = {
+                "owner": "system",
+                "kind": action_kind,
+                "label": "Restore verified Agent worker",
+                "goal_slug": decision.goal_slug,
+                "task_slug": decision.existing_task_slug,
+                "summary": "Verify the assigned Agent host dispatcher and private route, then recover delivery.",
+                "detail": "The canonical task is queued or retrying, but no verified Agent worker has leased it.",
+                "blocked_goal_count": 1,
+                "related_repairs": [
+                    {
+                        "goal_slug": decision.goal_slug,
+                        "task_slug": decision.existing_task_slug,
+                        "reason": decision.reason,
+                    }
+                ],
+            }
+        else:
+            action_kind = "repair_agent_handoff"
+            action = {
+                "owner": "system",
+                "kind": action_kind,
+                "label": "Repair verified Agent handoff",
+                "goal_slug": decision.goal_slug,
+                "task_slug": decision.existing_task_slug,
+                "summary": "Inspect Handoff History and recover the verified Agent delivery state.",
+                "detail": "The canonical task is active, but verified Agent handoff or execution needs system review.",
+                "blocked_goal_count": 1,
+                "related_repairs": [
+                    {
+                        "goal_slug": decision.goal_slug,
+                        "task_slug": decision.existing_task_slug,
+                        "reason": decision.reason,
+                    }
+                ],
+            }
         existing = next(
             (
                 item
                 for item in action_queue
-                if item.get("kind") == "repair_agent_handoff"
+                if item.get("kind") == action_kind
             ),
             None,
         )
@@ -436,6 +457,14 @@ def _goal_execution_system_repair_instruction(
         ),
         None,
     )
+    worker_action = next(
+        (
+            item
+            for item in action_queue
+            if item.get("kind") == "restore_agent_worker"
+        ),
+        None,
+    )
     parts: list[str] = []
     if artifact_action is not None:
         agent = _agent_label(artifact_action.get("agent_slug"))
@@ -452,6 +481,12 @@ def _goal_execution_system_repair_instruction(
         goal_label = "Goal" if blocked_goal_count == 1 else "Goals"
         parts.append(
             f"repair verified Agent handoff for {blocked_goal_count or 1} blocked {goal_label}"
+        )
+    if worker_action is not None:
+        blocked_goal_count = int(worker_action.get("blocked_goal_count") or 0)
+        goal_label = "Goal" if blocked_goal_count == 1 else "Goals"
+        parts.append(
+            f"restore verified Agent worker for {blocked_goal_count or 1} blocked {goal_label}"
         )
     return " and ".join(parts)
 
@@ -776,6 +811,27 @@ def _active_delivery_claim_overrides_attention(
     if expires_at is not None and expires_at <= now:
         return False
     return now - claimed_at < HANDOFF_WORKER_ATTENTION_AFTER
+
+
+def _suppressed_claim_unavailable_worker_unavailable(
+    delivery_state: object,
+    now: datetime,
+) -> bool:
+    if not isinstance(delivery_state, Mapping):
+        return False
+    if (
+        delivery_state.get("status") != "suppressed"
+        or delivery_state.get("reason") != "execution_claim_unavailable"
+        or delivery_state.get("terminal_state") not in {None, ""}
+    ):
+        return False
+    claimed_at = _parse_aware_datetime(delivery_state.get("claimed_at"))
+    if claimed_at is None:
+        return True
+    expires_at = _parse_aware_datetime(delivery_state.get("expires_at"))
+    return (expires_at is not None and expires_at <= now) or (
+        now - claimed_at >= HANDOFF_WORKER_ATTENTION_AFTER
+    )
 
 
 class GoalExecutionPlanner:
@@ -1691,6 +1747,18 @@ class GoalExecutionEngine:
                 and _active_delivery_claim_overrides_attention(delivery_state, now)
             ):
                 status = "queued"
+            if (
+                isinstance(status, str)
+                and status in self._HANDOFF_ATTENTION
+                and _suppressed_claim_unavailable_worker_unavailable(
+                    delivery_state,
+                    now,
+                )
+            ):
+                revised.append(replace(decision, reason="handoff_worker_unavailable"))
+                handoff_status_by_task[task_slug] = status
+                changed = True
+                continue
             handoff_status_by_task[task_slug] = status if isinstance(status, str) else None
             if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
                 revised.append(replace(decision, reason="handoff_needs_repair"))

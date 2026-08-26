@@ -1543,6 +1543,13 @@ class CanonicalHandoffEventBridge:
 
     def latest_task_handoff_delivery_state(self, task_slug: str) -> dict[str, Any] | None:
         status = self.dispatcher.store.latest_task_handoff_status(task_slug)
+        reason = None
+        latest_state = getattr(self.dispatcher.store, "latest_task_handoff_state", None)
+        if callable(latest_state):
+            state = latest_state(task_slug)
+            if isinstance(state, Mapping):
+                status = state.get("status") if isinstance(state.get("status"), str) else status
+                reason = state.get("reason")
         claim = self.dispatcher.store.get_execution_claim(
             task_slug,
             include_terminal=False,
@@ -1555,6 +1562,8 @@ class CanonicalHandoffEventBridge:
         if status is None and claim is None:
             return None
         state: dict[str, Any] = {"status": status}
+        if isinstance(reason, str):
+            state["reason"] = reason
         if claim is not None:
             state.update(
                 {
