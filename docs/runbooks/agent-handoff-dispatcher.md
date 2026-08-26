@@ -879,6 +879,14 @@ concrete template or recommended Codex owner, and must not be treated as a new
 dispatcher mutation path. Live readback now has two answerable questions plus
 one missing-owner assignment, so the next product slice is to expand the
 recommended plan beyond the first answerable question.
+V0.0.199 adds private-input handling for waiting questions that ask for
+credentials, tokens, API keys, passwords, secrets, or similar private values.
+Those `answer_question` actions are labeled `Private input required`, receive
+`private_input_required=true`, do not receive synthetic `answer_template`
+drafts, do not render inline answer/template controls, and are excluded from
+recommended unblock plans. Safe answer questions with concrete templates and a
+recommended Codex owner assignment still use the explicit reviewed plan; the
+dispatcher must never fabricate or prefill private credential answers.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

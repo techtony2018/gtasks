@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.198 at commit
-`3dfe196b0a0dd2688ca94561268c236fc7c86814`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.199 at commit
+`f7682905ea5dd5fdb104c558e1e74e9928101b9e`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -357,6 +357,13 @@ automatically and does not mutate GBrain unless Tony clicks it. Current live
 readback now has two `answer_question` actions plus `assign_goal_owner`, so
 the next product slice is expanding the recommended plan to cover all
 answerable questions.
+V0.0.199 detects private credential or token questions in Goal execution,
+labels them `Private input required`, suppresses synthetic answer templates
+and inline answer forms for those questions, and excludes them from
+recommended unblock plans. Safe answer questions with concrete templates and a
+recommended Codex owner assignment still use the explicit recommended plan;
+Mission Control never generates, prefills, or one-click submits private
+credential values.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -499,6 +506,11 @@ when one answerable question has a concrete `answer_template` and an
 `assign_goal_owner` action has a recommended Codex Agent. The plan is an
 explicit reviewed mutation shortcut, not automation: it uses the existing
 answer and default-goals endpoints in sequence only after Tony activates it.
+V0.0.199+ marks credential/token-like `answer_question` actions with
+`private_input_required=true`. Those actions display private-input guidance
+only, without `answer_template`, inline answer form, template insertion, or
+recommended-plan participation; Tony must open the Task and answer directly
+through the verified private-input path.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

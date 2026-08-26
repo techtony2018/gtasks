@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.198`
+- Last verified pushed release: `V0.0.199`
 - Release commits:
-  `3dfe196b0a0dd2688ca94561268c236fc7c86814`
+  `f7682905ea5dd5fdb104c558e1e74e9928101b9e`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -899,6 +899,31 @@ to the reviewed source before updating relationships.
 - Next slice note: current live `action_queue` now contains two
   `answer_question` actions plus one `assign_goal_owner`, so the next product
   slice is expanding the recommended plan to cover all answerable questions.
+- V0.0.199 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.199`; release commit
+  `f7682905ea5dd5fdb104c558e1e74e9928101b9e`; release evidence file
+  `docs/release-evidence/v0.0.199.md`; independent QA PASS at
+  `artifacts/qa/v0.0.199-independent/gate-report.md` with frozen aggregate
+  `5d03d498d2834bcc8706145ce71d3a1c4f976464234cd1b16cbd021326065f7c`.
+  Developer verification reported focused private/frontend coverage as `2` OK,
+  the combined focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `239` OK, and `python3 -m unittest discover -s tests` as `1395` OK with
+  `5` skipped.
+- Verified V0.0.199 behavior: Goal execution detects credential/token/private
+  input questions, labels them `Private input required`, sets
+  `private_input_required=true`, suppresses synthetic `answer_template`
+  content and inline answer/template controls, and excludes those questions
+  from recommended unblock plans. Postdeploy `/api/goal-execution` after
+  bounded warmup retained `last_run=true`, `last_error=null`,
+  `public_reason=actively_executing`, and an Action queue with one safe
+  `answer_question` with template, one private `answer_question` without
+  template and with `private_input_required=true`, and one
+  `assign_goal_owner`. Independent desktop 1440 and genuine mobile 390 QA
+  verified the private guidance copy, zero private TODO POST attempts, safe
+  recommended-plan answer plus Timmy assignment only, all-private and
+  OpenClaw-only plan suppression, no generated secret/token copy, no live
+  GBrain mutation, and clean console/network checks.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1089,3 +1114,8 @@ not automation. The button may sequence existing verified answer and
 assignment endpoints only after Tony clicks it, and the current implementation
 handles the first answerable question plus recommended owner assignment rather
 than every answerable question in the queue.
+V0.0.199 private-input handling is a hard safety boundary. Documentation must
+not describe credential/token/private questions as eligible for generated
+templates, inline synthetic answer forms, recommended unblock plans, or any
+prefilled secret value; Tony must open the Task and answer private prompts
+directly.
