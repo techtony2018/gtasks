@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.182",
+  "current_version": "V0.0.183",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1092,6 +1092,12 @@
       "date": "2026-08-25",
       "title": "Goal execution reader summary",
       "summary": "Add a compact Goal execution summary with attention counts and next action guidance for API/readback consumers."
+    },
+    {
+      "version": "V0.0.183",
+      "date": "2026-08-25",
+      "title": "Show Goal execution next action",
+      "summary": "Agents now surface the verified Goal execution summary in the Goal execution panel, including next action guidance and key attention counts so operators can see how to unblock progress without parsing API JSON."
     }
   ]
 }

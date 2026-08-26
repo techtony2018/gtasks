@@ -2484,9 +2484,33 @@ body.is-resizing-detail {
 
 .goal-execution-read-state,
 .goal-execution-copy,
-.goal-execution-empty {
+.goal-execution-empty,
+.goal-execution-reader-summary {
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.goal-execution-reader-summary {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  padding: 9px;
+  border: 1px solid rgba(119, 207, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(3, 16, 35, 0.46);
+}
+
+.goal-execution-reader-summary p {
+  margin: 0;
+}
+
+.goal-execution-next-action {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.goal-execution-metrics {
+  font-size: 0.88rem;
 }
 
 .goal-execution-list {

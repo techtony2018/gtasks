@@ -4272,6 +4272,36 @@ function renderAgentGoalExecution(agent) {
   return compact;
 }
 
+function goalExecutionSummaryPayload() {
+  const summary = state.goalExecution?.summary || state.goalExecution?.last_run?.summary;
+  return summary && typeof summary === "object" ? summary : null;
+}
+
+function pluralizeCount(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function renderGoalExecutionSummary() {
+  const summary = goalExecutionSummaryPayload();
+  if (!summary) return null;
+  const nextAction = String(summary.next_action || "").trim();
+  const metrics = [
+    pluralizeCount(Number(summary.total_goals) || 0, "total goal"),
+    pluralizeCount(Number(summary.needs_attention) || 0, "need attention", "need attention"),
+    pluralizeCount(Number(summary.waiting_for_tony) || 0, "waiting for Tony", "waiting for Tony"),
+    pluralizeCount(Number(summary.owner_missing) || 0, "missing owner"),
+    pluralizeCount(Number(summary.in_flight) || 0, "in flight", "in flight"),
+    pluralizeCount(Number(summary.recently_completed) || 0, "recently completed", "recently completed"),
+  ];
+  const panel = node("div", "goal-execution-reader-summary");
+  panel.setAttribute("aria-label", "Goal execution next action summary");
+  if (nextAction) {
+    panel.append(node("p", "goal-execution-next-action", `Next action: ${nextAction}`));
+  }
+  panel.append(node("p", "goal-execution-metrics", metrics.join(" · ")));
+  return panel;
+}
+
 function renderGoalExecutionSurface() {
   const section = node("section", "goal-execution-surface");
   section.id = "agent-goal-execution";
@@ -4284,6 +4314,7 @@ function renderGoalExecutionSurface() {
   status.setAttribute("aria-live", "polite");
   const list = node("ol", "goal-execution-list");
   list.id = "agent-goal-execution-list";
+  const summary = renderGoalExecutionSummary();
   const lastRun = state.goalExecution?.last_run;
   if (state.goalExecutionLoading && !state.goalExecution) {
     status.textContent = "Reading Goal execution…";
@@ -4310,7 +4341,9 @@ function renderGoalExecutionSurface() {
   if (!list.children.length) {
     list.append(node("li", "goal-execution-empty", "No bounded Goal-derived work is currently visible."));
   }
-  section.append(heading, status, list);
+  section.append(heading, status);
+  if (summary) section.append(summary);
+  section.append(list);
   return section;
 }
 

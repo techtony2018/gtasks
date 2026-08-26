@@ -162,6 +162,15 @@ state.projects = [];
 state.goalExecution = {
   mode: "canary",
   last_error: null,
+  summary: {
+    total_goals: 7,
+    needs_attention: 2,
+    waiting_for_tony: 1,
+    owner_missing: 1,
+    in_flight: 1,
+    recently_completed: 3,
+    next_action: "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
+  },
   last_run: {
     ran_at: "2026-08-23T12:00:00Z",
     public_reason: "activated",
@@ -170,6 +179,13 @@ state.goalExecution = {
     decisions: [{ goal_slug: goalSlug, reason: "auto_eligible", task_slug: taskSlug }],
   },
 };
+state.goalExecution.last_run.summary = state.goalExecution.summary;
+const goalExecutionSurfaceText = flattenText(renderGoalExecutionSurface());
+assert(goalExecutionSurfaceText.includes("Next action: Answer Tony questions and assign missing default_agent_for owners"), "Goal execution surface did not expose the summary next action");
+assert(goalExecutionSurfaceText.includes("7 total goals"), "Goal execution surface did not expose total Goal count");
+assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution surface did not expose attention count");
+assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
+assert(goalExecutionSurfaceText.includes("1 in flight"), "Goal execution surface did not expose in-flight count");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";
