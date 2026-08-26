@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.201`
+- Last verified pushed release: `V0.0.203`
 - Release commits:
-  `36ccddd1139f3651805aa311c91eb709d281be8a`
+  `f09d72bc566a1dc8e6d1966432df62b7539762c2`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -972,6 +972,35 @@ to the reviewed source before updating relationships.
   write; the explicit recommended plan still emitted only the safe Family
   answer POST followed by the Timmy owner POST on both widths, with zero
   private TODO POST attempts and no live GBrain mutation.
+- V0.0.202 evidence: release commit
+  `6f230ada3fccbabfe7ff3e66bbed3fa7d13005af`; release evidence file
+  `docs/release-evidence/v0.0.202.md`. V0.0.202 introduced grouped private
+  Goal blockers for duplicate same-Agent/same-question private credential
+  prompts. The grouped `answer_question` action carries `blocked_goal_count`
+  and `related_questions`, keeping repeated private prompts compact so owner
+  assignment controls remain visible. The grouping is display/readback
+  compression only; private rows remain excluded from answer forms, answer
+  templates, generated secrets, and recommended-plan writes.
+- V0.0.203 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.203`; release commit
+  `f09d72bc566a1dc8e6d1966432df62b7539762c2`; release evidence file
+  `docs/release-evidence/v0.0.203.md`; independent QA PASS at
+  `artifacts/qa/v0.0.203-independent/gate-report.md` with frozen aggregate
+  `928dac5b470458abf2a478bf82072ad3cea403403d72f97722c9f9c55507cc11`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1397` OK with `5` skipped.
+- Verified V0.0.203 behavior: Goal execution now groups live private blockers
+  by same Agent and same question even when each blocked Task has different
+  detail text, and removes the `.; assign` punctuation before owner
+  assignment. Postdeploy `/api/goal-execution` eventually read back
+  `public_reason=actively_executing`, one Tammy private action with
+  `blocked_goal_count=3`, owner action still present, `next_action` containing
+  `3 Tammy private-input blockers`, `dot_and_assign=false`, and
+  `semicolon_period_assign=false`. Independent desktop 1440 and genuine mobile
+  390 QA verified Agents and Inbox render exactly one private queue item, `3`
+  related private-input blockers, the safe Family answer, the Entrepreneurship
+  owner assignment with Codex-only Timmy/Toddy/Tammy controls, no OpenClaw
+  owner control, zero private POST attempts, and no live GBrain mutation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1175,3 +1204,8 @@ V0.0.201 grammar repairs are also display-only. Semicolon-separated
 next-action copy improves readability but does not change which actions are
 eligible for recommended plans, does not make private input autofillable, and
 does not create any mutation receipt.
+V0.0.202/V0.0.203 private-blocker grouping is display/readback compression
+only. Grouping repeated private credential prompts must not be documented as a
+credential answer, secret generation, plan eligibility change, ownership
+repair, or GBrain mutation; it simply keeps Agents and Inbox readable while
+preserving safe answer plus recommended-owner controls.

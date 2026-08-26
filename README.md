@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.201 at commit
-`36ccddd1139f3651805aa311c91eb709d281be8a`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.203 at commit
+`f09d72bc566a1dc8e6d1966432df62b7539762c2`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -379,6 +379,17 @@ semicolons. Agents and Inbox keep all three blockers visible without producing
 misleading `. and assign` or `?. and` copy; private input remains
 non-autofilled and excluded from plan writes, while the safe Family answer
 plus recommended Timmy owner plan behavior is preserved.
+V0.0.202 groups repeated private Goal blockers for the same Agent question so
+duplicate credential prompts do not crowd out owner-assignment controls in
+Agents or Inbox. The grouped item keeps `blocked_goal_count` and
+`related_questions` visible while preserving the hard boundary: no answer form,
+template, generated secret, or recommended-plan write for private input.
+V0.0.203 repairs the live grouping shape by grouping same-Agent/same-question
+private blockers even when detail text differs, and strips the remaining
+`.; assign` punctuation from next-action copy. Postdeploy readback for
+V0.0.203 showed one Tammy private action with `blocked_goal_count=3`, the
+owner action still present, and `next_action` naming
+`3 Tammy private-input blockers`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -536,6 +547,14 @@ V0.0.201+ formats that combined `summary.next_action` as separate clauses:
 ordinary answer guidance, private-input guidance, owner assignment guidance,
 then the continuing-work note. The copy must remain readable operator
 guidance, without `. and assign` sentence breaks or implied secret autofill.
+V0.0.202+ groups repeated private `answer_question` actions when they share
+the same Agent and question summary, exposing `blocked_goal_count` plus
+`related_questions` instead of rendering one noisy private row per blocked
+Goal. V0.0.203+ intentionally ignores differing detail text for that grouping
+key because the live Tammy credential blockers share the same question but
+carry task-specific detail payloads. Grouping is a display/readback
+compression only; it does not make private input answerable by template or
+eligible for recommended plans.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

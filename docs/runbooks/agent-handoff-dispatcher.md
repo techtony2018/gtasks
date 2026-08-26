@@ -901,6 +901,17 @@ grammar for this state. The grammar fix is display-only: private input remains
 non-autofilled and excluded from recommended-plan writes, while the safe
 answer plus recommended Timmy owner plan still uses the same explicit
 reviewed controls.
+V0.0.202 groups repeated private Goal blockers before rendering Action queue
+rows, so repeated private credential prompts for the same Agent question do
+not crowd owner-assignment controls out of Agents or Inbox. The grouped
+private action carries `blocked_goal_count` and `related_questions`; it
+remains no-form, no-template, no synthetic secret, and no recommended-plan
+write. V0.0.203 repairs the live shape by grouping on same Agent plus same
+question even when the task detail payload differs, and strips the remaining
+`.; assign` punctuation before owner-assignment next-action clauses. Live
+V0.0.203 readback showed one Tammy private action with
+`blocked_goal_count=3`, owner assignment still present, and no
+`. and assign`, `?. and`, or `.; assign` grammar.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
