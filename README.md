@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.204 at commit
-`6293a5bc77f20053f69513ea584be0f2bc771e43`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.206 at commit
+`ca0ad4665a9b69944bc975f2c0849a6c10062e6c`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -398,6 +398,16 @@ assignment visible, and `summary.next_action` can now say:
 `Answer ...; repair Tammy Artifact publisher identity for 3 blocked Goals; assign Entrepreneurship...`.
 Recommended plans remain limited to the safe answer plus recommended Timmy
 owner assignment; there is no system/private auto-write.
+V0.0.205/V0.0.206 complete the terminal handoff status repair path for the
+Tammy Artifact publisher blocker tasks. Completed Agent handoff tasks with
+stale `ready_for_agent` handoff frontmatter now reconcile after terminal
+status and exact `produced_for` Artifact evidence, and the status endpoint
+tolerates an invalid pre-mutation snapshot so a PATCH to completed/status can
+repair canonical state and wake Goal execution instead of failing before the
+repair. Post-repair readback restored and completed the Faith, Finance, and
+Career Tammy Artifact publisher blocker tasks with one expected Artifact each.
+Goal execution returned to three recently completed, one waiting-for-Tony
+question, and one missing owner; Timmy and Toddy remain non-local.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded

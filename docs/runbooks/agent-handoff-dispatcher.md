@@ -923,6 +923,16 @@ excluded from recommended-plan writes. The safe business question and
 missing-owner assignment remain visible, and the recommended unblock plan
 still writes only the safe TODO answer followed by recommended Timmy owner
 assignment.
+V0.0.205/V0.0.206 reconcile terminal handoff status repairs for completed
+Agent handoff tasks that still have stale `ready_for_agent` handoff
+frontmatter. The status repair path may PATCH completed/status through the
+canonical endpoint even when the pre-mutation task snapshot is invalid, then
+wake Goal execution after the canonical repair. This is not a broad bypass:
+completion still depends on terminal handoff repair plus exact
+`produced_for` Artifact readback. The restored Tammy Artifact publisher
+blocker tasks for Faith, Finance, and Career read back completed with no
+handoff or blockers and exactly one Artifact each; Timmy and Toddy remain
+non-local workers.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.204`
+- Last verified pushed release: `V0.0.206`
 - Release commits:
-  `6293a5bc77f20053f69513ea584be0f2bc771e43`
+  `ca0ad4665a9b69944bc975f2c0849a6c10062e6c`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1027,6 +1027,40 @@ to the reviewed source before updating relationships.
   assignment still visible, recommended plan writes limited to safe TODO answer
   then Timmy owner assignment, zero system/private POST attempts, and no live
   GBrain mutation.
+- V0.0.205 evidence: release commit
+  `ca0ad4665a9b69944bc975f2c0849a6c10062e6c`; release evidence file
+  `docs/release-evidence/v0.0.205.md`. V0.0.205 introduced terminal handoff
+  reconciliation for completed Agent handoff tasks whose canonical task
+  frontmatter still contained stale `ready_for_agent` handoff data after
+  Artifact publication. The repair is narrowly scoped to terminal status plus
+  exact `produced_for` Artifact evidence; it does not complete arbitrary
+  Agent tasks or make Timmy/Toddy local.
+- V0.0.206 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.206`; release commit
+  `ca0ad4665a9b69944bc975f2c0849a6c10062e6c`; release evidence file
+  `docs/release-evidence/v0.0.206.md`; independent QA PASS at
+  `artifacts/qa/v0.0.206-independent/gate-report.md` with frozen aggregate
+  `dc4944218df13af339cbf51775a903013b0ca25cc7120d43905a1e116d952f19`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1398` OK with `5` skipped.
+- Verified V0.0.206 behavior: the status endpoint now tolerates an invalid
+  pre-mutation task snapshot so PATCH completed/status repairs can proceed
+  and wake Goal execution without blocking canonical repair. Independent QA
+  verified Faith task `tasks/3da38b72-4636-5056-b171-568e9ce7c538`, Finance
+  task `tasks/a58adfb6-3400-56e9-992c-4e65ae87f66f`, and Career task
+  `tasks/c0ab18d6-dc1a-58da-911e-1bec46d7f21a` all completed with no handoff,
+  no blockers, and exactly one `produced_for` Artifact each:
+  `artifacts/767e630a-58d4-4fbe-9b2f-eb3286be6ca5`,
+  `artifacts/70b62868-b612-4c60-80a4-332ab5085309`, and
+  `artifacts/6081e00f-4c84-4057-93d8-dc59116f2f69`. Goal execution readback
+  showed `recently_completed=3`, `waiting_for_tony=1`, `owner_missing=1`, and
+  Action queue kinds only `answer_question` and `assign_goal_owner`; no
+  Artifact publisher identity repair action remained. Desktop 1440 and genuine
+  mobile 390 QA opened all three exact task links with HTTP 200, completed
+  status, one expected Artifact, title H2 focus, no handoff/blocker panel, and
+  exact-origin close restoration. Fresh browser smoke recorded zero
+  console warnings/errors, failed/HTTP >=400 requests, live non-GET requests,
+  or GBrain mutations.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1239,3 +1273,9 @@ V0.0.204 Artifact publisher identity repairs are system-owned operational
 repair items, not Tony private-input questions. Documentation must not
 describe them as private-answer prompts, template-fill candidates,
 recommended-plan writes, submitted credentials, or GBrain mutation receipts.
+V0.0.205/V0.0.206 terminal handoff status repair is also narrow. It allows the
+canonical completed/status repair to get past stale `ready_for_agent`
+frontmatter only when terminal handoff and exact Artifact evidence support the
+completed task. It must not be documented as permission to bypass handoff
+evidence, ignore missing Artifacts, mutate GBrain outside the verified status
+repair endpoint, or treat Timmy/Toddy as local workers.
