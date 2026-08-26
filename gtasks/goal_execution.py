@@ -704,6 +704,23 @@ def _stale_unclaimed_handoff(delivery_state: object, now: datetime) -> bool:
     return now - claimed_at >= HANDOFF_WORKER_ATTENTION_AFTER
 
 
+def _active_delivery_claim_overrides_attention(
+    delivery_state: object,
+    now: datetime,
+) -> bool:
+    if not isinstance(delivery_state, Mapping):
+        return False
+    if delivery_state.get("terminal_state") not in {None, ""}:
+        return False
+    claimed_at = _parse_aware_datetime(delivery_state.get("claimed_at"))
+    if claimed_at is None:
+        return False
+    expires_at = _parse_aware_datetime(delivery_state.get("expires_at"))
+    if expires_at is not None and expires_at <= now:
+        return False
+    return now - claimed_at < HANDOFF_WORKER_ATTENTION_AFTER
+
+
 class GoalExecutionPlanner:
     """Classify one bounded review candidate per available Codex Agent."""
 
@@ -1606,6 +1623,17 @@ class GoalExecutionEngine:
             status = latest_status(task_slug)
             if isinstance(status, Mapping):
                 status = status.get("status")
+            delivery_state = (
+                latest_delivery_state(task_slug)
+                if callable(latest_delivery_state)
+                else None
+            )
+            if (
+                isinstance(status, str)
+                and status in self._HANDOFF_ATTENTION
+                and _active_delivery_claim_overrides_attention(delivery_state, now)
+            ):
+                status = "queued"
             handoff_status_by_task[task_slug] = status if isinstance(status, str) else None
             if isinstance(status, str) and status in self._HANDOFF_ATTENTION:
                 revised.append(replace(decision, reason="handoff_needs_repair"))
@@ -1613,8 +1641,7 @@ class GoalExecutionEngine:
                 continue
             if (
                 status in {"queued", "retrying"}
-                and callable(latest_delivery_state)
-                and _stale_unclaimed_handoff(latest_delivery_state(task_slug), now)
+                and _stale_unclaimed_handoff(delivery_state, now)
             ):
                 revised.append(replace(decision, reason="handoff_worker_unavailable"))
                 changed = True

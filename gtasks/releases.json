@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.211",
+  "current_version": "V0.0.212",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1266,6 +1266,12 @@
       "date": "2026-08-26",
       "title": "Use verified owner candidates in Goal unblock plans",
       "summary": "Recommended Goal execution unblock plans now use the verified Codex owner candidate carried by the action queue when Agent hydration is sparse, preserving the owner-assignment step while still excluding OpenClaw owners."
+    },
+    {
+      "version": "V0.0.212",
+      "date": "2026-08-26",
+      "title": "Respect active handoff claims in Goal status",
+      "summary": "Goal execution now treats an active non-terminal Agent execution claim as in-flight even when a later suppressed handoff row exists, avoiding false handoff repair attention while the remote Agent still has the lease."
     }
   ]
 }

@@ -1802,6 +1802,31 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(bridge.recovery_calls[0][0], str(first.task_slug))
         self.assertEqual([name for name, _value in adapter.calls].count("status"), 1)
 
+    def test_existing_suppressed_handoff_with_active_claim_remains_delivering(self) -> None:
+        adapter = self.Adapter()
+        bridge = self.Bridge()
+        first = self.engine(adapter, bridge).run_once(NOW)
+        bridge.latest_status = "suppressed"
+        bridge.latest_delivery_state = {
+            "status": "suppressed",
+            "executor_agent": AGENT,
+            "permanent_owner": AGENT,
+            "claimed_at": NOW.isoformat(),
+            "expires_at": (NOW + timedelta(minutes=30)).isoformat(),
+            "terminal_state": None,
+        }
+
+        second = self.engine(adapter, bridge).run_once(NOW + timedelta(minutes=1))
+
+        self.assertEqual(first.task_slug, second.task_slug)
+        self.assertEqual(second.public_reason, "delivering")
+        self.assertEqual(second.handoff_status, "queued")
+        self.assertEqual(
+            second.to_dict()["decisions"][0]["reason"],
+            "duplicate",
+        )
+        self.assertEqual(len(bridge.recovery_calls), 0)
+
     def test_existing_active_goal_task_without_handoff_reports_missing_handoff(self) -> None:
         first_plan = GoalExecutionPlanner().plan(snapshot(projects=(project(),)))
         candidate = first_plan.decisions[0].candidate
