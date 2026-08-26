@@ -408,6 +408,14 @@ repair. Post-repair readback restored and completed the Faith, Finance, and
 Career Tammy Artifact publisher blocker tasks with one expected Artifact each.
 Goal execution returned to three recently completed, one waiting-for-Tony
 question, and one missing owner; Timmy and Toddy remain non-local.
+Goal execution overhaul is paused after V0.0.206. The canonical pause handoff
+is `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`: it records
+the verified V0.0.206 baseline, the intentionally uncommitted/unshipped
+V0.0.207 stash boundary
+`stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`,
+and the resume order. Do not apply that stash, continue implementation,
+mutate GBrain, or treat the V0.0.207 tests as release evidence unless Tony
+explicitly resumes the Goal.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -580,6 +588,12 @@ V0.0.204+ classifies Artifact publisher identity mismatches as system-owned
 recommended-plan writes. They identify dashboard Artifact publisher credential
 or identity repair work, not a request for Tony to paste secrets into an Agent
 question.
+Paused V0.0.207 WIP is not part of the deployed contract. If Tony resumes it,
+start from the handoff resume order: refresh git/runtime/Goal execution/Agents
+/Agent Work readbacks, confirm the committed version, apply the stash in a
+clean branch or worktree, add the RED scheduler-selection-ordering test, then
+implement, version, deploy, and get independent desktop/mobile QA before
+commit.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

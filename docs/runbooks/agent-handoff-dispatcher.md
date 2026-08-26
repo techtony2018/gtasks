@@ -933,6 +933,14 @@ completion still depends on terminal handoff repair plus exact
 blocker tasks for Faith, Finance, and Career read back completed with no
 handoff or blockers and exactly one Artifact each; Timmy and Toddy remain
 non-local workers.
+After V0.0.206, the broader Goal execution overhaul is paused by Tony. The
+resume handoff is `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`.
+Treat V0.0.206 as the verified deployed baseline and V0.0.207 as an
+uncommitted, unshipped stash boundary only:
+`stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`.
+Do not apply the stash, resume scheduler-ordering work, or mutate GBrain from
+automation; resume only after fresh Tony authorization and then follow the
+handoff's readback-first resume order.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

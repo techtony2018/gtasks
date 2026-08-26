@@ -1061,6 +1061,22 @@ to the reviewed source before updating relationships.
   exact-origin close restoration. Fresh browser smoke recorded zero
   console warnings/errors, failed/HTTP >=400 requests, live non-GET requests,
   or GBrain mutations.
+- Paused Goal execution overhaul handoff: commit
+  `079afe72e7b9e1b82fdf298f1135bc208184fdc0` added
+  `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`. The handoff
+  records V0.0.206 as the last verified deployed baseline and explicitly
+  marks the V0.0.207 attempt as uncommitted/unshipped WIP saved at
+  `stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`.
+  Resume order is readback-first: refresh git status, `/api/health`,
+  `/api/goal-execution?refresh=1`, `/api/agents?refresh=1`, and
+  `/api/agent-work?refresh=1`; confirm the committed version; apply the stash
+  only in a clean branch or worktree after Tony resumes; add the RED scheduler
+  selection-ordering test; then implement, test, version, restart
+  dashboard-managed Mission Control, obtain independent desktop/mobile QA,
+  commit, push, deploy, and notify Documentation Manager. The handoff also
+  preserves the worker boundary: local workers remain `agents/tammy` and
+  `agents/tammy-oc`; Timmy and Toddy remain non-local unless Tony explicitly
+  changes host placement.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1279,3 +1295,6 @@ frontmatter only when terminal handoff and exact Artifact evidence support the
 completed task. It must not be documented as permission to bypass handoff
 evidence, ignore missing Artifacts, mutate GBrain outside the verified status
 repair endpoint, or treat Timmy/Toddy as local workers.
+The V0.0.207 suppressed-handoff WIP is paused and not a release. Documentation
+must not describe it as deployed behavior, apply its stash from automation,
+or continue the overhaul without explicit Tony authorization.
