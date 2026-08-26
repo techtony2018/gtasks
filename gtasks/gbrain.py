@@ -7498,6 +7498,17 @@ class GBrainAdapter:
             task = self.get_task(slug)
             if task.owner_agent != owner or task.lifecycle_root not in codex_roots:
                 raise CanonicalRootError((str(owner),))
+            if (
+                task.status not in {"completed", "cancelled"}
+                and task.handoff is not None
+                and task.handoff.state == "waiting_for_input"
+                and isinstance(task.handoff.question_todo, str)
+                and task.handoff.question_todo
+            ):
+                todo_read = self._list_task_todos_for_task(task, limit=100)
+                if todo_read.issues:
+                    raise CanonicalRootError((task.slug,))
+                task = replace(task, todos=todo_read.todos)
             tasks_by_slug.setdefault(task.slug, task)
         return GoalExecutionSnapshot(
             goals=tuple(goals.goals),

@@ -2509,6 +2509,10 @@ body.is-resizing-detail {
   font-weight: 700;
 }
 
+.goal-execution-blocking-question {
+  color: #ffd89a;
+}
+
 .goal-execution-metrics {
   font-size: 0.88rem;
 }

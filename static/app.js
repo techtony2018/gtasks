@@ -4285,6 +4285,9 @@ function renderGoalExecutionSummary() {
   const summary = goalExecutionSummaryPayload();
   if (!summary) return null;
   const nextAction = String(summary.next_action || "").trim();
+  const blockingQuestions = Array.isArray(summary.blocking_questions)
+    ? summary.blocking_questions
+    : [];
   const metrics = [
     pluralizeCount(Number(summary.total_goals) || 0, "total goal"),
     pluralizeCount(Number(summary.needs_attention) || 0, "need attention", "need attention"),
@@ -4299,6 +4302,11 @@ function renderGoalExecutionSummary() {
     panel.append(node("p", "goal-execution-next-action", `Next action: ${nextAction}`));
   }
   panel.append(node("p", "goal-execution-metrics", metrics.join(" · ")));
+  blockingQuestions.slice(0, 2).forEach((item) => {
+    const question = String(item?.question || "").trim();
+    if (!question) return;
+    panel.append(node("p", "goal-execution-blocking-question", `Question: ${question}`));
+  });
   return panel;
 }
 

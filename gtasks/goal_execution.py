@@ -120,6 +120,8 @@ _GOAL_WORK_IN_FLIGHT_REASONS = frozenset(
 def _goal_execution_summary(
     decisions: tuple[GoalExecutionDecision, ...],
     public_reason: str,
+    *,
+    blocking_questions: tuple[Mapping[str, object], ...] = (),
 ) -> dict[str, object]:
     counts: dict[str, int] = {}
     for decision in decisions:
@@ -170,8 +172,40 @@ def _goal_execution_summary(
         "in_flight": in_flight,
         "recently_completed": counts.get("recently_completed", 0),
         "reasons": counts,
+        "blocking_questions": [dict(question) for question in blocking_questions],
         "next_action": next_action,
     }
+
+
+def _goal_execution_blocking_questions(
+    plan: GoalExecutionPlan,
+    snapshot: GoalExecutionSnapshot,
+) -> tuple[Mapping[str, object], ...]:
+    tasks_by_slug = {task.slug: task for task in snapshot.tasks}
+    questions: list[dict[str, object]] = []
+    for decision in plan.decisions:
+        if decision.reason != "waiting_for_tony" or decision.existing_task_slug is None:
+            continue
+        task = tasks_by_slug.get(decision.existing_task_slug)
+        if task is None or task.handoff is None:
+            continue
+        question_todo = task.handoff.question_todo
+        if not isinstance(question_todo, str) or not question_todo:
+            continue
+        todo = next((item for item in task.todos if item.slug == question_todo), None)
+        if todo is None or todo.status != "not_done" or todo.kind != "question":
+            continue
+        questions.append(
+            {
+                "goal_slug": decision.goal_slug,
+                "task_slug": task.slug,
+                "todo_slug": todo.slug,
+                "agent_slug": task.owner_agent,
+                "question": todo.text,
+                "detail": todo.detail,
+            }
+        )
+    return tuple(questions)
 
 
 def derived_task_slug(fingerprint: str) -> str:
@@ -542,6 +576,7 @@ class GoalExecutionRun:
     agent_slug: str | None = None
     handoff_id: str | None = None
     handoff_status: str | None = None
+    blocking_questions: tuple[Mapping[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         public_decisions = []
@@ -562,7 +597,11 @@ class GoalExecutionRun:
             "planner_version": self.planner_version,
             "decisions": public_decisions,
             "public_reason": self.public_reason,
-            "summary": _goal_execution_summary(self.decisions, self.public_reason),
+            "summary": _goal_execution_summary(
+                self.decisions,
+                self.public_reason,
+                blocking_questions=self.blocking_questions,
+            ),
             "task": (
                 {
                     "slug": self.task_slug,
@@ -588,6 +627,7 @@ class GoalExecutionRun:
         mode: str,
         ran_at: datetime,
         goal_slug: str | None = None,
+        blocking_questions: tuple[Mapping[str, object], ...] = (),
     ) -> "GoalExecutionRun":
         selected = next(
             (
@@ -612,6 +652,7 @@ class GoalExecutionRun:
             decisions=plan.decisions,
             public_reason=reason,
             task_slug=selected.existing_task_slug if selected else None,
+            blocking_questions=blocking_questions,
         )
 
     @classmethod
@@ -624,6 +665,7 @@ class GoalExecutionRun:
         task: Task,
         public_reason: str,
         handoff: object | None = None,
+        blocking_questions: tuple[Mapping[str, object], ...] = (),
     ) -> "GoalExecutionRun":
         return cls(
             mode=mode,
@@ -645,6 +687,7 @@ class GoalExecutionRun:
                 if handoff is not None and getattr(handoff, "status", None)
                 else None
             ),
+            blocking_questions=blocking_questions,
         )
 
 
@@ -728,6 +771,7 @@ class GoalExecutionEngine:
             snapshot,
             now=now,
         )
+        blocking_questions = _goal_execution_blocking_questions(plan, snapshot)
         if self.mode != "canary":
             return self._run_from_plan(
                 plan,
@@ -736,6 +780,7 @@ class GoalExecutionEngine:
                 ran_at=now,
                 goal_slug=self.canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
+                blocking_questions=blocking_questions,
             )
         canary_goal_slug = (
             self._auto_canary_goal_slug(
@@ -783,6 +828,7 @@ class GoalExecutionEngine:
                 ran_at=now,
                 goal_slug=canary_goal_slug,
                 handoff_status_by_task=handoff_status_by_task,
+                blocking_questions=blocking_questions,
             )
         try:
             planned = self.adapter.create_or_adopt_derived_agent_task(
@@ -798,6 +844,7 @@ class GoalExecutionEngine:
                 public_reason="system_repair_required",
                 task_slug=derived_task_slug(eligible.candidate.fingerprint),
                 agent_slug=eligible.candidate.agent_slug,
+                blocking_questions=blocking_questions,
             )
         if planned.status != "planned":
             return GoalExecutionRun.for_task(
@@ -806,6 +853,7 @@ class GoalExecutionEngine:
                 ran_at=now,
                 task=planned,
                 public_reason="adopted",
+                blocking_questions=blocking_questions,
             )
         try:
             activated = self.adapter.set_task_status(planned.slug, "active", now)
@@ -816,6 +864,7 @@ class GoalExecutionEngine:
                 ran_at=now,
                 task=planned,
                 public_reason="system_repair_required",
+                blocking_questions=blocking_questions,
             )
         if activated.verified is not True or activated.task.status != "active":
             return GoalExecutionRun.for_task(
@@ -824,6 +873,7 @@ class GoalExecutionEngine:
                 ran_at=now,
                 task=activated.task,
                 public_reason="system_repair_required",
+                blocking_questions=blocking_questions,
             )
         handoff = self.bridge.after_verified_mutation(
             planned.to_dict(),
@@ -847,6 +897,7 @@ class GoalExecutionEngine:
             task=activated.task,
             public_reason=reason,
             handoff=handoff,
+            blocking_questions=blocking_questions,
         )
 
     def _auto_canary_goal_slug(
@@ -1227,6 +1278,7 @@ class GoalExecutionEngine:
         ran_at: datetime,
         goal_slug: str | None,
         handoff_status_by_task: Mapping[str, str | None],
+        blocking_questions: tuple[Mapping[str, object], ...] = (),
     ) -> GoalExecutionRun:
         selected = next(
             (
@@ -1271,6 +1323,7 @@ class GoalExecutionEngine:
                     task=task,
                     public_reason=selected.reason,
                     handoff=handoff,
+                    blocking_questions=blocking_questions,
                 )
         if (
             selected is not None
@@ -1308,6 +1361,7 @@ class GoalExecutionEngine:
                     task=task,
                     public_reason="handoff_missing",
                     handoff=SimpleNamespace(status="missing"),
+                    blocking_questions=blocking_questions,
                 )
         if (
             goal_slug is not None
@@ -1343,12 +1397,14 @@ class GoalExecutionEngine:
                     task=task,
                     public_reason=public_reason,
                     handoff=handoff,
+                    blocking_questions=blocking_questions,
                 )
         return GoalExecutionRun.from_plan(
             plan,
             mode=mode,
             ran_at=ran_at,
             goal_slug=goal_slug,
+            blocking_questions=blocking_questions,
         )
 
 

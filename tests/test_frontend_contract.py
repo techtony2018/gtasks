@@ -169,6 +169,14 @@ state.goalExecution = {
     owner_missing: 1,
     in_flight: 1,
     recently_completed: 3,
+    blocking_questions: [{
+      goal_slug: goalSlug,
+      task_slug: taskSlug,
+      todo_slug: "todos/question",
+      agent_slug: "agents/timmy",
+      question: "Which family-care scope should Toddy use next?",
+      detail: "Choose the scope and first bounded action.",
+    }],
     next_action: "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
   },
   last_run: {
@@ -186,6 +194,7 @@ assert(goalExecutionSurfaceText.includes("7 total goals"), "Goal execution surfa
 assert(goalExecutionSurfaceText.includes("2 need attention"), "Goal execution surface did not expose attention count");
 assert(goalExecutionSurfaceText.includes("1 waiting for Tony"), "Goal execution surface did not expose waiting count");
 assert(goalExecutionSurfaceText.includes("1 in flight"), "Goal execution surface did not expose in-flight count");
+assert(goalExecutionSurfaceText.includes("Question: Which family-care scope should Toddy use next?"), "Goal execution surface did not expose the exact blocking question");
 const decision = state.goalExecution.last_run.decisions[0];
 assert(goalExecutionState(decision) === "Delivering", "queued handoff was not Delivering");
 state.goalExecution.last_run.handoff.status = "retrying";

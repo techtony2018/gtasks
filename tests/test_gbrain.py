@@ -30,6 +30,7 @@ from gtasks.domain import (
     SYSTEM_TICKETS_ROOT,
     SystemTicket,
     Task,
+    TodoItem,
     ProgressMetric,
     new_agent_artifact,
     new_goal,
@@ -74,6 +75,7 @@ from gtasks.goal_execution import (
     GoalExecutionSnapshot,
     derived_task_slug,
 )
+from gtasks.handoff import TaskHandoff
 from gtasks.delegation import AgentDelegationLease, DelegationState
 
 
@@ -1133,6 +1135,64 @@ class GoalExecutionAdapterTests(unittest.TestCase):
             ["agents/tammy", self.AGENT, "agents/toddy"],
         )
         self.assertEqual(snapshot.tasks, (open_task,))
+
+    def test_snapshot_hydrates_waiting_question_todo_for_goal_execution_summary(self) -> None:
+        adapter = GBrainAdapter(self._runner())
+        waiting = replace(
+            new_task(
+                title="Prepare family-care goal map",
+                detail="Bounded read-only work.",
+                now=self.NOW,
+                identity="waiting-question-goal-work",
+            ),
+            status="blocked",
+            lifecycle_root=self.WORK_ROOT,
+            owner_agent=self.AGENT,
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                waiting_on="people/tony-guan",
+                question_todo="todos/question",
+                resume_owner=self.AGENT,
+                resume_action="Use Tony's answer.",
+                requested_at=self.NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+        )
+        question = TodoItem(
+            slug="todos/question",
+            parent_task=waiting.slug,
+            text="Which family-care scope should Toddy use next?",
+            detail="Choose the scope and first bounded action.",
+            status="not_done",
+            kind="question",
+            created_at=self.NOW,
+            updated_at=self.NOW,
+            creator=self.AGENT,
+            source="agent",
+        )
+        adapter.list_goals = lambda: GoalRead((self._goal(),), ())
+        adapter.list_projects = lambda: ProjectRead((self._project(),), ())
+        adapter.list_agent_profiles = lambda: AgentRead(
+            (
+                self._agent(slug="agents/tammy"),
+                self._agent(),
+                self._agent(slug="agents/toddy"),
+            ),
+            (),
+        )
+        adapter.list_agent_work = lambda **_kwargs: AgentWorkRead(
+            (waiting.to_dict(),), (), (self.WORK_ROOT,)
+        )
+        adapter.get_task = lambda slug: waiting if slug == waiting.slug else None
+        adapter._list_task_todos_for_task = lambda task, **_kwargs: gbrain_module.TodoRead(
+            (question,), ()
+        )
+
+        snapshot = adapter.read_goal_execution_snapshot({self.AGENT: True})
+
+        self.assertEqual(snapshot.tasks[0].todos, (question,))
 
     def test_snapshot_fails_closed_when_goals_root_is_missing(self) -> None:
         runner = self._runner()

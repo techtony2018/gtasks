@@ -10,6 +10,7 @@ from gtasks.domain import (
     Goal,
     GoalDerivationReceipt,
     Project,
+    TodoItem,
     new_task,
 )
 from gtasks.goal_execution import (
@@ -548,6 +549,43 @@ class GoalExecutionEngineTests(unittest.TestCase):
         )
 
     def test_run_summary_counts_actionable_goal_states_for_readers(self) -> None:
+        active_task = replace(
+            agent_task(slug_identity="active", goal_slug=GOAL, status="active"),
+            next_action="Publish the bounded Goal progress brief.",
+        )
+        waiting_base = agent_task(
+            slug_identity="waiting",
+            goal_slug=OTHER_GOAL,
+            status="blocked",
+        )
+        waiting_task = replace(
+            waiting_base,
+            handoff=TaskHandoff(
+                state="waiting_for_input",
+                waiting_on="people/tony-guan",
+                question_todo="todos/question",
+                resume_owner=AGENT,
+                resume_action="Use Tony's answer.",
+                requested_at=NOW,
+                answered_at=None,
+                acknowledged_at=None,
+                round=1,
+            ),
+            todos=(
+                TodoItem(
+                    slug="todos/question",
+                    parent_task=waiting_base.slug,
+                    text="Which family-care scope should Toddy use next?",
+                    detail="Choose the scope and first bounded action.",
+                    status="not_done",
+                    kind="question",
+                    created_at=NOW,
+                    updated_at=NOW,
+                    creator=AGENT,
+                    source="agent",
+                ),
+            ),
+        )
         run = GoalExecutionEngine(
             adapter=self.Adapter(
                 snapshot_value=snapshot(
@@ -561,28 +599,8 @@ class GoalExecutionEngineTests(unittest.TestCase):
                     ),
                     agents=(agent(goals=(GOAL, OTHER_GOAL)),),
                     tasks=(
-                        replace(
-                            agent_task(slug_identity="active", goal_slug=GOAL, status="active"),
-                            next_action="Publish the bounded Goal progress brief.",
-                        ),
-                        replace(
-                            agent_task(
-                                slug_identity="waiting",
-                                goal_slug=OTHER_GOAL,
-                                status="blocked",
-                            ),
-                            handoff=TaskHandoff(
-                                state="waiting_for_input",
-                                waiting_on="people/tony-guan",
-                                question_todo="todos/question",
-                                resume_owner=AGENT,
-                                resume_action="Use Tony's answer.",
-                                requested_at=NOW,
-                                answered_at=None,
-                                acknowledged_at=None,
-                                round=1,
-                            ),
-                        ),
+                        active_task,
+                        waiting_task,
                     ),
                     route_health={AGENT: True},
                 )
@@ -598,6 +616,19 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(rendered["summary"]["needs_attention"], 2)
         self.assertEqual(rendered["summary"]["waiting_for_tony"], 1)
         self.assertEqual(rendered["summary"]["owner_missing"], 1)
+        self.assertEqual(
+            rendered["summary"]["blocking_questions"],
+            [
+                {
+                    "goal_slug": OTHER_GOAL,
+                    "task_slug": waiting_task.slug,
+                    "todo_slug": "todos/question",
+                    "agent_slug": AGENT,
+                    "question": "Which family-care scope should Toddy use next?",
+                    "detail": "Choose the scope and first bounded action.",
+                }
+            ],
+        )
         self.assertEqual(
             rendered["summary"]["next_action"],
             "Answer Tony questions and assign missing default_agent_for owners; executing or delivered Agent work can continue.",
