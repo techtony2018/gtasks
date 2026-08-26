@@ -268,6 +268,14 @@ const ownerAssignButtons = walkElements(goalExecutionSurface, (element) =>
 assert(ownerAssignButtons.length === 2, "summary missing owner did not expose Codex-only assignment buttons");
 assert(ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "summary missing owner omitted Tammy assignment");
 assert(!ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "summary missing owner exposed OpenClaw assignment");
+const actionQueueOwnerAssignButtons = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-action-owner-assign"));
+assert(actionQueueOwnerAssignButtons.length === 2, "action queue owner assignment did not expose Codex-only assignment buttons");
+assert(actionQueueOwnerAssignButtons.every((button) =>
+  button.dataset?.slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435"),
+  "action queue owner assignment buttons did not preserve the exact Goal slug");
+assert(actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "action queue owner assignment omitted Tammy assignment");
+assert(!actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "action queue owner assignment exposed OpenClaw assignment");
 const originalFetch = globalThis.fetch;
 const originalLoadAgents = loadAgents;
 const originalLoadGoalExecution = loadGoalExecution;

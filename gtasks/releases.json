@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.190",
+  "current_version": "V0.0.191",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1140,6 +1140,12 @@
       "date": "2026-08-25",
       "title": "Answer Goal questions inline",
       "summary": "Goal execution action queue entries for waiting Agent questions now carry the verified TODO readback version and render an inline answer form that submits through the existing canonical answer-and-handoff endpoint, so Tony can unblock Agents directly from the Agents summary."
+    },
+    {
+      "version": "V0.0.191",
+      "date": "2026-08-25",
+      "title": "Assign Goal owners from action queue",
+      "summary": "Goal execution action queue entries for missing default_agent_for owners now expose the same Codex-only Assign controls inline with the primary Tony action, so owner-missing Goals can be unblocked directly from the queue while preserving explicit verified GBrain assignment."
     }
   ]
 }

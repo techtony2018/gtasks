@@ -3503,6 +3503,32 @@ async function assignGoalOwnerFromSummary(goalSlug, agentSlug) {
   showToast(`Default Goal owner verified: ${agent.name}.`);
 }
 
+function goalOwnerAssignmentCandidates(goalSlug) {
+  return state.agents.filter((agent) =>
+    agent.runtime !== "openclaw" &&
+    Array.isArray(agent.default_goal_slugs) &&
+    !agent.default_goal_slugs.includes(goalSlug));
+}
+
+function appendGoalOwnerAssignmentButtons(parent, goalSlug, className) {
+  goalOwnerAssignmentCandidates(goalSlug).forEach((agent) => {
+    const assign = node("button", className, `Assign to ${agent.name}`);
+    assign.type = "button";
+    assign.dataset.slug = goalSlug;
+    assign.dataset.agentSlug = agent.slug;
+    assign.addEventListener("click", async () => {
+      assign.disabled = true;
+      try {
+        await assignGoalOwnerFromSummary(goalSlug, agent.slug);
+      } catch (error) {
+        showToast(error.message || "Goal owner assignment failed.");
+        assign.disabled = false;
+      }
+    });
+    parent.append(document.createTextNode(" "), assign);
+  });
+}
+
 function clearAgentAvatarPreview() {
   if (state.avatarPreviewUrl) URL.revokeObjectURL(state.avatarPreviewUrl);
   state.avatarPreviewUrl = null;
@@ -4426,6 +4452,13 @@ function renderGoalExecutionActionQueue(summary) {
       });
       item.append(form);
     }
+    if (action?.kind === "assign_goal_owner" && action?.goal_slug) {
+      appendGoalOwnerAssignmentButtons(
+        item,
+        String(action.goal_slug),
+        "goal-execution-action-owner-assign",
+      );
+    }
     list.append(item);
   });
   wrapper.append(list);
@@ -4492,26 +4525,7 @@ function renderGoalExecutionSummary() {
       row.append(document.createTextNode(title));
     }
     row.append(document.createTextNode(` — add ${relationship}`));
-    const candidates = state.agents.filter((agent) =>
-      agent.runtime !== "openclaw" &&
-      Array.isArray(agent.default_goal_slugs) &&
-      !agent.default_goal_slugs.includes(goalSlug));
-    candidates.forEach((agent) => {
-      const assign = node("button", "goal-execution-owner-assign", `Assign to ${agent.name}`);
-      assign.type = "button";
-      assign.dataset.slug = goalSlug;
-      assign.dataset.agentSlug = agent.slug;
-      assign.addEventListener("click", async () => {
-        assign.disabled = true;
-        try {
-          await assignGoalOwnerFromSummary(goalSlug, agent.slug);
-        } catch (error) {
-          showToast(error.message || "Goal owner assignment failed.");
-          assign.disabled = false;
-        }
-      });
-      row.append(document.createTextNode(" "), assign);
-    });
+    appendGoalOwnerAssignmentButtons(row, goalSlug, "goal-execution-owner-assign");
     panel.append(row);
   });
   return panel;
