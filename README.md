@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.195 at commit
-`05de4cb5eb1db55bda0ec5b263f0d7956244323e`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.196 at commit
+`78e57d2313690544a2f34957f947bea08640c310`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -334,6 +334,12 @@ execution waiting-question inline answer textarea. The verified
 Scope categories, Desired outcomes, Constraints, First action, and Notes; the
 button inserts that structured draft into the textarea and focuses it. This
 does not submit, answer, assign, acknowledge, wake, complete, or mutate GBrain.
+V0.0.196 makes that inserted template a concrete editable approval draft
+instead of placeholder choices: Scope categories accepted, Desired outcomes
+accepted, Constraints accepted, First action approved, and Notes asking to
+keep the work bounded to the stated scope, outcomes, constraints, and first
+action. The button still only fills and focuses the textarea; Tony must
+explicitly submit the answer before any GBrain mutation can occur.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -462,6 +468,10 @@ queue entries and renders `Insert answer template` beside the inline answer
 textarea. Activating the button only copies the draft into the editable
 textarea; answer submission remains the separate verified
 `/api/todos/<todo>/answer` POST path.
+V0.0.196+ changes the default `answer_template` from placeholder options to a
+concrete approval draft. Readers should still treat template insertion as
+local editable text preparation only, not a submitted answer or mutation
+receipt.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

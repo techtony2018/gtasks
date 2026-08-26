@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.195`
+- Last verified pushed release: `V0.0.196`
 - Release commits:
-  `05de4cb5eb1db55bda0ec5b263f0d7956244323e`
+  `78e57d2313690544a2f34957f947bea08640c310`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -821,6 +821,30 @@ to the reviewed source before updating relationships.
   `actor=people/tony-guan`, source `mission_control`, and UUID
   idempotency key; canonical readback remained blocked/not_done with answer
   null.
+- V0.0.196 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.196`; release commit
+  `78e57d2313690544a2f34957f947bea08640c310`; release evidence file
+  `docs/release-evidence/v0.0.196.md`; independent QA PASS at
+  `artifacts/qa/v0.0.196-independent/gate-report.md` with frozen aggregate
+  `c2aab1808f0290eba4973b3452affda7c81d588637c5c3cbd6cdf8707fbf49dc`.
+  Developer verification reported the focused Goal execution/frontend
+  contract as `2` OK, the combined focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK, and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.196 behavior: the waiting-question Action queue
+  `answer_template` now inserts a concrete editable approval draft instead of
+  placeholders: `Scope categories: accepted`, `Desired outcomes: accepted`,
+  `Constraints: accepted`, `First action: approved`, and
+  `Notes: Keep the work bounded to the stated scope, outcomes, constraints, and first action.`
+  Postdeploy `/api/goal-execution` retained `last_run=true`,
+  `last_error=null`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and concrete
+  `answer_template` readback. Desktop 1440 and genuine mobile 390 QA verified
+  no placeholder strings remained, template click focused the textarea,
+  emitted zero POST/non-GET requests, did not submit, and did not mutate data.
+  Answer-submit, Timmy recommendation, Codex-only owner controls, direct-answer
+  focus restoration, and clean console/network regressions remained intact.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -999,3 +1023,6 @@ into the inline textarea does not submit the answer, clear `waiting_for_input`,
 acknowledge a handoff, wake a worker, assign a Goal owner, complete a task, or
 mutate GBrain; only the separate verified answer submission flow may do that
 after Tony reviews and submits the text.
+V0.0.196 concrete approval templates keep the same boundary. Replacing
+placeholder choices with accepted/approved draft language reduces typing but
+does not reduce the required human review and explicit Submit answer gate.

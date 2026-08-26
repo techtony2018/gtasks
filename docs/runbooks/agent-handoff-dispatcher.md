@@ -856,6 +856,12 @@ First action, and Notes lines, and the Agents panel renders `Insert answer
 template` beside the inline answer textarea. Activating the button fills and
 focuses the textarea only; it does not submit an answer, acknowledge a
 handoff, wake a worker, complete a task, assign ownership, or mutate GBrain.
+V0.0.196 changes that draft from placeholder choices to a concrete editable
+approval template: Scope categories accepted, Desired outcomes accepted,
+Constraints accepted, First action approved, and Notes to keep the work
+bounded to the stated scope, outcomes, constraints, and first action. The
+template remains local text preparation only until Tony reviews and submits
+through the verified TODO answer contract.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
