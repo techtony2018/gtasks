@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.186 at commit
-`84e624464d302f4f7cdc503f81c1e93dab22ec76`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.187 at commit
+`a68b8febbd7874999ea5f61d3439a5d34bd69fc5`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -267,6 +267,13 @@ missing-owner title opens canonical Goal
 restores focus to the originating summary control. These links are read-only
 navigation; they do not answer Tony, create `default_agent_for`, or mutate
 canonical state.
+V0.0.187 adds explicit Codex-only owner assignment controls beside the
+missing-owner summary item: `Assign to Tammy`, `Assign to Timmy`, and
+`Assign to Toddy`. Each control uses the verified
+`POST /api/agents/<agent>/default-goals` contract with body
+`{goal_slug, action: "assign"}` only after explicit user activation. The UI
+does not infer or automatically mutate ownership, and it exposes no OpenClaw
+assignment controls.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -343,6 +350,12 @@ Task detail; missing-owner title controls open canonical Goal detail; closing
 the detail restores focus to the exact summary origin. This remains GET-only,
 read-only navigation and must not be documented as an answer, owner assignment,
 handoff acknowledgement, worker wake, or repair mutation.
+V0.0.187+ adds explicit Codex-only assignment controls to missing-owner summary
+items. `Assign to Tammy`, `Assign to Timmy`, and `Assign to Toddy` call
+`POST /api/agents/<agent>/default-goals` with `{goal_slug, action: "assign"}`
+only after the operator activates a button and only for non-OpenClaw Agents.
+These controls are a verified mutation path when activated; they are not
+automatic owner inference, background repair, or OpenClaw assignment.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

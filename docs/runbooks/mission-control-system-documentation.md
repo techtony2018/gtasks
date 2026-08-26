@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.186`
+- Last verified pushed release: `V0.0.187`
 - Release commits:
-  `84e624464d302f4f7cdc503f81c1e93dab22ec76`
+  `a68b8febbd7874999ea5f61d3439a5d34bd69fc5`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -621,6 +621,24 @@ to the reviewed source before updating relationships.
   `owner_missing=1`, `in_flight=1`, `recently_completed=3`, the same
   `default_agent_for` missing owner, and the same Family/Toddy blocking
   question task.
+- V0.0.187 evidence: dashboard-managed health readback `V0.0.187`; release
+  commit `a68b8febbd7874999ea5f61d3439a5d34bd69fc5`; release evidence file
+  `docs/release-evidence/v0.0.187.md`; independent QA PASS at
+  `artifacts/qa/v0.0.187-independent/gate-report.md` with frozen aggregate
+  `ae715146d8fc04662fd54ded5fc85c089172ae58684c121fcea5b6f65eabc09d`.
+  Developer verification reported the focused frontend contract OK and
+  `python3 -m unittest discover -s tests` as `1394` OK with `5` skipped.
+- Verified V0.0.187 behavior: Agents > Goal execution missing-owner action
+  items expose explicit Codex-only `Assign to Tammy`, `Assign to Timmy`, and
+  `Assign to Toddy` controls. On activation they use
+  `POST /api/agents/<agent>/default-goals` with body
+  `{goal_slug, action: "assign"}` and canonical readback. QA intercepted the
+  Tammy request before network at `/api/agents/agents%2Ftammy/default-goals`
+  with body
+  `{"goal_slug":"goals/d837ac94-36f5-4735-93bb-d84c69b45435","action":"assign"}`;
+  live readback remained missing-owner, proving no live GBrain mutation during
+  QA. No OpenClaw assignment controls appeared. V0.0.186 Task/Goal action links
+  and exact-origin focus restoration remained intact.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -758,3 +776,8 @@ V0.0.186 linked summary controls are navigation only. Opening the canonical
 Task or Goal detail from the summary does not answer Tony, create the
 `default_agent_for` edge, acknowledge or wake a worker, or mutate state; use
 the verified answer and Goal ownership flows for those repairs.
+V0.0.187 assignment buttons are an explicit user-activated Codex Agent owner
+repair path, not background automation. They must not be exposed for OpenClaw,
+must not infer an owner from the summary alone, and must not be treated as
+completed until the verified `default_goals` API readback confirms the
+`default_agent_for` relationship.

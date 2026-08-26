@@ -790,6 +790,13 @@ waiting-for-Tony question opens the canonical Task detail, the missing-owner
 Goal title opens the canonical Goal detail, and Close restores focus to the
 originating summary control. This is navigation only; it is not a dispatcher
 wake, handoff acknowledgement, Tony answer, owner repair, or mutation.
+V0.0.187 adds explicit Codex-only owner assignment buttons beside the
+missing-owner summary item: `Assign to Tammy`, `Assign to Timmy`, and
+`Assign to Toddy`. The buttons call the verified
+`POST /api/agents/<agent>/default-goals` contract with body
+`{goal_slug, action: "assign"}` only after user activation. No OpenClaw
+assignment controls are exposed, and no owner is inferred or assigned
+automatically by the dispatcher.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
