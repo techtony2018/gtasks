@@ -3368,7 +3368,7 @@ class RunForeverTests(unittest.TestCase):
         self.assertEqual(adapter.claims, ["handoff-100"])
         self.assertFalse(store.path.exists())
 
-    def test_pending_ack_retries_before_completed_inbox_observation(self) -> None:
+    def test_completed_inbox_supersedes_stale_pending_blocked_ack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             store = PrivateClaimStore(directory / "active.json")
@@ -3431,8 +3431,8 @@ class RunForeverTests(unittest.TestCase):
                 retry_delay=0,
             )
 
-            self.assertEqual(events, [f"ack:{blocked_sequence}:still_blocked"])
-            self.assertEqual(store.load_current()["status"], "still_blocked")
+            self.assertEqual(events, [f"ack:{blocked_sequence + 1}:completed"])
+            self.assertFalse(store.path.exists())
             self.assertEqual(inbox.get("handoff-100").state, "completed")
 
     def test_nonzero_and_timeout_require_recovery_and_are_never_retryable(self) -> None:

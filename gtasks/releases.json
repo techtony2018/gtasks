@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.215",
+  "current_version": "V0.0.216",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1290,6 +1290,12 @@
       "date": "2026-08-26",
       "title": "Let verified completion supersede stale blocked acks",
       "summary": "Remote handoff workers now let a verified completed wake-inbox result supersede an older pending still-blocked acknowledgement, so fixing worker credentials can unblock the same Goal-derived task without leaving the Agent pinned to stale local state."
+    },
+    {
+      "version": "V0.0.216",
+      "date": "2026-08-26",
+      "title": "Prioritize completed inbox receipts over stale blocked acks",
+      "summary": "Remote handoff workers now detect a completed local wake-inbox result before retrying an older pending still-blocked acknowledgement, submit the verified completed ack, and clear the pinned Agent claim so the next Goal-derived task can proceed."
     }
   ]
 }

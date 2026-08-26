@@ -79,6 +79,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_216_records_completed_inbox_priority_over_stale_blocked_ack(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.216")
+
+        self.assertIn("completed inbox", release["title"])
+        for contract in (
+            "wake-inbox",
+            "pending still-blocked",
+            "verified completed ack",
+            "pinned Agent claim",
+            "Goal-derived task",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.100")
 

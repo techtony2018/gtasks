@@ -3268,6 +3268,13 @@ def run_forever(
                     current_inbox_item = None
                 if (
                     current_inbox_item is not None
+                    and current_inbox_item.state == "completed"
+                    and current_inbox_item.pending_server_action is None
+                ):
+                    acknowledge_completed_execution(handoff_id)
+                    continue
+                if (
+                    current_inbox_item is not None
                     and (
                         current_inbox_item.state == "handed_back"
                         or (
