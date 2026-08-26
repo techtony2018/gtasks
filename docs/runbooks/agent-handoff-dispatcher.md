@@ -810,6 +810,13 @@ focuses the existing `#task-handoff-answer` control, and restores focus to the
 immutable `.goal-execution-answer-action` origin on Close. It does not submit
 an answer or create a new dispatcher mutation path; answering remains the
 existing verified `/api/todos/<todo>/answer` flow.
+V0.0.190 adds an inline answer composer beside that queue row. The summary
+action carries verified `todo_updated_at`; the form posts the answer through
+the existing canonical `/api/todos/<todo>/answer` endpoint with
+`expected_updated_at`, actor `people/tony-guan`, source `mission_control`, and
+a UUID `idempotency_key`. Verified response reconciliation refreshes Goal
+execution and Agent Work. This is a Tony answer path, not a dispatcher wake,
+Agent handoff acknowledgement, or OpenClaw assignment.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

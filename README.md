@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.189 at commit
-`748fa8a0bfbd0ec0fa648a1be4f181658d62c609`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.190 at commit
+`f7fd08dc17cd48ad80edfcc166ce3b147e4e7c28`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -290,6 +290,15 @@ the detail restores focus to the originating `.goal-execution-answer-action`
 using immutable `data-goal-execution-origin`; it does not fall back to a
 same-slug Agent-card link. This adds no new mutation path: answer submission
 still uses the existing verified `/api/todos/<todo>/answer` flow.
+V0.0.190 adds an inline answer composer directly in the Goal execution Action
+queue for Tony waiting-for-input Agent questions. The backend carries verified
+`todo_updated_at`; the UI renders one labeled textarea plus `Submit answer`.
+Submission uses the existing canonical
+`POST /api/todos/<todo>/answer` contract with `answer`,
+`expected_updated_at`, actor `people/tony-guan`, source `mission_control`, a
+UUID `idempotency_key`, verified response reconciliation, toast, and bounded
+Goal execution/Agent Work refresh. V0.0.189's direct Task-open action remains
+available and still restores exact origin focus.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -385,6 +394,13 @@ the existing handoff answer textarea after readback, and restores focus to the
 exact immutable summary-origin control on Close. Actual submission remains the
 existing verified `/api/todos/<todo>/answer` mutation flow; the action queue
 button only navigates and focuses the answer field.
+V0.0.190+ also renders an inline answer composer for the same Tony-owned
+`answer_question` entries when the queue includes verified `todo_updated_at`.
+The composer posts to the existing TODO answer endpoint with
+`expected_updated_at` and a UUID idempotency key, then reconciles the verified
+Task/TODO response and refreshes Goal execution and Agent Work. It is the same
+canonical answer mutation path, surfaced closer to the blocker in the Agents
+summary.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

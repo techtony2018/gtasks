@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.189`
+- Last verified pushed release: `V0.0.190`
 - Release commits:
-  `748fa8a0bfbd0ec0fa648a1be4f181658d62c609`
+  `f7fd08dc17cd48ad80edfcc166ce3b147e4e7c28`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -679,6 +679,28 @@ to the reviewed source before updating relationships.
   retained `last_run`, `public_reason=actively_executing`, selected task
   `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, Tony `answer_question` and
   `assign_goal_owner` action queue entries, and `last_error=null`.
+- V0.0.190 evidence: dashboard-managed `/api/health` and `/api/releases`
+  readback `V0.0.190`; release commit
+  `f7fd08dc17cd48ad80edfcc166ce3b147e4e7c28`; release evidence file
+  `docs/release-evidence/v0.0.190.md`; independent QA PASS at
+  `artifacts/qa/v0.0.190-independent/gate-report.md` with frozen aggregate
+  `734641816975e6ce1d6be48c826a639422e25c0f57bf87dfb4e50ffa2d928765`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.190 behavior: Goal execution Action queue entries for Tony
+  waiting-for-input Agent questions now carry verified `todo_updated_at` and
+  render one inline textarea plus `Submit answer`. The form posts to the
+  existing canonical `/api/todos/<todo>/answer` endpoint with `answer`,
+  `expected_updated_at`, actor `people/tony-guan`, source `mission_control`,
+  and a UUID `idempotency_key`; verified response reconciliation refreshes Goal
+  execution and Agent Work. QA intercepted the POST before live network at
+  `/api/todos/todos%2F99b64fec-aebe-57de-bf79-cc9d640a2db2/answer`; canonical
+  readback after QA remained unchanged, proving no live mutation during the
+  independent check. Postdeploy `/api/goal-execution` retained `last_run`,
+  `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, and `last_error=null`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -828,3 +850,7 @@ worker, or OpenClaw responsible for that repair.
 V0.0.189 answer actions are navigation and focus helpers only. They do not
 submit text, answer the TODO, clear `waiting_for_input`, or mutate GBrain until
 Tony uses the existing verified `/api/todos/<todo>/answer` submission flow.
+V0.0.190 inline composers expose that existing answer submission flow in the
+Goal execution summary. They require the verified TODO update timestamp and a
+human-entered answer; stale or unverified answer attempts must fail rather than
+silently clear a blocker.
