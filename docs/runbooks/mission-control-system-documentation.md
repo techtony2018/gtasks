@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.211`
+- Last verified pushed release: `V0.0.212`
 - Release commits:
-  `87c5e013e9c28fcfcc6372ab79ebd9842ee49e51`
+  `a48fe8e6abb5cb38e1dead64482bfd9871e2f6bb`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1145,6 +1145,32 @@ to the reviewed source before updating relationships.
   answer and owner assignment; that was a QA harness incident, not evidence
   that Mission Control auto-answers or auto-assigns without explicit reviewed
   activation.
+- V0.0.212 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.212`; release commit
+  `a48fe8e6abb5cb38e1dead64482bfd9871e2f6bb`; release evidence file
+  `docs/release-evidence/v0.0.212.md`; independent QA PASS at
+  `artifacts/qa/v0.0.212-independent/gate-report.md` with frozen aggregate
+  `7471d32d38779d47ce11aa20aa9eca4eaa5e2de63f0d361f3e70aad82ba78d93`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1404` OK with `5` skipped, focused Goal execution/frontend coverage as
+  `327` OK, and the QA backend active-claim/terminal-suppressed/stale-queued
+  regression set as `3` OK.
+- Verified V0.0.212 behavior: Goal execution now treats a latest suppressed
+  attention handoff row as in-flight/delivering when the latest delivery state
+  has an active non-terminal execution claim with recent `claimed_at`, future
+  `expires_at`, and `terminal_state=null`. Independent QA verified the
+  active-claim fixture rendered `Delivering` without `Needs attention` or
+  system-review copy on desktop 1440 and mobile 390; no-claim suppressed
+  fixtures still rendered handoff/system-review attention; stale retrying
+  fixtures still rendered worker-unavailable attention; browser traffic stayed
+  GET-only with zero writes. Live postdeploy readback returned
+  `public_reason=actively_executing` for
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, `total_goals=7`,
+  `needs_attention=1`, `waiting_for_tony=0`, `in_flight=1`,
+  `recently_completed=5`, and the remaining Family decision as elapsed live
+  `handoff_needs_repair`, not an active-claim fixture. Preserve the local
+  worker boundary: local workers are Tammy/Tammy-OC only; Timmy/Toddy are
+  remote/non-local.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1382,3 +1408,9 @@ write private answers, system repairs, OpenClaw owner assignments, or any live
 state when the Action queue is empty. The V0.0.209 Family/Toddy live
 submission was a QA interception incident and must not be cited as product
 auto-answer or auto-assignment behavior.
+V0.0.212 active-claim handling is a delivery-state distinction, not a repair
+bypass. A latest suppressed attention row should remain in-flight/delivering
+only while a verified non-terminal execution claim is active; once the claim is
+missing, terminal, or stale, the existing handoff repair or worker-unavailable
+attention classifications still apply. This does not make Timmy/Toddy local
+workers or complete work without terminal handoff and Artifact readback.

@@ -435,6 +435,14 @@ V0.0.211 makes that owner-assignment step resilient when the Agent profile
 surface is still hydrating: it uses the verified Codex owner candidate carried
 by the Goal execution action queue, while continuing to reject OpenClaw owners
 for automatic owner assignment.
+V0.0.212 prevents false repair attention while a remote Agent still holds a
+valid execution lease. Goal execution treats a latest suppressed attention
+handoff row as in-flight/delivering when the latest delivery state has an
+active non-terminal execution claim with recent `claimed_at`, future
+`expires_at`, and `terminal_state=null`. Suppressed rows without an active
+claim still render handoff repair attention, stale retrying delivery still
+renders worker-unavailable attention, and the local worker boundary remains
+Tammy/Tammy-OC only; Timmy and Toddy are remote/non-local.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -623,6 +631,12 @@ sparse by using the verified recommended Codex owner candidate carried in
 Action queue must render no recommended write controls. An earlier V0.0.209 QA
 interception incident accidentally submitted the live Family/Toddy answer and
 owner assignment; document that as QA harness error, not product automation.
+V0.0.212+ respects active non-terminal Agent execution claims even if the
+newest handoff row is suppressed attention. A suppressed handoff with a fresh
+claim lease remains `in_flight` / `delivering` and should not ask for handoff
+repair. Suppressed handoffs without an active claim still surface
+`handoff_needs_repair`, and stale retrying delivery still surfaces
+`handoff_worker_unavailable`.
 V0.0.207 supersedes the earlier paused stash boundary by shipping the
 scheduler-selection-ordering repair as a verified release. Do not apply the
 old `stash@{0}` entry as if it were still the source of truth; start from

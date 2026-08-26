@@ -958,6 +958,14 @@ OpenClaw owners. If live readback has `action_queue=[]`, render no recommended
 write controls and expect live POST count zero. The V0.0.209 live Family/Toddy
 answer/owner change came from a faulty QA interception harness, not from
 automatic product execution.
+V0.0.212 respects an active Agent execution lease over a later suppressed
+attention handoff row. If the latest delivery state has a recent `claimed_at`,
+future `expires_at`, and `terminal_state=null`, Goal execution should classify
+the work as in-flight/delivering and avoid handoff repair calls. Suppressed
+handoffs without that active claim remain `handoff_needs_repair`, stale
+retrying non-terminal delivery remains `handoff_worker_unavailable`, and the
+local worker boundary remains Tammy/Tammy-OC only; Timmy/Toddy are remote and
+non-local.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
