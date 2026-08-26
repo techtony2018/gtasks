@@ -451,6 +451,13 @@ Action queue item. `handoff_needs_repair` now produces
 Agents and Inbox render `System action required` without Tony answer forms,
 answer templates, owner assignment controls, or OpenClaw assignment controls
 for this system repair item.
+V0.0.214 preserves dispatcher `execution_claim_unavailable` reasons in latest
+delivery state and classifies stale or expired claim-unavailable work as
+`handoff_worker_unavailable` instead of generic handoff repair. The Action
+queue now surfaces a system-owned `restore_agent_worker` item with label
+`Restore verified Agent worker` and next action
+`restore verified Agent worker for 1 blocked Goal`, while active-claim
+precedence remains intact.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -650,6 +657,12 @@ system-owned `repair_agent_handoff` row with the concrete next action
 `repair verified Agent handoff for 1 blocked Goal`. This is operator recovery
 guidance for Handoff History review, not a Tony answer, owner assignment,
 OpenClaw action, or automatic repair mutation.
+V0.0.214+ routes stale or expired `execution_claim_unavailable` delivery state
+into `summary.action_queue` as a system-owned `restore_agent_worker` row.
+Agents and Inbox should render `System action required` /
+`Restore verified Agent worker` with no Tony answer form/template, no owner
+assignment controls, and no OpenClaw controls; the repair target is the
+assigned Agent host dispatcher/private route.
 V0.0.207 supersedes the earlier paused stash boundary by shipping the
 scheduler-selection-ordering repair as a verified release. Do not apply the
 old `stash@{0}` entry as if it were still the source of truth; start from

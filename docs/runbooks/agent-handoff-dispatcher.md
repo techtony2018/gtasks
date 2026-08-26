@@ -974,6 +974,15 @@ state.`, and next-action copy `repair verified Agent handoff for 1 blocked
 Goal`. Agents and Inbox should render `System action required` for this row,
 with no Tony answer form/template, no owner assignment controls, and no
 OpenClaw controls.
+V0.0.214 preserves dispatcher claim-unavailable reasons in latest delivery
+state and routes stale or expired `execution_claim_unavailable` into
+`handoff_worker_unavailable` instead of generic handoff repair. That state
+should emit one system-owned `restore_agent_worker` Action queue item with
+label `Restore verified Agent worker`, summary `Verify the assigned Agent
+host dispatcher and private route, then recover delivery.`, and next-action
+copy `restore verified Agent worker for 1 blocked Goal`. Keep active-claim
+precedence: a suppressed row plus recent/future non-terminal execution claim
+still renders Delivering, not Needs attention.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
