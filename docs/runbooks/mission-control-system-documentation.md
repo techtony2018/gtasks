@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.206`
+- Last verified pushed release: `V0.0.208`
 - Release commits:
-  `ca0ad4665a9b69944bc975f2c0849a6c10062e6c`
+  `f723be89ea2fbcc66390d97e29db324c9e124936`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1064,19 +1064,49 @@ to the reviewed source before updating relationships.
 - Paused Goal execution overhaul handoff: commit
   `079afe72e7b9e1b82fdf298f1135bc208184fdc0` added
   `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`. The handoff
-  records V0.0.206 as the last verified deployed baseline and explicitly
-  marks the V0.0.207 attempt as uncommitted/unshipped WIP saved at
+  recorded V0.0.206 as the then-current deployed baseline and marked the
+  V0.0.207 attempt as uncommitted/unshipped WIP at
   `stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`.
-  Resume order is readback-first: refresh git status, `/api/health`,
-  `/api/goal-execution?refresh=1`, `/api/agents?refresh=1`, and
-  `/api/agent-work?refresh=1`; confirm the committed version; apply the stash
-  only in a clean branch or worktree after Tony resumes; add the RED scheduler
-  selection-ordering test; then implement, test, version, restart
-  dashboard-managed Mission Control, obtain independent desktop/mobile QA,
-  commit, push, deploy, and notify Documentation Manager. The handoff also
-  preserves the worker boundary: local workers remain `agents/tammy` and
-  `agents/tammy-oc`; Timmy and Toddy remain non-local unless Tony explicitly
-  changes host placement.
+  That handoff is historical after V0.0.207 shipped from current `origin/main`;
+  do not apply the old stash as the source of truth.
+- V0.0.207 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.207`; release commit
+  `8a3734900c2e206a0f6ad887db2c3b187777e66f`; release evidence file
+  `docs/release-evidence/v0.0.207.md`; repaired independent QA PASS at
+  `artifacts/qa/v0.0.207-repair-independent/gate-report.md` with frozen
+  aggregate
+  `88ef33c46c410432066ced9980b10511ab6bbbd22412fe775fdc4f7467c74e36`.
+  Developer verification reported the broader command as `790` OK.
+- Verified V0.0.207 behavior: Goal execution now prioritizes active derived
+  tasks with suppressed handoff release plus exact `produced_for` Artifact
+  readback as terminal completion candidates before unrelated in-flight work.
+  Civic decision rendered `recently_completed`; task
+  `tasks/106db451-137a-5094-af72-7de3d9332a87` read back completed with
+  `handoff=null`, no blockers/dependencies, and exactly one produced-for
+  Artifact `artifacts/b95ad28a-eb6f-4b6f-b3a6-9e460642623a`. QA verified
+  Civic and Entrepreneurship both rendered `Recently completed` with explicit
+  completed copy on Agents, Civic Goal detail, desktop 1440, and genuine
+  mobile 390. Entrepreneurship naturally advanced from active/actively
+  executing to completed/recently_completed during the read-only gate; QA made
+  no GBrain mutation. Worker boundary stayed local to `agents/tammy` and
+  `agents/tammy-oc`; no local Timmy/Toddy worker config was present.
+- V0.0.208 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.208`; release commit
+  `f723be89ea2fbcc66390d97e29db324c9e124936`; release evidence file
+  `docs/release-evidence/v0.0.208.md`; independent QA PASS at
+  `artifacts/qa/v0.0.208-independent/gate-report.md` with frozen aggregate
+  `d244abfb7d556781679d46cbd398af0f8ef1e8a2e8f22da72a5778816bdfd7a7`.
+  Developer verification reported the broader command as `791` OK.
+- Verified V0.0.208 behavior: Goal execution status exposes cold scheduler
+  reads as explicit `read_state` loading state. A source-blind intercepted
+  `/api/goal-execution` HTTP 202 fixture with `last_run=null` and
+  `read_state={surface:"goal_execution",status:"loading",refreshing:true,last_valid_at:null}`
+  rendered `Reading Goal execution…` on desktop and mobile instead of blank,
+  null, or obsolete first-read waiting copy. Live regressions still showed six
+  unique Agent cards, seven Goal decisions, Civic and Entrepreneurship
+  `recently_completed`, Health executing, Family waiting for Tony, exact Civic
+  Task detail focus and exact-origin close restoration, mobile x0/y0/390x844
+  modal containment, GET-only live requests, and zero GBrain mutations.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1295,6 +1325,12 @@ frontmatter only when terminal handoff and exact Artifact evidence support the
 completed task. It must not be documented as permission to bypass handoff
 evidence, ignore missing Artifacts, mutate GBrain outside the verified status
 repair endpoint, or treat Timmy/Toddy as local workers.
-The V0.0.207 suppressed-handoff WIP is paused and not a release. Documentation
-must not describe it as deployed behavior, apply its stash from automation,
-or continue the overhaul without explicit Tony authorization.
+V0.0.207 supersedes the earlier suppressed-handoff stash boundary by shipping
+the scheduler-ordering repair as a verified release. Documentation should
+treat `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md` as
+historical handoff evidence, not current implementation instructions, and must
+not apply the old stash over newer commits.
+V0.0.208 cold-read loading copy is a read-state distinction, not a Goal
+execution decision. `Reading Goal execution…` means the scheduler read is
+still in progress; it is not a blocker, Ready state, completed state, or
+mutation receipt.

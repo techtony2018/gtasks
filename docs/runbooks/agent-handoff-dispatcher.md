@@ -933,14 +933,18 @@ completion still depends on terminal handoff repair plus exact
 blocker tasks for Faith, Finance, and Career read back completed with no
 handoff or blockers and exactly one Artifact each; Timmy and Toddy remain
 non-local workers.
-After V0.0.206, the broader Goal execution overhaul is paused by Tony. The
-resume handoff is `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`.
-Treat V0.0.206 as the verified deployed baseline and V0.0.207 as an
-uncommitted, unshipped stash boundary only:
-`stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`.
-Do not apply the stash, resume scheduler-ordering work, or mutate GBrain from
-automation; resume only after fresh Tony authorization and then follow the
-handoff's readback-first resume order.
+The V0.0.206 pause handoff at
+`docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md` is now historical:
+V0.0.207 shipped the scheduler-ordering repair from current `origin/main`, not
+from an unapplied docs task. V0.0.207 prioritizes active Goal-derived tasks
+with suppressed handoff release plus exact `produced_for` Artifact readback as
+terminal completion candidates before unrelated in-flight work. The Civic
+task `tasks/106db451-137a-5094-af72-7de3d9332a87` completed with Artifact
+`artifacts/b95ad28a-eb6f-4b6f-b3a6-9e460642623a`, released Timmy WIP
+capacity, and let Entrepreneurship advance to completed/recently_completed.
+V0.0.208 adds explicit `goal_execution` `read_state.status=loading` for cold
+or long scheduler reads; UI should render `Reading Goal execution…` instead
+of blank/null first-read waiting.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

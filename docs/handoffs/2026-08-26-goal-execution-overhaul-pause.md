@@ -2,6 +2,12 @@
 
 Status: paused by Tony; do not continue this Goal until Tony explicitly resumes it.
 
+Post-handoff update: this document is historical after V0.0.207 and V0.0.208
+shipped from `origin/main`. Do not apply the saved V0.0.207 stash over newer
+commits. Use release evidence `docs/release-evidence/v0.0.207.md` and
+`docs/release-evidence/v0.0.208.md` plus current readbacks as the source of
+truth.
+
 Branch: `main`
 
 Last pushed verified commits:
@@ -122,4 +128,3 @@ Keep local supervisor scoped to local identities only:
 6. Run focused tests and the broader server/frontend/release suite.
 7. Bump version, restart dashboard-managed Mission Control, and obtain independent QA PASS on desktop `1440x1000` and genuine mobile `390x844` before commit.
 8. Commit, push, deploy, verify postdeploy readback, then notify Documentation Manager.
-

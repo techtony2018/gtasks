@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.206 at commit
-`ca0ad4665a9b69944bc975f2c0849a6c10062e6c`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.208 at commit
+`f723be89ea2fbcc66390d97e29db324c9e124936`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -408,14 +408,19 @@ repair. Post-repair readback restored and completed the Faith, Finance, and
 Career Tammy Artifact publisher blocker tasks with one expected Artifact each.
 Goal execution returned to three recently completed, one waiting-for-Tony
 question, and one missing owner; Timmy and Toddy remain non-local.
-Goal execution overhaul is paused after V0.0.206. The canonical pause handoff
-is `docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md`: it records
-the verified V0.0.206 baseline, the intentionally uncommitted/unshipped
-V0.0.207 stash boundary
-`stash@{0}: On main: pause goal execution v0.0.207 suppressed handoff WIP`,
-and the resume order. Do not apply that stash, continue implementation,
-mutate GBrain, or treat the V0.0.207 tests as release evidence unless Tony
-explicitly resumes the Goal.
+The V0.0.207 Goal execution WIP that was paused in
+`docs/handoffs/2026-08-26-goal-execution-overhaul-pause.md` later shipped as
+verified product commit `8a3734900c2e206a0f6ad887db2c3b187777e66f`.
+V0.0.207 prioritizes active derived tasks with suppressed handoff release plus
+exact `produced_for` Artifact readback as terminal completion candidates
+before unrelated in-flight work. The Civic task
+`tasks/106db451-137a-5094-af72-7de3d9332a87` completed with Artifact
+`artifacts/b95ad28a-eb6f-4b6f-b3a6-9e460642623a`; Civic now renders
+Recently completed, and Entrepreneurship advanced to completed /
+recently_completed as dashboard-managed background execution continued.
+V0.0.208 adds explicit Goal execution `read_state` for cold or long scheduler
+reads, so the UI renders `Reading Goal execution…` instead of blank/null
+first-read waiting while the scheduler is still loading.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -588,12 +593,13 @@ V0.0.204+ classifies Artifact publisher identity mismatches as system-owned
 recommended-plan writes. They identify dashboard Artifact publisher credential
 or identity repair work, not a request for Tony to paste secrets into an Agent
 question.
-Paused V0.0.207 WIP is not part of the deployed contract. If Tony resumes it,
-start from the handoff resume order: refresh git/runtime/Goal execution/Agents
-/Agent Work readbacks, confirm the committed version, apply the stash in a
-clean branch or worktree, add the RED scheduler-selection-ordering test, then
-implement, version, deploy, and get independent desktop/mobile QA before
-commit.
+V0.0.207 supersedes the earlier paused stash boundary by shipping the
+scheduler-selection-ordering repair as a verified release. Do not apply the
+old `stash@{0}` entry as if it were still the source of truth; start from
+current `origin/main` and current readbacks. V0.0.208+ surfaces cold
+`goal_execution` reads with `read_state.status=loading` and the visible copy
+`Reading Goal execution…`; this is honest loading state, not a blocker,
+failure, or completed Goal execution readback.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface
