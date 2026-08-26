@@ -607,6 +607,22 @@ V0.0.204+ classifies Artifact publisher identity mismatches as system-owned
 recommended-plan writes. They identify dashboard Artifact publisher credential
 or identity repair work, not a request for Tony to paste secrets into an Agent
 question.
+V0.0.209+ may render `Submit recommended answer` in Inbox when the only
+recommended unblocker is a safe `answer_question` with a concrete
+`answer_template`. This is an explicit reviewed shortcut to the existing
+`/api/todos/<todo>/answer` flow and performs exactly one TODO answer POST
+after Tony clicks; it must not run owner, system-repair, private-input, or
+OpenClaw writes.
+V0.0.210+ keeps combined `Run recommended unblock plan` writes contiguous:
+when a safe answer and recommended Codex owner assignment are both available,
+the UI posts the answer and then the `default-goals` owner assignment before
+refreshing Goal or Agent read surfaces.
+V0.0.211+ keeps that combined plan robust while Agent profile hydration is
+sparse by using the verified recommended Codex owner candidate carried in
+`summary.action_queue`. OpenClaw owners remain excluded, and an empty live
+Action queue must render no recommended write controls. An earlier V0.0.209 QA
+interception incident accidentally submitted the live Family/Toddy answer and
+owner assignment; document that as QA harness error, not product automation.
 V0.0.207 supersedes the earlier paused stash boundary by shipping the
 scheduler-selection-ordering repair as a verified release. Do not apply the
 old `stash@{0}` entry as if it were still the source of truth; start from

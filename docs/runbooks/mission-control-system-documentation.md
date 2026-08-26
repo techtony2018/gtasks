@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.208`
+- Last verified pushed release: `V0.0.211`
 - Release commits:
-  `f723be89ea2fbcc66390d97e29db324c9e124936`
+  `87c5e013e9c28fcfcc6372ab79ebd9842ee49e51`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1107,6 +1107,44 @@ to the reviewed source before updating relationships.
   `recently_completed`, Health executing, Family waiting for Tony, exact Civic
   Task detail focus and exact-origin close restoration, mobile x0/y0/390x844
   modal containment, GET-only live requests, and zero GBrain mutations.
+- V0.0.209 evidence: release commit
+  `87c5e013e9c28fcfcc6372ab79ebd9842ee49e51`; release evidence file
+  `docs/release-evidence/v0.0.209.md`. V0.0.209 introduced the Inbox
+  `Submit recommended answer` shortcut for answer-only safe Goal execution
+  unblockers. The shortcut is explicit and reviewed: it sends exactly one TODO
+  answer POST after Tony clicks and must not perform owner, system, private,
+  or OpenClaw writes.
+- V0.0.210 evidence: release commit
+  `87c5e013e9c28fcfcc6372ab79ebd9842ee49e51`; release evidence file
+  `docs/release-evidence/v0.0.210.md`. V0.0.210 kept combined recommended
+  plan writes contiguous by posting the answer and then the recommended Codex
+  owner assignment before refreshing read surfaces. The V0.0.210 QA behavior
+  checks passed, but commit authorization was superseded by the V0.0.211
+  repaired independent PASS gate.
+- V0.0.211 evidence: dashboard-managed `/api/health`, `/api/releases`, and
+  About readback `V0.0.211`; release commit
+  `87c5e013e9c28fcfcc6372ab79ebd9842ee49e51`; release evidence file
+  `docs/release-evidence/v0.0.211.md`; independent QA PASS at
+  `artifacts/qa/v0.0.211-independent/gate-report.md` with frozen aggregate
+  `70050c3bfe96014df694b4e5c215347b0efa335553f4cd4ccd82e33d2f74f7d1`.
+  Developer verification reported `python3 -m unittest discover -s tests` as
+  `1403` OK with `5` skipped, focused Goal execution/frontend coverage as
+  `326` OK, and `node --check` / diff checks OK.
+- Verified V0.0.211 behavior: recommended Goal unblock plans now use the
+  verified recommended Codex owner candidate carried in `summary.action_queue`
+  when `/api/agents` profile hydration is sparse, while still excluding
+  OpenClaw owners. Independent QA verified answer-only fixtures emit one TODO
+  answer POST and no other writes; full and sparse combined fixtures emit two
+  contiguous POSTs in order, answer then owner assignment, with no intervening
+  refresh; private-input, system-repair, and OpenClaw-only fixtures render no
+  recommended write control. Fresh live V0.0.211 readback had
+  `waiting_for_tony=0`, `action_queue=[]`, `public_reason=actively_executing`,
+  the selected task `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, one
+  remaining `handoff_needs_repair` attention, and live POST count zero. An
+  earlier V0.0.209 QA interception accidentally submitted the Family/Toddy
+  answer and owner assignment; that was a QA harness incident, not evidence
+  that Mission Control auto-answers or auto-assigns without explicit reviewed
+  activation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1334,3 +1372,13 @@ V0.0.208 cold-read loading copy is a read-state distinction, not a Goal
 execution decision. `Reading Goal execution…` means the scheduler read is
 still in progress; it is not a blocker, Ready state, completed state, or
 mutation receipt.
+V0.0.209 answer-only recommended actions and V0.0.210/V0.0.211 recommended
+plans are explicit user-activated mutation shortcuts, not automation. The
+answer-only path may submit exactly one safe TODO answer; the combined path
+may submit the safe TODO answer and then the recommended Codex owner
+assignment contiguously before refresh, including when the owner candidate
+comes from `summary.action_queue` during sparse Agent hydration. They must not
+write private answers, system repairs, OpenClaw owner assignments, or any live
+state when the Action queue is empty. The V0.0.209 Family/Toddy live
+submission was a QA interception incident and must not be cited as product
+auto-answer or auto-assignment behavior.

@@ -945,6 +945,19 @@ capacity, and let Entrepreneurship advance to completed/recently_completed.
 V0.0.208 adds explicit `goal_execution` `read_state.status=loading` for cold
 or long scheduler reads; UI should render `Reading Goal execution…` instead
 of blank/null first-read waiting.
+V0.0.209 adds Inbox `Submit recommended answer` for the answer-only Goal
+unblock case: when the queue contains exactly a safe answerable question with
+a concrete template and no recommended owner/system/private work, one reviewed
+click sends exactly one TODO answer POST through the existing answer contract.
+V0.0.210 keeps combined recommended-plan writes contiguous by sending the
+reviewed answer POST and then the recommended Codex owner `default-goals` POST
+before any Goal/Agent refresh. V0.0.211 makes that owner step tolerate sparse
+Agent profile hydration by trusting the verified recommended Codex owner
+candidate already carried in `summary.action_queue`, while still rejecting
+OpenClaw owners. If live readback has `action_queue=[]`, render no recommended
+write controls and expect live POST count zero. The V0.0.209 live Family/Toddy
+answer/owner change came from a faulty QA interception harness, not from
+automatic product execution.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
