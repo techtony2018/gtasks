@@ -2579,6 +2579,22 @@ body.is-resizing-detail {
   outline-offset: 2px;
 }
 
+.goal-execution-answer-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  max-width: 560px;
+}
+
+.goal-execution-answer-input {
+  min-height: 56px;
+  resize: vertical;
+}
+
+.goal-execution-answer-submit {
+  justify-self: start;
+}
+
 .goal-execution-list {
   display: grid;
   gap: 7px;

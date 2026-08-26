@@ -4314,6 +4314,57 @@ function openGoalExecutionQuestionAction(taskSlug, todoSlug, originControl = nul
   });
 }
 
+async function answerGoalExecutionQuestionFromSummary(action, answer, submit = null, errorNode = null) {
+  const todoSlug = String(action?.todo_slug || "").trim();
+  const expectedUpdatedAt = String(action?.todo_updated_at || "").trim();
+  const responseText = String(answer || "").trim();
+  if (!todoSlug || !expectedUpdatedAt) {
+    throw new Error("Exact question readback is required before answering.");
+  }
+  if (!responseText) {
+    throw new Error("Answer is required before the Agent can resume.");
+  }
+  if (errorNode) {
+    errorNode.textContent = "";
+    errorNode.classList.add("is-hidden");
+  }
+  if (submit) submit.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/todos/${encodeURIComponent(todoSlug)}/answer`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          answer: responseText,
+          expected_updated_at: expectedUpdatedAt,
+          actor: "people/tony-guan",
+          source: "mission_control",
+          idempotency_key: crypto.randomUUID(),
+        }),
+      },
+    );
+    const receipt = await response.json();
+    if (!response.ok || !receipt.verified || !receipt.task || !receipt.todo) {
+      const error = new Error(receipt.error || "Answer readback was not verified in GBrain.");
+      error.code = receipt.code || "ambiguous_readback";
+      throw error;
+    }
+    reconcileVerifiedTask(mergeVerifiedTodoIntoTask(receipt.task, receipt.todo));
+    await Promise.all([loadGoalExecution({ force: true }), loadAgentWork()]);
+    showToast(`Answer verified. ${agentDisplayName(receipt.next_owner, receipt.task)} can resume this task.`);
+    return receipt;
+  } catch (error) {
+    if (errorNode) {
+      errorNode.textContent = todoErrorMessage(error);
+      errorNode.classList.remove("is-hidden");
+    }
+    throw error;
+  } finally {
+    if (submit) submit.disabled = false;
+  }
+}
+
 function renderGoalExecutionActionQueue(summary) {
   const actions = Array.isArray(summary.action_queue)
     ? summary.action_queue
@@ -4349,6 +4400,31 @@ function renderGoalExecutionActionQueue(summary) {
     const summaryText = String(action?.summary || "").trim();
     if (summaryText) {
       item.append(document.createTextNode(` — ${summaryText}`));
+    }
+    if (action?.kind === "answer_question" && action?.todo_slug && action?.todo_updated_at) {
+      const form = node("form", "goal-execution-answer-form");
+      const textarea = document.createElement("textarea");
+      textarea.className = "goal-execution-answer-input";
+      textarea.rows = 2;
+      textarea.maxLength = 4000;
+      textarea.required = true;
+      textarea.placeholder = "Answer so the Agent can resume";
+      textarea.setAttribute("aria-label", `Answer Agent question: ${summaryText || action.todo_slug}`);
+      const submit = node("button", "secondary-button goal-execution-answer-submit", "Submit answer");
+      submit.type = "submit";
+      const error = node("p", "form-error is-hidden");
+      error.setAttribute("role", "alert");
+      form.append(textarea, submit, error);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          await answerGoalExecutionQuestionFromSummary(action, textarea.value, submit, error);
+          textarea.value = "";
+        } catch (_error) {
+          // Error copy is rendered in the inline alert.
+        }
+      });
+      item.append(form);
     }
     list.append(item);
   });

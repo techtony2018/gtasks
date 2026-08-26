@@ -193,7 +193,7 @@ state.goalExecution = {
       message: "Assign exactly one Codex Agent with a verified default_agent_for link before Mission Control can derive work from this Goal.",
     }],
     action_queue: [
-      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?" },
+      { owner: "tony", kind: "answer_question", label: "Answer Agent question", goal_slug: goalSlug, task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", agent_slug: "agents/timmy", summary: "Which family-care scope should Toddy use next?" },
       { owner: "tony", kind: "assign_goal_owner", label: "Assign Goal owner", goal_slug: "goals/d837ac94-36f5-4735-93bb-d84c69b45435", agent_slug: null, summary: "Entrepreneurship — add default_agent_for" },
       { owner: "agent", kind: "monitor_active_handoff", label: "Agent is executing", goal_slug: goalSlug, task_slug: taskSlug, agent_slug: "agents/timmy", summary: "Review Civic progress" },
     ],
@@ -236,6 +236,15 @@ const answerActions = walkElements(goalExecutionSurface, (element) =>
   element.dataset?.taskSlug === taskSlug &&
   element.dataset?.todoSlug === "todos/question");
 assert(answerActions.length === 1, "action queue did not expose one direct Answer Agent question action");
+const inlineAnswerForms = walkElements(goalExecutionSurface, (element) =>
+  String(element.className || "").includes("goal-execution-answer-form"));
+assert(inlineAnswerForms.length === 1, "action queue did not expose one inline answer form");
+const inlineAnswerInputs = walkElements(inlineAnswerForms[0], (element) =>
+  String(element.className || "").includes("goal-execution-answer-input"));
+const inlineAnswerSubmits = walkElements(inlineAnswerForms[0], (element) =>
+  String(element.className || "").includes("goal-execution-answer-submit"));
+assert(inlineAnswerInputs.length === 1, "inline answer form did not expose one textarea");
+assert(inlineAnswerSubmits.length === 1, "inline answer form did not expose one submit button");
 assert(
   answerActions[0].dataset?.goalExecutionOrigin === "summary:action:answer_question:tasks_22222222-2222-4222-8222-222222222222:todos_question",
   "direct question action lacks immutable Goal execution origin identity",
@@ -262,6 +271,7 @@ assert(!ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agent
 const originalFetch = globalThis.fetch;
 const originalLoadAgents = loadAgents;
 const originalLoadGoalExecution = loadGoalExecution;
+const originalLoadAgentWork = loadAgentWork;
 const originalRender = render;
 const originalShowToast = showToast;
 let assignmentRequest = null;
@@ -283,6 +293,57 @@ assert(assignmentRequest.url === "/api/agents/agents%2Ftammy/default-goals", "su
 assert(assignmentRequest.method === "POST", "summary assignment did not POST");
 assert(assignmentRequest.body.goal_slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435", "summary assignment sent wrong Goal");
 assert(assignmentRequest.body.action === "assign", "summary assignment was not an explicit assign action");
+let answerRequest = null;
+let answerToast = "";
+globalThis.fetch = async (url, options = {}) => {
+  answerRequest = { url: String(url), method: options.method, body: JSON.parse(options.body || "{}") };
+  return { ok: true, json: async () => ({ verified: true, next_owner: "agents/timmy", todo: {
+    slug: "todos/question",
+    parent_task: taskSlug,
+    status: "done",
+    kind: "question",
+    text: "Which family-care scope should Toddy use next?",
+    detail: "Choose the scope and first bounded action.",
+    updated_at: "todo-v2",
+    comments: [{ body: "Use the suggested scope.", author: "people/tony-guan" }],
+    events: [],
+  }, task: {
+    slug: taskSlug,
+    title: "Review Civic progress",
+    summary: "Review Civic progress",
+    status: "blocked",
+    priority: "normal",
+    due_day: "2026-08-25",
+    display_markdown: "Question task",
+    owner_agent: "agents/timmy",
+    project: null,
+    goal: goalSlug,
+    todos: [],
+    handoff: { state: "ready_for_agent", resume_owner: "agents/timmy", resume_action: "Continue after Tony answers." },
+  } }) };
+};
+loadGoalExecution = async () => {};
+loadAgentWork = async () => {};
+render = () => {};
+showToast = (message) => { answerToast = message; };
+await answerGoalExecutionQuestionFromSummary(
+  { task_slug: taskSlug, todo_slug: "todos/question", todo_updated_at: "todo-v1", summary: "Which family-care scope should Toddy use next?", agent_slug: "agents/timmy" },
+  "Use the suggested scope.",
+  new FakeElement("button"),
+  new FakeElement("p"),
+);
+globalThis.fetch = originalFetch;
+loadGoalExecution = originalLoadGoalExecution;
+loadAgentWork = originalLoadAgentWork;
+render = originalRender;
+showToast = originalShowToast;
+assert(answerRequest.url === "/api/todos/todos%2Fquestion/answer", "inline question answer used wrong endpoint");
+assert(answerRequest.method === "POST", "inline question answer did not POST");
+assert(answerRequest.body.answer === "Use the suggested scope.", "inline question answer sent wrong answer");
+assert(answerRequest.body.expected_updated_at === "todo-v1", "inline question answer did not send action queue TODO readback version");
+assert(answerRequest.body.actor === "people/tony-guan", "inline question answer did not identify Tony as actor");
+assert(answerRequest.body.source === "mission_control", "inline question answer used wrong source");
+assert(answerToast.includes("Answer verified"), "inline question answer did not report verified success");
 let selectedQuestion = null;
 const originalSelectTask = selectTask;
 selectTask = (slug, fallback, origin, options = {}) => {

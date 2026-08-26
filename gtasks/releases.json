@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.189",
+  "current_version": "V0.0.190",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1134,6 +1134,12 @@
       "date": "2026-08-25",
       "title": "Focus Goal question actions on answers",
       "summary": "Goal execution action queue entries for Agent questions now open the exact Task and focus the verified Answer field after canonical readback, reducing the steps required to unblock waiting Agents."
+    },
+    {
+      "version": "V0.0.190",
+      "date": "2026-08-25",
+      "title": "Answer Goal questions inline",
+      "summary": "Goal execution action queue entries for waiting Agent questions now carry the verified TODO readback version and render an inline answer form that submits through the existing canonical answer-and-handoff endpoint, so Tony can unblock Agents directly from the Agents summary."
     }
   ]
 }

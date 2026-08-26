@@ -174,6 +174,7 @@ def _goal_execution_summary(
                 "goal_slug": question.get("goal_slug"),
                 "task_slug": question.get("task_slug"),
                 "todo_slug": question.get("todo_slug"),
+                "todo_updated_at": question.get("todo_updated_at"),
                 "agent_slug": question.get("agent_slug"),
                 "summary": question.get("question"),
             }
@@ -233,6 +234,7 @@ def _goal_execution_blocking_questions(
                 "goal_slug": decision.goal_slug,
                 "task_slug": task.slug,
                 "todo_slug": todo.slug,
+                "todo_updated_at": todo.updated_at.isoformat(),
                 "agent_slug": task.owner_agent,
                 "question": todo.text,
                 "detail": todo.detail,
