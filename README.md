@@ -76,8 +76,8 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.188 at commit
-`7484f86ae95fd0dbc496f0e41f9b4376397af202`. Mission Control supports a
+Latest verified pushed release baseline: V0.0.189 at commit
+`748fa8a0bfbd0ec0fa648a1be4f181658d62c609`. Mission Control supports a
 controlled Codex-only Goal execution canary through private dashboard-managed
 runtime configuration, keeps the default mode at `shadow`, persists a
 30-minute local Codex resume timeout for the Tammy supervisor, suppresses
@@ -283,6 +283,13 @@ two Tony-owned actions: `answer_question` for the Family/Toddy task
 `goals/d837ac94-36f5-4735-93bb-d84c69b45435`. Agents > Goal execution renders
 `Action queue:`, `Tony action required`, `Answer Agent question`, and
 `Assign Goal owner` while preserving the V0.0.187 explicit assignment buttons.
+V0.0.189 makes the `Answer Agent question` action a direct inline control:
+activating it opens the exact canonical waiting-for-input Task after readback
+and focuses `#task-handoff-answer`, so Tony can answer immediately. Closing
+the detail restores focus to the originating `.goal-execution-answer-action`
+using immutable `data-goal-execution-origin`; it does not fall back to a
+same-slug Agent-card link. This adds no new mutation path: answer submission
+still uses the existing verified `/api/todos/<todo>/answer` flow.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -372,6 +379,12 @@ and a bounded `summary`. The Agents panel renders the queue with owner labels
 such as `Tony action required` so operators can distinguish Tony-owned
 unblockers from Agent-active or system-action states without reading decision
 rows directly.
+V0.0.189+ renders Tony-owned `answer_question` queue entries as direct answer
+actions. The `Answer Agent question` button opens the canonical Task, focuses
+the existing handoff answer textarea after readback, and restores focus to the
+exact immutable summary-origin control on Close. Actual submission remains the
+existing verified `/api/todos/<todo>/answer` mutation flow; the action queue
+button only navigates and focuses the answer field.
 In V0.0.167+ auto-canary mode, public status selection is ordered: first
 activate the first currently `auto_eligible` Goal, then prefer an existing
 duplicate/recent task with an accepted active dispatcher handoff, then surface

@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-25`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.188`
+- Last verified pushed release: `V0.0.189`
 - Release commits:
-  `7484f86ae95fd0dbc496f0e41f9b4376397af202`
+  `748fa8a0bfbd0ec0fa648a1be4f181658d62c609`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -658,6 +658,27 @@ to the reviewed source before updating relationships.
   `goals/d837ac94-36f5-4735-93bb-d84c69b45435`. Agents > Goal execution
   visibly rendered `Action queue:`, `Tony action required`,
   `Answer Agent question`, and `Assign Goal owner`.
+- V0.0.189 evidence: dashboard-managed `/api/health` and `/api/releases`
+  readback `V0.0.189`; release commit
+  `748fa8a0bfbd0ec0fa648a1be4f181658d62c609`; release evidence file
+  `docs/release-evidence/v0.0.189.md`; repaired independent QA PASS at
+  `artifacts/qa/v0.0.189-repair-independent/gate-report.md` with frozen
+  aggregate
+  `4a51b29c345b9043a3eee7cbe7945d2050dfb446c775043bc56c392222f13f97`.
+  Developer verification reported focused
+  `python3 -m unittest tests.test_goal_execution tests.test_frontend_contract`
+  as `238` OK and `python3 -m unittest discover -s tests` as `1394` OK with
+  `5` skipped.
+- Verified V0.0.189 behavior: `Answer Agent question` is a direct inline
+  action. Activating it opens canonical Task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` after readback and focuses
+  existing `#task-handoff-answer`. Close restores focus to the exact
+  originating `.goal-execution-answer-action` with immutable origin
+  `summary:action:answer_question:tasks/561640dd-8e34-43e1-a03e-e3f3f270033d:todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`,
+  not to a same-slug Agent-card link. Postdeploy `/api/goal-execution`
+  retained `last_run`, `public_reason=actively_executing`, selected task
+  `tasks/08ca28c3-c812-5abf-86a7-110c14cb94a5`, Tony `answer_question` and
+  `assign_goal_owner` action queue entries, and `last_error=null`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -804,3 +825,6 @@ V0.0.188 action queues are owner-classification readback. A Tony-owned
 `answer_question` or `assign_goal_owner` item means Tony or a verified
 user-activated repair path must act; it does not make the dispatcher, a local
 worker, or OpenClaw responsible for that repair.
+V0.0.189 answer actions are navigation and focus helpers only. They do not
+submit text, answer the TODO, clear `waiting_for_input`, or mutate GBrain until
+Tony uses the existing verified `/api/todos/<todo>/answer` submission flow.

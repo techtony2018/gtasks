@@ -804,6 +804,12 @@ Tony-owned `assign_goal_owner` for the Entrepreneurship Goal. Agents > Goal
 execution renders `Action queue:`, `Tony action required`,
 `Answer Agent question`, and `Assign Goal owner` so operators can see who must
 act next without treating the dispatcher as the owner of Tony repairs.
+V0.0.189 turns the Tony-owned `Answer Agent question` queue row into a direct
+inline action. It opens the canonical waiting-for-input Task after readback,
+focuses the existing `#task-handoff-answer` control, and restores focus to the
+immutable `.goal-execution-answer-action` origin on Close. It does not submit
+an answer or create a new dispatcher mutation path; answering remains the
+existing verified `/api/todos/<todo>/answer` flow.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task
