@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.203",
+  "current_version": "V0.0.204",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1218,6 +1218,12 @@
       "date": "2026-08-26",
       "title": "Group live private blockers by question",
       "summary": "Goal execution now groups repeated private-input blockers by Agent and question even when each blocked task has different detail text, keeping live Tammy credential blockers compact and removing awkward punctuation before owner-assignment next actions."
+    },
+    {
+      "version": "V0.0.204",
+      "date": "2026-08-26",
+      "title": "Route Artifact identity blockers to system repair",
+      "summary": "Goal execution now classifies Artifact publisher identity mismatches as system-owned repair actions instead of Tony private-input answers, keeping dashboard credential provisioning separate from business questions while preserving safe answer and owner-assignment actions."
     }
   ]
 }

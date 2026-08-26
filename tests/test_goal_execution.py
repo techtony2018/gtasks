@@ -606,6 +606,94 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertNotIn(".; assign", rendered["next_action"])
         self.assertIn("; assign Entrepreneurship", rendered["next_action"])
 
+    def test_goal_execution_routes_artifact_identity_mismatch_to_system_repair_action(self) -> None:
+        rendered = _goal_execution_summary(
+            (
+                GoalExecutionDecision(
+                    GOAL,
+                    "waiting_for_tony",
+                    existing_task_slug="tasks/family",
+                ),
+                GoalExecutionDecision(
+                    OTHER_GOAL,
+                    "waiting_for_tony",
+                    existing_task_slug="tasks/faith-token",
+                ),
+                GoalExecutionDecision(
+                    "goals/840b3122-b299-5991-96be-30364c7f2e12",
+                    "waiting_for_tony",
+                    existing_task_slug="tasks/finance-token",
+                ),
+                GoalExecutionDecision(
+                    "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "owner_missing",
+                ),
+            ),
+            "waiting_for_tony",
+            blocking_questions=(
+                {
+                    "goal_slug": GOAL,
+                    "task_slug": "tasks/family",
+                    "todo_slug": "todos/family",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": "agents/toddy",
+                    "question": "Which family-care scope should Toddy use next?",
+                    "detail": "Choose the scope and first bounded action.",
+                },
+                {
+                    "goal_slug": OTHER_GOAL,
+                    "task_slug": "tasks/faith-token",
+                    "todo_slug": "todos/faith-token",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": "agents/tammy",
+                    "question": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
+                    "detail": "Artifact publication failed with `artifact_identity_mismatch`; provision dashboard Artifact publisher credentials.",
+                },
+                {
+                    "goal_slug": "goals/840b3122-b299-5991-96be-30364c7f2e12",
+                    "task_slug": "tasks/finance-token",
+                    "todo_slug": "todos/finance-token",
+                    "todo_updated_at": NOW.isoformat(),
+                    "agent_slug": "agents/tammy",
+                    "question": "Please provide the Tammy artifact publisher token for this fixed Codex worker.",
+                    "detail": "Finance publication failed with `artifact_identity_mismatch`; provision dashboard Artifact publisher credentials.",
+                },
+            ),
+            missing_owners=(
+                {
+                    "goal_slug": "goals/d837ac94-36f5-4735-93bb-d84c69b45435",
+                    "goal_title": "Entrepreneurship",
+                    "required_relationship": "default_agent_for",
+                    "candidate_owners": [
+                        {
+                            "agent_slug": AGENT,
+                            "agent_name": "Timmy",
+                            "default_goal_count": 1,
+                            "recommended": True,
+                            "recommendation": "recommended: lowest verified Codex Goal load",
+                        }
+                    ],
+                },
+            ),
+        )
+
+        self.assertEqual(
+            [item["kind"] for item in rendered["action_queue"]],
+            [
+                "answer_question",
+                "repair_artifact_publisher_identity",
+                "assign_goal_owner",
+            ],
+        )
+        repair_action = rendered["action_queue"][1]
+        self.assertEqual(repair_action["owner"], "system")
+        self.assertEqual(repair_action["agent_slug"], "agents/tammy")
+        self.assertEqual(repair_action["blocked_goal_count"], 2)
+        self.assertNotIn("private_input_required", repair_action)
+        self.assertNotIn("provide private input", rendered["next_action"])
+        self.assertIn("repair Tammy Artifact publisher identity for 2 blocked Goals", rendered["next_action"])
+        self.assertIn("; assign Entrepreneurship", rendered["next_action"])
+
     class Adapter:
         def __init__(
             self,

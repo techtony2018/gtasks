@@ -142,6 +142,44 @@ def _goal_execution_summary(
     )
     action_queue: list[dict[str, object]] = []
     for question in blocking_questions:
+        if _goal_execution_question_is_artifact_publisher_identity_repair(question):
+            action = {
+                "owner": "system",
+                "kind": "repair_artifact_publisher_identity",
+                "label": "Repair Artifact publisher identity",
+                "goal_slug": question.get("goal_slug"),
+                "task_slug": question.get("task_slug"),
+                "todo_slug": question.get("todo_slug"),
+                "todo_updated_at": question.get("todo_updated_at"),
+                "agent_slug": question.get("agent_slug"),
+                "summary": (
+                    "Provision dashboard Artifact publisher credentials and "
+                    "verify the Agent identity matches POST /api/artifacts."
+                ),
+                "detail": question.get("detail"),
+                "related_questions": [_goal_execution_related_question(question)],
+                "blocked_goal_count": 1,
+            }
+            existing = next(
+                (
+                    item
+                    for item in action_queue
+                    if item.get("kind") == "repair_artifact_publisher_identity"
+                    and item.get("agent_slug") == action.get("agent_slug")
+                ),
+                None,
+            )
+            if existing is not None:
+                related = existing.setdefault(
+                    "related_questions",
+                    [_goal_execution_related_question(existing)],
+                )
+                if isinstance(related, list):
+                    related.append(_goal_execution_related_question(action))
+                    existing["blocked_goal_count"] = len(related)
+                continue
+            action_queue.append(action)
+            continue
         requires_private_input = _goal_execution_question_requires_private_input(
             question
         )
@@ -200,13 +238,20 @@ def _goal_execution_summary(
             }
         )
     if waiting_for_tony and owner_missing:
-        next_action = (
-            f"{_goal_execution_answer_instruction(action_queue)}; "
-            f"{_goal_execution_owner_instruction(action_queue)}; "
-            "executing or delivered Agent work can continue."
-        )
+        parts = [_goal_execution_answer_instruction(action_queue)]
+        system_repair = _goal_execution_system_repair_instruction(action_queue)
+        if system_repair:
+            parts.append(system_repair)
+        parts.append(_goal_execution_owner_instruction(action_queue))
+        parts.append("executing or delivered Agent work can continue.")
+        next_action = "; ".join(parts)
     elif waiting_for_tony:
-        next_action = f"{_goal_execution_answer_instruction(action_queue)} so the assigned Agent can resume blocked Goal work."
+        parts = [_goal_execution_answer_instruction(action_queue)]
+        system_repair = _goal_execution_system_repair_instruction(action_queue)
+        if system_repair:
+            parts.append(system_repair)
+        parts.append("the assigned Agent can resume blocked Goal work.")
+        next_action = "; ".join(parts)
     elif owner_missing:
         next_action = f"{_goal_execution_owner_instruction(action_queue)} before Mission Control can derive that Goal work."
     elif needs_attention:
@@ -316,6 +361,42 @@ def _goal_execution_question_requires_private_input(
         "oauth",
     )
     return any(term in text for term in private_terms)
+
+
+def _goal_execution_question_is_artifact_publisher_identity_repair(
+    question: Mapping[str, object],
+) -> bool:
+    text = " ".join(
+        str(question.get(key) or "")
+        for key in ("question", "detail", "summary")
+    ).casefold()
+    return (
+        "artifact_identity_mismatch" in text
+        and "artifact publisher" in text
+    )
+
+
+def _goal_execution_system_repair_instruction(
+    action_queue: list[dict[str, object]],
+) -> str:
+    action = next(
+        (
+            item
+            for item in action_queue
+            if item.get("kind") == "repair_artifact_publisher_identity"
+        ),
+        None,
+    )
+    if action is None:
+        return ""
+    agent = _agent_label(action.get("agent_slug"))
+    blocked_goal_count = int(action.get("blocked_goal_count") or 0)
+    if blocked_goal_count > 1:
+        return (
+            f"repair {agent} Artifact publisher identity for "
+            f"{blocked_goal_count} blocked Goals"
+        )
+    return f"repair {agent} Artifact publisher identity"
 
 
 def _goal_execution_owner_instruction(
