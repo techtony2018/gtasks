@@ -4579,6 +4579,32 @@ function renderGoalExecutionSummary() {
   return panel;
 }
 
+function renderGoalExecutionInboxActions() {
+  const summary = goalExecutionSummaryPayload();
+  const actions = Array.isArray(summary?.action_queue)
+    ? summary.action_queue
+    : [];
+  if (!actions.length) return null;
+  const details = node("details", "needs-attention goal-execution-inbox-actions");
+  details.open = true;
+  const summaryRow = node("summary");
+  summaryRow.append(
+    node("span", "", "Goal execution actions"),
+    node("strong", "", String(actions.length)),
+  );
+  details.append(
+    summaryRow,
+    node(
+      "p",
+      "attention-intro",
+      "These Tony actions unblock Goal-derived Agent work. Template insertion is local until Submit answer is pressed.",
+    ),
+  );
+  const queue = renderGoalExecutionActionQueue(summary);
+  if (queue) details.append(queue);
+  return details;
+}
+
 function renderGoalExecutionSurface() {
   const section = node("section", "goal-execution-surface");
   section.id = "agent-goal-execution";
@@ -6430,10 +6456,14 @@ function render() {
         ? renderSettingsView()
         : renderListView(view);
   const attention = view === "inbox" ? renderNeedsAttention() : null;
+  const goalExecutionAttention = view === "inbox"
+    ? renderGoalExecutionInboxActions()
+    : null;
   const proposals = view === "inbox" ? renderProposedWork() : null;
   elements.viewSurface.replaceChildren(
     ...[
       ...(canonicalRootIssues ? [canonicalRootIssues] : []),
+      ...(goalExecutionAttention ? [goalExecutionAttention] : []),
       ...(attention ? [attention] : []),
       ...(proposals ? [proposals] : []),
       content,

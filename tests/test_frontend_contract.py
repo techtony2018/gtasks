@@ -301,6 +301,21 @@ assert(
   actionQueueOwnerAssignButtons.some((button) => flattenText(button).includes("recommended") && button.dataset?.agentSlug === "agents/tammy"),
   "action queue owner assignment did not label the recommended Codex Agent",
 );
+const inboxGoalActions = renderGoalExecutionInboxActions();
+const inboxGoalActionsText = flattenText(inboxGoalActions);
+assert(inboxGoalActionsText.includes("Goal execution actions"), "Inbox did not expose Goal execution actions");
+assert(inboxGoalActionsText.includes("Answer Agent question"), "Inbox Goal execution actions omitted the answer action");
+assert(inboxGoalActionsText.includes("Insert answer template"), "Inbox Goal execution actions omitted the answer template control");
+assert(inboxGoalActionsText.includes("Assign Goal owner"), "Inbox Goal execution actions omitted the owner action");
+const inboxTemplateButtons = walkElements(inboxGoalActions, (element) =>
+  String(element.className || "").includes("goal-execution-answer-template"));
+const inboxAnswerInputs = walkElements(inboxGoalActions, (element) =>
+  String(element.className || "").includes("goal-execution-answer-input"));
+assert(inboxTemplateButtons.length === 1, "Inbox Goal execution action did not expose one answer-template button");
+assert(inboxAnswerInputs.length === 1, "Inbox Goal execution action did not expose one answer textarea");
+inboxTemplateButtons[0].click();
+assert(inboxAnswerInputs[0].value.includes("Scope categories: accepted"), "Inbox answer template did not fill the concrete draft");
+assert(!inboxAnswerInputs[0].value.includes("[accepted/revised]"), "Inbox answer template exposed placeholder copy");
 const originalFetch = globalThis.fetch;
 const originalLoadAgents = loadAgents;
 const originalLoadGoalExecution = loadGoalExecution;
