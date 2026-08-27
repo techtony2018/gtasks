@@ -4072,6 +4072,28 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["gbrain_version"], "unavailable")
 
+    def test_health_reuses_gbrain_version_readback_without_repeated_runtime_probe(self) -> None:
+        calls = 0
+
+        def provider() -> str:
+            nonlocal calls
+            calls += 1
+            return f"gbrain-test {calls}"
+
+        harness = ServerHarness(
+            self,
+            FakeAdapter(),
+            gbrain_version_provider=provider,
+        )
+
+        first_status, first_payload, _ = harness.request("GET", "/api/health")
+        second_status, second_payload, _ = harness.request("GET", "/api/health")
+
+        self.assertEqual((first_status, second_status), (200, 200))
+        self.assertEqual(first_payload["gbrain_version"], "gbrain-test 1")
+        self.assertEqual(second_payload["gbrain_version"], "gbrain-test 1")
+        self.assertEqual(calls, 1)
+
     def test_release_history_is_served_from_the_canonical_catalog(self) -> None:
         harness = ServerHarness(self, FakeAdapter())
 
@@ -4348,17 +4370,18 @@ class TasksApiTests(unittest.TestCase):
         self.assertEqual(payload["task"]["owner_agent"], "agents/tammy")
         self.assertEqual(headers["Cache-Control"], "no-store")
 
-    def test_initial_reads_coalesce_through_short_cache_and_refresh_bypasses(self) -> None:
+    def test_initial_reads_coalesce_and_recent_refresh_keeps_verified_state(self) -> None:
         adapter = FakeAdapter()
         harness = ServerHarness(self, adapter)
 
         first, _, _ = harness.request("GET", "/api/tasks")
         second, _, _ = harness.request("GET", "/api/tasks")
-        refreshed, _, _ = harness.request("GET", "/api/tasks?refresh=1")
+        refreshed, refreshed_payload, _ = harness.request("GET", "/api/tasks?refresh=1")
 
         self.assertEqual((first, second, refreshed), (200, 200, 200))
-        self.assertEqual(adapter.collection_reads.count(ACTIVE_ROOT), 2)
-        self.assertEqual(adapter.collection_reads.count(COMPLETED_ROOT), 2)
+        self.assertEqual(refreshed_payload["read_state"]["status"], "fresh")
+        self.assertEqual(adapter.collection_reads.count(ACTIVE_ROOT), 1)
+        self.assertEqual(adapter.collection_reads.count(COMPLETED_ROOT), 1)
 
     def test_returns_empty_root_scoped_views_without_sample_tasks(self) -> None:
         harness = ServerHarness(self, FakeAdapter())

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.217",
+  "current_version": "V0.0.218",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1302,6 +1302,12 @@
       "date": "2026-08-26",
       "title": "Show Mission Control and GBrain runtime versions together",
       "summary": "Mission Control now reads the active GBrain runtime version from health, displays it directly beside the Mission Control version in the footer and About dialog, and falls back to an explicit unavailable label without exposing runtime errors."
+    },
+    {
+      "version": "V0.0.218",
+      "date": "2026-08-27",
+      "title": "Recover stale task refresh state and cheapen health",
+      "summary": "Task read-cache refreshes can now supersede an expired background read without leaving /api/tasks permanently refreshing/stale, while /api/health reuses the bounded GBrain version readback instead of probing the runtime on every request."
     }
   ]
 }

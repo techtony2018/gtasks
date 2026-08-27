@@ -116,13 +116,16 @@ class ReadSurfaceCache:
         *,
         clock: Callable[[], float] = time,
         background: bool = True,
+        max_refresh_seconds: float = 60.0,
     ) -> None:
         self._store = store
         self._clock = clock
         self._background = background
+        self._max_refresh_seconds = max_refresh_seconds
         self._condition = Condition()
         self._records = store.load()
-        self._loading: set[str] = set()
+        self._loading: dict[str, float] = {}
+        self._generations: dict[str, int] = {}
         self._dirty: set[str] = set()
         self._errors: dict[str, str] = {}
         self._error_at: dict[str, float] = {}
@@ -138,6 +141,7 @@ class ReadSurfaceCache:
         *,
         ttl_seconds: float,
         force: bool = False,
+        force_cooldown_seconds: float = 0.0,
     ) -> SurfaceRead:
         start_refresh = False
         with self._condition:
@@ -157,6 +161,15 @@ class ReadSurfaceCache:
                 or age is None
                 or age > ttl_seconds
             )
+            if (
+                force
+                and record is not None
+                and age is not None
+                and age <= force_cooldown_seconds
+                and name not in self._dirty
+                and name not in self._errors
+            ):
+                needs_refresh = False
             recent_cold_error = (
                 record is None
                 and name in self._errors
@@ -166,18 +179,32 @@ class ReadSurfaceCache:
             )
             if recent_cold_error:
                 needs_refresh = False
+            if needs_refresh and name in self._loading:
+                started_at = self._loading[name]
+                if self._clock() - started_at >= self._max_refresh_seconds:
+                    self._errors[name] = (
+                        "The canonical GBrain refresh did not complete. Last verified data is kept."
+                    )
+                    self._error_at[name] = self._clock()
+                    self._loading.pop(name, None)
+                else:
+                    needs_refresh = False
             if needs_refresh and name not in self._loading:
-                self._loading.add(name)
+                self._loading[name] = self._clock()
+                self._generations[name] = self._generations.get(name, 0) + 1
+                generation = self._generations[name]
                 self._errors.pop(name, None)
                 self._error_at.pop(name, None)
                 start_refresh = True
+            else:
+                generation = self._generations.get(name, 0)
 
         if start_refresh and not self._background:
-            self._refresh(name, loader)
+            self._refresh(name, loader, generation)
         elif start_refresh:
             Thread(
                 target=self._refresh,
-                args=(name, loader),
+                args=(name, loader, generation),
                 name=f"gtasks-{name}-refresh",
                 daemon=True,
             ).start()
@@ -227,6 +254,7 @@ class ReadSurfaceCache:
         self,
         name: str,
         loader: Callable[[], dict[str, Any]],
+        generation: int,
     ) -> None:
         try:
             payload = loader()
@@ -234,6 +262,8 @@ class ReadSurfaceCache:
                 raise TypeError("surface loader did not return an object")
             last_valid_at = self._clock()
             with self._condition:
+                if self._generations.get(name) != generation:
+                    return
                 self._records[name] = {
                     "payload": deepcopy(payload),
                     "last_valid_at": last_valid_at,
@@ -248,11 +278,14 @@ class ReadSurfaceCache:
                 pass
         except Exception:
             with self._condition:
+                if self._generations.get(name) != generation:
+                    return
                 self._errors[name] = (
                     "The canonical GBrain refresh did not complete. Last verified data is kept."
                 )
                 self._error_at[name] = self._clock()
         finally:
             with self._condition:
-                self._loading.discard(name)
+                if self._generations.get(name) == generation:
+                    self._loading.pop(name, None)
                 self._condition.notify_all()

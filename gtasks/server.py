@@ -174,7 +174,8 @@ class AgentDelegationMutationLock:
             finally:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
                 os.close(descriptor)
-SNAPSHOT_CACHE_SECONDS = 30
+SNAPSHOT_CACHE_SECONDS = 5 * 60
+SNAPSHOT_FORCE_REFRESH_COOLDOWN_SECONDS = SNAPSHOT_CACHE_SECONDS
 PROPOSAL_CACHE_SECONDS = 5 * 60
 SYSTEM_TICKET_CACHE_SECONDS = 5 * 60
 PROJECT_CACHE_SECONDS = 5 * 60
@@ -856,16 +857,26 @@ def _handler_class(
         delegation_lock_path or default_agent_delegation_lock_path()
     )
     active_gbrain_version_provider = gbrain_version_provider or gbrain_version_string
+    gbrain_version_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
+    gbrain_version_cache_seconds = 300.0
 
     def safe_gbrain_version() -> str:
+        now = time.time()
+        cached = gbrain_version_cache.get("value")
+        if isinstance(cached, str) and now < float(gbrain_version_cache["expires_at"]):
+            return cached
         try:
             value = active_gbrain_version_provider()
         except Exception:
-            return "unavailable"
+            value = "unavailable"
         if not isinstance(value, str):
-            return "unavailable"
+            value = "unavailable"
         normalized = " ".join(value.split())
-        return normalized or "unavailable"
+        if not normalized:
+            normalized = "unavailable"
+        gbrain_version_cache["value"] = normalized
+        gbrain_version_cache["expires_at"] = now + gbrain_version_cache_seconds
+        return normalized
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -1348,6 +1359,7 @@ def _handler_class(
             lambda: build_task_snapshot(adapter, clock().date()),
             ttl_seconds=SNAPSHOT_CACHE_SECONDS,
             force=force,
+            force_cooldown_seconds=SNAPSHOT_FORCE_REFRESH_COOLDOWN_SECONDS,
         )
 
     def read_proposals(force: bool = False):

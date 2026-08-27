@@ -105,6 +105,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_218_records_task_read_cache_and_health_repair(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.218")
+
+        self.assertIn("stale task refresh state", release["title"])
+        for contract in (
+            "supersede an expired background read",
+            "/api/tasks",
+            "permanently refreshing/stale",
+            "/api/health",
+            "GBrain version readback",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_100_records_bounded_long_open_refresh_scheduling(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.100")
 
