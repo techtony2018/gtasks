@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.216`
+- Last verified pushed release: `V0.0.218`
 - Release commits:
-  `98a70502226dc2cd7181218d22172c3bd179b8e5`
+  `75964184124efc333d0df061bd2b616d88e479ee`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1247,6 +1247,29 @@ to the reviewed source before updating relationships.
   `hosts/<agent>` route, current repo HEAD, preflight verification, and
   required private Artifact publisher token/config. Local supervisor scope
   remains Tammy/Tammy-OC only; Timmy/Toddy stay remote/non-local.
+- V0.0.217 evidence: release commit
+  `aaf11c2b860ca00e163d611f07d7a798e0bc024a`; release evidence file
+  `docs/release-evidence/v0.0.217.md`. V0.0.217 reads the active GBrain
+  runtime version from health and displays it directly beside the Mission
+  Control version in the footer and About dialog, with an explicit unavailable
+  fallback that does not expose runtime errors.
+- V0.0.218 evidence: dashboard-managed `/api/health` and `/api/releases`
+  readback `V0.0.218` with `gbrain 0.46.28.0`; release commit
+  `75964184124efc333d0df061bd2b616d88e479ee`; release evidence file
+  `docs/release-evidence/v0.0.218.md`; independent QA PASS at
+  `artifacts/qa/v0.0.218-independent/gate-report.md` with frozen aggregate
+  `90551eff928dd5496df6d5326f79de95dbdb63145ff5fcd175308d63d335932e`.
+- Verified V0.0.218 behavior: task read-cache refreshes can supersede an
+  expired background read without leaving `/api/tasks` permanently refreshing
+  or stale, while `/api/health` reuses the bounded GBrain version readback
+  instead of probing the runtime on every request. The final receipt run
+  reported health cached p50 `1.95ms`; `/api/tasks` settled to fresh,
+  `refreshing=false`, `stale=false`, 45 tasks, and zero issues by bounded poll
+  35; five immediate `/api/tasks?refresh=1` readbacks remained fresh with 45
+  tasks and zero issues. Independent QA also verified Board and All Tasks kept
+  populated canonical content on desktop 1440 and mobile 390, About rendered
+  `Mission Control V0.0.218 GBrain: gbrain 0.46.28.0`, browser traffic stayed
+  GET-only, and no GBrain mutation occurred.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1508,3 +1531,9 @@ completed wake-inbox result may override and clear stale blocked local state
 only after canonical readback; it does not permit Timmy/Toddy local workers,
 skip Artifact publisher token/config on the remote hosts, or complete work
 without a verified completed acknowledgement.
+V0.0.217/V0.0.218 health and task-cache changes are readback/latency repairs,
+not canonical-store changes. Displaying `gbrain 0.46.28.0` proves runtime
+version readback, not data mutation. Returning a last-valid task projection
+during a slow refresh preserves usability, but GBrain remains canonical and
+the cache must settle back to fresh/not-refreshing/not-stale after bounded
+polling.

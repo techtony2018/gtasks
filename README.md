@@ -467,6 +467,15 @@ Timmy/Toddy remain remote-only workers, this Mac's local supervisor remains
 Tammy/Tammy-OC only, and remote workers still require the private dispatcher
 configuration plus Artifact publisher token/config before they can complete
 Artifact-backed Goal work.
+V0.0.217 shows the active GBrain runtime version beside the Mission Control
+version in the footer and About dialog. V0.0.218 repairs stale task read-cache
+refresh state and keeps health cheap: an expired background task read can be
+superseded so `/api/tasks` does not remain permanently refreshing/stale, and
+`/api/health` reuses the bounded GBrain version readback instead of probing
+GBrain on every health request. Deployed V0.0.218 readback showed Mission
+Control V0.0.218 with `gbrain 0.46.28.0`, health cached p50 `1.95ms`, and
+`/api/tasks` settled fresh/not-refreshing/not-stale with 45 tasks and zero
+issues.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -863,6 +872,14 @@ shows its own explicit refreshing, stale, or error state while independently
 available data remains usable. Manual and automatic Refresh explicitly
 invalidate the relevant projection; verified task mutations invalidate task,
 proposal, and Agent Work projections together.
+V0.0.218 specifically repairs task read-cache refresh freshness: a later
+manual or automatic task refresh may supersede an expired background task read
+without leaving `/api/tasks` permanently `refreshing` or `stale`. The cache is
+still only a private last-valid read projection. It must continue to return the
+last verified task list during slow refresh, then settle to fresh/not
+refreshing/not stale after bounded polling. V0.0.218 verification read back 45
+tasks, zero issues, and five immediate `/api/tasks?refresh=1` responses that
+remained fresh rather than churning the refresh state.
 
 Independent UI QA fixtures must never be created in Tony's Tasks or an Agent
 work root. Their explicit contract is one typed `member_of` relationship to
