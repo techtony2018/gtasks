@@ -476,6 +476,18 @@ GBrain on every health request. Deployed V0.0.218 readback showed Mission
 Control V0.0.218 with `gbrain 0.46.28.0`, health cached p50 `1.95ms`, and
 `/api/tasks` settled fresh/not-refreshing/not-stale with 45 tasks and zero
 issues.
+V0.0.219 reopens incomplete Agent answer handoffs safely. Legacy or partial
+Agent answers that were incorrectly promoted to `ready_for_agent` now repair
+through `GBrainAdapter.repair_incomplete_agent_answer_handoff`: the same
+Task, TODO, comments, history, assigned Agent, and Goal relationships are
+preserved, the precise question is reopened to `waiting_for_input`, a TODO
+`status_changed` audit event is appended, and the typed Tony blocker is
+restored without waking the Agent. Deployed V0.0.219 readback showed Mission
+Control V0.0.219 with `gbrain 0.46.28.0`; Family/Toddy task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` read back blocked on
+`people/tony-guan`, handoff `waiting_for_input`, question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2` `not_done`, and
+`answered_at` / `acknowledged_at` null.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
@@ -880,6 +892,16 @@ last verified task list during slow refresh, then settle to fresh/not
 refreshing/not stale after bounded polling. V0.0.218 verification read back 45
 tasks, zero issues, and five immediate `/api/tasks?refresh=1` responses that
 remained fresh rather than churning the refresh state.
+
+V0.0.219 specifically repairs incomplete Agent-answer handoff freshness in the
+canonical task graph, not the read cache. If a legacy or partial answer left a
+handoff question promoted to `ready_for_agent` without a real Tony answer or
+Agent acknowledgement, the repair must reopen the exact question TODO to
+`not_done` / `waiting_for_input`, restore `waiting_on=people/tony-guan` and a
+typed `blocked_by -> people/tony-guan`, append a TODO `status_changed` audit
+event, and preserve the existing task, TODO, comments, history,
+`assigned_to`, and Goal relationships. It must not wake the Agent or create a
+new task/TODO.
 
 Independent UI QA fixtures must never be created in Tony's Tasks or an Agent
 work root. Their explicit contract is one typed `member_of` relationship to

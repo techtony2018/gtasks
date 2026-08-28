@@ -991,6 +991,18 @@ pinned Agent claim. This is the expected recovery after fixing a remote
 worker's private dispatcher credentials or Artifact publisher token/config;
 it does not grant permission to run Timmy/Toddy locally or to bypass verified
 completed wake-inbox readback.
+V0.0.219 adds the inverse repair for incomplete Agent-answer handoffs:
+`GBrainAdapter.repair_incomplete_agent_answer_handoff` handles legacy or
+partial answer records that were incorrectly promoted to `ready_for_agent`
+without a real Tony answer or Agent acknowledgement. The repair keeps the
+same task, TODO, comments, history, assigned Agent, and Goal links; reopens
+the precise question to `waiting_for_input`; restores
+`waiting_on=people/tony-guan` plus the typed Tony blocker; and appends a TODO
+`status_changed` audit event. It must not wake the Agent, synthesize an
+answer, create a replacement task/TODO, or treat this as remote worker
+completion. The canonical Family/Toddy repair target is task
+`tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` with question TODO
+`todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`.
 Live readback showed the auto canary completed Finance/Tammy task
 `tasks/cc655813-1968-5264-a5ad-454199c1b3cb` with Artifact
 `artifacts/9362d402-0f7c-4d65-9222-a8c140f1d9d3`, then Career/Tammy task

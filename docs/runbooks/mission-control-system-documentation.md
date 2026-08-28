@@ -137,9 +137,9 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.218`
+- Last verified pushed release: `V0.0.219`
 - Release commits:
-  `75964184124efc333d0df061bd2b616d88e479ee`
+  `9655050dbb3e531a37b8ecf3f2d2fe788b60001b`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1270,6 +1270,31 @@ to the reviewed source before updating relationships.
   populated canonical content on desktop 1440 and mobile 390, About rendered
   `Mission Control V0.0.218 GBrain: gbrain 0.46.28.0`, browser traffic stayed
   GET-only, and no GBrain mutation occurred.
+- V0.0.219 evidence: dashboard-managed `/api/health`, `/api/releases`,
+  footer, and About readback `V0.0.219` with `gbrain 0.46.28.0`; release
+  commit `9655050dbb3e531a37b8ecf3f2d2fe788b60001b`; release evidence file
+  `docs/release-evidence/v0.0.219.md`; independent QA PASS at
+  `artifacts/qa/v0.0.219-independent/report.md` with frozen aggregate
+  `ace41be413ecf159b6cbbf52282d3da561b2b03725cfda16c1ccd5d8f65f5007`.
+  Developer verification reported focused coverage as `229` OK and broader
+  coverage as `691` OK.
+- Verified V0.0.219 behavior: incomplete or legacy Agent-answer handoffs that
+  were incorrectly promoted to `ready_for_agent` now repair through
+  `GBrainAdapter.repair_incomplete_agent_answer_handoff` without creating a
+  replacement task/TODO or waking the Agent. The repair preserves the same
+  task, TODO, comments, history, `assigned_to`, and Goal relationships,
+  reopens the precise question to `waiting_for_input`, restores the typed Tony
+  blocker, and appends a TODO `status_changed` audit event. Canonical readback
+  showed Family/Toddy task
+  `tasks/561640dd-8e34-43e1-a03e-e3f3f270033d` as `blocked` with
+  `blockers=["people/tony-guan"]`, handoff `waiting_for_input`, question TODO
+  `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2`, `waiting_on`
+  `people/tony-guan`, resume owner `agents/toddy`, `answered_at=null`,
+  `acknowledged_at=null`, and the question TODO `not_done`. Independent
+  desktop 1440 and genuine mobile 390 QA verified Agents, Inbox, Goals, and
+  exact Task detail showed blocked/waiting-for-Tony copy with no visible
+  `ready_for_agent` or executing classification for that task; browser
+  traffic stayed GET-only and no QA write or GBrain mutation occurred.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1537,3 +1562,10 @@ version readback, not data mutation. Returning a last-valid task projection
 during a slow refresh preserves usability, but GBrain remains canonical and
 the cache must settle back to fresh/not-refreshing/not-stale after bounded
 polling.
+V0.0.219 is a canonical handoff repair, but only for incomplete Agent-answer
+handoffs with missing Tony answer/ack evidence that were incorrectly promoted
+to `ready_for_agent`. It must preserve existing task/TODO/comments/history,
+assigned Agent, and Goal relationships; reopen the exact question to
+`waiting_for_input`; restore the typed Tony blocker; and append audit history.
+It must not infer a new answer, clear the blocker, wake the Agent, create a
+replacement task/TODO, or mutate unrelated Goal execution state.
