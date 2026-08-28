@@ -11457,6 +11457,251 @@ class GBrainAdapter:
                 + ("Rollback verified." if rollback_ok else "Rollback could not be verified."),
             ) from exc
 
+    def repair_incomplete_agent_answer_handoff(
+        self,
+        task_slug: str,
+        *,
+        question_todo_slug: str,
+        remaining_question: str,
+        resume_action: str,
+        agent_slug: str,
+        idempotency_key: str,
+        now: datetime,
+    ) -> HandoffMutationReceipt:
+        """Return a partially answered Agent question to waiting-for-input.
+
+        This is the inverse of ``repair_answered_agent_handoff`` for legacy
+        pages where an incomplete Tony answer was incorrectly promoted into a
+        ready/acknowledged Agent handoff.  The repair is intentionally narrow:
+        it preserves the same task, TODO, comments, history, relationships, and
+        scalar provenance, appends a TODO status event when reopening the
+        question, and verifies canonical readback before reporting success.
+        """
+        normalized_question, _unused_detail = self._normalize_todo_text(
+            remaining_question, ""
+        )
+        normalized_resume, _unused = self._normalize_todo_text(resume_action, "")
+        key = self._normalize_idempotency_key(idempotency_key)
+        self._validate_todo_timestamp(now, "handoff incomplete-answer repair timestamp")
+        todo, raw_todo, _todo_links = self._read_todo_snapshot(question_todo_slug)
+        raw_task = self.runner.run("get_page", {"slug": task_slug})
+        raw_task_links = self.runner.run("get_links", {"slug": task_slug})
+        if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
+            raise GBrainProtocolError("incomplete-answer repair task snapshot was not structured")
+        raw_frontmatter = raw_task.get("frontmatter")
+        if not isinstance(raw_frontmatter, Mapping):
+            raise GBrainProtocolError("incomplete-answer repair task has no frontmatter")
+        raw_handoff = raw_frontmatter.get("handoff")
+        if not isinstance(raw_handoff, Mapping):
+            raise ValueError("task has no repairable Agent handoff")
+
+        parseable_task_page = deepcopy(dict(raw_task))
+        parseable_frontmatter = deepcopy(dict(raw_frontmatter))
+        parseable_frontmatter["handoff"] = None
+        parseable_task_page["frontmatter"] = parseable_frontmatter
+        task = Task.from_page(parseable_task_page, edges=raw_task_links)
+        self._require_task_openclaw_activation(task)
+        if todo.parent_task != task.slug:
+            raise ValueError("question TODO does not belong to the task")
+        if task.owner_agent != agent_slug:
+            raise ValueError("repair Agent must match the task's assigned Agent")
+        if task.status in {"proposed", "completed", "cancelled"}:
+            raise ValueError("only authorized unfinished Agent work can be repaired")
+        if todo.kind != "question":
+            raise ValueError("handoff repair TODO must be a question")
+        if raw_handoff.get("question_todo") != todo.slug:
+            raise ValueError("handoff question_todo does not match the repaired TODO")
+        if raw_handoff.get("resume_owner") != agent_slug:
+            raise ValueError("handoff resume_owner must match the assigned Agent")
+        if str(raw_handoff.get("resume_action", "")).strip() != normalized_resume:
+            raise ValueError("handoff resume_action does not match the expected resume action")
+        if now < todo.updated_at:
+            raise ValueError("handoff repair timestamp cannot move backwards")
+
+        raw_requested_at = raw_handoff.get("requested_at")
+        if not isinstance(raw_requested_at, str):
+            raise DomainValidationError("handoff requested_at must be an ISO timestamp")
+        try:
+            requested_at = datetime.fromisoformat(raw_requested_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise DomainValidationError(
+                "handoff requested_at must be an ISO timestamp"
+            ) from exc
+        if requested_at.tzinfo is None:
+            raise DomainValidationError("handoff requested_at must include a timezone")
+        raw_round = raw_handoff.get("round", 1)
+        if isinstance(raw_round, bool) or not isinstance(raw_round, int) or raw_round < 1:
+            raise DomainValidationError("handoff round must be a positive whole number")
+        waiting_handoff = TaskHandoff(
+            state="waiting_for_input",
+            question_todo=todo.slug,
+            waiting_on=TONY_PROFILE_SLUG,
+            resume_owner=agent_slug,
+            resume_action=normalized_resume,
+            requested_at=requested_at,
+            answered_at=None,
+            acknowledged_at=None,
+            round=raw_round,
+        )
+        status_event_slug = self._todo_identity(
+            "todo-events", todo.slug, f"reopen_incomplete_answer:{key}"
+        )
+
+        def repaired_readback_is_complete() -> HandoffMutationReceipt | None:
+            try:
+                stored_task = self.get_task(task.slug)
+                stored_todo = self._read_todo(todo.slug)
+            except (DomainValidationError, GBrainError):
+                return None
+            if (
+                stored_task.status == "blocked"
+                and stored_task.owner_agent == agent_slug
+                and stored_task.handoff == waiting_handoff
+                and stored_task.next_action == normalized_question
+                and TONY_PROFILE_SLUG in stored_task.blockers
+                and stored_todo.status == "not_done"
+                and stored_todo.kind == "question"
+            ):
+                return HandoffMutationReceipt(
+                    task=stored_task,
+                    todo=stored_todo,
+                    event=stored_todo.events[-1] if stored_todo.events else None,
+                    next_owner=TONY_PROFILE_SLUG,
+                    verified=True,
+                    idempotent=True,
+                )
+            return None
+
+        if self._optional_todo_event(status_event_slug) is not None:
+            receipt = repaired_readback_is_complete()
+            if receipt is None:
+                raise GBrainProtocolError("incomplete-answer repair idempotency readback was incomplete")
+            return receipt
+        if raw_handoff.get("state") == "waiting_for_input" and todo.status == "not_done":
+            receipt = repaired_readback_is_complete()
+            if receipt is not None:
+                return receipt
+            raise GBrainProtocolError("waiting handoff readback was incomplete")
+        if raw_handoff.get("state") not in {"ready_for_agent", "agent_working", "waiting_for_input"}:
+            raise ValueError("task handoff is not in a repairable state")
+
+        raw_existing_children = (*todo.comment_slugs, *todo.event_slugs)
+        status_event = TodoEvent(
+            slug=status_event_slug,
+            todo_slug=todo.slug,
+            event_type="status_changed",
+            actor=TONY_PROFILE_SLUG,
+            source="mission_control",
+            occurred_at=now,
+            idempotency_key=key,
+            before={
+                "status": todo.status,
+                "handoff_state": raw_handoff.get("state"),
+                "waiting_on": raw_handoff.get("waiting_on"),
+                "answered_at": raw_handoff.get("answered_at"),
+                "acknowledged_at": raw_handoff.get("acknowledged_at"),
+            },
+            after={
+                "status": "not_done",
+                "handoff_state": "waiting_for_input",
+                "waiting_on": TONY_PROFILE_SLUG,
+                "remaining_question": normalized_question,
+            },
+        )
+        updated_todo = (
+            replace(
+                todo,
+                status="not_done",
+                updated_at=now,
+                event_slugs=(*todo.event_slugs, status_event.slug),
+                events=(*todo.events, status_event),
+            )
+            if todo.status != "not_done"
+            else todo
+        )
+        blocker_preexisted = self._has_typed_edge(
+            raw_task_links,
+            from_slug=task.slug,
+            to_slug=TONY_PROFILE_SLUG,
+            link_type="blocked_by",
+        )
+        new_children = (status_event.slug,) if todo.status != "not_done" else ()
+        try:
+            if todo.status != "not_done":
+                self._write_todo_event(status_event)
+                self.runner.run(
+                    "put_page",
+                    {"slug": todo.slug, "content": render_todo_page(updated_todo)},
+                )
+            task_frontmatter = self._handoff_frontmatter(
+                raw_task,
+                status="blocked",
+                next_action=normalized_question,
+                handoff=waiting_handoff,
+                now=now,
+                add_blocker=TONY_PROFILE_SLUG,
+            )
+            self.runner.run(
+                "put_page",
+                {
+                    "slug": task.slug,
+                    "content": _render_preserved_task_page(raw_task, task_frontmatter),
+                },
+            )
+            if not blocker_preexisted:
+                self.runner.run(
+                    "add_link",
+                    {
+                        "from": task.slug,
+                        "to": TONY_PROFILE_SLUG,
+                        "link_type": "blocked_by",
+                        "context": "Agent work remains blocked pending Tony's specific answer.",
+                        "link_source": "gtasks",
+                    },
+                )
+            stored_task = self.get_task(task.slug)
+            stored_todo = self._read_todo(todo.slug)
+            if (
+                stored_task.status != "blocked"
+                or stored_task.owner_agent != agent_slug
+                or stored_task.handoff != waiting_handoff
+                or stored_task.next_action != normalized_question
+                or TONY_PROFILE_SLUG not in stored_task.blockers
+                or stored_todo.to_dict() != updated_todo.to_dict()
+            ):
+                raise GBrainProtocolError("incomplete-answer repair readback did not match")
+            return HandoffMutationReceipt(
+                task=stored_task,
+                todo=stored_todo,
+                event=status_event if todo.status != "not_done" else None,
+                next_owner=TONY_PROFILE_SLUG,
+                verified=True,
+            )
+        except (DomainValidationError, GBrainError) as exc:
+            rollback_ok = self._restore_page(raw_todo) and self._restore_page(raw_task)
+            rollback_ok = all(
+                self._delete_child_page(slug)
+                for slug in reversed(new_children)
+                if slug not in raw_existing_children
+            ) and rollback_ok
+            if not blocker_preexisted:
+                try:
+                    self.runner.run(
+                        "remove_link",
+                        {
+                            "from": task.slug,
+                            "to": TONY_PROFILE_SLUG,
+                            "link_type": "blocked_by",
+                        },
+                    )
+                except GBrainError:
+                    rollback_ok = False
+            raise PartialMutationError(
+                task.slug,
+                "Incomplete Agent answer handoff repair failed. "
+                + ("Rollback verified." if rollback_ok else "Rollback could not be verified."),
+            ) from exc
+
     def is_active_handoff_question(self, todo_slug: str) -> bool:
         todo = self._read_todo(todo_slug)
         task = self.get_task(todo.parent_task)

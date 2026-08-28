@@ -9193,6 +9193,86 @@ class TodoAdapterTests(unittest.TestCase):
         self.assertTrue(duplicate.idempotent)
         self.assertEqual(len(duplicate.todo.comments), 1)
 
+    def test_repairs_incomplete_answer_back_to_waiting_for_input(self) -> None:
+        runner, task = self._fixture(agent_slug="agents/toddy")
+        adapter = GBrainAdapter(runner)
+        question = adapter.request_agent_input(
+            task.slug,
+            question="Which single family-care category should Toddy consider first?",
+            question_detail="Choose exactly one category.",
+            resume_action="Resume after Tony chooses one category.",
+            agent_slug="agents/toddy",
+            idempotency_key="family-category-question",
+            now=datetime.fromisoformat("2026-08-02T10:00:00-07:00"),
+        ).todo
+        answered = adapter.answer_agent_question(
+            question.slug,
+            answer="Scope, outcomes, constraints, and procedure accepted.",
+            expected_updated_at=question.updated_at,
+            actor="people/tony-guan",
+            source="mission_control",
+            idempotency_key="partial-family-answer",
+            now=datetime.fromisoformat("2026-08-02T10:30:00-07:00"),
+        )
+        prior_comment_slugs = answered.todo.comment_slugs
+        prior_event_slugs = answered.todo.event_slugs
+
+        frontmatter = runner.pages[task.slug]["frontmatter"]
+        frontmatter["status"] = "active"
+        frontmatter["blocked_by"] = "Tony category selection"
+        frontmatter["next_action"] = (
+            "Which one category should be considered first: core care, periodic "
+            "support, emergency-only, or out of current scope?"
+        )
+        frontmatter["handoff"]["waiting_on"] = "people/tony-guan"
+        frontmatter["handoff"]["acknowledged_at"] = "2026-08-02T10:35:00-07:00"
+
+        receipt = adapter.repair_incomplete_agent_answer_handoff(
+            task.slug,
+            question_todo_slug=question.slug,
+            remaining_question=frontmatter["next_action"],
+            resume_action="Resume after Tony chooses one category.",
+            agent_slug="agents/toddy",
+            idempotency_key="repair-incomplete-family-answer",
+            now=datetime.fromisoformat("2026-08-02T11:00:00-07:00"),
+        )
+
+        self.assertTrue(receipt.verified)
+        self.assertEqual(receipt.next_owner, "people/tony-guan")
+        self.assertEqual(receipt.task.status, "blocked")
+        self.assertEqual(receipt.task.owner_agent, "agents/toddy")
+        self.assertEqual(receipt.task.blockers, ("people/tony-guan",))
+        self.assertEqual(receipt.task.handoff.state, "waiting_for_input")
+        self.assertEqual(receipt.task.handoff.question_todo, question.slug)
+        self.assertEqual(receipt.task.handoff.waiting_on, "people/tony-guan")
+        self.assertIsNone(receipt.task.handoff.answered_at)
+        self.assertIsNone(receipt.task.handoff.acknowledged_at)
+        self.assertEqual(receipt.task.next_action, frontmatter["next_action"])
+        self.assertEqual(receipt.todo.status, "not_done")
+        self.assertEqual(receipt.todo.comment_slugs, prior_comment_slugs)
+        self.assertEqual(receipt.todo.event_slugs[: len(prior_event_slugs)], prior_event_slugs)
+        self.assertEqual(receipt.todo.events[-1].event_type, "status_changed")
+        self.assertEqual(receipt.todo.events[-1].before["status"], "done")
+        self.assertEqual(receipt.todo.events[-1].after["status"], "not_done")
+        self.assertTrue(any(
+            edge.get("from_slug") == task.slug
+            and edge.get("to_slug") == "people/tony-guan"
+            and edge.get("link_type") == "blocked_by"
+            for edge in runner.links
+        ))
+
+        duplicate = adapter.repair_incomplete_agent_answer_handoff(
+            task.slug,
+            question_todo_slug=question.slug,
+            remaining_question=frontmatter["next_action"],
+            resume_action="Resume after Tony chooses one category.",
+            agent_slug="agents/toddy",
+            idempotency_key="repair-incomplete-family-answer",
+            now=datetime.fromisoformat("2026-08-02T11:00:00-07:00"),
+        )
+        self.assertTrue(duplicate.idempotent)
+        self.assertEqual(duplicate.todo.event_slugs, receipt.todo.event_slugs)
+
     def test_handoff_rejects_empty_answer_stale_question_and_wrong_agent(self) -> None:
         runner, task = self._fixture(agent_slug="agents/tammy")
         adapter = GBrainAdapter(runner)
