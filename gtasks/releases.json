@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.219",
+  "current_version": "V0.0.220",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1314,6 +1314,12 @@
       "date": "2026-08-28",
       "title": "Reopen incomplete Agent answers safely",
       "summary": "Adds a verified repair path for legacy Agent handoffs where a partial Tony answer was incorrectly promoted to ready_for_agent. The repair keeps the same task and TODO, reopens the precise question, restores waiting_for_input with a typed Tony blocker, appends audit evidence, and preserves existing comments, history, assignment, and goal relationships."
+    },
+    {
+      "version": "V0.0.220",
+      "date": "2026-08-29",
+      "title": "Settle expired read refreshes without retry loops",
+      "summary": "Read-cache surfaces now convert expired background refreshes into bounded stale/error states without immediately starting another forced refresh, preserving last-valid payloads while allowing a retry after the error cooldown."
     }
   ]
 }

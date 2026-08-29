@@ -186,9 +186,19 @@ class ReadSurfaceCache:
                         "The canonical GBrain refresh did not complete. Last verified data is kept."
                     )
                     self._error_at[name] = self._clock()
+                    self._generations[name] = self._generations.get(name, 0) + 1
                     self._loading.pop(name, None)
+                    needs_refresh = False
                 else:
                     needs_refresh = False
+            recent_refresh_error = (
+                record is not None
+                and name in self._errors
+                and self._clock() - self._error_at.get(name, 0.0)
+                < ttl_seconds
+            )
+            if recent_refresh_error:
+                needs_refresh = False
             if needs_refresh and name not in self._loading:
                 self._loading[name] = self._clock()
                 self._generations[name] = self._generations.get(name, 0) + 1

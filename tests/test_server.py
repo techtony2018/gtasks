@@ -7743,6 +7743,32 @@ class ProposalApiTests(unittest.TestCase):
             self.assertTrue(cache.wait_for_idle("proposals"))
             self.assertTrue(cache.wait_for_idle("tasks"))
 
+    def test_recent_proposal_force_refresh_keeps_verified_state(self) -> None:
+        class CountingProposalAdapter(FakeAdapter):
+            read_count = 0
+
+            def list_proposals(self) -> ProposalRead:
+                self.read_count += 1
+                return super().list_proposals()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(
+                ReadSnapshotStore(Path(temporary) / "reads.json"),
+                background=False,
+            )
+            adapter = CountingProposalAdapter(proposals=(sample_proposal(),))
+            harness = ServerHarness(self, adapter, read_cache=cache)
+
+            first_status, first_payload, _ = harness.request("GET", "/api/proposals")
+            refreshed_status, refreshed_payload, _ = harness.request(
+                "GET", "/api/proposals?refresh=1"
+            )
+
+            self.assertEqual((first_status, refreshed_status), (200, 200))
+            self.assertEqual(first_payload["read_state"]["status"], "fresh")
+            self.assertEqual(refreshed_payload["read_state"]["status"], "fresh")
+            self.assertEqual(adapter.read_count, 1)
+
     def test_lists_one_canonical_proposal_without_creating_work(self) -> None:
         adapter = FakeAdapter(proposals=(sample_proposal(),))
         harness = ServerHarness(self, adapter)

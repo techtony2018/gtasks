@@ -180,6 +180,7 @@ PROPOSAL_CACHE_SECONDS = 5 * 60
 SYSTEM_TICKET_CACHE_SECONDS = 5 * 60
 PROJECT_CACHE_SECONDS = 5 * 60
 AGENT_WORK_CACHE_SECONDS = 5 * 60
+READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS = 5 * 60
 DEFAULT_ARTIFACT_PUBLISHER_CREDENTIALS = (
     Path.home()
     / ".codex"
@@ -1378,6 +1379,7 @@ def _handler_class(
             load,
             ttl_seconds=PROPOSAL_CACHE_SECONDS,
             force=force,
+            force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
         )
 
     def read_system_tickets(
@@ -1393,6 +1395,7 @@ def _handler_class(
             ).to_dict(),
             ttl_seconds=SYSTEM_TICKET_CACHE_SECONDS,
             force=force,
+            force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
         )
 
     def read_projects(force: bool = False):
@@ -1401,6 +1404,7 @@ def _handler_class(
             lambda: adapter.list_projects().to_dict(),
             ttl_seconds=PROJECT_CACHE_SECONDS,
             force=force,
+            force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
         )
 
     def read_agent_work(force: bool = False):
@@ -1409,6 +1413,7 @@ def _handler_class(
             lambda: adapter.list_agent_work().to_dict(),
             ttl_seconds=AGENT_WORK_CACHE_SECONDS,
             force=force,
+            force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
         )
 
     class GTasksHandler(BaseHTTPRequestHandler):

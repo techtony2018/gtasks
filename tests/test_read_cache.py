@@ -150,7 +150,61 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 {"tasks": []},
             )
 
-    def test_expired_background_refresh_can_be_superseded_without_permanent_refreshing_state(self) -> None:
+    def test_expired_background_refresh_settles_to_stale_error_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "read-snapshots.json"
+            store = ReadSnapshotStore(path)
+            store.save(
+                {
+                    "tasks": {
+                        "payload": {"tasks": [{"slug": "tasks/old"}]},
+                        "last_valid_at": 1.0,
+                    }
+                }
+            )
+            now = 100.0
+            stalled_entered = threading.Event()
+            release_stalled = threading.Event()
+            calls = 0
+
+            def clock() -> float:
+                return now
+
+            def loader() -> dict:
+                nonlocal calls
+                calls += 1
+                stalled_entered.set()
+                release_stalled.wait(timeout=2)
+                return {"tasks": [{"slug": "tasks/stalled"}]}
+
+            cache = ReadSurfaceCache(
+                store,
+                clock=clock,
+                max_refresh_seconds=5,
+            )
+            try:
+                first = cache.read("tasks", loader, ttl_seconds=30, force=True)
+                self.assertEqual(first.payload["tasks"][0]["slug"], "tasks/old")
+                self.assertEqual(first.state["status"], "refreshing")
+                self.assertTrue(stalled_entered.wait(timeout=1))
+
+                now = 106.0
+                expired = cache.read("tasks", loader, ttl_seconds=30, force=True)
+                self.assertEqual(expired.payload["tasks"][0]["slug"], "tasks/old")
+                self.assertEqual(expired.state["status"], "stale")
+                self.assertFalse(expired.state["refreshing"])
+                self.assertTrue(expired.state["stale"])
+                self.assertEqual(calls, 1)
+
+                repeated_force = cache.read("tasks", loader, ttl_seconds=30, force=True)
+                self.assertEqual(repeated_force.state["status"], "stale")
+                self.assertFalse(repeated_force.state["refreshing"])
+                self.assertEqual(calls, 1)
+            finally:
+                release_stalled.set()
+                self.assertTrue(cache.wait_for_idle("tasks"))
+
+    def test_expired_refresh_can_retry_after_error_cooldown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "read-snapshots.json"
             store = ReadSnapshotStore(path)
@@ -188,12 +242,17 @@ class ReadSurfaceCacheTests(unittest.TestCase):
             )
             try:
                 first = cache.read("tasks", loader, ttl_seconds=30, force=True)
-                self.assertEqual(first.payload["tasks"][0]["slug"], "tasks/old")
                 self.assertEqual(first.state["status"], "refreshing")
                 self.assertTrue(stalled_entered.wait(timeout=1))
 
                 now = 106.0
-                cache.read("tasks", loader, ttl_seconds=30, force=True)
+                expired = cache.read("tasks", loader, ttl_seconds=30, force=True)
+                self.assertEqual(expired.state["status"], "stale")
+                self.assertFalse(expired.state["refreshing"])
+
+                now = 137.0
+                retrying = cache.read("tasks", loader, ttl_seconds=30, force=True)
+                self.assertEqual(retrying.state["status"], "refreshing")
                 self.assertTrue(replacement_entered.wait(timeout=1))
                 self.assertTrue(cache.wait_for_idle("tasks"))
 
@@ -202,10 +261,7 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 self.assertEqual(refreshed.state["status"], "fresh")
             finally:
                 release_stalled.set()
-
-            self.assertTrue(cache.wait_for_idle("tasks"))
-            still_fresh = cache.read("tasks", loader, ttl_seconds=30)
-            self.assertEqual(still_fresh.payload["tasks"][0]["slug"], "tasks/new")
+                self.assertTrue(cache.wait_for_idle("tasks"))
 
     def test_force_refresh_respects_cooldown_after_verified_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
