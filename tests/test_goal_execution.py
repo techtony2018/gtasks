@@ -2183,7 +2183,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         self.assertEqual(result.public_reason, "handoff_needs_repair")
         self.assertEqual(result.handoff_status, "dead_letter")
 
-    def test_route_health_accepts_approved_codex_openclaw_route_pair(self) -> None:
+    def test_route_health_excludes_retired_openclaw_registration(self) -> None:
         bridge = self.Bridge()
         bridge.dispatcher.registrations = (
             AgentRegistration(
@@ -2203,7 +2203,7 @@ class GoalExecutionEngineTests(unittest.TestCase):
         health = self.engine(self.Adapter(), bridge).route_health()
 
         self.assertTrue(health[AGENT])
-        self.assertTrue(health["agents/timmy-oc"])
+        self.assertNotIn("agents/timmy-oc", health)
 
     def test_route_health_rejects_duplicate_registration_for_one_agent(self) -> None:
         bridge = self.Bridge()

@@ -12,7 +12,7 @@ from time import monotonic
 from types import SimpleNamespace
 from typing import Any, Mapping, Protocol
 
-from .domain import AgentProfile, Goal, Project, Task
+from .domain import EXISTING_CODEX_AGENT_SLUGS, AgentProfile, Goal, Project, Task
 from .gbrain import PartialMutationError
 
 
@@ -1214,7 +1214,7 @@ class GoalExecutionEngine:
         agent_slugs = {
             str(registration.agent_slug)
             for registration in registrations
-            if isinstance(getattr(registration, "agent_slug", None), str)
+            if getattr(registration, "agent_slug", None) in EXISTING_CODEX_AGENT_SLUGS
         }
         health: dict[str, bool] = {}
         for agent_slug in agent_slugs:
