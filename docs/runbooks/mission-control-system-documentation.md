@@ -1295,6 +1295,18 @@ to the reviewed source before updating relationships.
   exact Task detail showed blocked/waiting-for-Tony copy with no visible
   `ready_for_agent` or executing classification for that task; browser
   traffic stayed GET-only and no QA write or GBrain mutation occurred.
+- V0.0.221 evidence: release commit
+  `27511c42e377ed8969b928e0e1c7d28dc9ad07e3`; dashboard-managed gtasks
+  deployment completed for Mission Control V0.0.221; focused
+  SystemTicketAdapter/release tests passed `90` OK; broader suite passed
+  `640` OK; independent QA PASS aggregate
+  `74d6dce65c93b2f7ebf9e91e21f55d4e88e4b7fca562496c88dbeed25ba4fc87`.
+- Verified V0.0.221 behavior: `GBrainAdapter.list_system_tickets` refreshes
+  now rehydrate every typed System Ticket member page instead of trusting
+  cached completed-ticket snapshots indefinitely. Reopened canonical System
+  Tickets therefore reappear in open planned/active queues after refresh. This
+  is a System Tickets contract; other slow non-ticket read surfaces may still
+  truthfully serve stale/error last-valid payloads with `refreshing=false`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1568,4 +1580,11 @@ to `ready_for_agent`. It must preserve existing task/TODO/comments/history,
 assigned Agent, and Goal relationships; reopen the exact question to
 `waiting_for_input`; restore the typed Tony blocker; and append audit history.
 It must not infer a new answer, clear the blocker, wake the Agent, create a
-replacement task/TODO, or mutate unrelated Goal execution state.
+replacement task/TODO, treat stale local handoff state as canonical, or mutate
+unrelated Goal execution state.
+V0.0.221 is a System Tickets refresh-path repair. System Ticket refreshes must
+rehydrate typed collection members so reopened canonical tickets return to open
+planned/active queues; the older completed-ticket snapshot may not permanently
+hide them. This does not change the separate last-valid cache behavior for
+slow non-ticket surfaces, which may still report stale/error read state
+truthfully while GBrain remains canonical.

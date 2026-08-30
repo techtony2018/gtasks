@@ -488,6 +488,14 @@ Control V0.0.219 with `gbrain 0.46.28.0`; Family/Toddy task
 `people/tony-guan`, handoff `waiting_for_input`, question TODO
 `todos/99b64fec-aebe-57de-bf79-cc9d640a2db2` `not_done`, and
 `answered_at` / `acknowledged_at` null.
+V0.0.221 rehydrates System Ticket member pages during
+`GBrainAdapter.list_system_tickets` refreshes instead of trusting cached
+completed-ticket snapshots indefinitely. If a completed System Ticket is
+reopened in canonical GBrain, the next System Tickets refresh reads the typed
+`member_of -> collections/mission-control-system-tickets` page and returns it
+to the open planned/active queues. This is specific to System Tickets; slower
+non-ticket read surfaces may still truthfully serve last-valid stale/error
+payloads with `refreshing=false` while GBrain remains canonical.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
