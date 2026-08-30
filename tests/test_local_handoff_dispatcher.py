@@ -4012,7 +4012,7 @@ class RunForeverTests(unittest.TestCase):
 
             self.assertEqual(events, [f"ack:{sequence}:received"])
 
-    def test_restart_retries_completed_inbox_ack_with_its_persisted_detail(self) -> None:
+    def test_restart_supersedes_legacy_completed_ack_with_unsafe_detail(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = PrivateClaimStore(Path(temporary) / "active-claim.json")
             store.save(claim_payload(status="actively_executing"))
@@ -4049,7 +4049,7 @@ class RunForeverTests(unittest.TestCase):
                 retry_delay=0,
             )
 
-            self.assertEqual(events, [(sequence, "completed", detail)])
+            self.assertEqual(events, [(sequence + 1, "completed", None)])
             self.assertIsNone(store.load_current())
 
     def test_restart_retries_pending_failure_before_recovery_or_new_claim(self) -> None:

@@ -617,7 +617,9 @@ class PrivateClaimStore:
         pending = state["pending_ack"]
         if pending is not None:
             if pending["status"] != status or pending["detail"] != detail:
-                if status == "completed" and pending["status"] != "completed":
+                if status == "completed" and (
+                    pending["status"] != "completed" or detail is None
+                ):
                     sequence = max(state["next_ack_sequence"], pending["sequence"] + 1)
                     state["pending_ack"] = {
                         "sequence": sequence,
@@ -3227,16 +3229,10 @@ def run_forever(
         if claim_store is None:
             raise ValueError("a private claim store is required to complete a handoff")
         claim = claim_store.load(handoff_id)
-        pending = claim_store.pending_ack()
-        if pending is not None and pending[1] == "completed":
-            sequence, _, detail = pending
-        else:
-            sequence = claim_store.prepare_ack("completed", None)
-            detail = None
+        sequence = claim_store.prepare_ack("completed", None)
         response = client.ack(
             claim,
             status="completed",
-            detail=detail,
             operation_sequence=sequence,
         )
         if not isinstance(response, Mapping):
