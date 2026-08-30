@@ -2,6 +2,12 @@
 
 Status: paused by Tony; resume next week.
 
+> Historical handoff, superseded by Mission Control V0.0.222. Keep this file as
+> evidence of the V0.0.169 pause state only. Do not treat its OpenClaw,
+> `*-oc`, local-supervisor, or six-profile instructions as current operator
+> guidance; current execution is exactly Tammy, Timmy, and Toddy as singleton
+> Codex Agents on their registered machines.
+
 Branch: `main`
 
 Last committed HEAD: `066bca0 Populate waiting Goal task context`

@@ -76,7 +76,7 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Current candidate: V0.0.222. Mission Control has exactly three execution
+Latest verified pushed release baseline: V0.0.222. Mission Control has exactly three execution
 Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and one singleton
 Dispatcher on each registered machine. The paragraphs below retain prior
 release behavior as history; where an older paragraph describes a paired
@@ -500,6 +500,16 @@ reopened in canonical GBrain, the next System Tickets refresh reads the typed
 to the open planned/active queues. This is specific to System Tickets; slower
 non-ticket read surfaces may still truthfully serve last-valid stale/error
 payloads with `refreshing=false` while GBrain remains canonical.
+V0.0.222 removes the retired OpenClaw execution surface from Mission Control:
+alternate-agent identities, delegation APIs, paired supervisors, UI controls,
+provisioning paths, and pre-removal read-cache snapshots are no longer current
+runtime authority. The only execution Agents are Tammy, Timmy, and Toddy; each
+machine runs one singleton Dispatcher that resumes its own fixed Codex task and
+uses one durable handoff lease/acknowledgement chain. The follow-up
+completion-ack repair makes Dispatcher restart recovery retry a persisted
+pending `completed` acknowledgement, with its original detail, before recovery
+or new-claim work so a successful local run does not stay stuck as
+`actively_executing`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. Only the three Codex Agents
@@ -1106,7 +1116,7 @@ correlation, pagination, retention/export metadata, and privacy-safe
 
 The central runtime paths, exact local install/resume contracts, redaction and
 retention rules, retry/dead-letter recovery, Guardian boundary, rollback, and
-three-host/Tammy-only canary sequence are documented in
+three-host singleton Dispatcher release sequence are documented in
 [`docs/runbooks/agent-handoff-dispatcher.md`](docs/runbooks/agent-handoff-dispatcher.md).
 
 ### Agent Artifact publication

@@ -1,5 +1,11 @@
 # OpenClaw Agents and Temporary Delegation Implementation Plan
 
+> Historical artifact, superseded by Mission Control V0.0.222. Do not execute
+> this plan as current operator guidance. V0.0.222 retired OpenClaw execution,
+> alternate-agent identities, delegation APIs, paired supervisors, and
+> provisioning paths; current execution is exactly Tammy, Timmy, and Toddy as
+> singleton Codex Agents on their registered machines.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Tammy-OC, Timmy-OC, and Toddy-OC as independent Mission Control Agents with fixed OpenClaw sessions, plus Tony-authorized time-bounded delegation that adds work without overriding their owned work.

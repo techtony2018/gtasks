@@ -136,9 +136,10 @@ to the reviewed source before updating relationships.
 
 - Last verified released baseline date: `2026-08-26`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.219`
+- Last verified pushed release: `V0.0.222`
 - Release commits:
-  `9655050dbb3e531a37b8ecf3f2d2fe788b60001b`
+  `8eaa96611607974d4b2489645aeaa804d30f4378`,
+  `978b2e35c128ee7e1a22322543794d6c9616613a`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -421,11 +422,11 @@ to the reviewed source before updating relationships.
 - Verified V0.0.164 behavior: the handoff dispatcher recovers expired owned
   `execution_claim` rows at the next authenticated claim boundary for the same
   registered Agent host, after verifying current task authority and preserving
-  the owned/nondelegated execution fence. QA readback confirmed this Mac's
-  local supervisor has exactly `agents/tammy` and `agents/tammy-oc` worker
-  configs and no local Timmy/Toddy worker. Documentation must preserve this
-  boundary: Timmy/Toddy worker recovery belongs on their own host machines, not
-  by installing Timmy/Toddy local workers on this Mac.
+  the owned/nondelegated execution fence. At that historical baseline, QA
+  readback confirmed this Mac's local worker scope excluded Timmy/Toddy.
+  V0.0.222 supersedes the paired-supervisor implementation, but preserves the
+  same boundary: Timmy/Toddy worker recovery belongs on their own host machines,
+  not by installing Timmy/Toddy local workers on this Mac.
 - Post-release verifier evidence: commit
   `f5a2aa77d44561a9d7279a185c184388759945ad` added
   `scripts/verify_handoff_worker_runtime.py`,
@@ -458,8 +459,9 @@ to the reviewed source before updating relationships.
   the exact repair. Operators must assign exactly one Codex Agent and verify
   the single `default_agent_for` link for the Goal. QA readback confirmed the
   visible copy contains both `Assign exactly one Codex Agent` and
-  `default_agent_for`, and the local supervisor still contains exactly
-  `agents/tammy` and `agents/tammy-oc`.
+  `default_agent_for`. V0.0.222 supersedes the old local-supervisor readback;
+  current verification must use the singleton Dispatcher and three-machine
+  fleet roster.
 - V0.0.166 evidence: dashboard-managed health and releases readback
   `V0.0.166`; release commit
   `7b57e945afa70ed47761d20f62be156bb785ee33`; release evidence file
@@ -1244,8 +1246,9 @@ to the reviewed source before updating relationships.
   config/handoff-dispatcher/remote-workers.json`; expected PASS means each
   remote Codex worker verifies on its own host with `ok: true`, expected
   `hosts/<agent>` route, current repo HEAD, preflight verification, and
-  required private Artifact publisher token/config. Local supervisor scope
-  remains Tammy/Tammy-OC only; Timmy/Toddy stay remote/non-local.
+  required private Artifact publisher token/config. V0.0.222 supersedes the
+  old local-supervisor scope; current verification must use the singleton
+  Dispatcher and three-machine fleet roster, with Timmy/Toddy remote/non-local.
 - V0.0.217 evidence: release commit
   `aaf11c2b860ca00e163d611f07d7a798e0bc024a`; release evidence file
   `docs/release-evidence/v0.0.217.md`. V0.0.217 reads the active GBrain
@@ -1306,6 +1309,19 @@ to the reviewed source before updating relationships.
   Tickets therefore reappear in open planned/active queues after refresh. This
   is a System Tickets contract; other slow non-ticket read surfaces may still
   truthfully serve stale/error last-valid payloads with `refreshing=false`.
+- V0.0.222 evidence: release commits
+  `8eaa96611607974d4b2489645aeaa804d30f4378` and
+  `978b2e35c128ee7e1a22322543794d6c9616613a`; release catalog current version
+  `V0.0.222`; shipped summary `Run one Codex Agent per machine`.
+- Verified V0.0.222 behavior: Mission Control now exposes and routes work only
+  to the three fixed Codex Agents, `agents/tammy`, `agents/timmy`, and
+  `agents/toddy`. Retired alternate-agent identities, delegation APIs, paired
+  supervisors, UI controls, provisioning paths, OpenClaw execution modules, and
+  pre-removal read-cache snapshots are not current runtime authority. Each
+  machine uses one singleton Dispatcher, one fixed Codex task, one private
+  registration, and one handoff lease/acknowledgement chain. The completion-ack
+  restart repair retries a persisted pending `completed` acknowledgement with
+  its original detail before recovery or new-claim work.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1562,7 +1578,7 @@ a Tony answer, owner assignment, OpenClaw assignment, private credential form,
 or automatic worker repair. Active non-terminal claim leases still take
 precedence and should render Delivering rather than Needs attention.
 V0.0.215/V0.0.216 stale `still_blocked` ack recovery is a remote-worker
-completion reconciliation, not local supervisor expansion. A verified
+completion reconciliation, not local Dispatcher expansion. A verified
 completed wake-inbox result may override and clear stale blocked local state
 only after canonical readback; it does not permit Timmy/Toddy local workers,
 skip Artifact publisher token/config on the remote hosts, or complete work
@@ -1587,3 +1603,10 @@ planned/active queues; the older completed-ticket snapshot may not permanently
 hide them. This does not change the separate last-valid cache behavior for
 slow non-ticket surfaces, which may still report stale/error read state
 truthfully while GBrain remains canonical.
+V0.0.222 is the current Agent execution boundary. Current documentation must
+describe only Tammy, Timmy, and Toddy as fixed Codex Agents on their own
+machines, with one singleton Dispatcher per machine and one fixed Codex task
+per Agent. OpenClaw execution modules, alternate-agent delegation APIs, paired
+supervisors, and pre-removal cache snapshots are historical evidence only. A
+Dispatcher restart must retry a persisted pending `completed` acknowledgement
+before recovery or new claims, preserving exact handoff continuity.

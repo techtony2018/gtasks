@@ -56,6 +56,12 @@ queued -> received -> actively_executing -> completed
 that Codex started. `actively_executing` requires the verified launch boundary.
 Terminal acknowledgement must reconcile the same handoff and canonical Task;
 it must not create replacement work or another Codex task.
+If the Dispatcher restarts after a local run completed but before the central
+server verified the terminal acknowledgement, it must retry the persisted
+pending `completed` acknowledgement with its original detail before recovery or
+new-claim work. A successful fixed-thread Codex run must not remain pinned as
+`actively_executing` merely because the process restarted between local
+completion and server acknowledgement.
 
 Guardian may retry a bounded retryable delivery or move exhausted work to
 `dead_letter`; neither state changes canonical ownership. Recovery does not

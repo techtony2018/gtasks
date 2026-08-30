@@ -3,6 +3,12 @@
 Date: 2026-08-07
 Status: approved conversational design; implementation requires a separate reviewed plan
 
+> Historical artifact, superseded by Mission Control V0.0.222. Do not use this
+> design as current operator guidance. V0.0.222 retired OpenClaw execution,
+> alternate-agent identities, delegation APIs, paired supervisors, and
+> provisioning paths; current execution is exactly Tammy, Timmy, and Toddy as
+> singleton Codex Agents on their registered machines.
+
 ## Objective
 
 Add three first-class OpenClaw Agents to Mission Control:
