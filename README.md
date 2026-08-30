@@ -506,10 +506,13 @@ provisioning paths, and pre-removal read-cache snapshots are no longer current
 runtime authority. The only execution Agents are Tammy, Timmy, and Toddy; each
 machine runs one singleton Dispatcher that resumes its own fixed Codex task and
 uses one durable handoff lease/acknowledgement chain. The follow-up
-completion-ack repair makes Dispatcher restart recovery retry a persisted
-pending `completed` acknowledgement, with its original detail, before recovery
-or new-claim work so a successful local run does not stay stuck as
-`actively_executing`.
+completion-ack compatibility repair makes Dispatcher restart recovery call
+`prepare_ack("completed", None)` before recovery or new-claim work. If an
+unchanged pending completed acknowledgement is already privacy-safe it may
+replay; unsafe legacy residual details, including long Artifact UUID text, are
+superseded with a new sequence and `detail: null` while canonical
+task/Artifact/handoff history remains intact, so a successful local run does
+not stay stuck as `actively_executing`.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. Only the three Codex Agents

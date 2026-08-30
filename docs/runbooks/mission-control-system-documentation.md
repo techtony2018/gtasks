@@ -139,7 +139,9 @@ to the reviewed source before updating relationships.
 - Last verified pushed release: `V0.0.222`
 - Release commits:
   `8eaa96611607974d4b2489645aeaa804d30f4378`,
-  `978b2e35c128ee7e1a22322543794d6c9616613a`
+  `215cb9f1a9285809e16f56fcb4fab8459281b964`,
+  `aff0803d98b3bf96e2f962576d5e657a57378123`,
+  prior documentation refresh `6821a3f`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1311,8 +1313,10 @@ to the reviewed source before updating relationships.
   truthfully serve stale/error last-valid payloads with `refreshing=false`.
 - V0.0.222 evidence: release commits
   `8eaa96611607974d4b2489645aeaa804d30f4378` and
-  `978b2e35c128ee7e1a22322543794d6c9616613a`; release catalog current version
-  `V0.0.222`; shipped summary `Run one Codex Agent per machine`.
+  `aff0803d98b3bf96e2f962576d5e657a57378123`, with final completion-ack compatibility at
+  `215cb9f1a9285809e16f56fcb4fab8459281b964` and documentation refresh
+  `6821a3f`; release catalog current version `V0.0.222`; shipped summary
+  `Run one Codex Agent per machine`.
 - Verified V0.0.222 behavior: Mission Control now exposes and routes work only
   to the three fixed Codex Agents, `agents/tammy`, `agents/timmy`, and
   `agents/toddy`. Retired alternate-agent identities, delegation APIs, paired
@@ -1320,8 +1324,11 @@ to the reviewed source before updating relationships.
   pre-removal read-cache snapshots are not current runtime authority. Each
   machine uses one singleton Dispatcher, one fixed Codex task, one private
   registration, and one handoff lease/acknowledgement chain. The completion-ack
-  restart repair retries a persisted pending `completed` acknowledgement with
-  its original detail before recovery or new-claim work.
+  compatibility repair calls `prepare_ack("completed", None)` before recovery
+  or new-claim work: unchanged safe pending completed acknowledgements may
+  replay, while unsafe legacy residual details are superseded with the next
+  sequence and `detail: null` without losing canonical task, Artifact, or
+  handoff history.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1608,5 +1615,8 @@ describe only Tammy, Timmy, and Toddy as fixed Codex Agents on their own
 machines, with one singleton Dispatcher per machine and one fixed Codex task
 per Agent. OpenClaw execution modules, alternate-agent delegation APIs, paired
 supervisors, and pre-removal cache snapshots are historical evidence only. A
-Dispatcher restart must retry a persisted pending `completed` acknowledgement
-before recovery or new claims, preserving exact handoff continuity.
+Dispatcher restart must run the completed-ack preflight before recovery or new
+claims. The current preflight uses `prepare_ack("completed", None)`, so safe
+unchanged pending completed acknowledgements may replay, but unsafe legacy
+residual details are superseded with a new sequence and `detail: null` while
+preserving exact handoff continuity.
