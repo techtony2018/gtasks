@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only fleet verifier for remote Mission Control handoff workers."""
+"""Read-only fleet verifier for the three Mission Control Codex workers."""
 
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-WORKER_KEYS = frozenset(
+COMMON_WORKER_KEYS = frozenset(
     {
         "name",
-        "ssh_target",
+        "transport",
         "expected_agent_slug",
         "expected_route",
         "config_path",
@@ -29,6 +29,7 @@ WORKER_KEYS = frozenset(
         "launch_label",
     }
 )
+SSH_WORKER_KEYS = COMMON_WORKER_KEYS | {"ssh_target"}
 SECRET_KEY_FRAGMENTS = ("token", "secret", "credential", "registration", "thread")
 
 
@@ -70,18 +71,25 @@ def load_inventory(path: str | Path) -> dict[str, object]:
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schema_version", "workers"}
-        or payload.get("schema_version") != 1
+        or payload.get("schema_version") != 2
         or not isinstance(payload.get("workers"), list)
         or not payload["workers"]
     ):
         raise ValueError("remote worker inventory must match the exact schema")
     names: set[str] = set()
     for worker in payload["workers"]:
-        if not isinstance(worker, dict) or set(worker) != WORKER_KEYS:
+        expected_keys = (
+            SSH_WORKER_KEYS
+            if isinstance(worker, dict) and worker.get("transport") == "ssh"
+            else COMMON_WORKER_KEYS
+        )
+        if not isinstance(worker, dict) or set(worker) != expected_keys:
             raise ValueError("remote worker inventory must match the exact worker schema")
-        for key in WORKER_KEYS:
+        for key in expected_keys:
             if not isinstance(worker[key], str) or not worker[key]:
                 raise ValueError("remote worker inventory fields must be non-empty strings")
+        if worker["transport"] not in {"local", "ssh"}:
+            raise ValueError("worker transport must be local or ssh")
         if worker["name"] in names:
             raise ValueError("remote worker inventory worker names must be unique")
         names.add(worker["name"])
@@ -118,6 +126,27 @@ def _ssh_command(
     ]
 
 
+def _local_command(
+    worker: dict[str, str], *, expected_commit: str
+) -> list[str]:
+    return [
+        sys.executable,
+        str(ROOT / "scripts" / "verify_handoff_worker_runtime.py"),
+        "--config",
+        worker["config_path"],
+        "--expected-agent",
+        worker["expected_agent_slug"],
+        "--expected-commit",
+        expected_commit,
+        "--repo",
+        worker["repo_path"],
+        "--launch-label",
+        worker["launch_label"],
+        "--timeout",
+        "20",
+    ]
+
+
 def _local_head() -> str:
     result = _default_run(
         ["git", "rev-parse", "HEAD"],
@@ -134,7 +163,8 @@ def _worker_failure(worker: dict[str, str], issue: str, stderr: str = "") -> dic
     return {
         "ok": False,
         "name": worker["name"],
-        "ssh_target": worker["ssh_target"],
+        "transport": worker["transport"],
+        "target": worker.get("ssh_target", "local"),
         "expected_agent_slug": worker["expected_agent_slug"],
         "expected_route": worker["expected_route"],
         "issues": [issue],
@@ -195,9 +225,16 @@ def verify_fleet(
     reports: list[dict[str, object]] = []
     for raw_worker in inventory["workers"]:
         worker = dict(raw_worker)
+        is_local = worker["transport"] == "local"
         result = execute(
-            _ssh_command(worker, expected_commit=expected, ssh_timeout=ssh_timeout),
-            timeout=max(ssh_timeout + 30, 35),
+            (
+                _local_command(worker, expected_commit=expected)
+                if is_local
+                else _ssh_command(
+                    worker, expected_commit=expected, ssh_timeout=ssh_timeout
+                )
+            ),
+            timeout=35 if is_local else max(ssh_timeout + 30, 35),
         )
         remote_report: dict[str, object] | None = None
         if result.stdout.strip():
@@ -211,11 +248,20 @@ def verify_fleet(
             if remote_report is not None:
                 remote_report = dict(remote_report)
                 remote_report["name"] = worker["name"]
-                remote_report["ssh_target"] = worker["ssh_target"]
+                remote_report["transport"] = worker["transport"]
+                remote_report["target"] = worker.get("ssh_target", "local")
                 reports.append(remote_report)
             else:
-                failure = _worker_failure(worker, "ssh_unreachable", result.stderr)
-                peer = _tailscale_peer_for_target(worker["ssh_target"], run=execute)
+                failure = _worker_failure(
+                    worker,
+                    "local_probe_failed" if is_local else "ssh_unreachable",
+                    result.stderr,
+                )
+                peer = (
+                    None
+                    if is_local
+                    else _tailscale_peer_for_target(worker["ssh_target"], run=execute)
+                )
                 if peer is not None:
                     failure["tailscale_peer"] = peer
                     if peer.get("expired"):
@@ -229,7 +275,8 @@ def verify_fleet(
             continue
         report = dict(remote_report)
         report["name"] = worker["name"]
-        report["ssh_target"] = worker["ssh_target"]
+        report["transport"] = worker["transport"]
+        report["target"] = worker.get("ssh_target", "local")
         reports.append(report)
     ok_count = sum(1 for report in reports if report.get("ok") is True)
     failed_count = len(reports) - ok_count

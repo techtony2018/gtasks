@@ -9,7 +9,6 @@ from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
-from .delegation import paired_openclaw_agent
 from .handoff import DomainValidationError, TaskHandoff, validate_task_handoff
 
 
@@ -25,9 +24,6 @@ ARTIFACT_AGENT_SCOPES = (
     ("agents/tammy", "collections/tammys-artifacts"),
     ("agents/timmy", "collections/timmys-artifacts"),
     ("agents/toddy", "collections/toddys-artifacts"),
-    ("agents/tammy-oc", "collections/tammy-oc-artifacts"),
-    ("agents/timmy-oc", "collections/timmy-oc-artifacts"),
-    ("agents/toddy-oc", "collections/toddy-oc-artifacts"),
 )
 ARTIFACT_BY_AGENT = dict(ARTIFACT_AGENT_SCOPES)
 ARTIFACT_BY_COLLECTION = {
@@ -38,19 +34,13 @@ AGENT_SCOPES = (
     ("agents/toddy", "collections/toddys-tasks"),
     ("agents/timmy", "collections/timmys-tasks"),
     ("agents/tammy", "collections/tammys-tasks"),
-    ("agents/tammy-oc", "collections/tammy-oc-tasks"),
-    ("agents/timmy-oc", "collections/timmy-oc-tasks"),
-    ("agents/toddy-oc", "collections/toddy-oc-tasks"),
 )
 AGENT_RUNTIME_BY_SLUG: dict[str, str] = {
     "agents/tammy": "codex",
     "agents/timmy": "codex",
     "agents/toddy": "codex",
-    "agents/tammy-oc": "openclaw",
-    "agents/timmy-oc": "openclaw",
-    "agents/toddy-oc": "openclaw",
 }
-APPROVED_AGENT_RUNTIMES = frozenset({"codex", "openclaw"})
+APPROVED_AGENT_RUNTIMES = frozenset({"codex"})
 EXISTING_CODEX_AGENT_SLUGS = frozenset({
     "agents/tammy", "agents/timmy", "agents/toddy",
 })
@@ -614,27 +604,6 @@ def _artifact_uuid_slug(value: Any, field: str) -> str:
     return value
 
 
-def _optional_delegation_ref(value: Any) -> str | None:
-    if value in {None, ""}:
-        return None
-    if not isinstance(value, str) or not value.startswith("agent-delegations/"):
-        raise DomainValidationError(
-            "delegation_ref must use a canonical UUID slug"
-        )
-    suffix = value.split("/", 1)[1]
-    try:
-        parsed = uuid.UUID(suffix)
-    except (AttributeError, ValueError) as exc:
-        raise DomainValidationError(
-            "delegation_ref must use a canonical UUID slug"
-        ) from exc
-    if str(parsed) != suffix.lower() or parsed.version not in {4, 5}:
-        raise DomainValidationError(
-            "delegation_ref must use a canonical UUIDv4 or UUIDv5 slug"
-        )
-    return value
-
-
 _GIT_COMMIT_ID = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
@@ -694,7 +663,6 @@ class AgentArtifact:
     supersedes: str | None
     created_at: datetime
     updated_at: datetime | None = None
-    delegation_ref: str | None = None
 
     @classmethod
     def from_page(
@@ -888,9 +856,6 @@ class AgentArtifact:
             frontmatter.get("updated_at") or page.get("updated_at"),
             "artifact updated_at",
         )
-        delegation_ref = _optional_delegation_ref(
-            frontmatter.get("delegation_ref")
-        )
         return cls(
             slug=slug,
             title=title,
@@ -906,7 +871,6 @@ class AgentArtifact:
             supersedes=supersedes,
             created_at=created_at,
             updated_at=updated_at,
-            delegation_ref=delegation_ref,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -925,70 +889,8 @@ class AgentArtifact:
             "supersedes": self.supersedes,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "delegation_ref": self.delegation_ref,
         }
         return result
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactExecutionClaim:
-    """Privacy-safe proof that an Artifact belongs to one delegated execution."""
-
-    task_slug: str
-    executor_agent: str
-    permanent_owner: str
-    delegation_ref: str
-    requested_operation: str
-    claimed_at: datetime
-    expires_at: datetime
-    completed_at: datetime | None = None
-
-    def __post_init__(self) -> None:
-        _artifact_uuid_slug(self.task_slug, "produced_for")
-        _optional_delegation_ref(self.delegation_ref)
-        if self.requested_operation != "artifact":
-            raise DomainValidationError(
-                "delegation claim requested_operation must be artifact"
-            )
-        if self.executor_agent not in ARTIFACT_BY_AGENT:
-            raise DomainValidationError("delegation claim executor is not approved")
-        if self.permanent_owner not in EXISTING_CODEX_AGENT_SLUGS:
-            raise DomainValidationError(
-                "delegation claim permanent owner must be a paired Codex Agent"
-            )
-        for value, field in (
-            (self.claimed_at, "claimed_at"),
-            (self.expires_at, "expires_at"),
-        ):
-            if not isinstance(value, datetime) or value.tzinfo is None:
-                raise DomainValidationError(
-                    f"delegation claim {field} must include a timezone"
-                )
-        if self.completed_at is not None and self.completed_at.tzinfo is None:
-            raise DomainValidationError(
-                "delegation claim completed_at must include a timezone"
-            )
-        if self.claimed_at >= self.expires_at:
-            raise DomainValidationError(
-                "delegation claim expiry must be after its claim time"
-            )
-        if self.completed_at is not None and not (
-            self.claimed_at <= self.completed_at <= self.expires_at
-        ):
-            raise DomainValidationError(
-                "delegation claim completion must be inside its execution window"
-            )
-
-    def matches(self, artifact: AgentArtifact, *, executing_agent: str) -> bool:
-        return (
-            artifact.delegation_ref is not None
-            and self.task_slug == artifact.produced_for
-            and self.executor_agent == executing_agent == artifact.created_by
-            and self.delegation_ref == artifact.delegation_ref
-            and self.requested_operation == "artifact"
-            and self.permanent_owner != self.executor_agent
-            and paired_openclaw_agent(self.permanent_owner) == self.executor_agent
-        )
 
 
 def new_agent_artifact(
@@ -1003,7 +905,6 @@ def new_agent_artifact(
     goal: str | None = None,
     git_url: str | None = None,
     supersedes: str | None = None,
-    delegation_ref: str | None = None,
     now: datetime,
 ) -> AgentArtifact:
     slug = f"artifacts/{uuid.uuid4()}"
@@ -1034,7 +935,6 @@ def new_agent_artifact(
                 "produced_for": produced_for,
                 "attachments": list(dict.fromkeys(attachments)),
                 "git_url": git_url,
-                "delegation_ref": delegation_ref,
                 "created_at": now.isoformat(),
                 "links": links,
             },
@@ -1085,9 +985,7 @@ class AgentProfile:
         if runtime is None and slug in EXISTING_CODEX_AGENT_SLUGS:
             runtime = "codex"
         if runtime not in APPROVED_AGENT_RUNTIMES:
-            raise DomainValidationError(
-                "agent runtime must be one of: codex, openclaw"
-            )
+            raise DomainValidationError("agent runtime must be codex")
         chat_url = frontmatter.get("chat_url")
         if chat_url is not None and (
             not isinstance(chat_url, str)

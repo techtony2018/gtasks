@@ -38,7 +38,6 @@ from .domain import (
     AGENT_BY_WORK_ROOT,
     AgentProfile,
     AgentArtifact,
-    ArtifactExecutionClaim,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -66,7 +65,6 @@ from .domain import (
     new_task,
 )
 from .handoff import TaskHandoff
-from .delegation import AgentDelegationLease, DelegationState, lease_state_at
 from .handoff_dispatcher import (
     ActionableChange,
     AgentRegistration,
@@ -87,77 +85,15 @@ if TYPE_CHECKING:
 
 
 APPROVED_ROOTS = frozenset({ACTIVE_ROOT, COMPLETED_ROOT, QA_FIXTURES_ROOT})
-# Memory Stargraph budgets are 6.5s for provision, 4.5s for recovery request,
-# and 2.5s for status/active. Caller deadlines retain transport margin.
-OPENCLAW_SUBMIT_CALLER_TIMEOUT_SECONDS = 8.0
-OPENCLAW_STATUS_CALLER_TIMEOUT_SECONDS = 4.0
 TONY_PROFILE_SLUG = "people/tony-guan"
-AGENT_DELEGATIONS_ROOT = "collections/mission-control-agent-delegations"
 _MARKDOWN_ATTACHMENT = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
-APPROVED_OPENCLAW_DECLARATIONS: dict[str, dict[str, str]] = {
-    "agents/tammy-oc": {
-        "slug": "agents/tammy-oc",
-        "name": "Tammy-OC",
-        "runtime": "openclaw",
-        "route": "hosts/tammy",
-        "task_collection": "collections/tammy-oc-tasks",
-        "artifact_collection": "collections/tammy-oc-artifacts",
-    },
-    "agents/timmy-oc": {
-        "slug": "agents/timmy-oc",
-        "name": "Timmy-OC",
-        "runtime": "openclaw",
-        "route": "hosts/timmy",
-        "task_collection": "collections/timmy-oc-tasks",
-        "artifact_collection": "collections/timmy-oc-artifacts",
-    },
-    "agents/toddy-oc": {
-        "slug": "agents/toddy-oc",
-        "name": "Toddy-OC",
-        "runtime": "openclaw",
-        "route": "hosts/toddy",
-        "task_collection": "collections/toddy-oc-tasks",
-        "artifact_collection": "collections/toddy-oc-artifacts",
-    },
-}
 HANDOFF_ROUTE_BY_AGENT: dict[str, str] = {
     "agents/tammy": "hosts/tammy",
-    "agents/tammy-oc": "hosts/tammy",
     "agents/timmy": "hosts/timmy",
-    "agents/timmy-oc": "hosts/timmy",
     "agents/toddy": "hosts/toddy",
-    "agents/toddy-oc": "hosts/toddy",
 }
 
 
-def _openclaw_active_manifest_identity_is_valid(
-    generation: Any, manifest_slug: Any, manifest_digest: Any
-) -> bool:
-    if (
-        isinstance(generation, bool)
-        or not isinstance(generation, int)
-        or generation < 0
-    ):
-        return False
-    if generation == 0:
-        return manifest_slug is None and manifest_digest is None
-    if (
-        not isinstance(manifest_slug, str)
-        or not isinstance(manifest_digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", manifest_digest) is None
-    ):
-        return False
-    prefix = (
-        "system/openclaw-profile-manifests/"
-        f"g{generation:06d}-"
-    )
-    if not manifest_slug.startswith(prefix):
-        return False
-    operation_id = manifest_slug[len(prefix) :]
-    return (
-        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", operation_id)
-        is not None
-    )
 
 
 def _canonical_json_digest(value: Mapping[str, Any]) -> str:
@@ -233,10 +169,6 @@ class ConcurrentTodoUpdateError(ValueError):
         )
 
 
-class ConcurrentAgentDelegationUpdateError(ValueError):
-    def __init__(self, slug: str) -> None:
-        self.slug = slug
-        super().__init__(f"Agent delegation {slug} changed; refresh before retrying.")
 
 
 class PartialMutationError(GBrainError):
@@ -251,421 +183,8 @@ class CommandRunner(Protocol):
     def run(self, tool: str, params: dict[str, Any]) -> object: ...
 
 
-class OpenClawProfileActivationClient(Protocol):
-    """Read/write boundary for Memory Stargraph's activation authority."""
-
-    def submit(
-        self,
-        declarations: Sequence[Mapping[str, str]],
-        *,
-        owner: str,
-        operation_id: str,
-    ) -> Mapping[str, Any]: ...
-
-    def status(
-        self, operation_id: str, *, timeout_seconds: float | None = None
-    ) -> Mapping[str, Any]: ...
-
-    def recover(
-        self, operation_id: str, *, timeout_seconds: float | None = None
-    ) -> Mapping[str, Any]: ...
-
-    def wait(
-        self,
-        operation_id: str,
-        *,
-        initial: Mapping[str, Any] | None = None,
-        on_status: Callable[[Mapping[str, Any]], None] | None = None,
-    ) -> Mapping[str, Any]: ...
-
-    def active_projection(self) -> Mapping[str, Any]: ...
 
 
-class MemoryStargraphOpenClawProfileClient:
-    """Authenticated client for the fail-closed Stargraph activation endpoint."""
-
-    def __init__(
-        self,
-        base_url: str,
-        token: str,
-        *,
-        timeout_seconds: float | None = None,
-        submit_timeout_seconds: float = OPENCLAW_SUBMIT_CALLER_TIMEOUT_SECONDS,
-        status_timeout_seconds: float = OPENCLAW_STATUS_CALLER_TIMEOUT_SECONDS,
-        poll_timeout_seconds: float = 180,
-        poll_interval_seconds: float = 0.5,
-        sleeper: Callable[[float], None] = sleep,
-        clock: Callable[[], float] = monotonic,
-    ) -> None:
-        try:
-            parsed_base_url = urlsplit(base_url)
-            port = parsed_base_url.port
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Memory Stargraph OpenClaw activation client is not configured"
-            ) from error
-        hostname = (parsed_base_url.hostname or "").lower()
-        loopback_host = hostname == "localhost"
-        if hostname and not loopback_host:
-            try:
-                loopback_host = ipaddress.ip_address(hostname).is_loopback
-            except ValueError:
-                loopback_host = False
-        if (
-            parsed_base_url.scheme != "http"
-            or not loopback_host
-            or port is None
-            or port < 1
-            or parsed_base_url.username is not None
-            or parsed_base_url.password is not None
-            or parsed_base_url.path not in {"", "/"}
-            or parsed_base_url.query
-            or parsed_base_url.fragment
-            or not token
-        ):
-            raise ValueError("Memory Stargraph OpenClaw activation client is not configured")
-        if timeout_seconds is not None:
-            submit_timeout_seconds = timeout_seconds
-            status_timeout_seconds = timeout_seconds
-        if (
-            submit_timeout_seconds <= 0
-            or submit_timeout_seconds > 30
-            or status_timeout_seconds <= 0
-            or status_timeout_seconds > 30
-            or poll_timeout_seconds < max(
-                submit_timeout_seconds, status_timeout_seconds
-            )
-            or poll_timeout_seconds > 3600
-            or poll_interval_seconds <= 0
-            or poll_interval_seconds > 10
-        ):
-            raise ValueError("Memory Stargraph activation timeouts are not aligned")
-        rendered_host = f"[{hostname}]" if ":" in hostname else hostname
-        self.base_url = f"http://{rendered_host}:{port}"
-        self.token = token
-        self.submit_timeout_seconds = submit_timeout_seconds
-        self.status_timeout_seconds = status_timeout_seconds
-        self.poll_timeout_seconds = poll_timeout_seconds
-        self.poll_interval_seconds = poll_interval_seconds
-        self.sleeper = sleeper
-        self.clock = clock
-
-    @classmethod
-    def from_environment(cls) -> "MemoryStargraphOpenClawProfileClient":
-        return cls(
-            os.environ.get("MEMORY_STARGRAPH_URL", ""),
-            os.environ.get("MEMORY_STARGRAPH_OC_PROVISION_TOKEN", ""),
-        )
-
-    def _request(
-        self,
-        method: str,
-        path: str,
-        payload: Mapping[str, Any] | None = None,
-        *,
-        timeout_seconds: float,
-    ) -> Mapping[str, Any]:
-        body = None if payload is None else json.dumps(dict(payload), separators=(",", ":")).encode("utf-8")
-        request = Request(
-            f"{self.base_url}{path}",
-            data=body,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "application/json",
-                **({"Content-Type": "application/json"} if body is not None else {}),
-            },
-        )
-        try:
-            with urlopen(request, timeout=timeout_seconds) as response:
-                parsed = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
-            raise GBrainCommandError("Memory Stargraph OpenClaw activation request failed") from exc
-        if not isinstance(parsed, Mapping) or parsed.get("ok") is not True:
-            raise GBrainProtocolError("Memory Stargraph OpenClaw activation response was invalid")
-        return dict(parsed)
-
-    @staticmethod
-    def _operation_response(
-        payload: Mapping[str, Any], operation_id: str
-    ) -> dict[str, Any]:
-        item = {key: value for key, value in payload.items() if key != "ok"}
-        if (
-            set(item)
-            != {
-                "operation_id",
-                "status",
-                "fence_generation",
-                "receipt",
-                "error",
-                "recovery_request_generation",
-                "recovery_processed_generation",
-            }
-            or item.get("operation_id") != operation_id
-            or not isinstance(operation_id, str)
-            or re.fullmatch(
-                r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", operation_id
-            )
-            is None
-            or item.get("status")
-            not in {"accepted", "running", "completed", "failed", "recovery_required"}
-            or (
-                item.get("fence_generation") is not None
-                and (
-                    isinstance(item["fence_generation"], bool)
-                    or not isinstance(item["fence_generation"], int)
-                    or item["fence_generation"] < 1
-                )
-            )
-            or (item.get("receipt") is not None and not isinstance(item["receipt"], Mapping))
-            or (item.get("error") is not None and not isinstance(item["error"], str))
-            or isinstance(item.get("recovery_request_generation"), bool)
-            or not isinstance(item.get("recovery_request_generation"), int)
-            or item["recovery_request_generation"] < 0
-            or isinstance(item.get("recovery_processed_generation"), bool)
-            or not isinstance(item.get("recovery_processed_generation"), int)
-            or item["recovery_processed_generation"] < 0
-            or item["recovery_processed_generation"]
-            > item["recovery_request_generation"]
-        ):
-            raise GBrainProtocolError(
-                f"Memory Stargraph activation status was invalid for {operation_id}"
-            )
-        if (
-            item["status"] == "completed"
-            and (
-                not isinstance(item["receipt"], Mapping)
-                or item.get("error") is not None
-            )
-        ):
-            raise GBrainProtocolError(
-                f"Memory Stargraph completed without a receipt for {operation_id}"
-            )
-        if item["status"] == "failed" and (
-            item.get("receipt") is not None
-            or not isinstance(item.get("error"), str)
-            or not item["error"]
-        ):
-            raise GBrainProtocolError(
-                f"Memory Stargraph failed terminal state was invalid for {operation_id}"
-            )
-        if item["status"] == "completed":
-            receipt = item["receipt"]
-            if (
-                set(receipt)
-                != {
-                    "generation",
-                    "manifest_slug",
-                    "manifest_digest",
-                    "default_goal_link_count",
-                }
-                or isinstance(receipt.get("generation"), bool)
-                or not isinstance(receipt.get("generation"), int)
-                or receipt["generation"] < 1
-                or receipt["generation"] != item["fence_generation"]
-                or receipt.get("manifest_slug")
-                != "system/openclaw-profile-manifests/"
-                f"g{receipt['generation']:06d}-{operation_id}"
-                or not isinstance(receipt.get("manifest_digest"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", receipt["manifest_digest"]) is None
-                or isinstance(receipt.get("default_goal_link_count"), bool)
-                or not isinstance(receipt.get("default_goal_link_count"), int)
-                or receipt.get("default_goal_link_count") != 0
-            ):
-                raise GBrainProtocolError(
-                    f"Memory Stargraph terminal receipt was invalid for {operation_id}"
-                )
-        return dict(item)
-
-    def submit(
-        self,
-        declarations: Sequence[Mapping[str, str]],
-        *,
-        owner: str,
-        operation_id: str,
-    ) -> Mapping[str, Any]:
-        response = self._request(
-            "POST", "/api/internal/openclaw-profiles/provision",
-            {"declarations": list(declarations), "owner": owner, "operation_id": operation_id},
-            timeout_seconds=self.submit_timeout_seconds,
-        )
-        return self._operation_response(response, operation_id)
-
-    def status(
-        self, operation_id: str, *, timeout_seconds: float | None = None
-    ) -> Mapping[str, Any]:
-        response = self._request(
-            "GET",
-            f"/api/internal/openclaw-profiles/operations/{quote(operation_id, safe='')}",
-            timeout_seconds=min(
-                self.status_timeout_seconds,
-                timeout_seconds
-                if timeout_seconds is not None
-                else self.status_timeout_seconds,
-            ),
-        )
-        return self._operation_response(response, operation_id)
-
-    def recover(
-        self, operation_id: str, *, timeout_seconds: float | None = None
-    ) -> Mapping[str, Any]:
-        response = self._request(
-            "POST",
-            f"/api/internal/openclaw-profiles/operations/{quote(operation_id, safe='')}/recover",
-            timeout_seconds=min(
-                self.submit_timeout_seconds,
-                timeout_seconds
-                if timeout_seconds is not None
-                else self.submit_timeout_seconds,
-            ),
-        )
-        return self._operation_response(response, operation_id)
-
-    def wait(
-        self,
-        operation_id: str,
-        *,
-        initial: Mapping[str, Any] | None = None,
-        on_status: Callable[[Mapping[str, Any]], None] | None = None,
-    ) -> Mapping[str, Any]:
-        deadline = self.clock() + self.poll_timeout_seconds
-        current = (
-            self._operation_response(initial, operation_id)
-            if initial is not None
-            else dict(
-                self.status(
-                    operation_id,
-                    timeout_seconds=min(
-                        self.status_timeout_seconds,
-                        max(0.001, deadline - self.clock()),
-                    ),
-                )
-            )
-        )
-        recovery_generation: int | None = None
-        while True:
-            if on_status is not None:
-                on_status(current)
-            status = current["status"]
-            if recovery_generation is not None:
-                if (
-                    current["recovery_processed_generation"]
-                    < recovery_generation
-                ):
-                    remaining = deadline - self.clock()
-                    if remaining <= 0:
-                        raise GBrainCommandError(
-                            "Memory Stargraph activation polling timed out for "
-                            f"{operation_id}"
-                        )
-                    self.sleeper(
-                        min(self.poll_interval_seconds, remaining)
-                    )
-                    remaining = deadline - self.clock()
-                    if remaining <= 0:
-                        continue
-                    current = self._operation_response(
-                        self.status(
-                            operation_id,
-                            timeout_seconds=min(
-                                self.status_timeout_seconds, remaining
-                            ),
-                        ),
-                        operation_id,
-                    )
-                    continue
-                recovery_generation = None
-            if status == "completed":
-                return current
-            if status == "failed":
-                raise GBrainCommandError(
-                    f"Memory Stargraph activation failed for {operation_id}: "
-                    f"{current.get('error') or 'unknown failure'}"
-                )
-            remaining = deadline - self.clock()
-            if remaining <= 0:
-                raise GBrainCommandError(
-                    f"Memory Stargraph activation polling timed out for {operation_id}"
-                )
-            if status == "recovery_required":
-                current = self._operation_response(
-                    self.recover(
-                        operation_id,
-                        timeout_seconds=min(
-                            self.submit_timeout_seconds, remaining
-                        ),
-                    ),
-                    operation_id,
-                )
-                recovery_generation = current[
-                    "recovery_request_generation"
-                ]
-                if (
-                    current["status"] == "recovery_required"
-                    and recovery_generation
-                    <= current["recovery_processed_generation"]
-                ):
-                    raise GBrainProtocolError(
-                        "Memory Stargraph recovery response did not queue a "
-                        f"generation for {operation_id}"
-                    )
-                continue
-            self.sleeper(min(self.poll_interval_seconds, remaining))
-            remaining = deadline - self.clock()
-            if remaining <= 0:
-                continue
-            current = self._operation_response(
-                self.status(
-                    operation_id,
-                    timeout_seconds=min(self.status_timeout_seconds, remaining),
-                ),
-                operation_id,
-            )
-
-    def provision(
-        self,
-        declarations: Sequence[Mapping[str, str]],
-        *,
-        owner: str,
-        operation_id: str,
-    ) -> Mapping[str, Any]:
-        accepted = self.submit(
-            declarations, owner=owner, operation_id=operation_id
-        )
-        return self.wait(operation_id, initial=accepted)
-
-    def active_projection(self) -> Mapping[str, Any]:
-        projection = self._request(
-            "GET",
-            "/api/internal/openclaw-profiles/active",
-            timeout_seconds=self.status_timeout_seconds,
-        )
-        status = projection.get("status")
-        if status == "validation_pending":
-            raise GBrainCommandError(
-                "Memory Stargraph OpenClaw active projection validation is pending"
-            )
-        if (
-            status != "ready"
-            or isinstance(projection.get("control_revision"), bool)
-            or not isinstance(projection.get("control_revision"), int)
-            or projection["control_revision"] < 0
-            or isinstance(projection.get("validated_at"), bool)
-            or not isinstance(projection.get("validated_at"), (int, float))
-            or isinstance(projection.get("generation"), bool)
-            or not isinstance(projection.get("generation"), int)
-            or projection["generation"] < 0
-            or not isinstance(projection.get("profiles"), list)
-            or not _openclaw_active_manifest_identity_is_valid(
-                projection.get("generation"),
-                projection.get("active_manifest"),
-                projection.get("manifest_digest"),
-            )
-        ):
-            raise GBrainProtocolError(
-                "Memory Stargraph OpenClaw active projection was invalid"
-            )
-        return projection
 
 
 class SubprocessCommandRunner:
@@ -1082,28 +601,6 @@ class AgentRead:
         return {
             "agents": [agent.to_dict() for agent in self.agents],
             "issues": [issue.to_dict() for issue in self.issues],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AgentProvisioningReceipt:
-    """Readback evidence for one explicit OpenClaw profile provision."""
-
-    agent_slug: str
-    collection_slugs: tuple[str, str]
-    default_goal_slugs: tuple[str, ...]
-    operations: tuple[str, ...]
-    verified: bool
-    mutated: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "agent_slug": self.agent_slug,
-            "collection_slugs": list(self.collection_slugs),
-            "default_goal_slugs": list(self.default_goal_slugs),
-            "operations": list(self.operations),
-            "verified": self.verified,
-            "mutated": self.mutated,
         }
 
 
@@ -2012,7 +1509,6 @@ def render_agent_artifact_page(
         f"produced_for: {_yaml_scalar(artifact.produced_for)}",
         "attachments: " + json.dumps(list(artifact.attachments), ensure_ascii=False),
         f"git_url: {_yaml_scalar(artifact.git_url)}",
-        f"delegation_ref: {_yaml_scalar(artifact.delegation_ref)}",
         f"created_at: {_yaml_scalar(artifact.created_at.isoformat())}",
     ]
     if artifact.updated_at is not None:
@@ -2468,256 +1964,10 @@ def render_projects_collection_page() -> str:
     )
 
 
-def _agent_delegation_dict(lease: AgentDelegationLease) -> dict[str, Any]:
-    return {
-        "slug": lease.slug,
-        "source_agent": lease.source_agent,
-        "executor_agent": lease.executor_agent,
-        "authorized_by": lease.authorized_by,
-        "starts_at": lease.starts_at.isoformat(),
-        "ends_at": lease.ends_at.isoformat(),
-        "display_timezone": lease.display_timezone,
-        "allowed_operations": list(lease.allowed_operations),
-        "state": lease.state.value,
-        "created_at": lease.created_at.isoformat(),
-        "updated_at": lease.updated_at.isoformat(),
-    }
 
 
-def _agent_delegation_from_page(
-    page: Mapping[str, Any],
-    links: list[object],
-) -> tuple[AgentDelegationLease, tuple[Mapping[str, Any], ...]]:
-    slug = page.get("slug")
-    frontmatter = page.get("frontmatter")
-    if not isinstance(slug, str) or not isinstance(frontmatter, Mapping):
-        raise GBrainProtocolError("agent delegation readback was not structured")
-    expected_fields = {
-        "type",
-        "title",
-        "source_agent",
-        "executor_agent",
-        "authorized_by",
-        "starts_at",
-        "ends_at",
-        "display_timezone",
-        "allowed_operations",
-        "state",
-        "created_at",
-        "updated_at",
-        "version",
-        "receipts",
-        "links",
-    }
-    stored_fields = frozenset(frontmatter)
-    # Stargraph's canonical page projection may add transport provenance
-    # fields when a page has been ingested through MCP. They are not part of
-    # the delegation contract and must not make an otherwise valid lease
-    # unreadable. Keep the allow-list narrow so unknown semantic fields still
-    # fail closed.
-    ingestion_metadata_fields = frozenset(
-        {"source_kind", "ingested_via", "ingested_at", "created"}
-    )
-    contract_fields = stored_fields - ingestion_metadata_fields
-    projected_fields = frozenset(expected_fields - {"type", "title"})
-    if page.get("type") != "agent_delegation_lease" or contract_fields not in {
-        frozenset(expected_fields),
-        projected_fields,
-    }:
-        raise GBrainProtocolError("agent delegation has an invalid canonical schema")
-    if stored_fields == expected_fields and (
-        frontmatter.get("type") != page.get("type")
-        or frontmatter.get("title") != page.get("title")
-    ):
-        raise GBrainProtocolError("agent delegation has conflicting canonical metadata")
-    if len(links) != 1 or not isinstance(links[0], Mapping) or not (
-        links[0].get("from_slug") == slug
-        and links[0].get("to_slug") == AGENT_DELEGATIONS_ROOT
-        and links[0].get("link_type") == "member_of"
-    ):
-        raise GBrainProtocolError(
-            "agent delegation must have exactly one outgoing relationship: its canonical member_of link"
-        )
-    declared_links = frontmatter.get("links")
-    if (
-        not isinstance(declared_links, list)
-        or len(declared_links) != 1
-        or not isinstance(declared_links[0], Mapping)
-        or declared_links[0].get("to") != AGENT_DELEGATIONS_ROOT
-        or declared_links[0].get("type") != "member_of"
-    ):
-        raise GBrainProtocolError("agent delegation declared links were not canonical")
-    operations = frontmatter.get("allowed_operations")
-    receipts = frontmatter.get("receipts")
-    if not isinstance(operations, list) or not isinstance(receipts, list) or not receipts:
-        raise GBrainProtocolError("agent delegation operations or receipts were malformed")
-    try:
-        lease = AgentDelegationLease(
-            slug=slug,
-            source_agent=str(frontmatter["source_agent"]),
-            executor_agent=str(frontmatter["executor_agent"]),
-            authorized_by=str(frontmatter["authorized_by"]),
-            starts_at=datetime.fromisoformat(str(frontmatter["starts_at"]).replace("Z", "+00:00")),
-            ends_at=datetime.fromisoformat(str(frontmatter["ends_at"]).replace("Z", "+00:00")),
-            display_timezone=str(frontmatter["display_timezone"]),
-            allowed_operations=tuple(operations),
-            state=DelegationState(str(frontmatter["state"])),
-            created_at=datetime.fromisoformat(str(frontmatter["created_at"]).replace("Z", "+00:00")),
-            updated_at=datetime.fromisoformat(str(frontmatter["updated_at"]).replace("Z", "+00:00")),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise GBrainProtocolError(f"agent delegation fields were invalid: {exc}") from exc
-    expected_title = f"{lease.source_agent.rsplit('/', 1)[-1].title()} temporary delegation"
-    if page.get("title") != expected_title or (
-        "title" in frontmatter and frontmatter.get("title") != expected_title
-    ):
-        raise GBrainProtocolError("agent delegation title was not canonical")
-    receipt_fields = {
-        "action",
-        "authorized_by",
-        "occurred_at",
-        "version",
-        "source_agent",
-        "executor_agent",
-        "starts_at",
-        "previous_ends_at",
-        "ends_at",
-        "display_timezone",
-        "allowed_operations",
-        "previous_state",
-        "state",
-    }
-    normalized_receipts: list[Mapping[str, Any]] = []
-    prior_snapshot: AgentDelegationLease | None = None
-    for index, raw_receipt in enumerate(receipts):
-        if not isinstance(raw_receipt, Mapping) or set(raw_receipt) != receipt_fields:
-            raise GBrainProtocolError("agent delegation receipt was malformed")
-        receipt = deepcopy(dict(raw_receipt))
-        action = receipt.get("action")
-        if action not in {"created", "extended", "completed", "revoked"}:
-            raise GBrainProtocolError("agent delegation receipt action was malformed")
-        if receipt.get("authorized_by") != TONY_PROFILE_SLUG:
-            raise GBrainProtocolError("agent delegation receipt was not authorized by Tony")
-        if (
-            receipt.get("source_agent") != lease.source_agent
-            or receipt.get("executor_agent") != lease.executor_agent
-            or receipt.get("starts_at") != lease.starts_at.isoformat()
-            or receipt.get("display_timezone") != lease.display_timezone
-            or receipt.get("allowed_operations") != list(lease.allowed_operations)
-        ):
-            raise GBrainProtocolError("agent delegation receipt identity was altered")
-        try:
-            receipt_instants = []
-            for field in ("occurred_at", "version", "ends_at"):
-                instant = datetime.fromisoformat(
-                    str(receipt[field]).replace("Z", "+00:00")
-                )
-                if instant.tzinfo is None or instant.utcoffset() is None:
-                    raise ValueError(f"{field} must be an aware UTC instant")
-                receipt_instants.append(instant.astimezone(timezone.utc))
-            occurred_at, version_at, receipt_ends_at = receipt_instants
-            receipt_state = DelegationState(str(receipt["state"]))
-            snapshot = AgentDelegationLease(
-                slug=lease.slug,
-                source_agent=lease.source_agent,
-                executor_agent=lease.executor_agent,
-                authorized_by=lease.authorized_by,
-                starts_at=lease.starts_at,
-                ends_at=receipt_ends_at,
-                display_timezone=lease.display_timezone,
-                allowed_operations=lease.allowed_operations,
-                state=receipt_state,
-                created_at=lease.created_at,
-                updated_at=version_at,
-            )
-        except (TypeError, ValueError) as exc:
-            raise GBrainProtocolError(f"agent delegation receipt was malformed: {exc}") from exc
-        if occurred_at != version_at:
-            raise GBrainProtocolError("agent delegation receipt occurrence and version differ")
-        if index == 0:
-            if (
-                action != "created"
-                or receipt.get("previous_ends_at") is not None
-                or receipt.get("previous_state") is not None
-                or version_at != lease.created_at
-                or receipt_state
-                not in {DelegationState.SCHEDULED, DelegationState.ACTIVE}
-                or receipt_state != lease_state_at(snapshot, occurred_at)
-            ):
-                raise GBrainProtocolError("agent delegation creation receipt is malformed")
-        else:
-            assert prior_snapshot is not None
-            effective_prior_state = lease_state_at(prior_snapshot, occurred_at)
-            if effective_prior_state in {
-                DelegationState.COMPLETED,
-                DelegationState.EXPIRED,
-                DelegationState.REVOKED,
-            }:
-                raise GBrainProtocolError("agent delegation receipt follows a terminal lease")
-            if (
-                version_at <= prior_snapshot.updated_at
-                or receipt.get("previous_ends_at") != prior_snapshot.ends_at.isoformat()
-                or receipt.get("previous_state") != effective_prior_state.value
-            ):
-                raise GBrainProtocolError("agent delegation receipt chain was altered")
-            if action == "extended":
-                expected_state = lease_state_at(snapshot, occurred_at)
-                if receipt_ends_at <= prior_snapshot.ends_at or receipt_state != expected_state:
-                    raise GBrainProtocolError("agent delegation extension receipt was malformed")
-            elif action in {"completed", "revoked"}:
-                if (
-                    receipt_ends_at != prior_snapshot.ends_at
-                    or receipt_state.value != action
-                ):
-                    raise GBrainProtocolError("agent delegation terminal receipt was malformed")
-            else:
-                raise GBrainProtocolError("agent delegation receipt chain repeated creation")
-        normalized_receipts.append(receipt)
-        prior_snapshot = snapshot
-    version = frontmatter.get("version")
-    if (
-        version != lease.updated_at.isoformat()
-        or normalized_receipts[-1].get("version") != version
-        or prior_snapshot != lease
-    ):
-        raise GBrainProtocolError("agent delegation version did not match its immutable receipt")
-    return lease, tuple(normalized_receipts)
 
 
-def render_agent_delegation_page(
-    lease: AgentDelegationLease,
-    receipts: Sequence[Mapping[str, Any]],
-) -> str:
-    values = _agent_delegation_dict(lease)
-    title = f"{lease.source_agent.rsplit('/', 1)[-1].title()} temporary delegation"
-    lines = [
-        "---",
-        "type: agent_delegation_lease",
-        f"title: {_yaml_scalar(title)}",
-        f"source_agent: {_yaml_scalar(lease.source_agent)}",
-        f"executor_agent: {_yaml_scalar(lease.executor_agent)}",
-        f"authorized_by: {_yaml_scalar(lease.authorized_by)}",
-        f"starts_at: {_yaml_scalar(values['starts_at'])}",
-        f"ends_at: {_yaml_scalar(values['ends_at'])}",
-        f"display_timezone: {_yaml_scalar(lease.display_timezone)}",
-        "allowed_operations: " + json.dumps(list(lease.allowed_operations), ensure_ascii=False),
-        f"state: {_yaml_scalar(lease.state.value)}",
-        f"created_at: {_yaml_scalar(values['created_at'])}",
-        f"updated_at: {_yaml_scalar(values['updated_at'])}",
-        f"version: {_yaml_scalar(values['updated_at'])}",
-        "receipts: " + json.dumps([dict(item) for item in receipts], ensure_ascii=False),
-        "links:",
-        f"  - to: {_yaml_scalar(AGENT_DELEGATIONS_ROOT)}",
-        "    type: member_of",
-        "    context: Tony-authorized temporary Agent delegation.",
-        "---",
-        "",
-        f"# {title}",
-        "",
-        "Time-bounded delegation authority. Permanent task ownership is unchanged.",
-        "",
-    ]
-    return "\n".join(lines)
 
 
 def _render_preserved_page(
@@ -3087,16 +2337,8 @@ class GBrainAdapter:
     def __init__(
         self,
         runner: CommandRunner | None = None,
-        *,
-        openclaw_profiles: OpenClawProfileActivationClient | None = None,
     ) -> None:
         self.runner = runner or RemoteHttpCommandRunner()
-        if openclaw_profiles is None and (
-            os.environ.get("MEMORY_STARGRAPH_URL")
-            and os.environ.get("MEMORY_STARGRAPH_OC_PROVISION_TOKEN")
-        ):
-            openclaw_profiles = MemoryStargraphOpenClawProfileClient.from_environment()
-        self.openclaw_profiles = openclaw_profiles
         # Comments and events are append-only canonical records. Cache only
         # fully validated immutable children so repeated Todo hydration does
         # not renegotiate OAuth through two CLI subprocesses per history item.
@@ -3105,10 +2347,8 @@ class GBrainAdapter:
         self._todo_child_cache_lock = Lock()
         self._artifact_create_lock = Lock()
         self._artifact_review_reference_lock = Lock()
-        self._delegation_mutation_lock = Lock()
         self._goal_execution_locks_guard = Lock()
         self._goal_execution_locks: dict[str, Lock] = {}
-        self._last_verified_openclaw_profiles: tuple[AgentProfile, ...] = ()
 
     def _verified_system_ticket_references(
         self, values: Sequence[str]
@@ -3966,14 +3206,12 @@ class GBrainAdapter:
         *,
         executing_agent: str,
         idempotency_key: str | None = None,
-        execution_claim: ArtifactExecutionClaim | None = None,
     ) -> ArtifactMutationReceipt:
         with self._artifact_create_lock:
             return self._create_agent_artifact_locked(
                 artifact,
                 executing_agent=executing_agent,
                 idempotency_key=idempotency_key,
-                execution_claim=execution_claim,
             )
 
     def _create_agent_artifact_locked(
@@ -3982,7 +3220,6 @@ class GBrainAdapter:
         *,
         executing_agent: str,
         idempotency_key: str | None = None,
-        execution_claim: ArtifactExecutionClaim | None = None,
     ) -> ArtifactMutationReceipt:
         if (
             executing_agent != artifact.created_by
@@ -3990,20 +3227,6 @@ class GBrainAdapter:
         ):
             raise DomainValidationError(
                 "Artifact publisher identity does not match its installed execution contract"
-            )
-        if artifact.delegation_ref is None:
-            if execution_claim is not None:
-                raise DomainValidationError(
-                    "delegation claim is forbidden when delegation_ref is absent"
-                )
-        elif (
-            not isinstance(execution_claim, ArtifactExecutionClaim)
-            or not execution_claim.matches(
-                artifact, executing_agent=executing_agent
-            )
-        ):
-            raise DomainValidationError(
-                "Artifact delegation claim does not match task, executor, owner, and delegation_ref"
             )
         if idempotency_key is not None and (
             not isinstance(idempotency_key, str)
@@ -4017,29 +3240,8 @@ class GBrainAdapter:
             )
         if idempotency_key is not None:
             idempotency_key = idempotency_key.strip()
-        if AGENT_RUNTIME_BY_SLUG.get(executing_agent) == "openclaw":
-            activation = self._active_openclaw_activation(executing_agent)
-            if (
-                artifact.agent_collection
-                != activation["canonical_artifact_collection"]
-            ):
-                raise DomainValidationError(
-                    "Artifact collection does not match the activated logical OpenClaw identity"
-                )
-            self._openclaw_profile_from_activation(activation)
-            self._verify_openclaw_task_anchor(activation)
-            self._verify_openclaw_artifact_anchor(activation)
-            self._preflight_artifact_task(
-                artifact,
-                expected_owner=(
-                    execution_claim.permanent_owner
-                    if execution_claim is not None
-                    else None
-                ),
-            )
-        else:
-            self._preflight_artifact_task(artifact)
-            self.ensure_artifact_collections()
+        self._preflight_artifact_task(artifact)
+        self.ensure_artifact_collections()
         backlinks = (
             self.runner.run(
                 "get_backlinks", {"slug": artifact.agent_collection}
@@ -5096,302 +4298,12 @@ class GBrainAdapter:
         )
         return tuple(dict.fromkeys(scopes))
 
-    def _activated_openclaw_profiles(self) -> tuple[Mapping[str, Any], ...]:
-        """Return only profiles named by Stargraph's CAS-active manifest.
 
-        The regular GBrain agent directory intentionally cannot activate an
-        `-oc` identity; staged pages become visible here only after the NATS
-        control key selected their immutable manifest.
-        """
-        if self.openclaw_profiles is None:
-            return ()
-        projection = self.openclaw_profiles.active_projection()
-        if not isinstance(projection, Mapping):
-            raise GBrainProtocolError(
-                "OpenClaw active profile projection was invalid"
-            )
-        generation = projection.get("generation")
-        active_manifest = projection.get("active_manifest")
-        manifest_digest = projection.get("manifest_digest")
-        raw_profiles = projection.get("profiles")
-        if not isinstance(raw_profiles, list):
-            raise GBrainProtocolError("OpenClaw active profile projection was invalid")
-        if not _openclaw_active_manifest_identity_is_valid(
-            generation, active_manifest, manifest_digest
-        ):
-            raise GBrainProtocolError(
-                "OpenClaw active profile manifest identity was invalid"
-            )
-        if generation == 0:
-            if raw_profiles:
-                raise GBrainProtocolError(
-                    "OpenClaw generation zero cannot expose active profiles"
-                )
-            return ()
-        assert isinstance(generation, int)
-        assert isinstance(active_manifest, str)
-        operation_id = active_manifest.split(f"g{generation:06d}-", 1)[1]
-        staged_prefix = (
-            "system/openclaw-profile-staging/"
-            f"g{generation:06d}-{operation_id}/staged/"
-        )
-        expected = {
-            "canonical_agent_slug",
-            "canonical_task_collection",
-            "canonical_artifact_collection",
-            "staged_agent_slug",
-            "staged_task_collection",
-            "staged_artifact_collection",
-            "page_hashes",
-            "metadata",
-        }
-        if len(raw_profiles) != len(APPROVED_OPENCLAW_DECLARATIONS):
-            raise GBrainProtocolError(
-                "OpenClaw active profile manifest must contain exactly three Agents"
-            )
-        profiles: list[Mapping[str, Any]] = []
-        for item in raw_profiles:
-            if not isinstance(item, Mapping) or set(item) != expected:
-                raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
-            values = {
-                key: item.get(key)
-                for key in expected
-                if key not in {"page_hashes", "metadata"}
-            }
-            page_hashes = item.get("page_hashes")
-            metadata = item.get("metadata")
-            if (
-                not all(isinstance(value, str) and value for value in values.values())
-                or not isinstance(page_hashes, Mapping)
-                or not isinstance(metadata, Mapping)
-            ):
-                raise GBrainProtocolError("OpenClaw active profile manifest was malformed")
-            canonical = str(values["canonical_agent_slug"])
-            staged_agent = str(values["staged_agent_slug"])
-            staged_tasks = str(values["staged_task_collection"])
-            staged_artifacts = str(values["staged_artifact_collection"])
-            declaration = APPROVED_OPENCLAW_DECLARATIONS.get(canonical)
-            if (
-                declaration is None
-                or values["canonical_task_collection"]
-                != declaration["task_collection"]
-                or values["canonical_artifact_collection"]
-                != declaration["artifact_collection"]
-                or staged_agent != f"{staged_prefix}{canonical}"
-                or staged_tasks
-                != f"{staged_prefix}{declaration['task_collection']}"
-                or staged_artifacts
-                != f"{staged_prefix}{declaration['artifact_collection']}"
-                or set(page_hashes) != {
-                    staged_agent,
-                    staged_tasks,
-                    staged_artifacts,
-                }
-                or not all(
-                    isinstance(digest, str)
-                    and re.fullmatch(r"[0-9a-f]{64}", digest)
-                    for digest in page_hashes.values()
-                )
-            ):
-                raise GBrainProtocolError(
-                    "OpenClaw active profile manifest has an invalid approved identity mapping"
-                )
-            metadata_frontmatter = metadata.get("frontmatter")
-            try:
-                metadata_digest = _canonical_json_digest(metadata)
-            except (TypeError, ValueError) as exc:
-                raise GBrainProtocolError(
-                    "OpenClaw active profile metadata was not canonical JSON"
-                ) from exc
-            if (
-                metadata.get("slug") != staged_agent
-                or metadata.get("type") != "agent"
-                or not isinstance(metadata.get("title"), str)
-                or not str(metadata["title"]).strip()
-                or not isinstance(metadata.get("compiled_truth"), str)
-                or not isinstance(metadata_frontmatter, Mapping)
-                or metadata_frontmatter.get("runtime") != "openclaw"
-                or metadata_frontmatter.get("route") != declaration["route"]
-                or metadata_frontmatter.get("activation_generation") != generation
-                or metadata_frontmatter.get("activation_operation_id")
-                != operation_id
-                or metadata_frontmatter.get("canonical_slug") != canonical
-                or metadata_frontmatter.get("staged") is not True
-                or not hmac.compare_digest(
-                    metadata_digest,
-                    str(page_hashes[staged_agent]),
-                )
-            ):
-                raise GBrainProtocolError(
-                    "OpenClaw active profile metadata was not bound to its approved declaration"
-                )
-            profiles.append(
-                {
-                    **{key: str(value) for key, value in values.items()},
-                    "metadata": deepcopy(dict(metadata)),
-                }
-            )
-        if {
-            str(item["canonical_agent_slug"]) for item in profiles
-        } != set(APPROVED_OPENCLAW_DECLARATIONS):
-            raise GBrainProtocolError(
-                "OpenClaw active profile manifest did not contain the approved identities"
-            )
-        return tuple(sorted(profiles, key=lambda item: item["canonical_agent_slug"]))
 
-    def _openclaw_profile_from_activation(
-        self, activation: Mapping[str, Any]
-    ) -> AgentProfile:
-        canonical_slug = str(activation["canonical_agent_slug"])
-        logical_page = self.runner.run("get_page", {"slug": canonical_slug})
-        logical_edges = self.runner.run("get_links", {"slug": canonical_slug})
-        if not isinstance(logical_page, Mapping) or not isinstance(
-            logical_edges, list
-        ):
-            raise GBrainProtocolError(
-                f"{canonical_slug} logical Agent anchor readback was not structured"
-            )
-        frontmatter = logical_page.get("frontmatter")
-        if (
-            logical_page.get("slug") != canonical_slug
-            or logical_page.get("type") != "agent"
-            or not isinstance(frontmatter, Mapping)
-            or frontmatter.get("runtime") != "openclaw"
-            or frontmatter.get("logical_anchor") is not True
-        ):
-            raise GBrainProtocolError(
-                f"{canonical_slug} is not a canonical logical OpenClaw Agent anchor"
-            )
 
-        generation_metadata = activation.get("metadata")
-        if not isinstance(generation_metadata, Mapping):
-            raise GBrainProtocolError(
-                "activated OpenClaw profile generation metadata was not structured"
-            )
-        generation_frontmatter = generation_metadata.get("frontmatter")
-        if not isinstance(generation_frontmatter, Mapping):
-            raise GBrainProtocolError(
-                "activated OpenClaw profile generation frontmatter was not structured"
-            )
-        composed_page = deepcopy(dict(generation_metadata))
-        composed_frontmatter = deepcopy(dict(generation_frontmatter))
-        # Generation metadata owns presentation, except for the two explicitly
-        # mutable logical-anchor authorities: avatar here and Goal edges below.
-        composed_frontmatter.pop("avatar", None)
-        if "avatar" in frontmatter:
-            composed_frontmatter["avatar"] = deepcopy(frontmatter["avatar"])
-        composed_page.update(
-            {
-                "slug": canonical_slug,
-                "type": "agent",
-                "frontmatter": composed_frontmatter,
-            }
-        )
-        profile = AgentProfile.from_page(
-            composed_page,
-            work_root=str(activation["canonical_task_collection"]),
-            edges=logical_edges,
-        )
-        if profile.runtime != "openclaw":
-            raise GBrainProtocolError(
-                "activated OpenClaw profile has the wrong runtime"
-            )
-        return profile
 
-    def _active_openclaw_activation(
-        self, agent_slug: str
-    ) -> Mapping[str, Any]:
-        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) != "openclaw":
-            raise ValueError(f"{agent_slug} is not an approved OpenClaw Agent")
-        activation = next(
-            (
-                item
-                for item in self._activated_openclaw_profiles()
-                if item["canonical_agent_slug"] == agent_slug
-            ),
-            None,
-        )
-        if activation is None:
-            raise ValueError(f"OpenClaw Agent {agent_slug} is not activated")
-        return activation
 
-    def _verify_openclaw_task_anchor(
-        self, activation: Mapping[str, Any]
-    ) -> None:
-        agent_slug = str(activation["canonical_agent_slug"])
-        collection_slug = str(activation["canonical_task_collection"])
-        page = self.runner.run("get_page", {"slug": collection_slug})
-        links = self.runner.run("get_links", {"slug": collection_slug})
-        frontmatter = page.get("frontmatter") if isinstance(page, Mapping) else None
-        if not isinstance(links, list):
-            raise GBrainProtocolError(
-                f"{collection_slug} logical task collection links were not a list"
-            )
-        exact_for_agent = [
-            edge
-            for edge in links
-            if isinstance(edge, Mapping)
-            and edge.get("from_slug") == collection_slug
-            and edge.get("to_slug") == agent_slug
-            and edge.get("link_type") == "for_agent"
-            and edge.get("context") == "Logical OpenClaw task scope."
-        ]
-        if (
-            not isinstance(page, Mapping)
-            or page.get("slug") != collection_slug
-            or page.get("type") != "collection"
-            or not isinstance(frontmatter, Mapping)
-            or frontmatter.get("collection_kind")
-            != "mission_control_agent_tasks"
-            or frontmatter.get("agent") != agent_slug
-            or frontmatter.get("logical_anchor") is not True
-            or len(links) != 1
-            or len(exact_for_agent) != 1
-        ):
-            raise GBrainProtocolError(
-                f"{collection_slug} is not the verified logical task collection for {agent_slug}"
-            )
 
-    def _verify_openclaw_artifact_anchor(
-        self, activation: Mapping[str, Any]
-    ) -> None:
-        collection_slug = str(activation["canonical_artifact_collection"])
-        page = self.runner.run("get_page", {"slug": collection_slug})
-        links = self.runner.run("get_links", {"slug": collection_slug})
-        frontmatter = page.get("frontmatter") if isinstance(page, Mapping) else None
-        if (
-            not isinstance(frontmatter, Mapping)
-            or frontmatter.get("logical_anchor") is not True
-        ):
-            raise GBrainProtocolError(
-                f"{collection_slug} is not a verified logical Artifact collection"
-            )
-        try:
-            self._verify_artifact_collection(collection_slug, page, links)
-        except GBrainProtocolError as exc:
-            raise GBrainProtocolError(
-                f"{collection_slug} is not a verified logical Artifact collection: {exc}"
-            ) from exc
-
-    def _require_task_openclaw_activation(self, task: Task) -> None:
-        owner = task.owner_agent
-        if owner is None or AGENT_RUNTIME_BY_SLUG.get(owner) != "openclaw":
-            return
-        activation = self._active_openclaw_activation(owner)
-        if task.lifecycle_root != activation["canonical_task_collection"]:
-            raise GBrainProtocolError(
-                "OpenClaw task is not in its stable logical task collection"
-            )
-        self._openclaw_profile_from_activation(activation)
-        self._verify_openclaw_task_anchor(activation)
-
-    def _require_openclaw_assignment_target(self, agent_slug: str) -> str | None:
-        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) != "openclaw":
-            return None
-        activation = self._active_openclaw_activation(agent_slug)
-        self._openclaw_profile_from_activation(activation)
-        self._verify_openclaw_task_anchor(activation)
-        return str(activation["canonical_task_collection"])
 
     def list_agent_profiles(self) -> AgentRead:
         def read_agent(
@@ -5431,28 +4343,6 @@ class GBrainAdapter:
                 agents.append(agent)
             if issue is not None:
                 issues.append(issue)
-        try:
-            activated_openclaw = tuple(
-                self._openclaw_profile_from_activation(activation)
-                for activation in self._activated_openclaw_profiles()
-            )
-        except (DomainValidationError, GBrainError, ValueError) as exc:
-            activated_openclaw = self._last_verified_openclaw_profiles
-            issues.append(
-                CollectionIssue(
-                    slug="system/openclaw-profile-activation",
-                    message=str(exc),
-                    category="openclaw_activation",
-                    impact=(
-                        "Last verified OpenClaw profiles remain visible while activation readback recovers."
-                        if activated_openclaw
-                        else "Existing Codex Agents remain available; OpenClaw activation could not be read."
-                    ),
-                )
-            )
-        else:
-            self._last_verified_openclaw_profiles = activated_openclaw
-        agents.extend(activated_openclaw)
         return AgentRead(agents=tuple(agents), issues=tuple(issues))
 
     def set_agent_avatar(self, agent_slug: str, served_url: str) -> AgentProfile:
@@ -5482,8 +4372,6 @@ class GBrainAdapter:
         stored = AgentProfile.from_page(stored_page, work_root=work_root, edges=stored_links)
         if stored.avatar_kind != "attachment" or stored.avatar_value != served_url:
             raise GBrainProtocolError("agent avatar reference did not read back from GBrain")
-        if profile.runtime == "openclaw":
-            return self.get_agent_profile(agent_slug)
         return stored
 
     def get_agent_profile(self, agent_slug: str) -> AgentProfile:
@@ -5496,100 +4384,10 @@ class GBrainAdapter:
             if not isinstance(page, Mapping) or not isinstance(links, list):
                 raise GBrainProtocolError("agent profile readback was not structured")
             return AgentProfile.from_page(page, work_root=work_root, edges=links)
-        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) == "openclaw":
-            activation = next(
-                (
-                    item
-                    for item in self._activated_openclaw_profiles()
-                    if item["canonical_agent_slug"] == agent_slug
-                ),
-                None,
-            )
-            if activation is None:
-                raise ValueError(
-                    f"OpenClaw Agent {agent_slug} is not activated"
-                )
-            return self._openclaw_profile_from_activation(activation)
-        else:
-            raise ValueError(
-                "Agent profile is not available in the active directory. Refresh and select the listed agent."
-            )
-
-    @staticmethod
-    def _openclaw_declaration(declaration: Mapping[str, str]) -> dict[str, str]:
-        required = {
-            "slug",
-            "name",
-            "runtime",
-            "route",
-            "task_collection",
-            "artifact_collection",
-        }
-        if set(declaration) != required or not all(
-            isinstance(value, str) and value.strip() for value in declaration.values()
-        ):
-            raise ValueError("OpenClaw declaration must contain the exact public fields")
-        normalized = {key: value.strip() for key, value in declaration.items()}
-        if APPROVED_OPENCLAW_DECLARATIONS.get(normalized["slug"]) != normalized:
-            raise ValueError("OpenClaw declaration does not match the approved scope")
-        return normalized
-
-    @staticmethod
-    def _openclaw_receipt(
-        declaration: Mapping[str, str],
-    ) -> AgentProvisioningReceipt:
-        agent = declaration["slug"]
-        task_collection = declaration["task_collection"]
-        artifact_collection = declaration["artifact_collection"]
-        return AgentProvisioningReceipt(
-            agent_slug=agent,
-            collection_slugs=(task_collection, artifact_collection),
-            default_goal_slugs=(),
-            operations=(
-                f"put_page:{agent}",
-                f"put_page:{task_collection}",
-                f"put_page:{artifact_collection}",
-                f"add_link:{task_collection}->{agent}:for_agent",
-                f"add_link:{artifact_collection}->{ARTIFACTS_ROOT}:part_of",
-                f"add_link:{artifact_collection}->{agent}:for_agent",
-            ),
-            verified=False,
-            mutated=False,
+        raise ValueError(
+            "Agent profile is not available in the active directory. Refresh and select the listed agent."
         )
 
-    def provision_agent_profiles(
-        self,
-        declarations: Sequence[Mapping[str, str]],
-        *,
-        execute: bool,
-    ) -> tuple[AgentProvisioningReceipt, ...]:
-        """Validate legacy plans without directly provisioning OpenClaw pages."""
-        if execute:
-            raise GBrainProtocolError(
-                "direct OpenClaw provisioning is disabled; use Memory Stargraph activation"
-            )
-        items = tuple(
-            self._openclaw_declaration(declaration)
-            for declaration in declarations
-        )
-        if not items:
-            raise ValueError(
-                "OpenClaw provisioning requires at least one declaration"
-            )
-        if len({item["slug"] for item in items}) != len(items):
-            raise ValueError(
-                "OpenClaw declarations must not share canonical identities"
-            )
-        return tuple(self._openclaw_receipt(item) for item in items)
-
-    def provision_agent_profile(
-        self,
-        declaration: Mapping[str, str],
-        *,
-        execute: bool,
-    ) -> AgentProvisioningReceipt:
-        """Return one legacy dry-run plan or reject direct execution."""
-        return self.provision_agent_profiles((declaration,), execute=execute)[0]
 
     def read_handoff_dispatcher_registration(
         self,
@@ -5879,228 +4677,10 @@ class GBrainAdapter:
             roots=tuple(agent.work_root for agent in profiles.agents),
         )
 
-    def _verify_agent_delegation_root(self) -> None:
-        root = self.runner.run("get_page", {"slug": AGENT_DELEGATIONS_ROOT})
-        frontmatter = root.get("frontmatter") if isinstance(root, Mapping) else None
-        if (
-            not isinstance(root, Mapping)
-            or root.get("slug") != AGENT_DELEGATIONS_ROOT
-            or root.get("type") != "collection"
-            or not isinstance(frontmatter, Mapping)
-            or frontmatter.get("collection_kind")
-            != "mission_control_agent_delegations"
-        ):
-            raise GBrainProtocolError(
-                "Mission Control Agent Delegations root is not canonical"
-            )
 
-    def list_agent_delegations(self) -> tuple[AgentDelegationLease, ...]:
-        self._verify_agent_delegation_root()
-        raw = self.runner.run("get_backlinks", {"slug": AGENT_DELEGATIONS_ROOT})
-        if not isinstance(raw, list):
-            raise GBrainProtocolError("agent delegation backlinks were not a list")
-        slugs = tuple(
-            dict.fromkeys(
-                str(edge["from_slug"])
-                for edge in raw
-                if isinstance(edge, Mapping)
-                and edge.get("to_slug") == AGENT_DELEGATIONS_ROOT
-                and edge.get("link_type") == "member_of"
-                and isinstance(edge.get("from_slug"), str)
-                and str(edge["from_slug"]).startswith("agent-delegations/")
-            )
-        )
-        leases: list[AgentDelegationLease] = []
-        for slug in slugs:
-            page = self.runner.run("get_page", {"slug": slug})
-            links = self.runner.run("get_links", {"slug": slug})
-            if not isinstance(page, Mapping) or not isinstance(links, list):
-                raise GBrainProtocolError("agent delegation readback was not structured")
-            lease, _receipts = _agent_delegation_from_page(page, links)
-            leases.append(lease)
-        return tuple(sorted(leases, key=lambda lease: (lease.created_at, lease.slug)))
 
-    def _read_agent_delegation(
-        self, slug: str
-    ) -> tuple[AgentDelegationLease, tuple[Mapping[str, Any], ...]]:
-        page = self.runner.run("get_page", {"slug": slug})
-        links = self.runner.run("get_links", {"slug": slug})
-        if not isinstance(page, Mapping) or not isinstance(links, list):
-            raise GBrainProtocolError("agent delegation readback was not structured")
-        return _agent_delegation_from_page(page, links)
 
-    def create_agent_delegation(
-        self, lease: AgentDelegationLease
-    ) -> MutationReceipt:
-        if not isinstance(lease, AgentDelegationLease):
-            raise TypeError("lease must be an AgentDelegationLease")
-        with self._delegation_mutation_lock:
-            self._verify_agent_delegation_root()
-            try:
-                page = self.runner.run("get_page", {"slug": lease.slug})
-            except GBrainCommandError as exc:
-                if not is_page_not_found_error(exc):
-                    raise
-            else:
-                try:
-                    links = self.runner.run("get_links", {"slug": lease.slug})
-                    if not isinstance(page, Mapping) or not isinstance(links, list):
-                        raise GBrainProtocolError(
-                            "agent delegation readback was not structured"
-                        )
-                    existing, _receipts = _agent_delegation_from_page(page, links)
-                except (GBrainError, ValueError) as exc:
-                    raise PartialMutationError(
-                        lease.slug,
-                        "Agent delegation existing page is not verified; inspect before retrying.",
-                    ) from exc
-                if existing != lease:
-                    raise ValueError(
-                        "delegation idempotency input conflicts with canonical lease"
-                    )
-                return MutationReceipt(lease.slug, True)
 
-            self._active_openclaw_activation(lease.executor_agent)
-            receipt = {
-                "action": "created",
-                "authorized_by": TONY_PROFILE_SLUG,
-                "occurred_at": lease.created_at.isoformat(),
-                "version": lease.updated_at.isoformat(),
-                "source_agent": lease.source_agent,
-                "executor_agent": lease.executor_agent,
-                "starts_at": lease.starts_at.isoformat(),
-                "previous_ends_at": None,
-                "ends_at": lease.ends_at.isoformat(),
-                "display_timezone": lease.display_timezone,
-                "allowed_operations": list(lease.allowed_operations),
-                "previous_state": None,
-                "state": lease.state.value,
-            }
-            try:
-                self.runner.run(
-                    "put_page",
-                    {
-                        "slug": lease.slug,
-                        "content": render_agent_delegation_page(lease, (receipt,)),
-                    },
-                )
-                self.runner.run(
-                    "add_link",
-                    {
-                        "from": lease.slug,
-                        "to": AGENT_DELEGATIONS_ROOT,
-                        "link_type": "member_of",
-                        "context": "Tony-authorized temporary Agent delegation.",
-                        "link_source": "gtasks",
-                    },
-                )
-                stored, receipts = self._read_agent_delegation(lease.slug)
-                if stored != lease or receipts != (receipt,):
-                    raise GBrainProtocolError(
-                        "agent delegation creation readback did not match the write"
-                    )
-            except (GBrainError, ValueError) as exc:
-                raise PartialMutationError(
-                    lease.slug,
-                    "Agent delegation creation was not verified; inspect before retrying.",
-                ) from exc
-            return MutationReceipt(lease.slug, True)
-
-    def update_agent_delegation(
-        self,
-        lease: AgentDelegationLease,
-        *,
-        expected_version: str,
-    ) -> MutationReceipt:
-        if not isinstance(lease, AgentDelegationLease):
-            raise TypeError("lease must be an AgentDelegationLease")
-        if not isinstance(expected_version, str) or not expected_version:
-            raise ValueError("expected_version must be the exact canonical version")
-        with self._delegation_mutation_lock:
-            self._verify_agent_delegation_root()
-            existing, receipts = self._read_agent_delegation(lease.slug)
-            canonical_version = existing.updated_at.isoformat()
-            if expected_version != canonical_version:
-                raise ConcurrentAgentDelegationUpdateError(lease.slug)
-            immutable = (
-                "slug",
-                "source_agent",
-                "executor_agent",
-                "authorized_by",
-                "starts_at",
-                "display_timezone",
-                "allowed_operations",
-                "created_at",
-            )
-            if any(getattr(existing, field) != getattr(lease, field) for field in immutable):
-                raise ValueError("agent delegation immutable fields cannot change")
-            if lease.updated_at <= existing.updated_at:
-                if lease == existing:
-                    return MutationReceipt(lease.slug, True)
-                raise ValueError("agent delegation updated_at must advance")
-            effective_existing = lease_state_at(existing, lease.updated_at)
-            if effective_existing in {
-                DelegationState.COMPLETED,
-                DelegationState.EXPIRED,
-                DelegationState.REVOKED,
-            }:
-                raise ValueError(
-                    f"{effective_existing.value} agent delegation cannot be changed"
-                )
-            action: str
-            receipt: dict[str, Any] = {
-                "authorized_by": TONY_PROFILE_SLUG,
-                "occurred_at": lease.updated_at.isoformat(),
-                "version": lease.updated_at.isoformat(),
-                "source_agent": lease.source_agent,
-                "executor_agent": lease.executor_agent,
-                "starts_at": lease.starts_at.isoformat(),
-                "previous_ends_at": existing.ends_at.isoformat(),
-                "ends_at": lease.ends_at.isoformat(),
-                "display_timezone": lease.display_timezone,
-                "allowed_operations": list(lease.allowed_operations),
-                "previous_state": effective_existing.value,
-                "state": lease.state.value,
-            }
-            if (
-                lease.ends_at > existing.ends_at
-                and lease.state == effective_existing
-            ):
-                action = "extended"
-                self._active_openclaw_activation(lease.executor_agent)
-            elif (
-                lease.ends_at == existing.ends_at
-                and lease.state in {DelegationState.COMPLETED, DelegationState.REVOKED}
-            ):
-                action = lease.state.value
-            else:
-                raise ValueError(
-                    "agent delegation update must be an extension, completion, or revocation"
-                )
-            receipt = {"action": action, **receipt}
-            new_receipts = (*receipts, receipt)
-            latest, latest_receipts = self._read_agent_delegation(lease.slug)
-            if latest != existing or latest_receipts != receipts:
-                raise ConcurrentAgentDelegationUpdateError(lease.slug)
-            try:
-                self.runner.run(
-                    "put_page",
-                    {
-                        "slug": lease.slug,
-                        "content": render_agent_delegation_page(lease, new_receipts),
-                    },
-                )
-                stored, stored_receipts = self._read_agent_delegation(lease.slug)
-                if stored != lease or stored_receipts != new_receipts:
-                    raise GBrainProtocolError(
-                        "agent delegation update readback did not match the write"
-                    )
-            except (GBrainError, ValueError) as exc:
-                raise PartialMutationError(
-                    lease.slug,
-                    "Agent delegation update was not verified; inspect before retrying.",
-                ) from exc
-            return MutationReceipt(lease.slug, True)
 
     def list_proposals(self) -> ProposalRead:
         # The current contract is an ordinary, agent-owned task with status
@@ -7808,22 +6388,17 @@ class GBrainAdapter:
                 "new agent work must start planned/queued in exactly the "
                 "selected agent work collection"
             )
-        if AGENT_RUNTIME_BY_SLUG.get(agent_slug) == "openclaw":
-            activation = self._active_openclaw_activation(agent_slug)
-            self._openclaw_profile_from_activation(activation)
-            self._verify_openclaw_task_anchor(activation)
-        else:
-            agent_page = self.runner.run("get_page", {"slug": agent_slug})
-            agent_links = self.runner.run("get_links", {"slug": agent_slug})
-            if not isinstance(agent_page, Mapping) or not isinstance(
-                agent_links, list
-            ):
-                raise ValueError("selected agent profile could not be verified")
-            AgentProfile.from_page(
-                agent_page,
-                work_root=work_root,
-                edges=agent_links,
-            )
+        agent_page = self.runner.run("get_page", {"slug": agent_slug})
+        agent_links = self.runner.run("get_links", {"slug": agent_slug})
+        if not isinstance(agent_page, Mapping) or not isinstance(
+            agent_links, list
+        ):
+            raise ValueError("selected agent profile could not be verified")
+        AgentProfile.from_page(
+            agent_page,
+            work_root=work_root,
+            edges=agent_links,
+        )
         if task.project:
             project_page = self.runner.run("get_page", {"slug": task.project})
             project_links = self.runner.run("get_links", {"slug": task.project})
@@ -8814,7 +7389,6 @@ class GBrainAdapter:
                     legacy_untyped_backlink=False,
                 )
         task = Task.from_page(normalized_page, edges=links)
-        self._require_task_openclaw_activation(task)
         return task, normalized_page
 
     def get_task(self, task_slug: str) -> Task:
@@ -8884,8 +7458,6 @@ class GBrainAdapter:
                 f"task has unexpected page type {raw_page.get('type') or 'missing'}; repair the task type before editing"
             )
         task = Task.from_page(raw_page, edges=raw_links)
-        self._require_task_openclaw_activation(task)
-        self._require_openclaw_assignment_target(assignee_slug)
         if status not in EDITABLE_TASK_STATUSES | {"proposed"}:
             raise ValueError("task status is not supported")
         if task.status == "proposed" and status == "proposed" and assignee_slug != (task.owner_agent or "tony"):
@@ -9046,14 +7618,10 @@ class GBrainAdapter:
         if not isinstance(page, Mapping) or not isinstance(links, list):
             raise GBrainProtocolError("task reassignment snapshot was not structured")
         task = Task.from_page(page, edges=links)
-        self._require_task_openclaw_activation(task)
         old_owner = task.owner_agent or "tony"
         old_root = task.lifecycle_root
-        target_openclaw_root = self._require_openclaw_assignment_target(assignee_slug)
         if assignee_slug == "tony":
             target_root = ACTIVE_ROOT
-        elif target_openclaw_root is not None:
-            target_root = target_openclaw_root
         else:
             target_root = {
                 agent.slug: agent.work_root
@@ -9158,7 +7726,6 @@ class GBrainAdapter:
             except DomainValidationError as recovery_exc:
                 raise ValueError(str(exc)) from recovery_exc
             recovering_terminal_handoff = True
-        self._require_task_openclaw_activation(task)
         existing_lifecycle_edges = initial_lifecycle_edges
         existing_lifecycle_edge = _require_single_lifecycle_edge(
             task_slug, raw_links
@@ -10600,7 +9167,6 @@ class GBrainAdapter:
         event_type: str = "created",
         sync_projection: bool = True,
     ) -> TodoMutationReceipt:
-        self._require_task_openclaw_activation(task)
         normalized_text, normalized_detail = self._normalize_todo_text(text, detail)
         key = self._normalize_idempotency_key(idempotency_key)
         self._validate_todo_timestamp(created_at, "todo created_at")
@@ -10826,7 +9392,6 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("handoff task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
-        self._require_task_openclaw_activation(task)
         if task.owner_agent != agent_slug:
             raise ValueError("question Agent must match the task's assigned Agent")
         if task.status in {"proposed", "completed", "cancelled"}:
@@ -10974,7 +9539,6 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("answer handoff task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
-        self._require_task_openclaw_activation(task)
         if task.handoff is None or task.handoff.question_todo != todo.slug:
             raise ValueError("TODO is not the task's current blocking question")
         comment_slug = self._todo_identity("todo-comments", todo.slug, key)
@@ -11161,7 +9725,6 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_links, list):
             raise GBrainProtocolError("handoff acknowledgement snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_links)
-        self._require_task_openclaw_activation(task)
         if task.owner_agent != actor:
             raise ValueError("handoff acknowledgement actor must be the assigned Agent")
         if task.handoff is None:
@@ -11253,7 +9816,6 @@ class GBrainAdapter:
         if not isinstance(raw_task, Mapping) or not isinstance(raw_task_links, list):
             raise GBrainProtocolError("handoff repair task snapshot was not structured")
         task = Task.from_page(raw_task, edges=raw_task_links)
-        self._require_task_openclaw_activation(task)
         if todo.parent_task != task.slug:
             raise ValueError("legacy question TODO does not belong to the task")
         if task.owner_agent != agent_slug:
@@ -11481,7 +10043,6 @@ class GBrainAdapter:
         parseable_frontmatter["handoff"] = None
         parseable_task_page["frontmatter"] = parseable_frontmatter
         task = Task.from_page(parseable_task_page, edges=raw_task_links)
-        self._require_task_openclaw_activation(task)
         if todo.parent_task != task.slug:
             raise ValueError("question TODO does not belong to the task")
         if task.owner_agent != agent_slug:
@@ -11861,7 +10422,6 @@ class GBrainAdapter:
         if not isinstance(raw_parent, Mapping) or not isinstance(raw_parent_links, list):
             raise GBrainProtocolError("todo comment parent snapshot was not structured")
         task = Task.from_page(raw_parent, edges=raw_parent_links)
-        self._require_task_openclaw_activation(task)
         self._validate_todo_actor_source(actor=author, source=source, task=task)
         if now < todo.updated_at:
             raise ValueError("todo updated_at cannot move backwards")

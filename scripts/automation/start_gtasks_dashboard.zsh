@@ -4,7 +4,6 @@ set -euo pipefail
 export GBRAIN_HOME=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote
 GBRAIN_CONFIG_FILE="$GBRAIN_HOME/.gbrain/config.json"
 GBRAIN_CREDENTIALS_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks-remote/credentials.env
-PROVISION_TOKEN_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/openclaw-profile-activation/provision.token
 BUZZ_ENV_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/buzz.env
 GOAL_EXECUTION_ENV_FILE=/Users/tony/.codex/services/all-things-codex-dashboard/state/gtasks/goal-execution.env
 
@@ -22,7 +21,6 @@ require_owner_file() {
 
 require_owner_file "$GBRAIN_CONFIG_FILE"
 require_owner_file "$GBRAIN_CREDENTIALS_FILE"
-require_owner_file "$PROVISION_TOKEN_FILE"
 require_owner_file "$BUZZ_ENV_FILE"
 
 /opt/homebrew/opt/python@3.12/libexec/bin/python3 - "$GBRAIN_CONFIG_FILE" <<'PY'
@@ -47,7 +45,6 @@ export GBRAIN_REMOTE_CLIENT_SECRET="$(
 }
 
 export MEMORY_STARGRAPH_URL=http://127.0.0.1:8788
-export MEMORY_STARGRAPH_OC_PROVISION_TOKEN="$(<"$PROVISION_TOKEN_FILE")"
 export PATH="/Users/tony/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 set -a

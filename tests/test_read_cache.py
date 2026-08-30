@@ -9,6 +9,29 @@ from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
 
 
 class ReadSnapshotStoreTests(unittest.TestCase):
+    def test_ignores_pre_codex_only_schema_to_avoid_retired_agent_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "read-snapshots.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "surfaces": {
+                            "agent_work": {
+                                "payload": {
+                                    "roots": ["collections/tammy-oc-tasks"],
+                                    "tasks": [],
+                                },
+                                "last_valid_at": 42.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(ReadSnapshotStore(path).load(), {})
+
     def test_persists_only_last_valid_surface_payload_privately(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state" / "read-snapshots.json"
@@ -30,7 +53,7 @@ class ReadSnapshotStoreTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8"))["schema_version"],
-                1,
+                2,
             )
 
     def test_ignores_corrupt_or_unknown_cache_schema(self) -> None:

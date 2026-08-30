@@ -22,7 +22,12 @@ from gtasks.local_handoff_dispatcher import (  # noqa: E402
     DispatcherConfig,
     RejectRedirectHandler,
 )
-from gtasks.local_handoff_supervisor import worker_route  # noqa: E402
+
+ROUTE_BY_AGENT = {
+    "agents/tammy": "hosts/tammy",
+    "agents/timmy": "hosts/timmy",
+    "agents/toddy": "hosts/toddy",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,8 +142,10 @@ def verify_worker_runtime(
 ) -> dict[str, object]:
     worker = DispatcherConfig.from_file(Path(config_path))
     execute = run or _default_run
-    expected_route = worker_route(worker)
+    expected_route = ROUTE_BY_AGENT.get(worker.agent_slug)
     issues: list[str] = []
+    if expected_route is None:
+        issues.append("unsupported_agent_identity")
     if worker.agent_slug != expected_agent_slug:
         issues.append("agent_identity_mismatch")
 

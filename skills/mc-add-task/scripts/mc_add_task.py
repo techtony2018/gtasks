@@ -25,18 +25,6 @@ AGENT_ALIASES = {
     "agents/timmy": "agents/timmy",
     "toddy": "agents/toddy",
     "agents/toddy": "agents/toddy",
-    "tammy-oc": "agents/tammy-oc",
-    "tammy oc": "agents/tammy-oc",
-    "tammy openclaw": "agents/tammy-oc",
-    "agents/tammy-oc": "agents/tammy-oc",
-    "timmy-oc": "agents/timmy-oc",
-    "timmy oc": "agents/timmy-oc",
-    "timmy openclaw": "agents/timmy-oc",
-    "agents/timmy-oc": "agents/timmy-oc",
-    "toddy-oc": "agents/toddy-oc",
-    "toddy oc": "agents/toddy-oc",
-    "toddy openclaw": "agents/toddy-oc",
-    "agents/toddy-oc": "agents/toddy-oc",
 }
 
 

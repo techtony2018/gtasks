@@ -40,14 +40,13 @@ actually released and verified. Do not refresh the current-state description
 from a planned, blocked, uncommitted, QA-failed, or partially deployed
 candidate. Keep those items in an explicitly labelled future/blocked section.
 
-The six-Agent OpenClaw delegation candidate is governed by
-[`openclaw-agent-delegation.md`](openclaw-agent-delegation.md). Until its
-sequential live canaries and deployment are verified, the canonical System
-Overview must describe Tammy-OC, Timmy-OC, and Toddy-OC only as an unreleased
-candidate. After release, refresh the shared Overview once; do not duplicate it
-into six identity pages. The exact identities are `agents/tammy`,
-`agents/timmy`, `agents/toddy`, `agents/tammy-oc`, `agents/timmy-oc`, and
-`agents/toddy-oc`. The three OpenClaw profiles begin with no default Goal.
+The current Agent system contains exactly the three Codex identities
+`agents/tammy`, `agents/timmy`, and `agents/toddy`. Current documentation must
+describe one fixed Codex task and one singleton Dispatcher per registered host,
+using `config/handoff-dispatcher/remote-workers.json` as the non-secret fleet
+roster. Alternate-agent identities, delegation routes, and paired supervisors
+were retired in V0.0.222. Historical receipts below remain release evidence;
+they are not current installation or execution instructions.
 
 For each refresh, inspect:
 

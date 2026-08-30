@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.221",
+  "current_version": "V0.0.222",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1326,6 +1326,12 @@
       "date": "2026-08-30",
       "title": "Rehydrate reopened System Tickets from canonical pages",
       "summary": "System Ticket refresh now rehydrates every typed member page instead of trusting cached completed-ticket snapshots indefinitely, so reopened tickets return to the planned/open queue with fresh read-state and current canonical status."
+    },
+    {
+      "version": "V0.0.222",
+      "date": "2026-08-30",
+      "title": "Run one Codex Agent per machine",
+      "summary": "Mission Control now exposes and routes work only to Tammy, Timmy, and Toddy as fixed Codex Agents. Retired alternate-agent identities, delegation APIs, paired supervisors, UI controls, provisioning paths, and pre-removal read-cache snapshots are removed; each machine uses one singleton Dispatcher and one handoff lease/acknowledgement chain, with a version-controlled three-machine fleet verifier and preserved historical audit rows."
     }
   ]
 }

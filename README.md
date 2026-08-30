@@ -76,11 +76,15 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.211 at commit
-`pending`. Mission Control supports a
-controlled Codex-only Goal execution canary through private dashboard-managed
-runtime configuration, keeps the default mode at `shadow`, persists a
-30-minute local Codex resume timeout for the Tammy supervisor, suppresses
+Current candidate: V0.0.222. Mission Control has exactly three execution
+Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and one singleton
+Dispatcher on each registered machine. The paragraphs below retain prior
+release behavior as history; where an older paragraph describes a paired
+supervisor or alternate-agent route, V0.0.222 supersedes it.
+
+Mission Control supports a controlled Codex-only Goal execution canary through
+private dashboard-managed runtime configuration, keeps the default mode at
+`shadow`, persists a 30-minute local Codex resume timeout for Tammy, suppresses
 immediate duplicate exact completed Goal review canaries as
 `recently_completed`, reconciles stale local abandon-start rows against
 authoritative server recovery state, treats `codex_thread_active_writer` as
@@ -190,8 +194,8 @@ not hidden by thinner cached rows. V0.0.164 recovers expired owned
 `execution_claim` rows at the next authenticated dispatcher claim boundary when
 the same registered Agent host returns, preserving verified task authority and
 owned-execution fencing so remote host worker outages or lost local claim state
-do not leave Goal-derived Agent work permanently queued. The local supervisor
-on this Mac remains Tammy/Tammy-OC only; Timmy and Toddy are not local workers
+do not leave Goal-derived Agent work permanently queued. The local singleton
+Dispatcher on this Mac is Tammy only; Timmy and Toddy are not local workers
 here and must run on their own host machines. Post-release verifier commit
 `f5a2aa77d44561a9d7279a185c184388759945ad` adds
 `scripts/verify_handoff_worker_runtime.py`, a read-only worker runtime verifier
@@ -209,8 +213,8 @@ exactly `d7622b7`; Toddy is still `ok: false` with `ssh_unreachable` for
 `toddy@100.117.212.20`. V0.0.165 makes Goal execution `owner_missing` repair
 copy actionable: assign exactly one Codex Agent and verify the single
 `default_agent_for` link for that Goal. QA verified the copy on desktop
-1440x1000 and genuine mobile 390x844, and local workers still read back
-Tammy/Tammy-OC only. V0.0.166 keeps Goal execution running past non-visible
+1440x1000 and genuine mobile 390x844, and local worker readback remains Tammy
+only. V0.0.166 keeps Goal execution running past non-visible
 malformed Agent work items that are already reported in Inbox, while missing
 canonical roots and visible unsafe Agent-work issues still fail closed. Live
 readback showed `/api/goal-execution` with 13 last-run decisions and
@@ -272,8 +276,8 @@ missing-owner summary item: `Assign to Tammy`, `Assign to Timmy`, and
 `Assign to Toddy`. Each control uses the verified
 `POST /api/agents/<agent>/default-goals` contract with body
 `{goal_slug, action: "assign"}` only after explicit user activation. The UI
-does not infer or automatically mutate ownership, and it exposes no OpenClaw
-assignment controls.
+does not infer or automatically mutate ownership, and it exposes controls only
+for the three Codex Agents.
 V0.0.188 adds `summary.action_queue` and `last_run.summary.action_queue` so
 Goal execution next actions are grouped by owner. The current live queue has
 two Tony-owned actions: `answer_question` for the Family/Toddy task
@@ -303,7 +307,7 @@ V0.0.191 renders `assign_goal_owner` Action queue entries with the same
 Codex-only inline assignment controls in the primary Action queue:
 `Assign to Tammy`, `Assign to Toddy`, and `Assign to Timmy`. Each control uses
 the existing verified `POST /api/agents/<agent>/default-goals` contract with
-`{goal_slug, action: "assign"}`. OpenClaw assignment remains excluded, and the
+`{goal_slug, action: "assign"}`. Only the three Codex Agents are eligible, and the
 separate Missing owner detail row keeps its own preserved assignment controls.
 V0.0.192 adds verified Codex Agent candidate-owner metadata to missing-owner
 summaries and `assign_goal_owner` Action queue entries. The current
@@ -312,7 +316,7 @@ Entrepreneurship missing-owner row labels Timmy as
 has 1 verified default Goal, while Toddy has 2 and Tammy has 3. The
 recommendation is readback guidance only: no `default_agent_for` relationship
 is created until Tony explicitly activates a verified Codex assignment
-control, and OpenClaw assignment remains excluded.
+control, and only the three Codex Agents are eligible.
 V0.0.193 carries the verified waiting-for-Tony question detail into
 `answer_question` Action queue entries and renders that detail beside the
 inline answer form. The Family/Toddy action now shows the detail beginning
@@ -433,8 +437,8 @@ Goal/Agent read surfaces, preventing the second action from stalling behind a
 bounded reconciliation request.
 V0.0.211 makes that owner-assignment step resilient when the Agent profile
 surface is still hydrating: it uses the verified Codex owner candidate carried
-by the Goal execution action queue, while continuing to reject OpenClaw owners
-for automatic owner assignment.
+by the Goal execution action queue, while rejecting every identity outside the
+three Codex Agents.
 V0.0.212 prevents false repair attention while a remote Agent still holds a
 valid execution lease. Goal execution treats a latest suppressed attention
 handoff row as in-flight/delivering when the latest delivery state has an
@@ -442,14 +446,14 @@ active non-terminal execution claim with recent `claimed_at`, future
 `expires_at`, and `terminal_state=null`. Suppressed rows without an active
 claim still render handoff repair attention, stale retrying delivery still
 renders worker-unavailable attention, and the local worker boundary remains
-Tammy/Tammy-OC only; Timmy and Toddy are remote/non-local.
+Tammy only; Timmy and Toddy are remote/non-local.
 V0.0.213 turns verified handoff repair attention into a concrete system-owned
 Action queue item. `handoff_needs_repair` now produces
 `owner=system`, `kind=repair_agent_handoff`, label
 `Repair verified Agent handoff`, and summary
 `Inspect Handoff History and recover the verified Agent delivery state.`
 Agents and Inbox render `System action required` without Tony answer forms,
-answer templates, owner assignment controls, or OpenClaw assignment controls
+answer templates, or owner assignment controls
 for this system repair item.
 V0.0.214 preserves dispatcher `execution_claim_unavailable` reasons in latest
 delivery state and classifies stale or expired claim-unavailable work as
@@ -463,8 +467,8 @@ host repair. A verified completed wake-inbox result can supersede an older
 pending `still_blocked` acknowledgement, and V0.0.216 checks that completed
 inbox receipt before retrying stale blocked acks so it can submit the verified
 completed ack and clear the pinned Agent claim. This is remote-host recovery:
-Timmy/Toddy remain remote-only workers, this Mac's local supervisor remains
-Tammy/Tammy-OC only, and remote workers still require the private dispatcher
+Timmy/Toddy remain remote-only workers, this Mac's local singleton Dispatcher
+remains Tammy only, and remote workers still require the private dispatcher
 configuration plus Artifact publisher token/config before they can complete
 Artifact-backed Goal work.
 V0.0.217 shows the active GBrain runtime version beside the Mission Control
@@ -498,8 +502,8 @@ non-ticket read surfaces may still truthfully serve last-valid stale/error
 payloads with `refreshing=false` while GBrain remains canonical.
 The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
-`artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. OpenClaw remains excluded
-from Goal execution.
+`artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. Only the three Codex Agents
+are eligible for Goal execution.
 
 ### Codex Goal execution controls
 
@@ -518,7 +522,7 @@ eligibility, WIP, identity, and fixed-route checks pass. `auto` applies the
 same one-task safety boundary but chooses the first currently `auto_eligible`
 Goal for the run, avoiding a stale fixed canary after a prior Goal completes.
 Every create, activation, and handoff requires exact canonical readback and a
-deterministic derivation receipt. OpenClaw is excluded from this rollout. If a
+deterministic derivation receipt. Only the three Codex Agents are eligible. If a
 canary cannot verify its Task or delivery path, switch back to `shadow`, retain
 the canonical Task and receipts, and repair the named blocker instead of
 creating a replacement.
@@ -575,9 +579,9 @@ handoff acknowledgement, worker wake, or repair mutation.
 V0.0.187+ adds explicit Codex-only assignment controls to missing-owner summary
 items. `Assign to Tammy`, `Assign to Timmy`, and `Assign to Toddy` call
 `POST /api/agents/<agent>/default-goals` with `{goal_slug, action: "assign"}`
-only after the operator activates a button and only for non-OpenClaw Agents.
+only after the operator activates a button and only for the three Codex Agents.
 These controls are a verified mutation path when activated; they are not
-automatic owner inference, background repair, or OpenClaw assignment.
+automatic owner inference, background repair, or assignment outside the three Codex Agents.
 V0.0.188+ includes `summary.action_queue` and
 `last_run.summary.action_queue` for owner-classified next actions. Queue
 entries include `owner`, `kind`, `label`, relevant Goal/Task/TODO/Agent slugs,
@@ -602,7 +606,7 @@ V0.0.191+ renders Tony-owned `assign_goal_owner` queue entries with inline
 Codex assignment buttons in the Action queue itself. The controls are the same
 explicit verified `default-goals` assignment path used by the preserved Missing
 owner detail row; they do not infer a default Agent and they never expose
-OpenClaw assignment.
+assignment outside the three Codex Agents.
 V0.0.192+ includes `candidate_owners` metadata on missing-owner summaries and
 Action queue `assign_goal_owner` entries. Candidate entries identify each
 eligible Codex Agent, verified `default_goal_count`, `recommended`, and the
@@ -673,14 +677,14 @@ recommended unblocker is a safe `answer_question` with a concrete
 `answer_template`. This is an explicit reviewed shortcut to the existing
 `/api/todos/<todo>/answer` flow and performs exactly one TODO answer POST
 after Tony clicks; it must not run owner, system-repair, private-input, or
-OpenClaw writes.
+unregistered-Agent writes.
 V0.0.210+ keeps combined `Run recommended unblock plan` writes contiguous:
 when a safe answer and recommended Codex owner assignment are both available,
 the UI posts the answer and then the `default-goals` owner assignment before
 refreshing Goal or Agent read surfaces.
 V0.0.211+ keeps that combined plan robust while Agent profile hydration is
 sparse by using the verified recommended Codex owner candidate carried in
-`summary.action_queue`. OpenClaw owners remain excluded, and an empty live
+`summary.action_queue`. Only the three Codex Agents are eligible, and an empty live
 Action queue must render no recommended write controls. An earlier V0.0.209 QA
 interception incident accidentally submitted the live Family/Toddy answer and
 owner assignment; document that as QA harness error, not product automation.
@@ -693,13 +697,13 @@ repair. Suppressed handoffs without an active claim still surface
 V0.0.213+ routes `handoff_needs_repair` into `summary.action_queue` as a
 system-owned `repair_agent_handoff` row with the concrete next action
 `repair verified Agent handoff for 1 blocked Goal`. This is operator recovery
-guidance for Handoff History review, not a Tony answer, owner assignment,
-OpenClaw action, or automatic repair mutation.
+guidance for Handoff History review, not a Tony answer, owner assignment, or
+automatic repair mutation.
 V0.0.214+ routes stale or expired `execution_claim_unavailable` delivery state
 into `summary.action_queue` as a system-owned `restore_agent_worker` row.
 Agents and Inbox should render `System action required` /
-`Restore verified Agent worker` with no Tony answer form/template, no owner
-assignment controls, and no OpenClaw controls; the repair target is the
+`Restore verified Agent worker` with no Tony answer form/template or owner
+assignment controls; the repair target is the
 assigned Agent host dispatcher/private route.
 V0.0.215+ lets a verified completed wake-inbox result supersede an older
 pending `still_blocked` acknowledgement for the same remote handoff, so
@@ -997,38 +1001,27 @@ The app never reads from or writes to the global GBrain `index` node.
 
 ## Agent profiles and work visibility
 
-GTasks recognizes six explicitly approved canonical Agent scopes. The existing
-Codex identities are:
+GTasks recognizes exactly three canonical Agent scopes:
 
 - `agents/toddy` with `collections/toddys-tasks`
 - `agents/timmy` with `collections/timmys-tasks`
 - `agents/tammy` with `collections/tammys-tasks`
 
-The independent OpenClaw identities are:
+Each Agent runs as one fixed Codex task on its own machine. Tammy is local;
+Timmy and Toddy run only on their registered remote machines. Each host has one
+singleton `com.tony.gtasks-handoff-dispatcher` LaunchAgent, one private Agent
+config, and one durable handoff lease/acknowledgement chain. The Dispatcher
+never creates, replaces, forks, or guesses a Codex task.
 
-- `agents/tammy-oc` with `collections/tammy-oc-tasks`
-- `agents/timmy-oc` with `collections/timmy-oc-tasks`
-- `agents/toddy-oc` with `collections/toddy-oc-tasks`
-
-OpenClaw identities start with no default Goal and may later receive their own
-Goals and owned tasks. Each Agent host uses a two-worker supervisor: one
-isolated Codex worker and one isolated OpenClaw worker for that host's pair.
-This Mac's local supervisor is currently Tammy/Tammy-OC only; Timmy and Toddy
-are not local workers on this Mac and must be installed or recovered only on
-their own host machines. Every OpenClaw worker resumes one pre-authorized fixed
-session and never creates, replaces, forks, or guesses a session. Private
-credentials and fixed-session identifiers stay under
-`~/Library/Application Support/GTasks/handoff-dispatcher`; they are not stored
-in Git or rendered by Mission Control.
-
-Tony may explicitly authorize a time-bounded delegation from a Codex Agent to
-its paired OpenClaw Agent. The window is selectable from 15 minutes through 7
-days, stored in UTC, and displayed in `America/Los_Angeles`. Permanent
-`assigned_to` ownership does not change, owned work always outranks delegated
-work, and expiry, completion, or revocation hands any unfinished task back to
-the permanent owner. See
-[`docs/runbooks/openclaw-agent-delegation.md`](docs/runbooks/openclaw-agent-delegation.md)
-for dry-run, canary, rollback, and recovery gates.
+The non-secret machine roster is
+[`config/handoff-dispatcher/remote-workers.json`](config/handoff-dispatcher/remote-workers.json).
+Run `python3 scripts/verify_handoff_worker_fleet.py --inventory
+config/handoff-dispatcher/remote-workers.json` to verify all three machines
+against the same release commit. Private credentials and fixed-task identifiers
+stay under `~/Library/Application Support/GTasks`; they are not stored in Git
+or rendered by Mission Control. See
+[`docs/runbooks/agent-handoff-dispatcher.md`](docs/runbooks/agent-handoff-dispatcher.md)
+for installation, verification, release, and rollback.
 
 Agent profiles are read from `type: agent` GBrain pages. Goal ownership comes
 from the single typed agent-to-goal `default_agent_for` edge; Goal detail reads

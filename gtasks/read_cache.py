@@ -11,7 +11,7 @@ from time import time
 from typing import Any, Callable, Mapping
 
 
-READ_CACHE_SCHEMA_VERSION = 1
+READ_CACHE_SCHEMA_VERSION = 2
 
 
 def default_read_cache_path() -> Path:

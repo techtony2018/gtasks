@@ -8,7 +8,6 @@ from gtasks.releases import CURRENT_RELEASE, RELEASES
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 README = PROJECT_ROOT / "README.md"
 RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "agent-handoff-dispatcher.md"
-OPENCLAW_DELEGATION_RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "openclaw-agent-delegation.md"
 DOCUMENTATION_RUNBOOK = PROJECT_ROOT / "docs" / "runbooks" / "mission-control-system-documentation.md"
 RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.77.md"
 V078_RELEASE_EVIDENCE = PROJECT_ROOT / "docs" / "release-evidence" / "v0.0.78.md"
@@ -48,7 +47,7 @@ class ReleaseCatalogTests(unittest.TestCase):
             "MISSION_CONTROL_GOAL_EXECUTION_MODE",
             "MISSION_CONTROL_GOAL_EXECUTION_CANARY_GOAL",
             "dashboard-managed Mission Control runtime",
-            "OpenClaw is excluded",
+            "Only the three Codex Agents are eligible",
             "one automatic Task",
             "exact canonical readback",
             "switch back to `shadow`",
@@ -115,6 +114,20 @@ class ReleaseCatalogTests(unittest.TestCase):
             "permanently refreshing/stale",
             "/api/health",
             "GBrain version readback",
+        ):
+            self.assertIn(contract, release["summary"])
+
+    def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.222")
+
+        self.assertIn("one Codex Agent per machine", release["title"])
+        for contract in (
+            "Tammy, Timmy, and Toddy",
+            "delegation APIs",
+            "paired supervisors",
+            "one singleton Dispatcher",
+            "three-machine fleet verifier",
+            "historical audit rows",
         ):
             self.assertIn(contract, release["summary"])
 
@@ -227,38 +240,26 @@ class ReleaseCatalogTests(unittest.TestCase):
         self.assertIn("preserves permanent ownership", release["summary"])
         self.assertIn("prioritizes each OpenClaw Agent's own work", release["summary"])
 
-    def test_openclaw_delegation_documentation_contract_is_complete(self) -> None:
+    def test_current_agent_documentation_is_three_codex_singletons(self) -> None:
         documents = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in (README, RUNBOOK, OPENCLAW_DELEGATION_RUNBOOK, DOCUMENTATION_RUNBOOK)
+            for path in (README, RUNBOOK, DOCUMENTATION_RUNBOOK)
         )
 
-        for identity in (
-            "agents/tammy",
-            "agents/timmy",
-            "agents/toddy",
-            "agents/tammy-oc",
-            "agents/timmy-oc",
-            "agents/toddy-oc",
-        ):
+        for identity in ("agents/tammy", "agents/timmy", "agents/toddy"):
             self.assertIn(identity, documents)
-        normalized = documents.casefold()
         for required_contract in (
-            "fixed session",
-            "two-worker supervisor",
-            "no default Goal",
-            "owned work always outranks delegated work",
-            "15 minutes through 7 days",
-            "america/los_angeles",
-            "--dry-run",
-            "Tammy-OC canary",
-            "disable only the affected OpenClaw worker",
-            "preserve canonical leases and events",
-            "leave the Codex worker running",
-            "~/Library/Application Support/GTasks/handoff-dispatcher",
-            "curl -fsS http://127.0.0.1:4179/api/health",
+            "exactly three canonical Agent scopes",
+            "one singleton Codex Dispatcher",
+            "config/handoff-dispatcher/remote-workers.json",
+            "com.tony.gtasks-handoff-dispatcher",
+            "1440x1000",
+            "390x844",
         ):
-            self.assertIn(required_contract.casefold(), normalized)
+            self.assertIn(required_contract, documents)
+        self.assertFalse(
+            (PROJECT_ROOT / "docs" / "runbooks" / "openclaw-agent-delegation.md").exists()
+        )
 
     def test_v0_0_84_records_single_stargraph_style_word_art(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.84")

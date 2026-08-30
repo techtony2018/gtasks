@@ -33,7 +33,6 @@ from gtasks.local_handoff_dispatcher import (  # noqa: E402
 
 
 DEFAULT_LABEL = "com.tony.gtasks-handoff-dispatcher"
-SUPERVISOR_LABEL = "com.tony.gtasks-handoff-dispatcher-supervisor"
 OVERRIDE_ABSENT = "absent"
 OVERRIDE_EXPLICITLY_ENABLED = "explicitly_enabled"
 OVERRIDE_EXPLICITLY_DISABLED = "explicitly_disabled"
@@ -42,7 +41,7 @@ OVERRIDE_EXPLICITLY_DISABLED = "explicitly_disabled"
 def canonical_single_worker_install_paths(
     home_directory: str | Path,
 ) -> tuple[Path, Path]:
-    """Return the legacy one-worker paths retained through supervisor canaries."""
+    """Return the canonical single Codex worker paths."""
     home = Path(home_directory).resolve()
     return (
         home / "Library" / "Application Support" / "GTasks" / "handoff-dispatcher.json",
@@ -163,116 +162,14 @@ def _parse_override_state(output: str, label: str) -> str:
     return OVERRIDE_ABSENT
 
 
-def supervisor_recovery_marker_path(home_directory: str | Path) -> Path:
-    return (
-        Path(home_directory).resolve()
-        / "Library"
-        / "Application Support"
-        / "GTasks"
-        / "handoff-dispatcher"
-        / ".install-recovery.json"
-    )
 
 
-def _require_no_supervisor_recovery_marker(home_directory: str | Path) -> None:
-    marker = supervisor_recovery_marker_path(home_directory)
-    try:
-        marker.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise ValueError(
-            "supervisor recovery marker state could not be inspected; "
-            "follow the paired supervisor recovery procedure before legacy install"
-        ) from exc
-    raise ValueError(
-        "supervisor recovery marker is present; follow the paired supervisor "
-        "recovery procedure before legacy install"
-    )
 
 
-def _supervisor_marker_present(home_directory: str | Path) -> bool:
-    marker = (
-        Path(home_directory).resolve()
-        / "Library"
-        / "LaunchAgents"
-        / f"{SUPERVISOR_LABEL}.plist"
-    )
-    if marker.is_symlink():
-        raise ValueError("supervisor fence marker must not be a symbolic link")
-    if not marker.exists():
-        return False
-    try:
-        value = plistlib.loads(marker.read_bytes())
-    except (OSError, plistlib.InvalidFileException) as exc:
-        raise ValueError("supervisor fence marker is invalid") from exc
-    arguments = value.get("ProgramArguments") if isinstance(value, dict) else None
-    if (
-        not isinstance(value, dict)
-        or value.get("Label") != SUPERVISOR_LABEL
-        or not isinstance(arguments, list)
-        or len(arguments) < 3
-        or arguments[1:3] != ["-m", "gtasks.local_handoff_supervisor"]
-    ):
-        raise ValueError("supervisor fence marker is invalid")
-    return True
 
 
-def _supervisor_loaded_contract(output: str) -> bool:
-    arguments, _working_directory, environment = _parse_launchctl_contract(output)
-    return (
-        len(arguments) >= 3
-        and arguments[1:3] == ["-m", "gtasks.local_handoff_supervisor"]
-        and environment.get("XPC_SERVICE_NAME") == SUPERVISOR_LABEL
-    )
 
 
-def _require_supervisor_fence_inactive(
-    *,
-    run: Callable[..., subprocess.CompletedProcess[str]],
-    home_directory: str | Path,
-    launch_domain: str,
-) -> None:
-    _require_no_supervisor_recovery_marker(home_directory)
-    disabled = run(
-        ["/bin/launchctl", "print-disabled", launch_domain],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if disabled.returncode != 0:
-        raise ValueError("supervisor fence state could not be verified")
-    supervisor_override = _parse_override_state(disabled.stdout, SUPERVISOR_LABEL)
-    supervisor_ref = f"{launch_domain}/{SUPERVISOR_LABEL}"
-    _require_no_supervisor_recovery_marker(home_directory)
-    loaded = run(
-        ["/bin/launchctl", "print", supervisor_ref],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if loaded.returncode == 0:
-        detail = (
-            "canonical contract"
-            if _supervisor_loaded_contract(loaded.stdout)
-            else "drifted contract"
-        )
-        raise ValueError(
-            f"reserved supervisor label is loaded with {detail}; "
-            "legacy bootstrap is refused"
-        )
-    if supervisor_override == OVERRIDE_EXPLICITLY_ENABLED:
-        raise ValueError(
-            "supervisor fence label is durably enabled while unloaded; "
-            "legacy bootstrap is refused"
-        )
-    marker_present = _supervisor_marker_present(home_directory)
-    if marker_present:
-        raise ValueError(
-            "durable supervisor fence is active; legacy bootstrap is refused"
-        )
 
 
 @locked_handoff_install
@@ -304,9 +201,6 @@ def install(
         raise ValueError("destination must use the canonical plist path")
     if label != DEFAULT_LABEL:
         raise ValueError("installer requires the canonical label")
-    _require_no_supervisor_recovery_marker(
-        home_directory if home_directory is not None else Path.home()
-    )
     config = DispatcherConfig.from_file(source_path)
     config.read_token()
     resolved_python = _resolve_executable(python_path)
@@ -411,14 +305,6 @@ def install(
     )
     launch_domain = f"gui/{os.getuid()}"
     launch_ref = f"{launch_domain}/{label}"
-    install_home = home_directory if home_directory is not None else Path.home()
-    _require_no_supervisor_recovery_marker(install_home)
-    _require_supervisor_fence_inactive(
-        run=run,
-        home_directory=install_home,
-        launch_domain=launch_domain,
-    )
-    _require_no_supervisor_recovery_marker(install_home)
     loaded = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,
@@ -436,12 +322,9 @@ def install(
     ):
         raise ValueError("loaded LaunchAgent does not match the exact canonical contract")
 
-    _require_no_supervisor_recovery_marker(install_home)
     _atomic_write(destination_path, serialized_config, 0o600)
-    _require_no_supervisor_recovery_marker(install_home)
     _atomic_write(plist_path, plist_text.encode("utf-8"), 0o644)
     if loaded.returncode == 0:
-        _require_no_supervisor_recovery_marker(install_home)
         run(
             ["/bin/launchctl", "bootout", launch_ref],
             check=False,
@@ -449,7 +332,6 @@ def install(
             text=True,
             timeout=10,
         )
-    _require_no_supervisor_recovery_marker(install_home)
     enabled = run(
         ["/bin/launchctl", "enable", launch_ref],
         check=False,
@@ -459,7 +341,6 @@ def install(
     )
     if enabled.returncode != 0:
         raise RuntimeError("LaunchAgent enable failed")
-    _require_no_supervisor_recovery_marker(install_home)
     enabled_readback = run(
         ["/bin/launchctl", "print-disabled", launch_domain],
         check=False,
@@ -473,7 +354,6 @@ def install(
         != OVERRIDE_EXPLICITLY_ENABLED
     ):
         raise RuntimeError("LaunchAgent enable readback failed")
-    _require_no_supervisor_recovery_marker(install_home)
     bootstrap = run(
         ["/bin/launchctl", "bootstrap", launch_domain, str(plist_path)],
         check=False,
@@ -483,7 +363,6 @@ def install(
     )
     if bootstrap.returncode != 0:
         raise RuntimeError("LaunchAgent bootstrap failed")
-    _require_no_supervisor_recovery_marker(install_home)
     readback = run(
         ["/bin/launchctl", "print", launch_ref],
         check=False,

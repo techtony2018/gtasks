@@ -34,10 +34,11 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
         self.inventory.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "workers": [
                         {
                             "name": "timmy",
+                            "transport": "ssh",
                             "ssh_target": "toddy@timmy-host.test",
                             "expected_agent_slug": "agents/timmy",
                             "expected_route": "hosts/timmy",
@@ -47,6 +48,7 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
                         },
                         {
                             "name": "toddy",
+                            "transport": "ssh",
                             "ssh_target": "toddy@toddy-host.test",
                             "expected_agent_slug": "agents/toddy",
                             "expected_route": "hosts/toddy",
@@ -113,6 +115,46 @@ class HandoffWorkerFleetVerifierTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "secret|exact"):
             verifier.load_inventory(self.inventory)
+
+    def test_local_worker_uses_direct_runtime_probe_without_ssh(self) -> None:
+        verifier = load_verifier()
+        payload = json.loads(self.inventory.read_text(encoding="utf-8"))
+        payload["workers"] = [{
+            "name": "tammy",
+            "transport": "local",
+            "expected_agent_slug": "agents/tammy",
+            "expected_route": "hosts/tammy",
+            "config_path": "/private/tammy/dispatcher.json",
+            "repo_path": str(ROOT),
+            "launch_label": "com.tony.gtasks-handoff-dispatcher",
+        }]
+        self.inventory.write_text(json.dumps(payload), encoding="utf-8")
+        commands: list[list[str]] = []
+
+        def run(command, **_kwargs):
+            commands.append(list(command))
+            return verifier.CompletedProbe(
+                0,
+                json.dumps({
+                    "ok": True,
+                    "agent_slug": "agents/tammy",
+                    "expected_route": "hosts/tammy",
+                    "route": "hosts/tammy",
+                    "issues": [],
+                }),
+                "",
+            )
+
+        report = verifier.verify_fleet(
+            inventory_path=self.inventory,
+            expected_commit="abc123",
+            run=run,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertNotEqual(commands[0][0], "ssh")
+        self.assertIn("verify_handoff_worker_runtime.py", commands[0][1])
+        self.assertEqual(report["workers"][0]["transport"], "local")
 
     def test_remote_verifier_failure_is_not_reported_as_ssh_unreachable(self) -> None:
         verifier = load_verifier()

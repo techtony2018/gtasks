@@ -1349,68 +1349,17 @@ class GoalTests(unittest.TestCase):
 
 
 class AgentScopeDeclarationTests(unittest.TestCase):
-    def test_openclaw_declaration_and_domain_scope_tables_remain_in_parity(self) -> None:
-        config_path = (
-            Path(__file__).resolve().parents[1]
-            / "config"
-            / "openclaw-agents"
-            / "agents.json"
-        )
-        declaration = json.loads(config_path.read_text(encoding="utf-8"))
-        expected_openclaw = {
-            "agents/tammy-oc": (
-                "hosts/tammy",
-                "collections/tammy-oc-tasks",
-                "collections/tammy-oc-artifacts",
-            ),
-            "agents/timmy-oc": (
-                "hosts/timmy",
-                "collections/timmy-oc-tasks",
-                "collections/timmy-oc-artifacts",
-            ),
-            "agents/toddy-oc": (
-                "hosts/toddy",
-                "collections/toddy-oc-tasks",
-                "collections/toddy-oc-artifacts",
-            ),
-        }
-
-        self.assertEqual(declaration["schema_version"], 1)
-        self.assertEqual(
-            {
-                item["slug"]: (
-                    item["route"],
-                    item["task_collection"],
-                    item["artifact_collection"],
-                )
-                for item in declaration["agents"]
-            },
-            expected_openclaw,
-        )
-        self.assertTrue(
-            all(item["runtime"] == "openclaw" for item in declaration["agents"])
-        )
-
+    def test_supported_scope_tables_contain_exactly_three_codex_agents(self) -> None:
         task_scopes = dict(domain.AGENT_SCOPES)
         artifact_scopes = dict(domain.ARTIFACT_AGENT_SCOPES)
-        self.assertEqual(len(task_scopes), 6)
-        self.assertEqual(len(artifact_scopes), 6)
-        self.assertEqual(len(set(task_scopes.values())), 6)
-        self.assertEqual(len(set(artifact_scopes.values())), 6)
+        self.assertEqual(len(task_scopes), 3)
+        self.assertEqual(len(artifact_scopes), 3)
+        self.assertEqual(len(set(task_scopes.values())), 3)
+        self.assertEqual(len(set(artifact_scopes.values())), 3)
+        self.assertEqual(set(task_scopes), set(artifact_scopes))
         self.assertEqual(
-            {
-                slug: (task_scopes[slug], artifact_scopes[slug])
-                for slug in expected_openclaw
-            },
-            {
-                slug: (task_collection, artifact_collection)
-                for slug, (_route, task_collection, artifact_collection)
-                in expected_openclaw.items()
-            },
-        )
-        self.assertEqual(
-            {slug: domain.AGENT_RUNTIME_BY_SLUG[slug] for slug in expected_openclaw},
-            {slug: "openclaw" for slug in expected_openclaw},
+            domain.AGENT_RUNTIME_BY_SLUG,
+            {slug: "codex" for slug in task_scopes},
         )
         self.assertEqual(
             domain.EXISTING_CODEX_AGENT_SCOPES,
@@ -1768,30 +1717,6 @@ class AgentArtifactContractTests(unittest.TestCase):
         self.assertRegex(artifact.slug, r"^artifacts/[0-9a-f-]{36}$")
         self.assertEqual(artifact.agent_collection, "collections/toddys-artifacts")
         self.assertEqual(artifact.attachments, ("/media/artifacts/brief.png",))
-
-    def test_delegation_reference_shape_parser_rejects_noncanonical_values(self) -> None:
-        for invalid in (
-            "delegation-secret-token",
-            "agent-delegations/title-derived",
-            "agent-delegations/6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-        ):
-            with self.subTest(invalid=invalid):
-                with self.assertRaisesRegex(
-                    DomainValidationError,
-                    "delegation_ref.*canonical UUID",
-                ):
-                    domain.new_agent_artifact(
-                        title="Unsafe provenance",
-                        artifact_kind="markdown",
-                        created_by="agents/tammy-oc",
-                        produced_for=(
-                            "tasks/561640dd-8e34-43e1-a03e-e3f3f270033d"
-                        ),
-                        markdown="# Evidence",
-                        delegation_ref=invalid,
-                        now=datetime(2026, 8, 8, 17, tzinfo=timezone.utc),
-                    )
-
 
 if __name__ == "__main__":
     unittest.main()

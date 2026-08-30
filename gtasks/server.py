@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import hmac
 import json
@@ -19,7 +18,6 @@ from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 from urllib.parse import quote, unquote
@@ -32,7 +30,6 @@ from .domain import (
     EXISTING_CODEX_AGENT_SCOPES,
     ARTIFACT_BY_AGENT,
     ARTIFACT_KINDS,
-    ArtifactExecutionClaim,
     COMPLETED_ROOT,
     DomainValidationError,
     EDITABLE_TASK_STATUSES,
@@ -68,15 +65,8 @@ from .gbrain import (
     LifecycleIntegrityError,
     PartialMutationError,
     TONY_PROFILE_SLUG,
-    ConcurrentAgentDelegationUpdateError,
 )
 from .goal_execution import GoalExecutionEngine, GoalExecutionScheduler
-from .delegation import (
-    AgentDelegationLease,
-    DelegationState,
-    agent_route_group_is_approved,
-    lease_state_at,
-)
 from .ical import CalendarPreferences, ICalendarError, ICalendarReader
 from .job_application_binding import (
     JOB_APPLIED_BOUND_TASK_SLUG,
@@ -111,19 +101,6 @@ ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
-def default_agent_delegation_lock_path() -> Path:
-    configured = os.environ.get("GTASKS_AGENT_DELEGATION_LOCK_FILE")
-    if configured:
-        return Path(configured).expanduser()
-    return (
-        Path.home()
-        / "Library"
-        / "Application Support"
-        / "GTasks"
-        / "agent-delegations.lock"
-    )
-
-
 def gbrain_version_string(
     *, executable: str = "gbrain", timeout_seconds: float = 2.0
 ) -> str:
@@ -143,37 +120,6 @@ def gbrain_version_string(
     return value or "unavailable"
 
 
-class AgentDelegationMutationLock:
-    """Process-shared, slug-keyed writer lock for Mission Control mutations."""
-
-    _registry_guard = Lock()
-    _thread_locks: dict[str, Lock] = {}
-
-    def __init__(self, base_path: Path) -> None:
-        self.base_path = Path(base_path)
-
-    @contextmanager
-    def hold(self, slug: str):
-        digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()
-        lock_path = self.base_path.with_name(f"{self.base_path.name}.{digest}")
-        if not lock_path.parent.exists():
-            lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if lock_path.parent.stat().st_mode & 0o077:
-            raise PermissionError(
-                "agent delegation lock directory must be private (mode 0700)"
-            )
-        key = str(lock_path.resolve())
-        with self._registry_guard:
-            thread_lock = self._thread_locks.setdefault(key, Lock())
-        with thread_lock:
-            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-            try:
-                os.fchmod(descriptor, 0o600)
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-                yield
-            finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-                os.close(descriptor)
 SNAPSHOT_CACHE_SECONDS = 5 * 60
 SNAPSHOT_FORCE_REFRESH_COOLDOWN_SECONDS = SNAPSHOT_CACHE_SECONDS
 PROPOSAL_CACHE_SECONDS = 5 * 60
@@ -281,7 +227,7 @@ class HandoffDispatcherAuth:
         ):
             raise ValueError("Handoff dispatcher credentials have the wrong schema")
         entries = payload.get("identities")
-        if not isinstance(entries, list) or len(entries) not in {3, 6}:
+        if not isinstance(entries, list) or len(entries) != 3:
             raise ValueError("Handoff dispatcher credentials have the wrong schema")
         identities: list[tuple[HandoffDispatcherIdentity, str]] = []
         for entry in entries:
@@ -308,13 +254,10 @@ class HandoffDispatcherAuth:
         configured_agents = frozenset(
             identity.agent_slug for identity, _token_hash in identities
         )
-        legacy_codex_agents = frozenset(
+        supported_agents = frozenset(
             agent_slug for agent_slug, _collection in EXISTING_CODEX_AGENT_SCOPES
         )
-        all_approved_agents = frozenset(
-            agent_slug for agent_slug, _collection in AGENT_SCOPES
-        )
-        if configured_agents not in {legacy_codex_agents, all_approved_agents}:
+        if configured_agents != supported_agents:
             raise ValueError("Handoff dispatcher credentials have the wrong schema")
         return cls(tuple(identities))
 
@@ -506,14 +449,13 @@ def build_runtime_handoff_event_bridge(
     approved_routes = {
         route
         for route, agents in route_agents.items()
-        if agent_route_group_is_approved(agents)
+        if len(agents) == 1
     }
     unambiguous = tuple(
         registration
         for registration in registrations
         if registration.route in approved_routes
     )
-    delegation_reader = getattr(adapter, "list_agent_delegations", lambda: ())
     buzz_outbox_dir = os.environ.get("MISSION_CONTROL_BUZZ_OUTBOX_DIR", "").strip()
     coordination_sink = (
         build_handoff_coordination_sink(BuzzCoordinationOutbox(Path(buzz_outbox_dir)))
@@ -524,10 +466,6 @@ def build_runtime_handoff_event_bridge(
         HandoffDispatcher(
             store,
             registrations=unambiguous,
-            delegations=delegation_reader,
-            owned_work_snapshot=lambda executor: _canonical_executor_priority_snapshot(
-                adapter, executor
-            ),
             coordination_sink=coordination_sink,
         )
     )
@@ -833,7 +771,6 @@ def _handler_class(
     handoff_waiter: Callable[[float], None] | None = None,
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
-    delegation_lock_path: Path | None = None,
     gbrain_version_provider: Callable[[], str | None] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
@@ -854,9 +791,6 @@ def _handler_class(
     active_handoff_waiter = handoff_waiter or time.sleep
     active_handoff_event_bridge = handoff_event_bridge
     active_goal_execution_scheduler = goal_execution_scheduler
-    active_delegation_lock = AgentDelegationMutationLock(
-        delegation_lock_path or default_agent_delegation_lock_path()
-    )
     active_gbrain_version_provider = gbrain_version_provider or gbrain_version_string
     gbrain_version_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
     gbrain_version_cache_seconds = 300.0
@@ -938,244 +872,19 @@ def _handler_class(
                 return rendered
         return {}
 
-    def delegation_payload(lease: AgentDelegationLease) -> dict[str, Any]:
-        effective_state = lease_state_at(lease, clock().astimezone(timezone.utc))
-        return {
-            "slug": lease.slug,
-            "source_agent": lease.source_agent,
-            "executor_agent": lease.executor_agent,
-            "authorized_by": lease.authorized_by,
-            "starts_at": lease.starts_at.isoformat(),
-            "ends_at": lease.ends_at.isoformat(),
-            "display_timezone": lease.display_timezone,
-            "allowed_operations": list(lease.allowed_operations),
-            "state": effective_state.value,
-            "created_at": lease.created_at.isoformat(),
-            "updated_at": lease.updated_at.isoformat(),
-            "version": lease.updated_at.isoformat(),
-        }
-
-    def delegation_response(
-        lease: AgentDelegationLease, receipt: object
-    ) -> dict[str, Any] | None:
-        receipt_value = canonical_mapping(receipt)
-        if receipt_value.get("verified") is not True or receipt_value.get("slug") != lease.slug:
-            return None
-        readback = next(
-            (
-                item
-                for item in adapter.list_agent_delegations()
-                if item.slug == lease.slug
-            ),
-            None,
-        )
-        if readback != lease:
-            return None
-        return {
-            "lease": delegation_payload(readback),
-            "version": readback.updated_at.isoformat(),
-            "receipt": receipt_value,
-        }
-
-    def verified_artifact_execution_claim(
-        *,
-        task_slug: str,
-        executor_agent: str,
-        delegation_ref: str,
-    ) -> ArtifactExecutionClaim:
-        if handoff_store is None:
-            raise DomainValidationError(
-                "Artifact delegation claim storage is unavailable"
-            )
-        claim_reader = getattr(handoff_store, "get_execution_claim", None)
-        if not callable(claim_reader):
-            raise DomainValidationError(
-                "Artifact delegation claim storage is unavailable"
-            )
-        now = clock().astimezone(timezone.utc)
-        claim = claim_reader(task_slug, include_terminal=False)
-        completed_at = None
-        if claim is None:
-            claim = claim_reader(task_slug, include_terminal=True)
-            terminal_state = getattr(claim, "terminal_state", None)
-            terminal_at = getattr(claim, "terminal_at", None)
-            if (
-                claim is None
-                or terminal_state != "completed"
-                or not isinstance(terminal_at, datetime)
-                or terminal_at.tzinfo is None
-                or terminal_at.astimezone(timezone.utc) < now - timedelta(minutes=5)
-                or terminal_at.astimezone(timezone.utc) > now
-            ):
-                raise DomainValidationError(
-                    "Artifact delegation claim is not active or narrowly just completed"
-                )
-            completed_at = terminal_at
-        elif (
-            getattr(claim, "terminal_state", None) is not None
-            or claim.expires_at <= now
-        ):
-            raise DomainValidationError("Artifact delegation claim is expired or terminal")
-        try:
-            leases = {
-                lease.slug: lease
-                for lease in adapter.list_agent_delegations()
-            }
-        except (GBrainError, ValueError) as exc:
-            raise DomainValidationError(
-                "Artifact delegation lease could not be verified"
-            ) from exc
-        lease = leases.get(delegation_ref)
-        if (
-            claim.task_slug != task_slug
-            or claim.executor_agent != executor_agent
-            or claim.delegation_slug != delegation_ref
-            or lease is None
-            or lease.executor_agent != executor_agent
-            or lease.source_agent != claim.permanent_owner
-            or "artifact" not in lease.allowed_operations
-            or lease_state_at(lease, completed_at or now)
-            not in {DelegationState.ACTIVE, DelegationState.COMPLETED}
-        ):
-            raise DomainValidationError(
-                "Artifact delegation claim does not match task, executor, owner, and lease"
-            )
-        return ArtifactExecutionClaim(
-            task_slug=claim.task_slug,
-            executor_agent=claim.executor_agent,
-            permanent_owner=claim.permanent_owner,
-            delegation_ref=delegation_ref,
-            requested_operation=claim.requested_operation,
-            claimed_at=claim.claimed_at,
-            expires_at=claim.expires_at,
-            completed_at=completed_at,
-        )
-
-    @contextmanager
-    def reserve_verified_artifact_execution(
-        initial: ArtifactExecutionClaim,
-        *,
-        publication_key: str,
-    ):
-        if handoff_store is None:
-            raise DomainValidationError(
-                "Artifact delegation claim storage is unavailable"
-            )
-        reserve = getattr(handoff_store, "reserve_artifact_publication", None)
-        observe = getattr(handoff_store, "observe_delegation_authority", None)
-        if not callable(reserve) or not callable(observe):
-            raise DomainValidationError(
-                "Artifact delegation claim reservation is unavailable"
-            )
-        with active_delegation_lock.hold(initial.delegation_ref):
-            now = clock().astimezone(timezone.utc)
-            matches = tuple(
-                lease
-                for lease in adapter.list_agent_delegations()
-                if lease.slug == initial.delegation_ref
-            )
-            if len(matches) != 1 or not isinstance(matches[0], AgentDelegationLease):
-                raise DomainValidationError(
-                    "Artifact delegation claim lease could not be re-read at the write boundary"
-                )
-            lease = matches[0]
-            authority_at = initial.completed_at or now
-            if (
-                lease.source_agent != initial.permanent_owner
-                or lease.executor_agent != initial.executor_agent
-                or "artifact" not in lease.allowed_operations
-                or lease_state_at(lease, authority_at)
-                not in {DelegationState.ACTIVE, DelegationState.COMPLETED}
-            ):
-                raise DomainValidationError(
-                    "Artifact delegation claim lease changed before the write boundary"
-                )
-            observe(lease, observed_at=now)
-            try:
-                with reserve(
-                    initial.task_slug,
-                    executor_agent=initial.executor_agent,
-                    permanent_owner=initial.permanent_owner,
-                    delegation_slug=initial.delegation_ref,
-                    publication_key=publication_key,
-                    now=now,
-                ) as claim:
-                    yield ArtifactExecutionClaim(
-                        task_slug=claim.task_slug,
-                        executor_agent=claim.executor_agent,
-                        permanent_owner=claim.permanent_owner,
-                        delegation_ref=claim.delegation_slug,
-                        requested_operation=claim.requested_operation,
-                        claimed_at=claim.claimed_at,
-                        expires_at=claim.expires_at,
-                        completed_at=(
-                            claim.terminal_at
-                            if claim.terminal_state == "completed"
-                            else None
-                        ),
-                    )
-            except (RuntimeError, sqlite3.Error, ValueError) as exc:
-                raise DomainValidationError(
-                    "Artifact delegation claim reservation was lost or invalid"
-                ) from exc
-
     def decorate_agent_work_execution(payload: dict[str, Any]) -> dict[str, Any]:
-        """Project only currently verified, non-terminal per-task claims."""
+        """Add only the latest durable Codex handoff status to open Agent work."""
         if handoff_store is None:
             return payload
-        claim_reader = getattr(handoff_store, "get_execution_claim", None)
-        delegation_reader = getattr(adapter, "list_agent_delegations", None)
-        if not callable(claim_reader) or not callable(delegation_reader):
-            return payload
-        now = clock().astimezone(timezone.utc)
-        try:
-            leases = {
-                lease.slug: lease
-                for lease in delegation_reader()
-                if lease_state_at(lease, now) == DelegationState.ACTIVE
-            }
-        except (DomainValidationError, GBrainError, ValueError):
+        latest_status = getattr(handoff_store, "latest_task_handoff_status", None)
+        if not callable(latest_status):
             return payload
         tasks: list[dict[str, Any]] = []
         for raw_task in payload.get("tasks", []):
             task = dict(raw_task) if isinstance(raw_task, dict) else raw_task
-            if not isinstance(task, dict):
-                tasks.append(task)
-                continue
-            slug = task.get("slug")
-            owner = task.get("owner")
-            permanent_owner = task.get("owner_agent") or (
-                owner.get("slug") if isinstance(owner, dict) else None
-            )
-            try:
-                claim = (
-                    claim_reader(slug, include_terminal=False)
-                    if isinstance(slug, str)
-                    else None
-                )
-            except (RuntimeError, ValueError):
-                claim = None
-            lease = leases.get(claim.delegation_slug) if claim is not None else None
-            if (
-                claim is not None
-                and lease is not None
-                and claim.expires_at > now
-                and claim.permanent_owner == permanent_owner
-                and claim.executor_agent == lease.executor_agent
-                and claim.permanent_owner == lease.source_agent
-            ):
-                task["temporary_execution"] = {
-                    "executor_agent": claim.executor_agent,
-                    "permanent_owner": claim.permanent_owner,
-                    "delegation_slug": claim.delegation_slug,
-                    "claimed_at": claim.claimed_at.isoformat(),
-                    "expires_at": claim.expires_at.isoformat(),
-                }
-            if isinstance(slug, str) and task.get("status") != "completed":
-                latest_status = getattr(
-                    handoff_store, "latest_task_handoff_status", None
-                )
-                if callable(latest_status):
+            if isinstance(task, dict):
+                slug = task.get("slug")
+                if isinstance(slug, str) and task.get("status") != "completed":
                     try:
                         dispatcher_status = latest_status(slug)
                     except (RuntimeError, ValueError):
@@ -1191,61 +900,39 @@ def _handler_class(
         observed_at: datetime,
         include_task: bool = False,
     ) -> None:
-        """Refresh canonical delegation and priority controls just before execution."""
+        """Refresh the canonical Codex task authority before execution."""
         if handoff_store is None:
             raise RuntimeError("handoff storage is unavailable")
-        if include_task:
-            task_slug = getattr(record, "task_slug", None)
-            if not isinstance(task_slug, str):
-                raise ValueError("handoff task identity is invalid")
-            task = canonical_mapping(adapter.get_task(task_slug))
-            owner_agent = task.get("owner_agent")
-            status = task.get("status")
-            if task.get("slug") != task_slug or not isinstance(status, str):
-                raise ValueError("canonical task authority readback is invalid")
-            if owner_agent is not None and not isinstance(owner_agent, str):
-                raise ValueError("canonical task owner readback is invalid")
-            task_version = "task/" + hashlib.sha256(
-                json.dumps(
-                    {
-                        "slug": task_slug,
-                        "owner_agent": owner_agent,
-                        "status": status,
-                        "updated_at": task.get("updated_at"),
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ).encode("utf-8")
-            ).hexdigest()
-            handoff_store.observe_task_authority(
-                task_slug,
-                owner_agent=owner_agent,
-                status=status,
-                version=task_version,
-                observed_at=observed_at,
-            )
-        delegation_slug = getattr(record, "delegation_slug", None)
-        if delegation_slug is None:
+        if not include_task:
             return
-        leases = tuple(adapter.list_agent_delegations())
-        matches = tuple(lease for lease in leases if lease.slug == delegation_slug)
-        if len(matches) != 1:
-            handoff_store.observe_delegation_absence(
-                delegation_slug, observed_at=observed_at
-            )
-            return
-        lease = matches[0]
-        if not isinstance(lease, AgentDelegationLease):
-            raise ValueError("canonical delegation readback is invalid")
-        handoff_store.observe_delegation_authority(lease, observed_at=observed_at)
-        owned_work_ready, version = _canonical_executor_priority_snapshot(
-            adapter, lease.executor_agent
-        )
-        handoff_store.observe_executor_priority(
-            lease.executor_agent,
-            owned_work_ready=owned_work_ready,
-            version=version,
+        task_slug = getattr(record, "task_slug", None)
+        if not isinstance(task_slug, str):
+            raise ValueError("handoff task identity is invalid")
+        task = canonical_mapping(adapter.get_task(task_slug))
+        owner_agent = task.get("owner_agent")
+        status = task.get("status")
+        if task.get("slug") != task_slug or not isinstance(status, str):
+            raise ValueError("canonical task authority readback is invalid")
+        if owner_agent is not None and not isinstance(owner_agent, str):
+            raise ValueError("canonical task owner readback is invalid")
+        task_version = "task/" + hashlib.sha256(
+            json.dumps(
+                {
+                    "slug": task_slug,
+                    "owner_agent": owner_agent,
+                    "status": status,
+                    "updated_at": task.get("updated_at"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        handoff_store.observe_task_authority(
+            task_slug,
+            owner_agent=owner_agent,
+            status=status,
+            version=task_version,
             observed_at=observed_at,
         )
 
@@ -1507,7 +1194,7 @@ def _handler_class(
                         canonical.agent_slug
                     )
                 if any(
-                    not agent_route_group_is_approved(agents)
+                    len(agents) != 1
                     for agents in route_agents.values()
                 ):
                     raise _HandoffIdentityMismatch(
@@ -1851,29 +1538,6 @@ def _handler_class(
                         "proposals_root": PROPOSALS_ROOT,
                         "qa_fixtures_root": QA_FIXTURES_ROOT,
                         "read_surfaces": "last_verified_local_cache",
-                    },
-                )
-                return
-            if path == "/api/agent-delegations":
-                try:
-                    with foreground_operation():
-                        leases = adapter.list_agent_delegations()
-                except (DomainValidationError, ValueError) as exc:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": str(exc), "code": "invalid_agent_delegation"},
-                    )
-                    return
-                except GBrainError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
-                    )
-                    return
-                self._json(
-                    HTTPStatus.OK,
-                    {
-                        "delegations": [delegation_payload(lease) for lease in leases],
                     },
                 )
                 return
@@ -2546,180 +2210,6 @@ def _handler_class(
                     HTTPStatus.OK if receipt.idempotent else HTTPStatus.CREATED,
                     {"receipt": receipt.to_dict()},
                 )
-                return
-            if path == "/api/agent-delegations":
-                payload = self._read_json()
-                if payload is None:
-                    return
-                required = {
-                    "source_agent",
-                    "executor_agent",
-                    "starts_at",
-                    "ends_at",
-                    "display_timezone",
-                    "allowed_operations",
-                }
-                if set(payload) != required:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {
-                            "error": "agent delegation requires the exact confirmation fields.",
-                            "code": "invalid_agent_delegation",
-                        },
-                    )
-                    return
-                try:
-                    source_agent = payload["source_agent"]
-                    executor_agent = payload["executor_agent"]
-                    display_timezone = payload["display_timezone"]
-                    raw_operations = payload["allowed_operations"]
-                    if (
-                        not isinstance(source_agent, str)
-                        or not isinstance(executor_agent, str)
-                        or not isinstance(display_timezone, str)
-                        or not isinstance(raw_operations, list)
-                        or not raw_operations
-                        or any(not isinstance(item, str) for item in raw_operations)
-                        or len(set(raw_operations)) != len(raw_operations)
-                        or not set(raw_operations).issubset(
-                            {"task_status", "todo", "comment", "artifact"}
-                        )
-                    ):
-                        raise ValueError("agent delegation fields are invalid")
-                    starts_at = datetime.fromisoformat(
-                        str(payload["starts_at"]).replace("Z", "+00:00")
-                    )
-                    ends_at = datetime.fromisoformat(
-                        str(payload["ends_at"]).replace("Z", "+00:00")
-                    )
-                    if (
-                        starts_at.tzinfo is None
-                        or starts_at.utcoffset() is None
-                        or ends_at.tzinfo is None
-                        or ends_at.utcoffset() is None
-                    ):
-                        raise ValueError(
-                            "starts_at and ends_at must be aware UTC instants"
-                        )
-                    starts_at = starts_at.astimezone(timezone.utc)
-                    ends_at = ends_at.astimezone(timezone.utc)
-                    now = clock().astimezone(timezone.utc)
-                    if ends_at <= now:
-                        raise ValueError("agent delegation must end in the future")
-                    canonical_input = json.dumps(
-                        {
-                            "source_agent": source_agent,
-                            "executor_agent": executor_agent,
-                            "starts_at": starts_at.isoformat(),
-                            "ends_at": ends_at.isoformat(),
-                            "display_timezone": display_timezone,
-                            "allowed_operations": raw_operations,
-                        },
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    )
-                    slug = "agent-delegations/" + str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, canonical_input)
-                    )
-                    with active_delegation_lock.hold(slug):
-                        existing = next(
-                            (
-                                item
-                                for item in adapter.list_agent_delegations()
-                                if item.slug == slug
-                            ),
-                            None,
-                        )
-                        if existing is not None:
-                            requested = (
-                                source_agent,
-                                executor_agent,
-                                starts_at,
-                                ends_at,
-                                display_timezone,
-                                tuple(raw_operations),
-                            )
-                            canonical = (
-                                existing.source_agent,
-                                existing.executor_agent,
-                                existing.starts_at,
-                                existing.ends_at,
-                                existing.display_timezone,
-                                existing.allowed_operations,
-                            )
-                            if requested != canonical:
-                                self._json(
-                                    HTTPStatus.CONFLICT,
-                                    {
-                                        "error": "agent delegation idempotency input conflicts with canonical readback.",
-                                        "code": "delegation_conflict",
-                                    },
-                                )
-                                return
-                            lease = existing
-                            with foreground_operation():
-                                receipt = adapter.create_agent_delegation(existing)
-                                response = delegation_response(existing, receipt)
-                            response_status = HTTPStatus.OK
-                        else:
-                            state = (
-                                DelegationState.SCHEDULED
-                                if starts_at > now
-                                else DelegationState.ACTIVE
-                            )
-                            lease = AgentDelegationLease(
-                                slug=slug,
-                                source_agent=source_agent,
-                                executor_agent=executor_agent,
-                                authorized_by=TONY_PROFILE_SLUG,
-                                starts_at=starts_at,
-                                ends_at=ends_at,
-                                display_timezone=display_timezone,
-                                allowed_operations=tuple(raw_operations),
-                                state=state,
-                                created_at=now,
-                                updated_at=now,
-                            )
-                            with foreground_operation():
-                                receipt = adapter.create_agent_delegation(lease)
-                                response = delegation_response(lease, receipt)
-                            response_status = HTTPStatus.CREATED
-                except (DomainValidationError, TypeError, ValueError) as exc:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": str(exc), "code": "invalid_agent_delegation"},
-                    )
-                    return
-                except PartialMutationError as exc:
-                    self._json(
-                        HTTPStatus.BAD_GATEWAY,
-                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
-                    )
-                    return
-                except GBrainError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
-                    )
-                    return
-                except OSError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "delegation_lock_unavailable"},
-                    )
-                    return
-                if response is None:
-                    self._json(
-                        HTTPStatus.BAD_GATEWAY,
-                        {
-                            "error": "agent delegation mutation lacked exact verified canonical readback.",
-                            "code": "delegation_not_verified",
-                            "slug": lease.slug,
-                        },
-                    )
-                    return
-                self._json(response_status, response)
                 return
             if path == "/api/handoffs/preflight":
                 identity = self._handoff_identity()
@@ -3723,8 +3213,7 @@ def _handler_class(
                     "supersedes",
                     "idempotency_key",
                 }
-                optional = {"delegation_ref"}
-                if set(payload) not in (required, required | optional):
+                if set(payload) != required:
                     self._json(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
@@ -3779,13 +3268,6 @@ def _handler_class(
                             },
                         )
                         return
-                    execution_claim = None
-                    if payload.get("delegation_ref") is not None:
-                        execution_claim = verified_artifact_execution_claim(
-                            task_slug=payload["produced_for"],
-                            executor_agent=executing_agent,
-                            delegation_ref=payload["delegation_ref"],
-                        )
                     artifact = new_agent_artifact(
                         title=payload["title"],
                         artifact_kind=payload["artifact_kind"],
@@ -3797,27 +3279,14 @@ def _handler_class(
                         goal=payload["goal"],
                         git_url=payload["git_url"],
                         supersedes=payload["supersedes"],
-                        delegation_ref=payload.get("delegation_ref"),
                         now=clock(),
                     )
                     with foreground_operation():
-                        artifact_arguments = {
-                            "executing_agent": executing_agent,
-                            "idempotency_key": payload["idempotency_key"],
-                        }
-                        if execution_claim is None:
-                            receipt = adapter.create_agent_artifact(
-                                artifact, **artifact_arguments
-                            )
-                        else:
-                            with reserve_verified_artifact_execution(
-                                execution_claim,
-                                publication_key=payload["idempotency_key"],
-                            ) as reserved_claim:
-                                artifact_arguments["execution_claim"] = reserved_claim
-                                receipt = adapter.create_agent_artifact(
-                                    artifact, **artifact_arguments
-                                )
+                        receipt = adapter.create_agent_artifact(
+                            artifact,
+                            executing_agent=executing_agent,
+                            idempotency_key=payload["idempotency_key"],
+                        )
                 except ArtifactIdempotencyConflict as exc:
                     self._json(
                         HTTPStatus.CONFLICT,
@@ -3829,11 +3298,7 @@ def _handler_class(
                         HTTPStatus.UNPROCESSABLE_ENTITY,
                         {
                             "error": str(exc),
-                            "code": (
-                                "invalid_delegation_claim"
-                                if "delegation claim" in str(exc).lower()
-                                else "invalid_artifact"
-                            ),
+                            "code": "invalid_artifact",
                         },
                     )
                     return
@@ -5019,143 +4484,6 @@ def _handler_class(
 
         def do_PATCH(self) -> None:
             path = urlsplit(self.path).path
-            delegation_prefix = "/api/agent-delegations/"
-            if path.startswith(delegation_prefix) and "/" not in path[len(delegation_prefix) :]:
-                slug = unquote(path[len(delegation_prefix) :])
-                payload = self._read_json()
-                if payload is None:
-                    return
-                extension_fields = {"ends_at", "expected_version"}
-                action_fields = {"action", "expected_version"}
-                if frozenset(payload) not in {
-                    frozenset(extension_fields),
-                    frozenset(action_fields),
-                }:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {
-                            "error": "delegation change requires one extension or terminal action with expected_version.",
-                            "code": "invalid_agent_delegation",
-                        },
-                    )
-                    return
-                try:
-                    expected_version = payload["expected_version"]
-                    if not isinstance(expected_version, str) or not expected_version:
-                        raise ValueError("expected_version must be the canonical lease version")
-                    with active_delegation_lock.hold(slug):
-                        current = next(
-                            (
-                                item
-                                for item in adapter.list_agent_delegations()
-                                if item.slug == slug
-                            ),
-                            None,
-                        )
-                        if current is None:
-                            self._json(
-                                HTTPStatus.NOT_FOUND,
-                                {
-                                    "error": "agent delegation was not found.",
-                                    "code": "delegation_not_found",
-                                },
-                            )
-                            return
-                        if current.updated_at.isoformat() != expected_version:
-                            raise ConcurrentAgentDelegationUpdateError(slug)
-                        operation_time = clock().astimezone(timezone.utc)
-                        effective_state = lease_state_at(current, operation_time)
-                        if effective_state in {
-                            DelegationState.COMPLETED,
-                            DelegationState.EXPIRED,
-                            DelegationState.REVOKED,
-                        }:
-                            raise ValueError(
-                                f"{effective_state.value} agent delegation cannot be changed"
-                            )
-                        updated_at = operation_time
-                        if updated_at <= current.updated_at:
-                            updated_at = current.updated_at + timedelta(microseconds=1)
-                        if set(payload) == extension_fields:
-                            ends_at = datetime.fromisoformat(
-                                str(payload["ends_at"]).replace("Z", "+00:00")
-                            )
-                            if ends_at.tzinfo is None or ends_at.utcoffset() is None:
-                                raise ValueError("ends_at must be an aware UTC instant")
-                            ends_at = ends_at.astimezone(timezone.utc)
-                            if ends_at <= current.ends_at:
-                                raise ValueError(
-                                    "agent delegation extension must advance ends_at"
-                                )
-                            updated = replace(
-                                current,
-                                ends_at=ends_at,
-                                state=effective_state,
-                                updated_at=updated_at,
-                            )
-                        else:
-                            action = payload.get("action")
-                            if action not in {"complete", "revoke"}:
-                                raise ValueError(
-                                    "agent delegation action must be complete or revoke"
-                                )
-                            updated = replace(
-                                current,
-                                state=(
-                                    DelegationState.COMPLETED
-                                    if action == "complete"
-                                    else DelegationState.REVOKED
-                                ),
-                                updated_at=updated_at,
-                            )
-                        with foreground_operation():
-                            receipt = adapter.update_agent_delegation(
-                                updated,
-                                expected_version=expected_version,
-                            )
-                            response = delegation_response(updated, receipt)
-                except ConcurrentAgentDelegationUpdateError as exc:
-                    self._json(
-                        HTTPStatus.CONFLICT,
-                        {"error": str(exc), "code": "delegation_changed", "slug": exc.slug},
-                    )
-                    return
-                except (DomainValidationError, TypeError, ValueError) as exc:
-                    self._json(
-                        HTTPStatus.UNPROCESSABLE_ENTITY,
-                        {"error": str(exc), "code": "invalid_agent_delegation"},
-                    )
-                    return
-                except PartialMutationError as exc:
-                    self._json(
-                        HTTPStatus.BAD_GATEWAY,
-                        {"error": str(exc), "code": "partial_write", "slug": exc.slug},
-                    )
-                    return
-                except GBrainError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "gbrain_unavailable"},
-                    )
-                    return
-                except OSError as exc:
-                    self._json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {"error": str(exc), "code": "delegation_lock_unavailable"},
-                    )
-                    return
-                if response is None:
-                    self._json(
-                        HTTPStatus.BAD_GATEWAY,
-                        {
-                            "error": "agent delegation mutation lacked exact verified canonical readback.",
-                            "code": "delegation_not_verified",
-                            "slug": updated.slug,
-                        },
-                    )
-                    return
-                self._json(HTTPStatus.OK, response)
-                return
             todo_prefix = "/api/todos/"
             todo_status_suffix = "/status"
             if path.startswith(todo_prefix) and path.endswith(todo_status_suffix):
@@ -6180,7 +5508,6 @@ def build_server(
     handoff_waiter: Callable[[float], None] | None = None,
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
-    delegation_lock_path: Path | None = None,
     gbrain_version_provider: Callable[[], str | None] | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
@@ -6209,7 +5536,6 @@ def build_server(
         handoff_waiter,
         handoff_event_bridge,
         goal_execution_scheduler,
-        delegation_lock_path,
         gbrain_version_provider,
     )
     return ThreadingHTTPServer((host, port), handler)
@@ -6227,7 +5553,6 @@ def main() -> None:
     parser.add_argument("--artifact-publisher-credentials-file", type=Path)
     parser.add_argument("--handoff-store", type=Path)
     parser.add_argument("--handoff-dispatcher-credentials-file", type=Path)
-    parser.add_argument("--agent-delegation-lock-file", type=Path)
     parser.add_argument("--stargraph-url", default=os.environ.get("MEMORY_STARGRAPH_URL", "http://127.0.0.1:8788"))
     args = parser.parse_args()
 
@@ -6289,7 +5614,6 @@ def main() -> None:
         handoff_dispatcher_auth=handoff_dispatcher_auth,
         handoff_event_bridge=handoff_event_bridge,
         goal_execution_scheduler=goal_execution_scheduler,
-        delegation_lock_path=args.agent_delegation_lock_file,
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

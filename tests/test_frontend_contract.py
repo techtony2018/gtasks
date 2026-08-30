@@ -107,7 +107,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertNotIn('data-view="goal-execution"', html)
         self.assertIn("function renderGoalExecutionSurface", javascript)
         self.assertIn("function renderAgentGoalExecution", javascript)
-        self.assertIn('agent.runtime === "openclaw" ? [] : [renderAgentGoalExecution(agent)]', javascript)
+        self.assertIn("renderAgentGoalExecution(agent)", javascript)
         self.assertIn('section.id = "agent-goal-execution"', javascript)
         self.assertIn('heading.id = "agent-goal-execution-heading"', javascript)
         self.assertIn('status.id = "agent-goal-execution-state"', javascript)
@@ -174,7 +174,7 @@ state.snapshot = {
 state.agents = [
   { slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] },
   { slug: "agents/tammy", name: "Tammy", runtime: "codex", default_goal_slugs: [] },
-  { slug: "agents/tammy-oc", name: "Tammy-OC", runtime: "openclaw", default_goal_slugs: [] },
+  { slug: "agents/toddy", name: "Toddy", runtime: "codex", default_goal_slugs: [] },
 ];
 state.projects = [];
 state.goalExecution = {
@@ -312,9 +312,9 @@ const missingOwnerLinks = walkElements(goalExecutionSurface, (element) =>
 assert(missingOwnerLinks.length === 1, "summary missing owner did not expose one exact Goal link");
 const ownerAssignButtons = walkElements(goalExecutionSurface, (element) =>
   String(element.className || "").includes("goal-execution-owner-assign"));
-assert(ownerAssignButtons.length === 2, "summary missing owner did not expose Codex-only assignment buttons");
+assert(ownerAssignButtons.length === 3, "summary missing owner did not expose all three Codex assignment buttons");
 assert(ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "summary missing owner omitted Tammy assignment");
-assert(!ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "summary missing owner exposed OpenClaw assignment");
+assert(ownerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/toddy"), "summary missing owner omitted Toddy assignment");
 const actionQueueOwnerAssignButtons = walkElements(goalExecutionSurface, (element) =>
   String(element.className || "").includes("goal-execution-action-owner-assign"));
 assert(actionQueueOwnerAssignButtons.length === 2, "action queue owner assignment did not expose Codex-only assignment buttons");
@@ -322,7 +322,6 @@ assert(actionQueueOwnerAssignButtons.every((button) =>
   button.dataset?.slug === "goals/d837ac94-36f5-4735-93bb-d84c69b45435"),
   "action queue owner assignment buttons did not preserve the exact Goal slug");
 assert(actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy"), "action queue owner assignment omitted Tammy assignment");
-assert(!actionQueueOwnerAssignButtons.some((button) => button.dataset?.agentSlug === "agents/tammy-oc"), "action queue owner assignment exposed OpenClaw assignment");
 assert(
   actionQueueOwnerAssignButtons.some((button) => flattenText(button).includes("recommended") && button.dataset?.agentSlug === "agents/tammy"),
   "action queue owner assignment did not label the recommended Codex Agent",
@@ -453,7 +452,7 @@ showToast = originalShowToast;
 state.agents = [
   { slug: "agents/timmy", name: "Timmy", runtime: "codex", default_goal_slugs: [goalSlug] },
   { slug: "agents/tammy", name: "Tammy", runtime: "codex", default_goal_slugs: [] },
-  { slug: "agents/tammy-oc", name: "Tammy-OC", runtime: "openclaw", default_goal_slugs: [] },
+  { slug: "agents/toddy", name: "Toddy", runtime: "codex", default_goal_slugs: [] },
 ];
 assert(sparseOwnerRequests.length === 2, "recommended plan did not preserve the verified owner action when Agents hydration was sparse");
 assert(sparseOwnerRequests[1].url === "/api/agents/agents%2Ftammy/default-goals", "recommended plan did not use the action queue recommended owner when Agents hydration was sparse");
@@ -3788,6 +3787,14 @@ assert(statusBadge && statusBadge.textContent === "Blocked", "visible canonical 
         self.assertNotIn("node(\"details\"", agent_work)
         self.assertNotIn("Open Agent Profile", agent_work)
         self.assertIn('node("h3", "", "Current work")', agent_work)
+        self.assertIn(
+            '["planned", "active", "blocked"].includes(task.status)',
+            agent_work,
+        )
+        self.assertNotIn(
+            'const work = allWork.filter((task) => task.status !== "proposed")',
+            agent_work,
+        )
         self.assertIn("No authorized work yet", agent_work)
         self.assertIn("No current task or open TODO recorded.", agent_work)
 
@@ -3925,7 +3932,8 @@ state.handoffLogError = "";
 const text = flatten(renderAgentWorkView());
 assert(!text.includes("Needs attention · Verified Agent handoff needs system review"), `terminal history created false attention: ${text}`);
 assert(!text.includes("Latest dispatcher status: suppressed"), `terminal history exposed stale dispatcher repair copy: ${text}`);
-assert(text.includes("0 active · 0 proposed · 0 blocked · 0 completed"), `ordinary summary was not preserved: ${text}`);
+assert(text.includes("No authorized work yet"), `terminal history was counted as current work: ${text}`);
+assert(text.includes("No current task or open TODO recorded."), `terminal task appeared as current work: ${text}`);
 """
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -4940,18 +4948,16 @@ assert(
         self.assertIn("correlation-fixture-task", fixture)
         self.assertIn("fixture-terminal", fixture)
         self.assertIn("append_correction", fixture)
-        self.assertIn("handoff_store=SyntheticClaimHandoffStore(handoff_store, claim)", fixture)
-        self.assertIn("MISSION_CONTROL_QA_DELEGATION_SCENARIO", fixture)
+        self.assertIn("handoff_store=handoff_store", fixture)
         self.assertIn("MISSION_CONTROL_QA_PORT", fixture)
-        self.assertIn('"inactive", "active", "expired", "unknown", "mismatched"', fixture)
-        self.assertIn("SyntheticClaimHandoffStore", fixture)
+        self.assertNotIn("MISSION_CONTROL_QA_DELEGATION_SCENARIO", fixture)
+        self.assertNotIn("SyntheticClaimHandoffStore", fixture)
         self.assertIn("external writes: disabled", fixture)
         self.assertIn("/api/qa-fixture-status", fixture)
         production_server = (PROJECT_ROOT / "gtasks" / "server.py").read_text(encoding="utf-8")
         self.assertNotIn("/api/qa-fixture-status", production_server)
         self.assertNotIn("GBrainAdapter(", fixture)
         self.assertNotIn("NatsClient(", fixture)
-        self.assertNotIn("OpenClawClient(", fixture)
 
     def test_handoff_correlation_waits_for_inflight_canonical_task_read(self) -> None:
         result = run_app_runtime_probe(
@@ -5387,259 +5393,14 @@ assert(state.handoffLogFocusKey === null, "completed focus restoration remained 
   }"""
         self.assertIn(required_rule, mobile)
 
-    def test_openclaw_delegation_ui_is_confirmed_compact_and_fail_closed(self) -> None:
-        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        markup = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
 
-        for copy in (
-            "OpenClaw",
-            "No goals assigned yet",
-            "Owned work",
-            "Additional delegated work",
-            "Temporarily delegate work",
-            "Permanent owner",
-            "Temporary executor",
-            "End Early",
-            "Extend",
-            "Revoke",
-        ):
-            self.assertIn(copy, javascript + markup)
-        self.assertIn('fetch("/api/agent-delegations"', javascript)
-        self.assertIn("window.confirm", javascript)
-        create_flow = javascript[
-            javascript.index("async function createTemporaryDelegation"):
-            javascript.index("async function changeTemporaryDelegation")
-        ]
-        self.assertLess(create_flow.index("window.confirm"), create_flow.index('fetch("/api/agent-delegations"'))
-        self.assertIn("expected_version", javascript)
-        self.assertIn("display_timezone", javascript)
-        self.assertIn('type = "datetime-local"', javascript)
-        self.assertIn("delegation-card", stylesheet)
-        self.assertIn("restoreDelegationFocus", javascript)
-        self.assertIn("@media (max-width: 760px)", stylesheet)
-        self.assertNotIn("session_key", javascript)
-        self.assertNotIn("registration_id", javascript)
 
-    def test_openclaw_delegation_runtime_cancels_without_write_and_expires_locally(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const past = new Date(Date.now() - 60000).toISOString();
-state.delegations = [{ source_agent: "agents/tammy", executor_agent: "agents/tammy-oc", state: "active", ends_at: past }];
-assert(activeDelegationForSource("agents/tammy") === null, "expired client projection stayed actionable");
-let fetches = 0;
-globalThis.fetch = async () => { fetches += 1; throw new Error("must not fetch"); };
-window.confirm = () => false;
-state.agents = [{ slug: "agents/tammy", name: "Tammy" }, { slug: "agents/tammy-oc", name: "Tammy-OC" }];
-const end = { value: formatPacificInstant(new Date(Date.now() + 3600000)) };
-const submit = { disabled: false };
-const section = { querySelector: () => null };
-const form = {
-  closest: () => section,
-  querySelector: (selector) => selector.includes("delegation-end") ? end : submit,
-};
-await createTemporaryDelegation(
-  { preventDefault() {}, currentTarget: form },
-  "agents/tammy",
-  "agents/tammy-oc",
-);
-assert(fetches === 0, "cancelled confirmation still submitted a mutation");
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_pacific_datetime_local_round_trip_handles_dst_and_request_instant(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-assert(formatPacificInstant(new Date("2026-03-08T09:30:00Z")) === "2026-03-08T01:30", "pre-DST wall time wrong");
-assert(formatPacificInstant(new Date("2026-03-08T10:30:00Z")) === "2026-03-08T03:30", "post-DST wall time wrong");
-assert(parsePacificLocalDateTime("2026-03-08T03:30").toISOString() === "2026-03-08T10:30:00.000Z", "spring DST instant wrong");
-assert(!Number.isFinite(parsePacificLocalDateTime("2026-03-08T02:30").getTime()), "nonexistent spring time accepted");
-assert(parsePacificLocalDateTime("2026-11-01T01:30").toISOString() === "2026-11-01T08:30:00.000Z", "fall overlap was not deterministic");
 
-const selected = "2026-08-09T06:45";
-const selectedInstant = parsePacificLocalDateTime(selected);
-assert(formatPacificInstant(selectedInstant) === selected, "input and summary wall time disagree");
-assert(selectedInstant.toISOString() === "2026-08-09T13:45:00.000Z", "request instant disagrees with Pacific input");
-assert(formatPacificDisplay(selectedInstant).includes("6:45"), "confirmation display disagrees with input");
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_task_detail_resolves_verified_executor_from_agent_work_only(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const future = new Date(Date.now() + 3600000).toISOString();
-const leaseSlug = "agent-delegations/22222222-2222-4222-8222-222222222222";
-state.agents = [
-  { slug: "agents/tammy", name: "Tammy" },
-  { slug: "agents/tammy-oc", name: "Tammy-OC" },
-];
-state.delegations = [{
-  slug: leaseSlug,
-  source_agent: "agents/tammy",
-  executor_agent: "agents/tammy-oc",
-  state: "active",
-  ends_at: future,
-}];
-const canonicalTask = { slug: "tasks/fixture", owner_agent: "agents/tammy" };
-let executorHidden = true;
-elements.taskTemporaryExecutor.classList.toggle = (name, value) => {
-  if (name === "is-hidden") executorHidden = value;
-};
-state.agentTasks = [{
-  ...canonicalTask,
-  temporary_execution: {
-    permanent_owner: "agents/tammy",
-    executor_agent: "agents/tammy-oc",
-    delegation_slug: leaseSlug,
-    expires_at: future,
-  },
-}];
-renderTaskTemporaryExecutor(canonicalTask);
-assert(!executorHidden, "verified executor stayed hidden");
-assert(elements.taskExecutorName.textContent.includes("Tammy-OC"), "verified executor name missing");
 
-state.agentTasks[0].temporary_execution.delegation_slug = "agent-delegations/33333333-3333-4333-8333-333333333333";
-renderTaskTemporaryExecutor(canonicalTask);
-assert(executorHidden, "unknown claim did not fail closed");
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_task_detail_loads_executor_projection_before_agents_view(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const task = { slug: "tasks/fixture", owner_agent: "agents/tammy" };
-state.selectedKind = "task";
-state.selectedSlug = task.slug;
-state.agentsLoaded = false;
-state.delegationsLoaded = false;
-state.agentWorkLoaded = false;
-let agentLoads = 0;
-let workLoads = 0;
-let renders = 0;
-loadAgents = async () => { agentLoads += 1; };
-loadAgentWork = async () => { workLoads += 1; };
-renderTaskTemporaryExecutor = (value) => {
-  if (value?.slug === task.slug) renders += 1;
-};
-await ensureTaskTemporaryExecutorProjection(task);
-assert(agentLoads === 1, "task detail did not load Agent/delegation projection");
-assert(workLoads === 1, "task detail did not load Agent work projection");
-assert(renders === 2, "task executor did not render before and after projection load");
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_openclaw_cards_use_claim_projection_and_pair_controls(self) -> None:
-        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        agent_view = javascript[
-            javascript.index("function renderAgentWorkView"):
-            javascript.index("function goalCard")
-        ]
-        self.assertIn("activeTemporaryExecution(task)", agent_view)
-        execution_projection = javascript[
-            javascript.index("function activeTemporaryExecution"):
-            javascript.index("function delegationRemainingLabel")
-        ]
-        self.assertIn("temporary_execution", execution_projection)
-        self.assertIn("execution.expires_at", execution_projection)
-        self.assertNotIn('task.status === "planned"', agent_view)
-        self.assertIn("renderDelegationControls(agent)", agent_view)
-        self.assertIn("OPENCLAW_PAIR_BY_SOURCE[agent.slug]", javascript)
-        self.assertIn("Session health unavailable", javascript)
-        runtime = javascript[javascript.index("function agentRuntimeLabel"):javascript.index("function renderSystemHandoffAttention")]
-        self.assertIn('["execution_started", "acknowledgement"]', runtime)
-        self.assertIn("event.executor_agent === agent.slug", runtime)
-
-    def test_agents_view_renders_all_six_profiles_in_api_order(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const names = ["Tammy", "Timmy", "Toddy", "Tammy-OC", "Timmy-OC", "Toddy-OC"];
-state.agents = names.map((name, index) => ({
-  slug: `agents/${name.toLowerCase()}`,
-  name,
-  title: `Agent ${name}`,
-  summary: "Synthetic independent profile.",
-  avatar: { kind: "initials", value: name.slice(0, 2) },
-  runtime: index < 3 ? "codex" : "openclaw",
-  default_goal_slugs: [],
-}));
-state.agentTasks = [];
-state.snapshot = { tasks: [], goals: [], views: {} };
-state.delegations = [];
-state.handoffLogEvents = [];
-state.handoffLogLoading = false;
-state.handoffLogStale = false;
-state.handoffLogError = "";
-const view = renderAgentWorkView();
-const cards = [];
-const walk = (node) => {
-  if (node?.className === "agent-profile-card") cards.push(node);
-  for (const child of node?.children || []) walk(child);
-};
-walk(view);
-assert(cards.length === 6, `expected six Agent cards, received ${cards.length}`);
-assert(state.agents.map((agent) => agent.name).join("|") === names.join("|"), "Agent order changed");
-assert(
-  state.agents.filter((agent) => agent.runtime === "openclaw").every((agent) => agent.default_goal_slugs.length === 0),
-  "OpenClaw fixture profile unexpectedly received a default Goal",
-);
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_openclaw_session_health_ignores_arbitrary_handoff_activity(self) -> None:
-        result = run_app_runtime_probe(
-            r"""
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const agent = { slug: "agents/tammy-oc", runtime: "openclaw" };
-state.handoffLogEvents = [{
-  agent_slug: agent.slug,
-  executor_agent: agent.slug,
-  event_type: "handoff_queued",
-  sequence: 9,
-  occurred_at: "2026-08-09T08:00:00Z",
-}];
-assert(agentRuntimeLabel(agent).includes("Session health unavailable"), "arbitrary handoff event became session health");
-state.handoffLogEvents.push({
-  agent_slug: agent.slug,
-  executor_agent: agent.slug,
-  event_type: "execution_started",
-  sequence: 10,
-  occurred_at: "2026-08-09T08:01:00Z",
-});
-assert(agentRuntimeLabel(agent).includes("verified fixed-session activity"), "verified run activity was not shown");
-"""
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_delegation_confirmation_names_end_timezone_scope_and_exclusions(self) -> None:
-        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        create_flow = javascript[
-            javascript.index("async function createTemporaryDelegation"):
-            javascript.index("async function changeTemporaryDelegation")
-        ]
-        change_flow = javascript[
-            javascript.index("async function changeTemporaryDelegation"):
-            javascript.index("function renderDelegationControls")
-        ]
-        for copy in (
-            "America/Los_Angeles",
-            "task status, TODOs, comments, and Artifacts",
-            "No account access, external actions, trading, or scope expansion",
-            "Permanent ownership will not change",
-        ):
-            self.assertIn(copy, create_flow)
-        self.assertIn("requested new end", change_flow)
-        self.assertIn("formatPacificDisplay", change_flow)
-        self.assertIn("parsePacificLocalDateTime", change_flow)
 
 
 if __name__ == "__main__":

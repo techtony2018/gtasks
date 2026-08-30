@@ -15,6 +15,7 @@ from gtasks.server import HandoffDispatcherAuth
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVISIONER_PATH = ROOT / "scripts" / "provision_handoff_dispatcher_credentials.py"
+MIGRATOR_PATH = ROOT / "scripts" / "migrate_handoff_dispatcher_credentials.py"
 
 
 def load_provisioner():
@@ -66,19 +67,12 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
             ],
         }
 
-    def _write_six_identity_configs(
+    def _write_three_identity_configs(
         self, directory: Path
     ) -> tuple[list[Path], list[Path]]:
         config_paths: list[Path] = []
         token_paths: list[Path] = []
-        for agent in (
-            "tammy",
-            "timmy",
-            "toddy",
-            "tammy-oc",
-            "timmy-oc",
-            "toddy-oc",
-        ):
+        for agent in ("tammy", "timmy", "toddy"):
             token_path = directory / f"{agent}.token"
             token_path.write_text(f"{agent}-private-token\n", encoding="utf-8")
             token_path.chmod(0o600)
@@ -134,7 +128,50 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "0600"):
             HandoffDispatcherAuth.from_file(path)
 
-    def test_auth_loader_accepts_exactly_all_three_codex_openclaw_pairs(self) -> None:
+    def test_migrator_atomically_retires_openclaw_hash_entries(self) -> None:
+        path = self.root / "credentials.json"
+        payload = self._credential_payload()
+        payload["identities"].extend(
+            {
+                "agent_slug": f"agents/{agent}-oc",
+                "registration_sha256": hashlib.sha256(
+                    f"private-registration-{agent}-oc".encode()
+                ).hexdigest(),
+                "token_sha256": hashlib.sha256(
+                    f"{agent}-oc-private-token".encode()
+                ).hexdigest(),
+            }
+            for agent in ("tammy", "timmy", "toddy")
+        )
+        self._write_json(path, payload)
+
+        result = subprocess.run(
+            [sys.executable, str(MIGRATOR_PATH), "--credentials", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        migrated = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [entry["agent_slug"] for entry in migrated["identities"]],
+            ["agents/tammy", "agents/timmy", "agents/toddy"],
+        )
+        self.assertNotIn("token_sha256", result.stdout)
+        HandoffDispatcherAuth.from_file(path)
+
+        replay = subprocess.run(
+            [sys.executable, str(MIGRATOR_PATH), "--credentials", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(replay.returncode, 0, replay.stderr)
+        self.assertEqual(json.loads(replay.stdout)["status"], "already_codex_only")
+
+    def test_auth_loader_rejects_any_extra_identity(self) -> None:
         path = self.root / "paired-credentials.json"
         payload = self._credential_payload()
         payload["identities"].extend(
@@ -151,22 +188,13 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         )
         self._write_json(path, payload)
 
-        auth = HandoffDispatcherAuth.from_file(path)
-
-        for agent in ("tammy", "timmy", "toddy"):
-            identity = auth.resolve(f"Bearer {agent}-oc-private-token")
-            self.assertIsNotNone(identity)
-            self.assertEqual(identity.agent_slug, f"agents/{agent}-oc")
-
-        payload["identities"][-1]["agent_slug"] = "agents/unknown-oc"
-        self._write_json(path, payload)
         with self.assertRaisesRegex(ValueError, "wrong schema"):
             HandoffDispatcherAuth.from_file(path)
 
-    def test_provisioner_hashes_six_explicit_private_identity_configs(self) -> None:
+    def test_provisioner_hashes_three_explicit_private_identity_configs(self) -> None:
         config_paths: list[Path] = []
         raw_values: list[str] = []
-        agents = ("tammy", "timmy", "toddy", "tammy-oc", "timmy-oc", "toddy-oc")
+        agents = ("tammy", "timmy", "toddy")
         for agent in agents:
             token = f"{agent}-private-dispatcher-token"
             registration = f"private-registration-{agent}"
@@ -236,7 +264,7 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         self.assertEqual(reordered.returncode, 0, reordered.stderr)
         self.assertEqual(reordered_output.read_bytes(), output.read_bytes())
 
-    def test_provisioner_requires_exactly_six_reviewed_unique_private_inputs(self) -> None:
+    def test_provisioner_requires_exactly_three_reviewed_unique_private_inputs(self) -> None:
         token_path = self.root / "token"
         token_path.write_text("private-token\n", encoding="utf-8")
         token_path.chmod(0o600)
@@ -279,11 +307,11 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
             "token_symlink",
             "token_directory",
         ):
-            for index in range(6):
+            for index in range(3):
                 with self.subTest(kind=kind, index=index):
                     case = self.root / f"{kind}-{index}"
                     case.mkdir()
-                    configs, tokens = self._write_six_identity_configs(case)
+                    configs, tokens = self._write_three_identity_configs(case)
                     if kind == "config_symlink":
                         target = configs[index].with_suffix(".real.json")
                         configs[index].rename(target)
@@ -309,7 +337,7 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
 
     def test_provisioner_refuses_duplicate_hashes_or_unreviewed_identity_set(self) -> None:
         configs: list[Path] = []
-        for agent in ("tammy", "timmy", "toddy", "tammy-oc", "timmy-oc", "unknown-oc"):
+        for agent in ("tammy", "timmy", "unknown"):
             token_path = self.root / f"{agent}.token"
             token_path.write_text(f"private-token-{agent}\n", encoding="utf-8")
             token_path.chmod(0o600)
@@ -333,7 +361,7 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
         self.assertFalse(output.exists())
 
         replacement = json.loads(configs[-1].read_text(encoding="utf-8"))
-        replacement["agent_slug"] = "agents/toddy-oc"
+        replacement["agent_slug"] = "agents/toddy"
         replacement["registration_id"] = "private-registration-tammy"
         self._write_json(configs[-1], replacement)
         with self.assertRaisesRegex(ValueError, "registration_sha256.*unique"):

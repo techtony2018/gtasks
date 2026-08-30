@@ -16,9 +16,6 @@ Create one Mission Control task and verify canonical GBrain readback. Use this f
   - `Tammy` -> `agents/tammy`
   - `Timmy` -> `agents/timmy`
   - `Toddy` -> `agents/toddy`
-  - `Tammy OpenClaw` / `tammy-oc` -> `agents/tammy-oc`
-  - `Timmy OpenClaw` / `timmy-oc` -> `agents/timmy-oc`
-  - `Toddy OpenClaw` / `toddy-oc` -> `agents/toddy-oc`
 - Do not infer an Agent owner from vague language like "someone" or "automation"; default to Tony unless a named Agent is present.
 
 ## Required inputs
@@ -38,8 +35,8 @@ Optional:
 
 ## Markdown detail contract
 
-Every new Task created by this skill, including Tony, Codex Agent, OpenClaw
-Agent, and Bible Study Tasks, must pass a Markdown-formatted `detail` to the
+Every new Task created by this skill, including Tony, Codex Agent, and Bible
+Study Tasks, must pass a Markdown-formatted `detail` to the
 helper. Use this structure and omit only optional sections that have no items:
 
 ```md

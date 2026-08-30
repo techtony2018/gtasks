@@ -459,10 +459,6 @@ const state = {
   agentsLoaded: false,
   agentsLoading: false,
   agentsLoadPromise: null,
-  delegations: [],
-  delegationsLoaded: false,
-  delegationsLoading: false,
-  delegationsError: "",
   agentTasks: [],
   agentProfileIssues: [],
   agentWorkIssues: [],
@@ -1096,9 +1092,6 @@ const elements = {
   taskOwner: document.querySelector("#task-owner"),
   taskOwnerAvatar: document.querySelector("#task-owner-avatar"),
   taskOwnerName: document.querySelector("#task-owner-name"),
-  taskTemporaryExecutor: document.querySelector("#task-temporary-executor"),
-  taskExecutorAvatar: document.querySelector("#task-executor-avatar"),
-  taskExecutorName: document.querySelector("#task-executor-name"),
   taskHandoffPanel: document.querySelector("#task-handoff-panel"),
   taskHandoffHeading: document.querySelector("#task-handoff-heading"),
   taskHandoffCopy: document.querySelector("#task-handoff-copy"),
@@ -3516,7 +3509,7 @@ async function saveAgentGoalAssignment(goalSlug, action) {
 }
 
 async function assignGoalOwnerFromSummary(goalSlug, agentSlug, options = {}) {
-  const agent = state.agents.find((item) => item.slug === agentSlug && item.runtime !== "openclaw") || (
+  const agent = state.agents.find((item) => item.slug === agentSlug) || (
     options.verifiedCandidateName && isCodexGoalOwnerSlug(agentSlug)
       ? { slug: agentSlug, name: String(options.verifiedCandidateName), runtime: "codex" }
       : null
@@ -3545,7 +3538,7 @@ function goalOwnerAssignmentCandidates(goalSlug, candidateOwners = null) {
       .filter((candidate) => {
         const agentSlug = String(candidate?.agent_slug || "").trim();
         const agent = state.agents.find((item) => item.slug === agentSlug);
-        return agentSlug && agent && agent.runtime !== "openclaw";
+        return Boolean(agentSlug && agent);
       })
       .map((candidate) => {
         const agentSlug = String(candidate.agent_slug);
@@ -3560,7 +3553,6 @@ function goalOwnerAssignmentCandidates(goalSlug, candidateOwners = null) {
   }
   return state.agents
     .filter((agent) =>
-      agent.runtime !== "openclaw" &&
       Array.isArray(agent.default_goal_slugs) &&
       !agent.default_goal_slugs.includes(goalSlug))
     .map((agent) => ({
@@ -3821,17 +3813,8 @@ function renderAgentHandoffStatus(agent) {
   return status;
 }
 
-function agentRuntimeLabel(agent) {
-  if (agent.runtime !== "openclaw") return "Codex";
-  const latest = verifiedHandoffEventsForAgent(agent)
-    .filter((event) => (
-      event.executor_agent === agent.slug &&
-      ["execution_started", "acknowledgement"].includes(event.event_type)
-    ))
-    .slice()
-    .sort((left, right) => Number(right.sequence || 0) - Number(left.sequence || 0))[0];
-  if (!latest) return "OpenClaw · Session health unavailable";
-  return `OpenClaw · verified fixed-session activity ${latest.occurred_at ? new Date(latest.occurred_at).toLocaleString() : "time unavailable"}`;
+function agentRuntimeLabel() {
+  return "Codex";
 }
 
 function renderSystemHandoffAttention() {
@@ -3953,276 +3936,6 @@ function renderUnifiedHandoffHistory({ historyOpen = false } = {}) {
   loadMore.addEventListener("click", () => void loadHandoffLog({ reset: false }));
   details.append(summary, form, stateMessage, list, loadMore);
   return details;
-}
-
-const OPENCLAW_PAIR_BY_SOURCE = {
-  "agents/tammy": "agents/tammy-oc",
-  "agents/timmy": "agents/timmy-oc",
-  "agents/toddy": "agents/toddy-oc",
-};
-const SOURCE_BY_OPENCLAW_PAIR = Object.fromEntries(
-  Object.entries(OPENCLAW_PAIR_BY_SOURCE).map(([source, executor]) => [executor, source]),
-);
-
-function activeDelegationForSource(sourceSlug) {
-  return state.delegations.find((lease) => (
-    lease.source_agent === sourceSlug &&
-    ["active", "scheduled"].includes(lease.state) &&
-    Number.isFinite(new Date(lease.ends_at).getTime()) &&
-    new Date(lease.ends_at).getTime() > Date.now()
-  )) || null;
-}
-
-function activeTemporaryExecution(task) {
-  const execution = task?.temporary_execution;
-  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
-  const lease = execution ? activeDelegationForSource(ownerSlug) : null;
-  if (
-    !execution ||
-    !lease ||
-    lease.slug !== execution.delegation_slug ||
-    execution.permanent_owner !== ownerSlug ||
-    execution.executor_agent !== lease.executor_agent ||
-    !Number.isFinite(new Date(execution.expires_at).getTime()) ||
-    new Date(execution.expires_at).getTime() <= Date.now()
-  ) return null;
-  return execution;
-}
-
-function delegationRemainingLabel(lease) {
-  if (!lease) return "No temporary delegation is active.";
-  const end = new Date(lease.ends_at);
-  const remaining = Math.max(0, end.getTime() - Date.now());
-  if (!Number.isFinite(end.getTime()) || remaining <= 0 || lease.state === "expired") {
-    return "Authorization expired; no delegated work can start.";
-  }
-  const minutes = Math.ceil(remaining / 60000);
-  const duration = minutes >= 1440
-    ? `${Math.ceil(minutes / 1440)}d`
-    : minutes >= 60 ? `${Math.ceil(minutes / 60)}h` : `${minutes}m`;
-  return `${lease.state === "scheduled" ? "Starts later" : "Active"} · ${duration} remaining · ends ${formatPacificDisplay(end)}`;
-}
-
-const PACIFIC_TIME_ZONE = "America/Los_Angeles";
-const PACIFIC_INPUT_FORMATTER = new Intl.DateTimeFormat("en-CA", {
-  timeZone: PACIFIC_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
-
-function formatPacificInstant(date) {
-  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) return "";
-  const parts = Object.fromEntries(
-    PACIFIC_INPUT_FORMATTER.formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
-}
-
-function formatPacificDisplay(date) {
-  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) return "time unavailable";
-  return date.toLocaleString("en-US", { timeZone: PACIFIC_TIME_ZONE });
-}
-
-function parsePacificLocalDateTime(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || ""));
-  if (!match) return new Date(Number.NaN);
-  const [, year, month, day, hour, minute] = match;
-  const target = `${year}-${month}-${day}T${hour}:${minute}`;
-  const localAsUtc = Date.UTC(
-    Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute),
-  );
-  const candidates = [];
-  for (let offsetMinutes = -12 * 60; offsetMinutes <= 14 * 60; offsetMinutes += 15) {
-    const candidate = new Date(localAsUtc - offsetMinutes * 60000);
-    if (formatPacificInstant(candidate) === target) candidates.push(candidate);
-  }
-  if (!candidates.length) return new Date(Number.NaN);
-  candidates.sort((left, right) => left.getTime() - right.getTime());
-  return candidates[0];
-}
-
-function delegationMutationError(section, message) {
-  const error = section.querySelector(".delegation-error");
-  error.textContent = message;
-  error.classList.remove("is-hidden");
-  error.focus({ preventScroll: true });
-}
-
-function restoreDelegationFocus(agentSlug) {
-  window.requestAnimationFrame(() => {
-    document.querySelector(
-      `[data-delegation-agent="${CSS.escape(agentSlug)}"] .delegation-status`,
-    )?.focus({ preventScroll: true });
-  });
-}
-
-async function createTemporaryDelegation(event, sourceAgent, executorAgent) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const section = form.closest(".delegation-card");
-  const endInput = form.querySelector('[name="delegation-end"]');
-  const endsAt = parsePacificLocalDateTime(endInput.value);
-  if (!Number.isFinite(endsAt.getTime()) || endsAt <= new Date()) {
-    delegationMutationError(section, "Choose a future end time between 15 minutes and 7 days.");
-    return;
-  }
-  const ownerName = state.agents.find((agent) => agent.slug === sourceAgent)?.name || sourceAgent;
-  const executorName = state.agents.find((agent) => agent.slug === executorAgent)?.name || executorAgent;
-  const confirmation = [
-    `Temporarily delegate eligible ${ownerName} work to ${executorName} until ${formatPacificDisplay(endsAt)} (${PACIFIC_TIME_ZONE})?`,
-    "Allowed: task status, TODOs, comments, and Artifacts.",
-    "No account access, external actions, trading, or scope expansion.",
-    "Permanent ownership will not change.",
-  ].join("\n");
-  if (!window.confirm(confirmation)) return;
-  const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
-  try {
-    if (!await loadAgentDelegations()) throw new Error("Canonical authorization could not be refreshed. No change was made.");
-    if (activeDelegationForSource(sourceAgent)) throw new Error("A current authorization already exists. Refresh before changing it.");
-    const response = await fetch("/api/agent-delegations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        source_agent: sourceAgent,
-        executor_agent: executorAgent,
-        starts_at: new Date().toISOString(),
-        ends_at: endsAt.toISOString(),
-        display_timezone: "America/Los_Angeles",
-        allowed_operations: ["task_status", "todo", "comment", "artifact"],
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Delegation was not verified.");
-    if (!await loadAgentDelegations()) throw new Error("Verified mutation succeeded, but its refreshed authorization could not be displayed yet.");
-    render();
-    restoreDelegationFocus(executorAgent);
-    showToast("Temporary delegation was saved after canonical readback.");
-  } catch (error) {
-    delegationMutationError(section, error.message || "Temporary delegation was not saved.");
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function changeTemporaryDelegation(lease, action, section, requestedEnd = null) {
-  const verb = action === "extend" ? "Extend" : action === "revoke" ? "Revoke" : "End Early";
-  const requested = requestedEnd ? parsePacificLocalDateTime(requestedEnd) : null;
-  const exactEnd = action === "extend" && requested && Number.isFinite(requested.getTime())
-    ? ` The requested new end is ${formatPacificDisplay(requested)} (${PACIFIC_TIME_ZONE}).`
-    : "";
-  if (!window.confirm(`${verb} this temporary authorization?${exactEnd} Allowed: task status, TODOs, comments, and Artifacts. No account access, external actions, trading, or scope expansion. Permanent ownership will not change.`)) return;
-  try {
-    if (!await loadAgentDelegations()) throw new Error("Canonical authorization could not be refreshed. No change was made.");
-    const current = state.delegations.find((item) => item.slug === lease.slug);
-    if (!current || !["active", "scheduled"].includes(current.state)) {
-      throw new Error("This authorization is no longer active. No change was made.");
-    }
-    const extendedEnd = requestedEnd ? parsePacificLocalDateTime(requestedEnd) : null;
-    if (action === "extend" && (!extendedEnd || !Number.isFinite(extendedEnd.getTime()))) {
-      throw new Error("Choose a valid later end time.");
-    }
-    const body = action === "extend"
-      ? { ends_at: extendedEnd.toISOString(), expected_version: current.version }
-      : { action: action === "revoke" ? "revoke" : "complete", expected_version: current.version };
-    const response = await fetch(`/api/agent-delegations/${encodeURIComponent(current.slug)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.receipt?.verified) throw new Error(payload.error || "Delegation change was not verified.");
-    if (!await loadAgentDelegations()) throw new Error("Verified mutation succeeded, but its refreshed authorization could not be displayed yet.");
-    render();
-    restoreDelegationFocus(current.executor_agent);
-    showToast(`${verb} was verified.`);
-  } catch (error) {
-    delegationMutationError(section, error.message || "Delegation could not be changed.");
-  }
-}
-
-function renderDelegationControls(agent) {
-  const section = node("section", "delegation-card");
-  section.dataset.delegationAgent = agent.slug;
-  const sourceSlug = OPENCLAW_PAIR_BY_SOURCE[agent.slug]
-    ? agent.slug
-    : SOURCE_BY_OPENCLAW_PAIR[agent.slug];
-  const executorSlug = OPENCLAW_PAIR_BY_SOURCE[sourceSlug];
-  const lease = sourceSlug ? activeDelegationForSource(sourceSlug) : null;
-  section.append(node("h3", "", "Temporarily delegate work"));
-  const status = node("p", "delegation-status", delegationRemainingLabel(lease));
-  status.setAttribute("role", "status");
-  status.tabIndex = -1;
-  section.append(status);
-  if (state.delegationsError) {
-    section.append(node("p", "delegation-stale", "Last verified authorization remains visible; refresh failed."));
-  }
-  const error = node("p", "form-error delegation-error is-hidden");
-  error.setAttribute("role", "alert");
-  error.tabIndex = -1;
-  if (lease) {
-    const actions = node("div", "delegation-actions");
-    const endInput = document.createElement("input");
-    endInput.type = "datetime-local";
-    endInput.setAttribute("aria-label", "New delegation end time (America/Los_Angeles)");
-    const minimumExtension = new Date(new Date(lease.ends_at).getTime() + 15 * 60000);
-    const maximumExtension = new Date(new Date(lease.starts_at).getTime() + 7 * 86400000);
-    endInput.min = formatPacificInstant(minimumExtension);
-    endInput.max = formatPacificInstant(maximumExtension);
-    endInput.value = formatPacificInstant(new Date(Math.min(
-      new Date(lease.ends_at).getTime() + 60 * 60000,
-      maximumExtension.getTime(),
-    )));
-    const extend = node("button", "secondary-button", "Extend");
-    extend.type = "button";
-    if (minimumExtension > maximumExtension) {
-      endInput.disabled = true;
-      extend.disabled = true;
-    }
-    extend.addEventListener("click", () => void changeTemporaryDelegation(lease, "extend", section, endInput.value));
-    const end = node("button", "secondary-button", "End Early");
-    end.type = "button";
-    end.addEventListener("click", () => void changeTemporaryDelegation(lease, "end", section));
-    const revoke = node("button", "danger-button", "Revoke");
-    revoke.type = "button";
-    revoke.addEventListener("click", () => void changeTemporaryDelegation(lease, "revoke", section));
-    actions.append(extend, end, revoke);
-    section.append(endInput, actions, error);
-    return section;
-  }
-  if (agent.runtime === "openclaw") {
-    section.append(node("p", "delegation-owner-copy", "Start temporary delegation from the paired Codex Agent card."), error);
-    return section;
-  }
-  const form = node("form", "delegation-form");
-  const label = node("label", "", "Authorization ends (America/Los_Angeles)");
-  const input = document.createElement("input");
-  input.type = "datetime-local";
-  input.name = "delegation-end";
-  input.required = true;
-  input.min = formatPacificInstant(new Date(Date.now() + 15 * 60000));
-  input.max = formatPacificInstant(new Date(Date.now() + 7 * 86400000));
-  input.value = formatPacificInstant(new Date(Date.now() + 8 * 3600000));
-  label.append(input);
-  const shortcuts = node("div", "delegation-shortcuts");
-  [["1 hour", 1], ["8 hours", 8], ["24 hours", 24]].forEach(([copy, hours]) => {
-    const button = node("button", "secondary-button", copy);
-    button.type = "button";
-    button.addEventListener("click", () => { input.value = formatPacificInstant(new Date(Date.now() + hours * 3600000)); });
-    shortcuts.append(button);
-  });
-  const submit = node("button", "primary-button", "Temporarily delegate work");
-  submit.type = "submit";
-  form.addEventListener("submit", (event) => void createTemporaryDelegation(event, sourceSlug, executorSlug));
-  form.append(label, shortcuts, node("p", "delegation-owner-copy", "Permanent owner does not change. Delegated work is additional and only starts when this Agent has no owned work ready."), submit);
-  section.append(form, error);
-  return section;
 }
 
 const GOAL_EXECUTION_ATTENTION_REASONS = new Set([
@@ -4422,9 +4135,7 @@ function goalExecutionRow(decision, preferredAgent = null, originKey = "surface"
 function goalExecutionRows(decisions) {
   const rows = [];
   const used = new Set();
-  state.agents
-    .filter((agent) => agent.runtime !== "openclaw")
-    .forEach((agent) => {
+  state.agents.forEach((agent) => {
       const decision = decisions.find((candidate, index) => {
         if (used.has(index)) return false;
         const match = goalExecutionAgent(candidate)?.slug === agent.slug ||
@@ -4437,7 +4148,7 @@ function goalExecutionRows(decisions) {
         agent,
         `surface:${agent.slug}:${decision?.goal_slug || "none"}`,
       ));
-    });
+  });
   decisions.forEach((decision, index) => {
     if (!used.has(index)) rows.push(goalExecutionRow(
       decision,
@@ -4935,11 +4646,9 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       item.append(button);
       goalList.append(item);
     });
-    const delegatedWork = state.agentTasks.filter(
-      (task) => activeTemporaryExecution(task)?.executor_agent === agent.slug,
-    );
-    const counts = agentStatusCounts(allWork);
-    const work = allWork.filter((task) => task.status !== "proposed");
+    const work = allWork.filter((task) =>
+      ["planned", "active", "blocked"].includes(task.status));
+    const counts = agentStatusCounts(work);
     const latest = work.slice().sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))[0];
     const recentCompletion = latestTaskByStatus(allWork, "completed");
     const dispatcherAttention = work.find((task) => taskDispatcherAttention(task));
@@ -4956,7 +4665,7 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
         : coldAgentWorkLoading
           ? "Reading typed agent task collections…"
           : work.length
-            ? `${counts.active} active · ${counts.proposed} proposed · ${counts.blocked} blocked · ${counts.completed} completed`
+            ? `${counts.active} active · ${counts.planned} planned · ${counts.blocked} blocked`
             : "No authorized work yet",
     ));
     const openTodoCount = work.reduce(
@@ -4976,11 +4685,6 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
     }
     workSummary.append(nextLine);
     workSummary.append(node("span", "", dispatcherAttentionCopy ? dispatcherAttentionCopy.detail : coldAgentWorkLoading ? "Reading verified completion history…" : recentCompletion ? `Recent verified completion: ${recentCompletion.title || recentCompletion.summary}` : "No verified completion yet."));
-    const delegatedSummary = node("div", "agent-work-summary delegated-work-summary");
-    delegatedSummary.append(
-      node("h3", "", "Additional delegated work"),
-      node("strong", "", delegatedWork.length ? `${delegatedWork.length} eligible planned item${delegatedWork.length === 1 ? "" : "s"}` : "No additional delegated work"),
-    );
     card.append(
       heading,
       node(
@@ -4993,13 +4697,9 @@ function renderAgentWorkView({ historyOpen = false } = {}) {
       node("p", "agent-runtime-label", agentRuntimeLabel(agent)),
       goalList,
       workSummary,
-      delegatedSummary,
-      ...(agent.runtime === "openclaw" ? [] : [renderAgentGoalExecution(agent)]),
+      renderAgentGoalExecution(agent),
       renderAgentHandoffStatus(agent),
     );
-    if (agent.runtime === "openclaw" || OPENCLAW_PAIR_BY_SOURCE[agent.slug]) {
-      card.append(renderDelegationControls(agent));
-    }
     if (agent.chat_url) {
       const chat = node("a", "secondary-button", "Open Codex chat");
       chat.href = agent.chat_url;
@@ -5242,7 +4942,6 @@ async function loadAgents() {
         : [];
       syncAgentIssues();
       state.agentsLoaded = true;
-      await loadAgentDelegations();
       render();
     } catch (_error) {
       // Keep the last verified cards visible when a refresh is transiently unavailable.
@@ -5253,28 +4952,6 @@ async function loadAgents() {
     state.agentsLoadPromise = null;
   });
   return state.agentsLoadPromise;
-}
-
-async function loadAgentDelegations() {
-  if (state.delegationsLoading) return false;
-  state.delegationsLoading = true;
-  state.delegationsError = "";
-  try {
-    const response = await fetch("/api/agent-delegations", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Temporary delegation could not be read.");
-    state.delegations = Array.isArray(payload.delegations) ? payload.delegations : [];
-    state.delegationsLoaded = true;
-    return true;
-  } catch (error) {
-    state.delegationsError = error.message || "Temporary delegation could not be read.";
-    return false;
-  } finally {
-    state.delegationsLoading = false;
-  }
 }
 
 function loadAgentWork() {
@@ -8480,33 +8157,6 @@ function renderTaskHandoffTimeline(taskSlug) {
   elements.taskHandoffLoadMore.disabled = entry.loading;
 }
 
-function renderTaskTemporaryExecutor(task) {
-  const projectedTask = state.agentTasks.find((item) => item.slug === task?.slug) || task;
-  const execution = activeTemporaryExecution(projectedTask);
-  const ownerSlug = projectedTask?.owner_agent || projectedTask?.owner?.slug || null;
-  const lease = execution ? activeDelegationForSource(ownerSlug) : null;
-  const executor = execution
-    ? state.agents.find((agent) => agent.slug === execution.executor_agent)
-    : null;
-  elements.taskTemporaryExecutor.classList.toggle("is-hidden", !executor);
-  if (!executor) return;
-  setCompactAgentAvatar(elements.taskExecutorAvatar, executor);
-  elements.taskExecutorName.textContent = `${executor.name} · ${delegationRemainingLabel(lease)}`;
-}
-
-async function ensureTaskTemporaryExecutorProjection(task) {
-  renderTaskTemporaryExecutor(task);
-  const ownerSlug = task?.owner_agent || task?.owner?.slug || null;
-  if (
-    !ownerSlug ||
-    (state.agentsLoaded && state.delegationsLoaded && state.agentWorkLoaded)
-  ) return;
-  await Promise.all([loadAgents(), loadAgentWork()]);
-  if (state.selectedKind === "task" && state.selectedSlug === task.slug) {
-    renderTaskTemporaryExecutor(findTaskBySlug(task.slug) || task);
-  }
-}
-
 function syncTaskHandoffTimelineDisclosure() {
   if (!elements.taskHandoffTimeline || !elements.taskHandoffTimelineHeading) return;
   elements.taskHandoffTimelineHeading.setAttribute(
@@ -8531,7 +8181,6 @@ async function readTaskHandoffPage(taskSlug, { reset }) {
   state.taskHandoffEvents.set(taskSlug, entry);
   if (state.selectedKind === "task" && state.selectedSlug === taskSlug) {
     renderTaskHandoffTimeline(taskSlug);
-    renderTaskTemporaryExecutor(findTaskBySlug(taskSlug));
   }
   const params = new URLSearchParams({
     limit: String(HANDOFF_EVENT_PAGE_SIZE),
@@ -9134,7 +8783,6 @@ function selectTask(
     setCompactAgentAvatar(elements.taskOwnerAvatar, owner);
     elements.taskOwnerName.textContent = owner.name;
   }
-  void ensureTaskTemporaryExecutorProjection(task);
   elements.taskHandoffTimeline.open = false;
   syncTaskHandoffTimelineDisclosure();
   elements.taskTodoError.classList.add("is-hidden");

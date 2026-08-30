@@ -93,18 +93,30 @@ class McAddTaskHelperDryRunTests(unittest.TestCase):
         self.assertIn(f"System Ticket unavailable: {TICKET_SLUG}", result["rendered_body"])
         self.assertNotIn("#system-ticket/", result["rendered_body"])
 
-    def test_openclaw_dry_run_reports_shared_markdown_contract_and_rendered_body(self):
-        detail = DETAIL + f"\nFollow ordinary task {TICKET_SLUG}.\n"
-        result = self._dry_run("--owner-agent", "tammy-oc", detail=detail)
-        self.assertEqual(result["owner"], "agents/tammy-oc")
-        self.assertTrue(result["dry_run"])
-        self.assertEqual(result["markdown_contract"], "unified-task-ticket-v1")
-        self.assertEqual(
-            result["rendered_body"],
-            render_task_body("Review unified contract", result["detail"], {}),
+    def test_retired_openclaw_owner_alias_is_rejected(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HELPER_PATH),
+                "--title",
+                "Review unified contract",
+                "--detail",
+                DETAIL,
+                "--due-day",
+                "2026-08-10",
+                "--gtasks-repo",
+                str(REPO_ROOT),
+                "--dry-run",
+                "--owner-agent",
+                "tammy-oc",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
         )
-        self.assertNotIn("System Ticket unavailable", result["rendered_body"])
-        self.assertNotIn("#system-ticket/", result["rendered_body"])
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown owner agent", result.stderr)
 
     def test_dry_run_internal_route_reports_live_verification_required(self):
         detail = (

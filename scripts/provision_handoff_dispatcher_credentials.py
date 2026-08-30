@@ -25,9 +25,6 @@ REVIEWED_AGENT_SLUGS = (
     "agents/tammy",
     "agents/timmy",
     "agents/toddy",
-    "agents/tammy-oc",
-    "agents/timmy-oc",
-    "agents/toddy-oc",
 )
 
 
@@ -66,8 +63,8 @@ def _sha256(value: str) -> str:
 
 
 def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
-    if len(identity_configs) != 6:
-        raise ValueError("Exactly six --identity-config files are required")
+    if len(identity_configs) != 3:
+        raise ValueError("Exactly three --identity-config files are required")
     entries: list[dict[str, str]] = []
     for config_path in identity_configs:
         config = _read_private_json(config_path)
@@ -97,7 +94,7 @@ def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
         )
     configured_slugs = [entry["agent_slug"] for entry in entries]
     if set(configured_slugs) != set(REVIEWED_AGENT_SLUGS):
-        raise ValueError("Dispatcher identities must be exactly the six reviewed Agents")
+        raise ValueError("Dispatcher identities must be exactly the three reviewed Codex Agents")
     for field in ("agent_slug", "registration_sha256", "token_sha256"):
         values = [entry[field] for entry in entries]
         if len(set(values)) != len(values):

@@ -17,14 +17,6 @@ import time
 from typing import Callable, Iterable, Iterator
 from uuid import uuid4
 
-from .delegation import (
-    AgentDelegationLease,
-    DelegationState,
-    delegated_work_is_eligible,
-    lease_state_at,
-)
-
-
 ACTIONABLE_TRIGGERS = frozenset(
     {
         "answer_received",
@@ -327,7 +319,6 @@ class ExecutionClaim:
 class _ExecutionClaimRequest:
     permanent_owner: str
     executor_agent: str
-    delegation: AgentDelegationLease | None
     task_status: str
     requested_operation: str
     owned_work_ready: bool
@@ -863,151 +854,7 @@ class DurableHandoffStore:
                 f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
             )
 
-    def observe_delegation_authority(
-        self, lease: AgentDelegationLease, *, observed_at: datetime
-    ) -> None:
-        """Persist one verified canonical lease snapshot without stale overwrite."""
-        if not isinstance(lease, AgentDelegationLease):
-            raise TypeError("lease must be an AgentDelegationLease")
-        observed_at = _require_utc(observed_at, "observed_at")
-        version = _timestamp(lease.updated_at)
-        allowed_operations = json.dumps(
-            list(lease.allowed_operations), separators=(",", ":")
-        )
-        values = (
-            lease.source_agent,
-            lease.executor_agent,
-            lease.state.value,
-            _timestamp(lease.starts_at),
-            _timestamp(lease.ends_at),
-            allowed_operations,
-        )
-        with self._write_transaction():
-            current = self._connection.execute(
-                "SELECT * FROM delegation_authority WHERE delegation_slug = ?",
-                (lease.slug,),
-            ).fetchone()
-            if current is not None:
-                if current["version"] > version:
-                    return
-                current_values = (
-                    current["source_agent"],
-                    current["executor_agent"],
-                    current["state"],
-                    current["starts_at"],
-                    current["ends_at"],
-                    current["allowed_operations"],
-                )
-                if current["version"] == version:
-                    if current_values != values or current["verified"] != 1:
-                        raise ValueError(
-                            "delegation version conflicts with verified authority"
-                        )
-                    if _parse_timestamp(current["observed_at"]) < observed_at:
-                        self._connection.execute(
-                            """
-                            UPDATE delegation_authority SET observed_at = ?
-                            WHERE delegation_slug = ? AND version = ?
-                            """,
-                            (_timestamp(observed_at), lease.slug, version),
-                        )
-                    return
-            self._connection.execute(
-                """
-                INSERT INTO delegation_authority (
-                    delegation_slug, source_agent, executor_agent, state,
-                    starts_at, ends_at, allowed_operations, version,
-                    observed_at, verified
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(delegation_slug) DO UPDATE SET
-                    source_agent = excluded.source_agent,
-                    executor_agent = excluded.executor_agent,
-                    state = excluded.state,
-                    starts_at = excluded.starts_at,
-                    ends_at = excluded.ends_at,
-                    allowed_operations = excluded.allowed_operations,
-                    version = excluded.version,
-                    observed_at = excluded.observed_at,
-                    verified = 1
-                """,
-                (lease.slug, *values, version, _timestamp(observed_at)),
-            )
-            self._append_authority_event(
-                control_kind="delegation",
-                subject_slug=lease.slug,
-                version=version,
-                state=lease.state.value,
-                observed_at=observed_at,
-            )
 
-    def observe_executor_priority(
-        self,
-        executor_agent: str,
-        *,
-        owned_work_ready: bool,
-        version: str,
-        observed_at: datetime,
-    ) -> None:
-        """Persist a versioned owned-work priority snapshot for atomic claims."""
-        _require_structured_id(executor_agent, "executor_agent")
-        _require_structured_id(version, "priority version")
-        if not isinstance(owned_work_ready, bool):
-            raise ValueError("owned_work_ready must be a boolean")
-        observed_at = _require_utc(observed_at, "observed_at")
-        with self._write_transaction():
-            current = self._connection.execute(
-                "SELECT * FROM executor_priority WHERE executor_agent = ?",
-                (executor_agent,),
-            ).fetchone()
-            if current is not None:
-                current_observed = _parse_timestamp(current["observed_at"])
-                if current_observed > observed_at:
-                    return
-                if current_observed == observed_at:
-                    if (
-                        bool(current["owned_work_ready"]) != owned_work_ready
-                        or current["version"] != version
-                    ):
-                        raise ValueError(
-                            "priority observation conflicts at the same version instant"
-                        )
-                    return
-                if (
-                    bool(current["owned_work_ready"]) == owned_work_ready
-                    and current["version"] == version
-                ):
-                    self._connection.execute(
-                        """
-                        UPDATE executor_priority SET observed_at = ?
-                        WHERE executor_agent = ?
-                        """,
-                        (_timestamp(observed_at), executor_agent),
-                    )
-                    return
-            self._connection.execute(
-                """
-                INSERT INTO executor_priority (
-                    executor_agent, owned_work_ready, version, observed_at
-                ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(executor_agent) DO UPDATE SET
-                    owned_work_ready = excluded.owned_work_ready,
-                    version = excluded.version,
-                    observed_at = excluded.observed_at
-                """,
-                (
-                    executor_agent,
-                    1 if owned_work_ready else 0,
-                    version,
-                    _timestamp(observed_at),
-                ),
-            )
-            self._append_authority_event(
-                control_kind="priority",
-                subject_slug=executor_agent,
-                version=version,
-                state="owned_ready" if owned_work_ready else "delegation_eligible",
-                observed_at=observed_at,
-            )
 
     def observe_task_authority(
         self,
@@ -1085,40 +932,6 @@ class DurableHandoffStore:
             observed_at=observed_at,
         )
 
-    def observe_delegation_absence(
-        self, delegation_slug: str, *, observed_at: datetime
-    ) -> None:
-        """Record canonical lease removal so an older active snapshot cannot wake."""
-        _require_structured_id(delegation_slug, "delegation_slug")
-        observed_at = _require_utc(observed_at, "observed_at")
-        version = _timestamp(observed_at)
-        with self._write_transaction():
-            current = self._connection.execute(
-                "SELECT * FROM delegation_authority WHERE delegation_slug = ?",
-                (delegation_slug,),
-            ).fetchone()
-            if current is None or current["version"] > version:
-                return
-            self._connection.execute(
-                """
-                UPDATE delegation_authority
-                SET state = ?, version = ?, observed_at = ?, verified = 1
-                WHERE delegation_slug = ?
-                """,
-                (
-                    DelegationState.REVOKED.value,
-                    version,
-                    version,
-                    delegation_slug,
-                ),
-            )
-            self._append_authority_event(
-                control_kind="delegation",
-                subject_slug=delegation_slug,
-                version=version,
-                state="absent",
-                observed_at=observed_at,
-            )
 
     def _append_authority_event(
         self,
@@ -1182,11 +995,10 @@ class DurableHandoffStore:
         )
         handoff_id = f"handoff-{idempotency_key}"
         correlation_id = change.correlation_id or f"corr-{idempotency_key[:24]}"
-        terminal_rejection = classification.reason == "delegation_identity_mismatch"
         status = (
             "queued"
             if classification.actionable
-            else "dead_letter" if terminal_rejection else "suppressed"
+            else "suppressed"
         )
         if classification.actionable and registration_id is None:
             raise ValueError("actionable handoffs require a private registration id")
@@ -1200,12 +1012,7 @@ class DurableHandoffStore:
             if execution_request is not None
             else classification.agent_slug
         )
-        delegation_slug = (
-            execution_request.delegation.slug
-            if execution_request is not None
-            and execution_request.delegation is not None
-            else None
-        )
+        delegation_slug = None
         with self._write_transaction():
             inserted = self._connection.execute(
                 """
@@ -1295,8 +1102,6 @@ class DurableHandoffStore:
                 event_type=(
                     "handoff_queued"
                     if classification.actionable
-                    else "delivery_terminal"
-                    if terminal_rejection
                     else "handoff_suppressed"
                 ),
                 summary=change.summary.strip(),
@@ -1402,167 +1207,12 @@ class DurableHandoffStore:
             ).fetchone()
         return self._execution_claim_from_row(row) if row is not None else None
 
-    @contextmanager
-    def reserve_artifact_publication(
-        self,
-        task_slug: str,
-        *,
-        executor_agent: str,
-        permanent_owner: str,
-        delegation_slug: str,
-        publication_key: str,
-        now: datetime,
-    ) -> Iterator[ExecutionClaim]:
-        """Fence one delegated Artifact write against claim/lease terminalization."""
-        for value, field_name in (
-            (task_slug, "task_slug"),
-            (executor_agent, "executor_agent"),
-            (permanent_owner, "permanent_owner"),
-            (delegation_slug, "delegation_slug"),
-        ):
-            _require_structured_id(value, field_name)
-        if (
-            not isinstance(publication_key, str)
-            or not publication_key.strip()
-            or len(publication_key) > 200
-            or "\n" in publication_key
-            or "\r" in publication_key
-        ):
-            raise ValueError("publication_key must be 1 to 200 characters on one line")
-        now = _require_utc(now, "now")
-        publication_ref = hashlib.sha256(
-            f"{task_slug}\0{publication_key.strip()}".encode("utf-8")
-        ).hexdigest()
-        with self._write_transaction():
-            row = self._connection.execute(
-                """
-                SELECT * FROM execution_claims
-                WHERE task_slug = ?
-                ORDER BY claim_sequence DESC LIMIT 1
-                """,
-                (task_slug,),
-            ).fetchone()
-            authority = self._connection.execute(
-                "SELECT * FROM delegation_authority WHERE delegation_slug = ?",
-                (delegation_slug,),
-            ).fetchone()
-            try:
-                allowed_operations = (
-                    json.loads(authority["allowed_operations"])
-                    if authority is not None
-                    else None
-                )
-            except (TypeError, json.JSONDecodeError):
-                allowed_operations = None
-            terminal_at = (
-                _parse_timestamp(row["terminal_at"])
-                if row is not None and row["terminal_at"] is not None
-                else None
-            )
-            terminal_is_narrow_completion = (
-                row is not None
-                and row["terminal_state"] == "completed"
-                and terminal_at is not None
-                and now - timedelta(minutes=5) <= terminal_at <= now
-            )
-            active = (
-                row is not None
-                and row["terminal_state"] is None
-                and now < _parse_timestamp(row["expires_at"])
-            )
-            authority_at = terminal_at if terminal_is_narrow_completion else now
-            authority_is_current = (
-                authority is not None
-                and authority["verified"] == 1
-                and authority["version"] == row["delegation_version"]
-                and authority["source_agent"] == permanent_owner
-                and authority["executor_agent"] == executor_agent
-                and authority["state"]
-                not in {
-                    DelegationState.EXPIRED.value,
-                    DelegationState.REVOKED.value,
-                }
-                and _parse_timestamp(authority["starts_at"]) <= authority_at
-                and authority_at <= _parse_timestamp(authority["ends_at"])
-                and isinstance(allowed_operations, list)
-                and "artifact" in allowed_operations
-            ) if row is not None else False
-            if (
-                row is None
-                or row["task_slug"] != task_slug
-                or row["executor_agent"] != executor_agent
-                or row["permanent_owner"] != permanent_owner
-                or row["delegation_slug"] != delegation_slug
-                or row["requested_operation"] != "artifact"
-                or not (active or terminal_is_narrow_completion)
-                or not authority_is_current
-            ):
-                raise ValueError(
-                    "artifact publication requires the exact current artifact execution claim"
-                )
-            existing = self._connection.execute(
-                """
-                SELECT * FROM artifact_publication_reservations
-                WHERE publication_ref = ?
-                """,
-                (publication_ref,),
-            ).fetchone()
-            if existing is not None and (
-                existing["claim_sequence"] != row["claim_sequence"]
-                or existing["task_slug"] != task_slug
-                or existing["executor_agent"] != executor_agent
-                or existing["permanent_owner"] != permanent_owner
-                or existing["delegation_slug"] != delegation_slug
-                or existing["requested_operation"] != "artifact"
-                or existing["delegation_version"] != row["delegation_version"]
-                or existing["state"] != "committed"
-            ):
-                raise ValueError("artifact publication reservation is unavailable")
-            if existing is None:
-                reservation_id = f"artifact-reservation-{uuid4()}"
-                self._connection.execute(
-                    """
-                    INSERT INTO artifact_publication_reservations (
-                        reservation_id, claim_sequence, publication_ref,
-                        task_slug, executor_agent, permanent_owner,
-                        delegation_slug, requested_operation, delegation_version,
-                        state, reserved_at, committed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'artifact', ?, 'reserved', ?, NULL)
-                    """,
-                    (
-                        reservation_id,
-                        row["claim_sequence"],
-                        publication_ref,
-                        task_slug,
-                        executor_agent,
-                        permanent_owner,
-                        delegation_slug,
-                        row["delegation_version"],
-                        _timestamp(now),
-                    ),
-                )
-            claim = self._execution_claim_from_row(row)
-            yield claim
-            if existing is None:
-                changed = self._connection.execute(
-                    """
-                    UPDATE artifact_publication_reservations
-                    SET state = 'committed', committed_at = ?
-                    WHERE publication_ref = ? AND state = 'reserved'
-                        AND claim_sequence = ?
-                    """,
-                    (_timestamp(now), publication_ref, row["claim_sequence"]),
-                ).rowcount
-                if changed != 1:
-                    raise ValueError("artifact publication reservation was lost")
-
     def claim_execution(
         self,
         handoff_id: str,
         *,
         permanent_owner: str,
         executor_agent: str,
-        delegation: AgentDelegationLease | None,
         task_status: str,
         requested_operation: str,
         owned_work_ready: bool,
@@ -1572,15 +1222,10 @@ class DurableHandoffStore:
         """Create one atomic task-scoped execution fence or replay it exactly."""
         now = _require_utc(now, "now")
         if expires_at is None:
-            expires_at = (
-                delegation.ends_at
-                if delegation is not None
-                else now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
-            )
+            expires_at = now + timedelta(seconds=DEFAULT_EXECUTION_CLAIM_SECONDS)
         request = _ExecutionClaimRequest(
             permanent_owner=permanent_owner,
             executor_agent=executor_agent,
-            delegation=delegation,
             task_status=task_status,
             requested_operation=requested_operation,
             owned_work_ready=owned_work_ready,
@@ -1626,11 +1271,12 @@ class DurableHandoffStore:
             raise ValueError("owned_work_ready must be a boolean")
         expires_at = _require_utc(request.expires_at, "expires_at")
         now = _require_utc(now, "now")
-        delegation_slug = request.delegation.slug if request.delegation else None
+        if record.status not in {"queued", "retrying"}:
+            return None, False
         if (
             record.executor_agent != request.executor_agent
             or record.permanent_owner != request.permanent_owner
-            or record.delegation_slug != delegation_slug
+            or record.delegation_slug is not None
         ):
             raise ValueError("execution claim does not match the durable route")
 
@@ -1643,7 +1289,7 @@ class DurableHandoffStore:
                 replay["task_slug"] != record.task_slug
                 or replay["executor_agent"] != request.executor_agent
                 or replay["permanent_owner"] != request.permanent_owner
-                or replay["delegation_slug"] != delegation_slug
+                or replay["delegation_slug"] is not None
                 or replay["correlation_id"] != record.correlation_id
                 or replay["requested_operation"] != request.requested_operation
             ):
@@ -1652,68 +1298,8 @@ class DurableHandoffStore:
                 return None, False
             return self._execution_claim_from_row(replay), False
 
-        if record.status not in {"queued", "retrying"}:
-            return None, False
-
-        if request.delegation is None:
-            delegation_version = None
-            priority_version = None
-            if request.executor_agent != request.permanent_owner:
-                raise ValueError("owned execution must preserve permanent ownership")
-        else:
-            authority = self._connection.execute(
-                """
-                SELECT * FROM delegation_authority WHERE delegation_slug = ?
-                """,
-                (delegation_slug,),
-            ).fetchone()
-            priority = self._connection.execute(
-                """
-                SELECT * FROM executor_priority WHERE executor_agent = ?
-                """,
-                (request.executor_agent,),
-            ).fetchone()
-            owned_claim = self._connection.execute(
-                """
-                SELECT 1 FROM execution_claims
-                WHERE executor_agent = ? AND permanent_owner = ?
-                    AND delegation_slug IS NULL AND terminal_state IS NULL
-                LIMIT 1
-                """,
-                (request.executor_agent, request.executor_agent),
-            ).fetchone()
-            try:
-                allowed_operations = (
-                    json.loads(authority["allowed_operations"])
-                    if authority is not None
-                    else None
-                )
-            except (TypeError, json.JSONDecodeError):
-                allowed_operations = None
-            if (
-                authority is None
-                or authority["verified"] != 1
-                or authority["source_agent"] != request.permanent_owner
-                or authority["executor_agent"] != request.executor_agent
-                or authority["state"]
-                in {
-                    DelegationState.COMPLETED.value,
-                    DelegationState.EXPIRED.value,
-                    DelegationState.REVOKED.value,
-                }
-                or now < _parse_timestamp(authority["starts_at"])
-                or now >= _parse_timestamp(authority["ends_at"])
-                or not isinstance(allowed_operations, list)
-                or request.requested_operation not in allowed_operations
-                or request.task_status != "planned"
-                or priority is None
-                or bool(priority["owned_work_ready"])
-                or owned_claim is not None
-            ):
-                return None, False
-            delegation_version = authority["version"]
-            priority_version = priority["version"]
-            expires_at = min(expires_at, _parse_timestamp(authority["ends_at"]))
+        if request.executor_agent != request.permanent_owner:
+            raise ValueError("owned execution must preserve permanent ownership")
 
         if expires_at <= now:
             return None, False
@@ -1743,12 +1329,12 @@ class DurableHandoffStore:
                     record.task_slug,
                     request.executor_agent,
                     request.permanent_owner,
-                    delegation_slug,
+                    None,
                     record.correlation_id,
                     record.idempotency_key,
                     request.requested_operation,
-                    delegation_version,
-                    priority_version,
+                    None,
+                    None,
                     _timestamp(now),
                     _timestamp(expires_at),
                 ),
@@ -2257,56 +1843,11 @@ class DurableHandoffStore:
         delegation_slug = execution_row["delegation_slug"]
         if delegation_slug is None:
             return None
-
-        authority = self._connection.execute(
-            "SELECT * FROM delegation_authority WHERE delegation_slug = ?",
-            (delegation_slug,),
-        ).fetchone()
-        priority = self._connection.execute(
-            "SELECT * FROM executor_priority WHERE executor_agent = ?",
-            (execution_row["executor_agent"],),
-        ).fetchone()
-        try:
-            allowed_operations = (
-                json.loads(authority["allowed_operations"])
-                if authority is not None
-                else None
-            )
-        except (TypeError, json.JSONDecodeError):
-            allowed_operations = None
-        if (
-            authority is None
-            or authority["verified"] != 1
-            or authority["version"] != execution_row["delegation_version"]
-            or authority["source_agent"] != execution_row["permanent_owner"]
-            or authority["executor_agent"] != execution_row["executor_agent"]
-            or authority["state"]
-            in {
-                DelegationState.COMPLETED.value,
-                DelegationState.EXPIRED.value,
-                DelegationState.REVOKED.value,
-            }
-            or now < _parse_timestamp(authority["starts_at"])
-            or now >= _parse_timestamp(authority["ends_at"])
-            or not isinstance(allowed_operations, list)
-            or execution_row["requested_operation"] not in allowed_operations
-        ):
-            return (
-                "revoked",
-                "delegation_authority_changed",
-                "Delegated execution authority changed; checkpoint and hand back.",
-            )
-        if (
-            priority is None
-            or priority["version"] != execution_row["priority_version"]
-            or bool(priority["owned_work_ready"])
-        ):
-            return (
-                "checkpointed",
-                "owned_work_priority_changed",
-                "Owned work now has priority; delegated execution must checkpoint and hand back.",
-            )
-        return None
+        return (
+            "revoked",
+            "retired_execution_route",
+            "This historical execution route was retired; checkpoint and hand back.",
+        )
 
     @staticmethod
     def _launch_grant(
@@ -3797,13 +3338,6 @@ class HandoffDispatcher:
         *,
         registrations: Iterable[AgentRegistration],
         classifier: HandoffClassifier | None = None,
-        delegations: (
-            Iterable[AgentDelegationLease]
-            | Callable[[], Iterable[AgentDelegationLease]]
-            | None
-        ) = None,
-        owned_work_ready: Callable[[str], bool] | None = None,
-        owned_work_snapshot: Callable[[str], tuple[bool, str]] | None = None,
         coordination_sink: Callable[[ActionableChange, HandoffRecord], None] | None = None,
         execution_claim_seconds: int = DEFAULT_EXECUTION_CLAIM_SECONDS,
     ) -> None:
@@ -3816,108 +3350,19 @@ class HandoffDispatcher:
         self.store = store
         self.registrations = tuple(registrations)
         self.classifier = classifier or HandoffClassifier()
-        self._lease_aware = delegations is not None
-        self._delegations = delegations
-        self._owned_work_ready = owned_work_ready or (lambda _executor: False)
-        self._owned_work_snapshot = owned_work_snapshot
         self._coordination_sink = coordination_sink
         self._coordination_emitted: set[str] = set()
         self._coordination_lock = threading.Lock()
         self.execution_claim_seconds = execution_claim_seconds
 
-    def _read_delegations(self) -> tuple[AgentDelegationLease, ...]:
-        source = self._delegations
-        values = source() if callable(source) else source
-        leases = tuple(values or ())
-        if any(not isinstance(lease, AgentDelegationLease) for lease in leases):
-            raise ValueError("delegation reader returned an unverified lease")
-        return leases
-
     def record(self, change: ActionableChange, *, now: datetime) -> HandoffRecord:
         now = _require_utc(now, "now")
-        if self._lease_aware:
-            self.store.observe_task_authority(
-                change.task_slug,
-                owner_agent=(
-                    change.assigned_to[0] if len(change.assigned_to) == 1 else None
-                ),
-                status=change.task_status,
-                version=change.canonical_version,
-                observed_at=now,
-            )
         executor_agent = change.assigned_to[0] if len(change.assigned_to) == 1 else None
-        selected_lease: AgentDelegationLease | None = None
-        owned_work_ready = False
-        identity_mismatch = False
-        if (
-            self._lease_aware
-            and change.trigger in ACTIONABLE_TRIGGERS
-            and executor_agent is not None
-        ):
-            leases = self._read_delegations()
-            for lease in leases:
-                self.store.observe_delegation_authority(lease, observed_at=now)
-            active = tuple(
-                lease
-                for lease in leases
-                if lease.source_agent == executor_agent
-                and lease_state_at(lease, now) == DelegationState.ACTIVE
-            )
-            if len(active) > 1:
-                identity_mismatch = True
-                selected_lease = active[0]
-                executor_agent = selected_lease.executor_agent
-            elif len(active) == 1:
-                candidate = active[0]
-                if self._owned_work_snapshot is not None:
-                    owned_work_ready, priority_version = self._owned_work_snapshot(
-                        candidate.executor_agent
-                    )
-                else:
-                    owned_work_ready = self._owned_work_ready(candidate.executor_agent)
-                    priority_version = (
-                        "priority-owned-ready"
-                        if owned_work_ready
-                        else "priority-delegation-eligible"
-                    )
-                if not isinstance(owned_work_ready, bool):
-                    raise ValueError("owned work readiness must be a boolean")
-                self.store.observe_executor_priority(
-                    candidate.executor_agent,
-                    owned_work_ready=owned_work_ready,
-                    version=priority_version,
-                    observed_at=now,
-                )
-                if (
-                    change.requested_operation in candidate.allowed_operations
-                    and delegated_work_is_eligible(
-                        owned_work_ready=owned_work_ready,
-                        task_status=change.task_status,
-                        task_owner=change.assigned_to[0],
-                        lease=candidate,
-                        now=now,
-                    )
-                ):
-                    selected_lease = candidate
-                    executor_agent = candidate.executor_agent
-
         classification = self.classifier.classify(
             change,
             self.registrations,
             executor_agent=executor_agent,
         )
-        if selected_lease is not None and (
-            identity_mismatch
-            or not classification.actionable
-            and classification.reason
-            in {"missing_registration", "multiple_registrations", "route_mismatch"}
-        ):
-            classification = Classification(
-                False,
-                "delegation_identity_mismatch",
-                executor_agent,
-                classification.registration_ref,
-            )
         registration_id = None
         if classification.actionable:
             registration_id = next(
@@ -3925,27 +3370,12 @@ class HandoffDispatcher:
                 for registration in self.registrations
                 if registration.reference == classification.registration_ref
             )
-        execution_request = None
-        if self._lease_aware and len(change.assigned_to) == 1:
-            execution_request = _ExecutionClaimRequest(
-                permanent_owner=change.assigned_to[0],
-                executor_agent=executor_agent or change.assigned_to[0],
-                delegation=selected_lease,
-                task_status=change.task_status,
-                requested_operation=change.requested_operation,
-                owned_work_ready=owned_work_ready,
-                expires_at=(
-                    selected_lease.ends_at
-                    if selected_lease is not None
-                    else now + timedelta(seconds=self.execution_claim_seconds)
-                ),
-            )
         record = self.store.record(
             change,
             classification,
             now=now,
             registration_id=registration_id,
-            execution_request=execution_request,
+            execution_request=None,
         )
         if self._coordination_sink is not None and classification.actionable:
             with self._coordination_lock:
