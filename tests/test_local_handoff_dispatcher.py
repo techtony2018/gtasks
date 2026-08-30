@@ -4012,6 +4012,46 @@ class RunForeverTests(unittest.TestCase):
 
             self.assertEqual(events, [f"ack:{sequence}:received"])
 
+    def test_restart_retries_completed_inbox_ack_with_its_persisted_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = PrivateClaimStore(Path(temporary) / "active-claim.json")
+            store.save(claim_payload(status="actively_executing"))
+            detail = "Published and canonically verified the final artifact."
+            sequence = store.prepare_ack("completed", detail)
+            events: list[tuple[int, str, str | None]] = []
+            inbox = PrivateWakeInbox(Path(temporary) / "wake-inbox.sqlite3")
+            self.addCleanup(inbox.close)
+            inbox.enqueue(
+                store.load("handoff-100"),
+                wake_token="wake/handoff-key-100",
+                now=datetime.now(timezone.utc),
+            )
+            inbox._connection.execute(
+                "UPDATE wake_inbox SET state = 'completed' WHERE handoff_id = ?",
+                ("handoff-100",),
+            )
+            inbox._connection.commit()
+
+            class Client(self.Client):
+                def __init__(inner_self):
+                    super().__init__([])
+
+                def ack(inner_self, claim, *, status, detail=None, operation_sequence=1):
+                    events.append((operation_sequence, status, detail))
+                    return {"status": status, "detail": detail}
+
+            run_forever(
+                Client(),
+                self.Adapter([]),
+                claim_store=store,
+                wake_inbox=inbox,
+                max_iterations=1,
+                retry_delay=0,
+            )
+
+            self.assertEqual(events, [(sequence, "completed", detail)])
+            self.assertIsNone(store.load_current())
+
     def test_restart_retries_pending_failure_before_recovery_or_new_claim(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = PrivateClaimStore(Path(temporary) / "active-claim.json")
