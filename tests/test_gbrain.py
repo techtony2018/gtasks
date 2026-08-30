@@ -10454,7 +10454,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             [],
         )
 
-    def test_default_ticket_read_uses_verified_snapshot_to_skip_completed_page_hydration(self) -> None:
+    def test_default_ticket_read_hydrates_cached_completed_pages_to_detect_reopens(self) -> None:
         planned = SystemTicket(
             "tasks/system-tickets/open-fast-a1b2c3",
             "Open ticket",
@@ -10488,7 +10488,10 @@ class SystemTicketAdapterTests(unittest.TestCase):
             runner = FakeRunner(
                 {
                     "get_backlinks": [edges],
-                    "get_page": [self._system_ticket_page(planned)],
+                    "get_page": [
+                        self._system_ticket_page(planned),
+                        *[self._system_ticket_page(ticket) for ticket in completed],
+                    ],
                     "get_links": [[edges[0]]],
                 }
             )
@@ -10500,14 +10503,57 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual([ticket["slug"] for ticket in payload["tickets"]], [planned.slug])
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug],
+            [planned.slug, *[ticket.slug for ticket in completed]],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
             [],
         )
 
-    def test_include_completed_ticket_read_uses_snapshot_for_completed_and_hydrates_open_only(self) -> None:
+    def test_default_ticket_read_returns_reopened_ticket_from_stale_completed_snapshot(self) -> None:
+        cached_completed = SystemTicket(
+            "tasks/system-tickets/reopened-a1b2c3",
+            "Reopened ticket",
+            "completed",
+            "The cached snapshot is stale.",
+            "mission_control",
+            "high",
+        )
+        reopened = replace(cached_completed, status="planned")
+        edge = {
+            "from_slug": reopened.slug,
+            "to_slug": SYSTEM_TICKETS_ROOT,
+            "link_type": "member_of",
+        }
+        with TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "read-snapshots.json"
+            self._write_system_ticket_snapshot(cache_path, (cached_completed,))
+            runner = FakeRunner(
+                {
+                    "get_backlinks": [[edge]],
+                    "get_page": [self._system_ticket_page(reopened)],
+                    "get_links": [[edge]],
+                }
+            )
+            with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
+                payload = GBrainAdapter(runner).list_system_tickets(
+                    include_completed=False
+                ).to_dict()
+
+        self.assertEqual(
+            [(ticket["slug"], ticket["status"]) for ticket in payload["tickets"]],
+            [(reopened.slug, "planned")],
+        )
+        self.assertEqual(
+            [params["slug"] for tool, params in runner.calls if tool == "get_page"],
+            [reopened.slug],
+        )
+        self.assertEqual(
+            [tool for tool, _params in runner.calls if tool == "get_links"],
+            [],
+        )
+
+    def test_include_completed_ticket_read_hydrates_cached_completed_pages(self) -> None:
         planned = SystemTicket(
             "tasks/system-tickets/open-all-a1b2c3",
             "Open ticket",
@@ -10538,7 +10584,10 @@ class SystemTicketAdapterTests(unittest.TestCase):
             runner = FakeRunner(
                 {
                     "get_backlinks": [edges],
-                    "get_page": [self._system_ticket_page(planned)],
+                    "get_page": [
+                        self._system_ticket_page(planned),
+                        self._system_ticket_page(completed),
+                    ],
                     "get_links": [[edges[0]]],
                 }
             )
@@ -10553,14 +10602,14 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug],
+            [planned.slug, completed.slug],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
             [],
         )
 
-    def test_partial_verified_system_ticket_snapshot_only_hydrates_missing_slugs(self) -> None:
+    def test_partial_verified_system_ticket_snapshot_hydrates_every_member_slug(self) -> None:
         planned = SystemTicket(
             "tasks/system-tickets/open-partial-a1b2c3",
             "Open ticket",
@@ -10604,10 +10653,6 @@ class SystemTicketAdapterTests(unittest.TestCase):
                 if tool == "get_backlinks":
                     return edges
                 slug = params["slug"]
-                if slug == cached_completed.slug:
-                    raise AssertionError(
-                        "cached completed System Ticket should not be hydrated"
-                    )
                 if tool == "get_page":
                     return self_page[slug]
                 if tool == "get_links":
@@ -10618,6 +10663,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
 
         self_page = {
             planned.slug: self._system_ticket_page(planned),
+            cached_completed.slug: self._system_ticket_page(cached_completed),
             missing_completed.slug: self._system_ticket_page(missing_completed),
         }
         with TemporaryDirectory() as directory:
@@ -10638,7 +10684,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug, missing_completed.slug],
+            [planned.slug, cached_completed.slug, missing_completed.slug],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],

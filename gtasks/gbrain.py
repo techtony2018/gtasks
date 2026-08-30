@@ -6761,19 +6761,11 @@ class GBrainAdapter:
             and str(link["from_slug"]).startswith("tasks/")
         }
         slugs = list(dict.fromkeys(root_edges))
-        snapshot = self._load_verified_system_ticket_snapshot(slugs)
-        cached_tickets: dict[str, SystemTicket] = {}
-        cached_display: dict[str, str] = {}
-        if snapshot is not None:
-            cached_tickets, cached_display = snapshot
+        # The private snapshot is a serving cache, not canonical truth. Reopened
+        # System Tickets can legitimately move from completed back to planned
+        # outside this process; a refresh must therefore rehydrate every typed
+        # member page instead of trusting cached completed entries indefinitely.
         read_slugs = slugs
-        if cached_tickets:
-            read_slugs = [
-                slug
-                for slug in slugs
-                if slug not in cached_tickets
-                or cached_tickets[slug].status != "completed"
-            ]
         def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
@@ -6811,17 +6803,6 @@ class GBrainAdapter:
                 if display_markdown is not None:
                     projections.append((ticket.slug, display_markdown))
             if issue: issues.append(issue)
-        if include_completed and cached_tickets:
-            hydrated = {ticket.slug for ticket in tickets}
-            for slug in slugs:
-                if slug in hydrated:
-                    continue
-                ticket = cached_tickets.get(slug)
-                if ticket is not None and ticket.status == "completed":
-                    tickets.append(ticket)
-                    display_markdown = cached_display.get(slug)
-                    if display_markdown is not None:
-                        projections.append((slug, display_markdown))
         tickets.sort(key=lambda ticket: ((ticket.updated_at or datetime.min), ticket.title.casefold()), reverse=True)
         return SystemTicketRead(tuple(tickets), tuple(issues), tuple(projections))
 

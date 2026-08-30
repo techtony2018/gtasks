@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.220",
+  "current_version": "V0.0.221",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1320,6 +1320,12 @@
       "date": "2026-08-29",
       "title": "Settle expired read refreshes without retry loops",
       "summary": "Read-cache surfaces now convert expired background refreshes into bounded stale/error states without immediately starting another forced refresh, preserving last-valid payloads while allowing a retry after the error cooldown."
+    },
+    {
+      "version": "V0.0.221",
+      "date": "2026-08-30",
+      "title": "Rehydrate reopened System Tickets from canonical pages",
+      "summary": "System Ticket refresh now rehydrates every typed member page instead of trusting cached completed-ticket snapshots indefinitely, so reopened tickets return to the planned/open queue with fresh read-state and current canonical status."
     }
   ]
 }
