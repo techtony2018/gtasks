@@ -76,16 +76,18 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.222 at commit
-`35c15c38afffd0bf28e5a24c2d688b0039bc6478`. Mission Control has exactly
+Latest verified pushed release baseline: V0.0.223 at commit
+`559c3a7f88d200472069791628595ed323218723`. Mission Control has exactly
 three execution Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and
 one singleton Dispatcher on each registered machine; the fleet verifier reads
-back all three machines at that commit. Mission Control OpenClaw Agent
-identities, roles, Goal authority, delegation routes, paired supervisors, and
-activation paths are retired. Independent global OpenClaw gateways are outside
-this removal boundary and remain available as separate platform services. The
-terminal release and QA record is
-[`docs/release-evidence/v0.0.222.md`](docs/release-evidence/v0.0.222.md).
+back all three machines at the V0.0.222 fleet baseline. Mission Control
+OpenClaw Agent identities, roles, Goal authority, delegation routes, paired
+supervisors, and activation paths are retired. Independent global OpenClaw
+gateways are outside this removal boundary and remain available as separate
+platform services. The OpenClaw-boundary record is
+[`docs/release-evidence/v0.0.222.md`](docs/release-evidence/v0.0.222.md); the
+current System Ticket refresh record is
+[`docs/release-evidence/v0.0.223.md`](docs/release-evidence/v0.0.223.md).
 The paragraphs below retain prior release behavior as history; where an older
 paragraph describes a paired supervisor or alternate-agent route, V0.0.222
 supersedes it.
@@ -525,6 +527,17 @@ The earlier Finance canary task
 `tasks/3d54d11c-db8e-59bf-8039-e050fa763dc9` completed with canonical Artifact
 `artifacts/b6acc5bc-4af2-42f2-a829-8c97e3dd0838`. Only the three Codex Agents
 are eligible for Goal execution.
+V0.0.223 makes direct canonical System Ticket refresh proportional to change,
+not collection history. `GBrainAdapter.list_system_tickets` still starts from
+typed root backlinks, then compares bounded `list_pages` `updated_at` metadata
+with the last-verified `system_tickets_all` snapshot. Unchanged members reuse
+their verified snapshot projection; changed or missing members are hydrated
+from canonical pages, so reopened tickets still return to the open queue.
+When metadata or snapshot evidence is unavailable, the adapter falls back to
+page hydration instead of claiming freshness. Dashboard-managed remote MCP
+also honors the owner-only `GBRAIN_CREDENTIALS_FILE` when `GBRAIN_HOME` points
+to a `remote_mcp` config; credentials remain outside version-controlled config
+and documentation.
 
 ### Codex Goal execution controls
 

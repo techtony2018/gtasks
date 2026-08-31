@@ -136,16 +136,17 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-30`
+- Last verified released baseline date: `2026-08-31`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.222`
+- Last verified pushed release: `V0.0.223`
 - Release commits:
   `8eaa96611607974d4b2489645aeaa804d30f4378`,
   `978b2e35c128ee7e1a22322543794d6c9616613a`,
   `215cb9f1a9285809e16f56fcb4fab8459281b964`,
   `aff0803d98b3bf96e2f962576d5e657a57378123`,
   `fa44fd7bc91b7cd47b6d3c27c75d9274cb5cc2be`, and terminal Mission Control
-  commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`
+  fleet commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`; current System Ticket read
+  release commit `559c3a7f88d200472069791628595ed323218723`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1356,6 +1357,26 @@ to the reviewed source before updating relationships.
   `c701488ac7a010883b24df55b47a77cc57e9443210beeab863b570e57c3d3dd6`.
   The durable terminal record is
   `docs/release-evidence/v0.0.222.md`.
+- V0.0.223 evidence: pushed release commit
+  `559c3a7f88d200472069791628595ed323218723`; dashboard-managed health read
+  back `V0.0.223` with `gbrain 0.46.28.0`. Direct remote-MCP postdeploy
+  `list_system_tickets(include_completed=False)` returned 5 tickets and zero
+  issues in `422.25ms`, and the completed-inclusive read returned 57 tickets
+  and zero issues in `412.66ms`; both used exactly one `get_backlinks` plus one
+  `list_pages` call and no unchanged completed-ticket page/link fan-out.
+  Dashboard API open/all projections read back fresh with zero issues. A later
+  documentation read found 4 open and 57 all after the repair ticket itself
+  completed; that lifecycle change does not contradict the earlier direct
+  remote-MCP performance receipt. Durable evidence:
+  `docs/release-evidence/v0.0.223.md`.
+- Verified V0.0.223 behavior: typed root backlinks remain the membership
+  authority. Bounded `list_pages` `updated_at` metadata is compared with the
+  last-verified `system_tickets_all` snapshot so unchanged tickets can reuse
+  verified projections while changed or missing members hydrate from canonical
+  pages. Missing/invalid snapshot or metadata evidence falls back to hydration.
+  `RemoteHttpCommandRunner` also honors the owner-only
+  `GBRAIN_CREDENTIALS_FILE` when `GBRAIN_HOME` selects a `remote_mcp` config;
+  no secret value is embedded in source, config, receipts, or documentation.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1651,3 +1672,10 @@ last Mission Control OpenClaw profile-activation runtime, routes, launcher
 environment, and deployed files. Independent global OpenClaw gateways remain
 separate platform services and are not Agent authority, handoff workers, or
 activation providers for Mission Control.
+V0.0.223 supersedes V0.0.221's hydrate-every-member refresh strategy without
+weakening reopened-ticket detection. Typed root backlinks still define the
+collection; bounded page metadata may authorize reuse only from the
+last-verified completed-inclusive snapshot; changed, missing, or unverifiable
+members hydrate canonically. The owner-only `GBRAIN_CREDENTIALS_FILE` is a
+runtime credential path, not a value to copy into version control, logs, or
+receipts.

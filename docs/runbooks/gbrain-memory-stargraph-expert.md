@@ -101,6 +101,13 @@ Contract phrase: local and .85 evidence must be kept separate.
   `search.remote_private_pages` is set to `visible` or
   `GBRAIN_REMOTE_PRIVATE_PAGES=1` is set for the process. The absence of that
   config is a fail-closed default, not proof that the page is missing.
+- Dashboard-managed remote-MCP credentials: when `GBRAIN_HOME` points to a
+  config containing `remote_mcp`, Mission Control V0.0.223 permits
+  `RemoteHttpCommandRunner` to load credentials from the owner-only path named
+  by `GBRAIN_CREDENTIALS_FILE`. Validate that the path is present, owner-only,
+  and readable by the managed service, but report only the path, mode, key
+  names, hashes, and status. Never copy credential values into `config.json`,
+  source code, command arguments, logs, or documentation.
 - Stale Mission Control projection: `refreshing=true` or `stale=true` is not
   canonical truth. Direct GBrain page/link/backlink reads decide whether an
   item exists and how it is related.
