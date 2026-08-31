@@ -4,10 +4,10 @@
   "collection_slug": "collections/mission-control-documentation",
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
-  "last_verified_version": "V0.0.222",
-  "last_verified_commit": "47218e533ebde1255487a9d8423b986f666300bb",
-  "source_evidence_base_commit": "35c15c38afffd0bf28e5a24c2d688b0039bc6478",
-  "last_verified_date": "2026-08-30",
+  "last_verified_version": "V0.0.223",
+  "last_verified_commit": "c5c0024251c8d55453711a2f29935fc07396c43f",
+  "source_evidence_base_commit": "559c3a7f88d200472069791628595ed323218723",
+  "last_verified_date": "2026-08-31",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "consultation_roles": [
     {
@@ -18,15 +18,15 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-30T18:22:58-07:00",
-    "verification_scope": "canonical remote-MCP page/link/backlink readback plus the three-machine Codex dispatcher fleet verifier",
+    "verified_at": "2026-08-31T08:38:30-07:00",
+    "verification_scope": "canonical remote-MCP page/link/backlink readback for V0.0.223 documentation; V0.0.222 three-machine Codex fleet receipt preserved",
     "agents": [
       "tammy",
       "timmy",
       "toddy"
     ],
     "collection_content_hash": "bc65429b11bb8cb30b31ac7b2fd3c49933d47304d7854034fc0cc424ce3c1888",
-    "overview_content_hash": "5dd910472f01cb5a2804d76ba314ccf447c665f5deb18be11b18663f3ee429af",
+    "overview_content_hash": "200947ac92d545243323d9e03183b0e2857ab5d11f8bb67e655c18027c372ecd",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],
