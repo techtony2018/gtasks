@@ -4527,6 +4527,15 @@ assert(state.completedSystemTickets.some((ticket) => ticket.slug === "tasks/comp
         goal_styles = css[css.index(".agent-profile-goal-row") :]
         self.assertIn("min-width: 44px", goal_styles)
 
+    def test_agent_profile_inline_code_wraps_without_widening_mobile_dialog(self) -> None:
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+        code_styles = css[
+            css.index(".agent-profile-summary code")
+            : css.index(".agent-current-avatar")
+        ]
+        self.assertIn("overflow-wrap: anywhere", code_styles)
+
     def test_agent_profile_renders_markdown_as_safe_profile_content(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
