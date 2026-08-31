@@ -1,5 +1,9 @@
 # Task 2B report: activated OpenClaw Agent integration
 
+> Historical record — superseded by V0.0.222. The activation and `*-oc`
+> behavior described below has been removed from current Mission Control and
+> must not be treated as supported runtime authority.
+
 ## Status
 
 Completed in the GTasks worktree. Activated OpenClaw profiles now resolve only

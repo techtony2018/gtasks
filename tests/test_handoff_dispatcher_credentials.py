@@ -375,6 +375,21 @@ class HandoffDispatcherCredentialTests(unittest.TestCase):
             load_provisioner().provision(configs, output)
         self.assertFalse(output.exists())
 
+    def test_provisioner_cli_reports_exact_three_codex_identities(self) -> None:
+        configs, _ = self._write_three_identity_configs(self.root)
+        output = self.root / "credentials.json"
+        command = [sys.executable, str(PROVISIONER_PATH)]
+        for config in configs:
+            command.extend(("--identity-config", str(config)))
+        command.extend(("--output", str(output)))
+
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["identity_count"], 3)
+        self.assertNotIn("six", result.stdout.casefold())
+
 
 if __name__ == "__main__":
     unittest.main()

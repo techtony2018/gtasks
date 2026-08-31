@@ -123,7 +123,7 @@ def provision(identity_configs: list[Path], output: Path) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Hash six private host dispatcher identities for Mission Control."
+        description="Hash three private Codex dispatcher identities for Mission Control."
     )
     parser.add_argument(
         "--identity-config", action="append", type=Path, default=[], dest="identities"
@@ -134,7 +134,7 @@ def main() -> int:
         provision(args.identities, args.output)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
-    print(json.dumps({"status": "provisioned", "identity_count": 6, "output": str(args.output)}))
+    print(json.dumps({"status": "provisioned", "identity_count": 3, "output": str(args.output)}))
     return 0
 
 

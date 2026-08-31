@@ -1,5 +1,10 @@
 # Unified Task and Ticket Markdown Contract
 
+> Historical scope note (V0.0.222): references below to OpenClaw Agent task
+> creation describe the former supported roster. Current Mission Control task
+> creation supports Tony, Tammy, Timmy, Toddy, and System Tickets only; retired
+> `*-oc` identities cannot own or receive new work.
+
 **Date:** 2026-08-10
 **Status:** Approved for implementation
 **Scope:** Every newly created Mission Control Task and System Ticket

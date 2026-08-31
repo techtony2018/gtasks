@@ -4,10 +4,10 @@
   "collection_slug": "collections/mission-control-documentation",
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
-  "last_verified_version": "V0.0.169",
-  "last_verified_commit": "066bca00433deb313b79b2383b0156677c38c2e6",
-  "source_evidence_base_commit": "066bca00433deb313b79b2383b0156677c38c2e6",
-  "last_verified_date": "2026-08-24",
+  "last_verified_version": "V0.0.222",
+  "last_verified_commit": "af674673c768f655cddd9f7b7085ff3b8cf35f01",
+  "source_evidence_base_commit": "af674673c768f655cddd9f7b7085ff3b8cf35f01",
+  "last_verified_date": "2026-08-30",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "consultation_roles": [
     {
@@ -18,15 +18,15 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-24T08:50:00-07:00",
-    "verification_scope": "local dashboard remote MCP readback; cross-host recheck not performed in this refresh",
+    "verified_at": "2026-08-30T17:20:00-07:00",
+    "verification_scope": "canonical remote-MCP page/link/backlink readback plus the three-machine Codex dispatcher fleet verifier",
     "agents": [
       "tammy",
       "timmy",
       "toddy"
     ],
-    "collection_content_hash": "7df109b3c0186cf407fd3dc66cc827743d882697d2fc609603df80a5d70f3a5d",
-    "overview_content_hash": "f93caa0c3e242e0894f9c8548c623990df00beb9ae2aed9b23d24081586c73d2",
+    "collection_content_hash": "bc65429b11bb8cb30b31ac7b2fd3c49933d47304d7854034fc0cc424ce3c1888",
+    "overview_content_hash": "14a1dce9342718aee47705fe5a2e7c722c3f54d8d2091341c9a64ed62893c4f8",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],

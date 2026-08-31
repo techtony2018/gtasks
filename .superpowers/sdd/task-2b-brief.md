@@ -1,5 +1,9 @@
 # Task 2B: Complete activated OpenClaw Agent integration
 
+> Historical record — superseded by V0.0.222. OpenClaw Agent activation,
+> `*-oc` identities, delegation, and paired-supervisor execution are retired
+> and must not be used as current implementation or operator guidance.
+
 ## Worktree
 
 `/Users/tony/.codex/worktrees/openclaw-agent-delegation/gtasks`
