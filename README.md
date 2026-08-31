@@ -76,11 +76,19 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.222. Mission Control has exactly three execution
-Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and one singleton
-Dispatcher on each registered machine. The paragraphs below retain prior
-release behavior as history; where an older paragraph describes a paired
-supervisor or alternate-agent route, V0.0.222 supersedes it.
+Latest verified pushed release baseline: V0.0.222 at commit
+`35c15c38afffd0bf28e5a24c2d688b0039bc6478`. Mission Control has exactly
+three execution Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and
+one singleton Dispatcher on each registered machine; the fleet verifier reads
+back all three machines at that commit. Mission Control OpenClaw Agent
+identities, roles, Goal authority, delegation routes, paired supervisors, and
+activation paths are retired. Independent global OpenClaw gateways are outside
+this removal boundary and remain available as separate platform services. The
+terminal release and QA record is
+[`docs/release-evidence/v0.0.222.md`](docs/release-evidence/v0.0.222.md).
+The paragraphs below retain prior release behavior as history; where an older
+paragraph describes a paired supervisor or alternate-agent route, V0.0.222
+supersedes it.
 
 Mission Control supports a controlled Codex-only Goal execution canary through
 private dashboard-managed runtime configuration, keeps the default mode at

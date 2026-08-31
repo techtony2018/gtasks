@@ -46,7 +46,9 @@ describe one fixed Codex task and one singleton Dispatcher per registered host,
 using `config/handoff-dispatcher/remote-workers.json` as the non-secret fleet
 roster. Alternate-agent identities, delegation routes, and paired supervisors
 were retired in V0.0.222. Historical receipts below remain release evidence;
-they are not current installation or execution instructions.
+they are not current installation or execution instructions. Independent
+global OpenClaw gateways are separate platform services: this release neither
+uses them as Mission Control Agent authority nor stops or uninstalls them.
 
 For each refresh, inspect:
 
@@ -134,14 +136,16 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-26`
+- Last verified released baseline date: `2026-08-30`
   (`America/Los_Angeles`)
 - Last verified pushed release: `V0.0.222`
 - Release commits:
   `8eaa96611607974d4b2489645aeaa804d30f4378`,
+  `978b2e35c128ee7e1a22322543794d6c9616613a`,
   `215cb9f1a9285809e16f56fcb4fab8459281b964`,
   `aff0803d98b3bf96e2f962576d5e657a57378123`,
-  prior documentation refresh `6821a3f`
+  `fa44fd7bc91b7cd47b6d3c27c75d9274cb5cc2be`, and terminal Mission Control
+  commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1329,6 +1333,29 @@ to the reviewed source before updating relationships.
   replay, while unsafe legacy residual details are superseded with the next
   sequence and `detail: null` without losing canonical task, Artifact, or
   handoff history.
+- Terminal V0.0.222 fleet readback: the read-only fleet verifier returned
+  `ok=3, failed=0`; Tammy, Timmy, and Toddy each read back the exact repository
+  commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`, the correct fixed Agent and
+  host route, verified private preflight, and one loaded singleton Dispatcher.
+- The companion Memory Stargraph clean-removal release is `V1.0.211`, commit
+  `ab7d6629d73ad78514c2b9b5045fb268654cc81b`. It removes the OpenClaw profile
+  activation runtime, authenticated activation routes, launcher environment
+  dependency, deployment packaging, source module, test module, and operator
+  runbook. Dashboard-managed health read back `V1.0.211` locally and on the
+  Timmy (`100.100.126.85`) and Toddy (`100.117.212.20`) machines. All four
+  retired activation probes returned HTTP 404, deployed activation files were
+  absent, and the local live process exposed zero `MEMORY_STARGRAPH_OC_*`
+  environment keys.
+- Gate-integrity history is preserved rather than collapsed into the final
+  result. Initial independent QA failed both the Memory Stargraph candidate
+  and the Mission Control CSS candidate for real containment, asset/network,
+  animation, and focus/accessibility defects. The first Memory Stargraph
+  retest still failed modal focus containment. Those failures were repaired
+  and retested. Final integrated independent QA passed desktop `1440x1000`
+  and genuine mobile `390x844` for the unchanged uncommitted aggregate
+  `c701488ac7a010883b24df55b47a77cc57e9443210beeab863b570e57c3d3dd6`.
+  The durable terminal record is
+  `docs/release-evidence/v0.0.222.md`.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1619,4 +1646,8 @@ Dispatcher restart must run the completed-ack preflight before recovery or new
 claims. The current preflight uses `prepare_ack("completed", None)`, so safe
 unchanged pending completed acknowledgements may replay, but unsafe legacy
 residual details are superseded with a new sequence and `detail: null` while
-preserving exact handoff continuity.
+preserving exact handoff continuity. Memory Stargraph V1.0.211 also removes the
+last Mission Control OpenClaw profile-activation runtime, routes, launcher
+environment, and deployed files. Independent global OpenClaw gateways remain
+separate platform services and are not Agent authority, handoff workers, or
+activation providers for Mission Control.
