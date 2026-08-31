@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.222",
+  "current_version": "V0.0.223",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1332,6 +1332,12 @@
       "date": "2026-08-30",
       "title": "Run one Codex Agent per machine",
       "summary": "Mission Control now exposes and routes work only to Tammy, Timmy, and Toddy as fixed Codex Agents. Retired alternate-agent identities, delegation APIs, paired supervisors, UI controls, provisioning paths, and pre-removal read-cache snapshots are removed; each machine uses one singleton Dispatcher and one handoff lease/acknowledgement chain, with a version-controlled three-machine fleet verifier and preserved historical audit rows."
+    },
+    {
+      "version": "V0.0.223",
+      "date": "2026-08-31",
+      "title": "Fast System Ticket metadata refresh",
+      "summary": "System Ticket direct canonical reads now use root backlink membership plus bounded list_pages updated_at metadata to reuse unchanged last-verified tickets and hydrate only changed or missing members, removing completed-ticket get_page fan-out while preserving reopened-ticket detection. Remote MCP reads also honor the owner-only GBRAIN_CREDENTIALS_FILE used by the dashboard launcher."
     }
   ]
 }

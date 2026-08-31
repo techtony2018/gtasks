@@ -8255,7 +8255,8 @@ class SystemTicketAdapterTests(unittest.TestCase):
             [],
         )
 
-    def test_default_ticket_read_hydrates_cached_completed_pages_to_detect_reopens(self) -> None:
+    def test_default_ticket_read_skips_unchanged_cached_completed_pages(self) -> None:
+        cached_at = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
         planned = SystemTicket(
             "tasks/system-tickets/open-fast-a1b2c3",
             "Open ticket",
@@ -8263,6 +8264,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Return this ticket.",
             "mission_control",
             "normal",
+            updated_at=cached_at,
         )
         completed = tuple(
             SystemTicket(
@@ -8272,6 +8274,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
                 "Do not hydrate completed tickets for the default view.",
                 "mission_control",
                 "normal",
+                updated_at=cached_at,
             )
             for index in range(3)
         )
@@ -8289,11 +8292,16 @@ class SystemTicketAdapterTests(unittest.TestCase):
             runner = FakeRunner(
                 {
                     "get_backlinks": [edges],
-                    "get_page": [
-                        self._system_ticket_page(planned),
-                        *[self._system_ticket_page(ticket) for ticket in completed],
+                    "list_pages": [
+                        [
+                            {
+                                "slug": ticket.slug,
+                                "type": "task",
+                                "updated_at": cached_at.isoformat(),
+                            }
+                            for ticket in (planned, *completed)
+                        ]
                     ],
-                    "get_links": [[edges[0]]],
                 }
             )
             with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
@@ -8304,14 +8312,16 @@ class SystemTicketAdapterTests(unittest.TestCase):
         self.assertEqual([ticket["slug"] for ticket in payload["tickets"]], [planned.slug])
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug, *[ticket.slug for ticket in completed]],
+            [],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
             [],
         )
 
-    def test_default_ticket_read_returns_reopened_ticket_from_stale_completed_snapshot(self) -> None:
+    def test_default_ticket_read_rehydrates_changed_completed_snapshot_to_detect_reopen(self) -> None:
+        cached_at = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+        reopened_at = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
         cached_completed = SystemTicket(
             "tasks/system-tickets/reopened-a1b2c3",
             "Reopened ticket",
@@ -8319,8 +8329,9 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "The cached snapshot is stale.",
             "mission_control",
             "high",
+            updated_at=cached_at,
         )
-        reopened = replace(cached_completed, status="planned")
+        reopened = replace(cached_completed, status="planned", updated_at=reopened_at)
         edge = {
             "from_slug": reopened.slug,
             "to_slug": SYSTEM_TICKETS_ROOT,
@@ -8332,8 +8343,16 @@ class SystemTicketAdapterTests(unittest.TestCase):
             runner = FakeRunner(
                 {
                     "get_backlinks": [[edge]],
+                    "list_pages": [
+                        [
+                            {
+                                "slug": reopened.slug,
+                                "type": "task",
+                                "updated_at": reopened_at.isoformat(),
+                            }
+                        ]
+                    ],
                     "get_page": [self._system_ticket_page(reopened)],
-                    "get_links": [[edge]],
                 }
             )
             with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
@@ -8354,7 +8373,8 @@ class SystemTicketAdapterTests(unittest.TestCase):
             [],
         )
 
-    def test_include_completed_ticket_read_hydrates_cached_completed_pages(self) -> None:
+    def test_include_completed_ticket_read_serves_unchanged_verified_snapshot(self) -> None:
+        cached_at = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
         planned = SystemTicket(
             "tasks/system-tickets/open-all-a1b2c3",
             "Open ticket",
@@ -8362,6 +8382,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Hydrate non-completed tickets.",
             "mission_control",
             "high",
+            updated_at=cached_at,
         )
         completed = SystemTicket(
             "tasks/system-tickets/completed-all-a1b2c3",
@@ -8370,6 +8391,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Serve completed ticket from last verified snapshot.",
             "mission_control",
             "normal",
+            updated_at=cached_at,
         )
         edges = [
             {
@@ -8385,11 +8407,16 @@ class SystemTicketAdapterTests(unittest.TestCase):
             runner = FakeRunner(
                 {
                     "get_backlinks": [edges],
-                    "get_page": [
-                        self._system_ticket_page(planned),
-                        self._system_ticket_page(completed),
+                    "list_pages": [
+                        [
+                            {
+                                "slug": ticket.slug,
+                                "type": "task",
+                                "updated_at": cached_at.isoformat(),
+                            }
+                            for ticket in (planned, completed)
+                        ]
                     ],
-                    "get_links": [[edges[0]]],
                 }
             )
             with patch.dict(os.environ, {"GTASKS_READ_CACHE_FILE": str(cache_path)}):
@@ -8403,14 +8430,15 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug, completed.slug],
+            [],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
             [],
         )
 
-    def test_partial_verified_system_ticket_snapshot_hydrates_every_member_slug(self) -> None:
+    def test_partial_verified_system_ticket_snapshot_hydrates_only_missing_member_slug(self) -> None:
+        cached_at = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
         planned = SystemTicket(
             "tasks/system-tickets/open-partial-a1b2c3",
             "Open ticket",
@@ -8418,6 +8446,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Hydrate open tickets.",
             "mission_control",
             "high",
+            updated_at=cached_at,
         )
         cached_completed = SystemTicket(
             "tasks/system-tickets/cached-completed-a1b2c3",
@@ -8426,6 +8455,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Serve this from the verified snapshot.",
             "mission_control",
             "normal",
+            updated_at=cached_at,
         )
         missing_completed = SystemTicket(
             "tasks/system-tickets/new-completed-a1b2c3",
@@ -8434,6 +8464,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "Hydrate only this missing member.",
             "mission_control",
             "normal",
+            updated_at=cached_at,
         )
         tickets = (planned, cached_completed, missing_completed)
         edges = [
@@ -8453,6 +8484,15 @@ class SystemTicketAdapterTests(unittest.TestCase):
                 self.calls.append((tool, dict(params)))
                 if tool == "get_backlinks":
                     return edges
+                if tool == "list_pages":
+                    return [
+                        {
+                            "slug": ticket.slug,
+                            "type": "task",
+                            "updated_at": cached_at.isoformat(),
+                        }
+                        for ticket in tickets
+                    ]
                 slug = params["slug"]
                 if tool == "get_page":
                     return self_page[slug]
@@ -8485,7 +8525,7 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_page"],
-            [planned.slug, cached_completed.slug, missing_completed.slug],
+            [missing_completed.slug],
         )
         self.assertEqual(
             [params["slug"] for tool, params in runner.calls if tool == "get_links"],
@@ -8493,6 +8533,8 @@ class SystemTicketAdapterTests(unittest.TestCase):
         )
 
     def test_include_completed_uses_root_backlink_when_page_read_shows_cached_open_ticket_completed(self) -> None:
+        cached_at = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+        completed_at = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
         stale_open = SystemTicket(
             "tasks/system-tickets/stale-open-a1b2c3",
             "Stale open ticket",
@@ -8500,8 +8542,9 @@ class SystemTicketAdapterTests(unittest.TestCase):
             "The snapshot has not seen this completion yet.",
             "mission_control",
             "normal",
+            updated_at=cached_at,
         )
-        completed = replace(stale_open, status="completed")
+        completed = replace(stale_open, status="completed", updated_at=completed_at)
         edge = {
             "from_slug": stale_open.slug,
             "to_slug": SYSTEM_TICKETS_ROOT,
@@ -8516,6 +8559,14 @@ class SystemTicketAdapterTests(unittest.TestCase):
                 self.calls.append((tool, dict(params)))
                 if tool == "get_backlinks":
                     return [edge]
+                if tool == "list_pages":
+                    return [
+                        {
+                            "slug": completed.slug,
+                            "type": "task",
+                            "updated_at": completed_at.isoformat(),
+                        }
+                    ]
                 if tool == "get_page":
                     return self._page
                 if tool == "get_links":
@@ -9489,6 +9540,85 @@ class SubprocessRunnerTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, {"slug": "tasks/from-env"})
+
+    @patch("gtasks.gbrain.urlopen")
+    def test_remote_http_runner_reads_credentials_file_env_for_remote_home_config(
+        self, open_url
+    ) -> None:
+        class Response:
+            status = 200
+
+            def __init__(self, payload: object) -> None:
+                self.payload = payload
+                self.headers = {"Content-Type": "application/json"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        def respond(request, **_kwargs):
+            if request.full_url.endswith("/.well-known/oauth-authorization-server"):
+                return Response({"token_endpoint": "https://brain.test/token"})
+            if request.full_url == "https://brain.test/token":
+                return Response({"access_token": "token-file", "expires_in": 3600})
+            return Response(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "one",
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({"slug": "tasks/from-file"}),
+                            }
+                        ]
+                    },
+                }
+            )
+
+        open_url.side_effect = respond
+        with TemporaryDirectory() as directory:
+            home = Path(directory) / "remote-home"
+            config_path = home / ".gbrain" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "remote_mcp": {
+                            "issuer_url": "https://brain.test",
+                            "mcp_url": "https://brain.test/mcp",
+                            "oauth_client_id": "client-file",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            credentials = home / "credentials.env"
+            credentials.write_text(
+                "GBRAIN_REMOTE_CLIENT_SECRET=secret-file\n",
+                encoding="utf-8",
+            )
+            os.chmod(credentials, 0o600)
+            with patch.dict(
+                os.environ,
+                {
+                    "GBRAIN_HOME": str(home),
+                    "GBRAIN_CREDENTIALS_FILE": str(credentials),
+                    "GBRAIN_REMOTE_CLIENT_SECRET": "",
+                },
+                clear=False,
+            ):
+                os.environ.pop("GBRAIN_CONFIG_FILE", None)
+                result = RemoteHttpCommandRunner().run(
+                    "get_page", {"slug": "tasks/from-file"}
+                )
+
+        self.assertEqual(result, {"slug": "tasks/from-file"})
 
     @patch("gtasks.gbrain.urlopen")
     def test_remote_http_runner_falls_back_to_dashboard_runtime_config(self, open_url) -> None:

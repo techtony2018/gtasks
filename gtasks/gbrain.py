@@ -388,6 +388,13 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
             ) from exc
         return None
 
+    @staticmethod
+    def _credentials_file_env_path() -> Path | None:
+        configured = os.environ.get("GBRAIN_CREDENTIALS_FILE")
+        if not isinstance(configured, str) or not configured.strip():
+            return None
+        return Path(configured).expanduser()
+
     def _remote_config(self) -> dict[str, str]:
         config_path = self._config_path
         credentials_path = self._credentials_path
@@ -413,6 +420,9 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
             if not isinstance(remote, Mapping):
                 raise GBrainCommandError("GBrain remote_mcp config is unavailable")
             self._config_path = config_path
+            self._credentials_path = credentials_path
+        elif credentials_path is None:
+            credentials_path = self._credentials_file_env_path()
             self._credentials_path = credentials_path
         result: dict[str, str] = {}
         for field in ("issuer_url", "mcp_url", "oauth_client_id"):
@@ -5171,22 +5181,59 @@ class GBrainAdapter:
     def _parse_snapshot_datetime(self, value: object) -> datetime | None:
         if not isinstance(value, str) or not value.strip():
             return None
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
         try:
-            return datetime.fromisoformat(value)
+            return datetime.fromisoformat(text)
         except ValueError:
             return None
+
+    def _parse_snapshot_timestamp(self, value: object) -> datetime | None:
+        if not isinstance(value, (int, float)):
+            return None
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+
+    def _remote_page_updated_index(
+        self,
+        member_slugs: Sequence[str],
+    ) -> dict[str, datetime] | None:
+        try:
+            raw_pages = self.runner.run(
+                "list_pages",
+                {"type": "task", "limit": max(1000, len(member_slugs) * 4)},
+            )
+        except GBrainError:
+            return None
+        if not isinstance(raw_pages, list):
+            return None
+        wanted = set(member_slugs)
+        index: dict[str, datetime] = {}
+        for item in raw_pages:
+            if not isinstance(item, Mapping):
+                continue
+            slug = item.get("slug")
+            if not isinstance(slug, str) or slug not in wanted:
+                continue
+            updated_at = self._parse_snapshot_datetime(item.get("updated_at"))
+            if updated_at is not None:
+                index[slug] = updated_at
+        return index
 
     def _load_verified_system_ticket_snapshot(
         self,
         member_slugs: Sequence[str],
-    ) -> tuple[dict[str, SystemTicket], dict[str, str]] | None:
+    ) -> tuple[dict[str, SystemTicket], dict[str, str], datetime | None] | None:
         try:
             raw = json.loads(
                 self._system_ticket_snapshot_path().read_text(encoding="utf-8")
             )
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
-        if not isinstance(raw, Mapping) or raw.get("schema_version") != 1:
+        if not isinstance(raw, Mapping) or raw.get("schema_version") not in (1, 2):
             return None
         surfaces = raw.get("surfaces")
         if not isinstance(surfaces, Mapping):
@@ -5194,6 +5241,7 @@ class GBrainAdapter:
         record = surfaces.get("system_tickets_all")
         if not isinstance(record, Mapping):
             return None
+        verified_at = self._parse_snapshot_timestamp(record.get("last_valid_at"))
         payload = record.get("payload")
         if (
             not isinstance(payload, Mapping)
@@ -5255,7 +5303,9 @@ class GBrainAdapter:
             markdown = item.get("display_markdown")
             if isinstance(markdown, str):
                 display[slug] = markdown
-        return tickets, display
+        if member_slugs and not any(slug in tickets for slug in member_slugs):
+            return None
+        return tickets, display, verified_at
 
     def _invalidate_system_ticket_snapshot_cache(
         self,
@@ -5341,11 +5391,38 @@ class GBrainAdapter:
             and str(link["from_slug"]).startswith("tasks/")
         }
         slugs = list(dict.fromkeys(root_edges))
-        # The private snapshot is a serving cache, not canonical truth. Reopened
-        # System Tickets can legitimately move from completed back to planned
-        # outside this process; a refresh must therefore rehydrate every typed
-        # member page instead of trusting cached completed entries indefinitely.
         read_slugs = slugs
+        tickets: list[SystemTicket] = []
+        issues: list[CollectionIssue] = []
+        projections: list[tuple[str, str]] = []
+        snapshot = self._load_verified_system_ticket_snapshot(slugs)
+        if snapshot is not None:
+            cached_tickets, cached_display, snapshot_verified_at = snapshot
+            updated_index = self._remote_page_updated_index(slugs)
+            if updated_index is not None:
+                read_slugs = []
+                for slug in slugs:
+                    cached_ticket = cached_tickets.get(slug)
+                    if cached_ticket is None:
+                        read_slugs.append(slug)
+                        continue
+                    cached_updated_at = cached_ticket.updated_at
+                    remote_updated_at = updated_index.get(slug)
+                    if cached_updated_at is None or remote_updated_at is None:
+                        if snapshot_verified_at is None:
+                            read_slugs.append(slug)
+                            continue
+                    elif remote_updated_at > cached_updated_at and (
+                        snapshot_verified_at is None
+                        or remote_updated_at > snapshot_verified_at
+                    ):
+                        read_slugs.append(slug)
+                        continue
+                    if include_completed or cached_ticket.status != "completed":
+                        tickets.append(cached_ticket)
+                        display_markdown = cached_display.get(slug)
+                        if display_markdown is not None:
+                            projections.append((slug, display_markdown))
         def read(slug: str) -> tuple[SystemTicket | None, CollectionIssue | None, str | None]:
             try:
                 page = self.runner.run("get_page", {"slug": slug})
@@ -5375,15 +5452,19 @@ class GBrainAdapter:
                 return ticket, None, display_markdown
             except (DomainValidationError, GBrainError) as exc:
                 return None, CollectionIssue(slug=slug, message=str(exc), category="system_ticket_data", impact="This System Ticket cannot be dispatched until its canonical task data is repaired."), None
-        tickets, issues = [], []
-        projections: list[tuple[str, str]] = []
         for ticket, issue, display_markdown in self._bounded_map(read, read_slugs):
             if ticket:
                 tickets.append(ticket)
                 if display_markdown is not None:
                     projections.append((ticket.slug, display_markdown))
             if issue: issues.append(issue)
-        tickets.sort(key=lambda ticket: ((ticket.updated_at or datetime.min), ticket.title.casefold()), reverse=True)
+        tickets.sort(
+            key=lambda ticket: (
+                ticket.updated_at.isoformat() if ticket.updated_at else "",
+                ticket.title.casefold(),
+            ),
+            reverse=True,
+        )
         return SystemTicketRead(tuple(tickets), tuple(issues), tuple(projections))
 
     def create_system_ticket(self, ticket: SystemTicket) -> MutationReceipt:
