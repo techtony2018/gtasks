@@ -5,8 +5,8 @@
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
   "last_verified_version": "V0.0.222",
-  "last_verified_commit": "af674673c768f655cddd9f7b7085ff3b8cf35f01",
-  "source_evidence_base_commit": "af674673c768f655cddd9f7b7085ff3b8cf35f01",
+  "last_verified_commit": "47218e533ebde1255487a9d8423b986f666300bb",
+  "source_evidence_base_commit": "35c15c38afffd0bf28e5a24c2d688b0039bc6478",
   "last_verified_date": "2026-08-30",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "consultation_roles": [
@@ -18,7 +18,7 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-30T17:20:00-07:00",
+    "verified_at": "2026-08-30T18:22:58-07:00",
     "verification_scope": "canonical remote-MCP page/link/backlink readback plus the three-machine Codex dispatcher fleet verifier",
     "agents": [
       "tammy",
@@ -26,7 +26,7 @@
       "toddy"
     ],
     "collection_content_hash": "bc65429b11bb8cb30b31ac7b2fd3c49933d47304d7854034fc0cc424ce3c1888",
-    "overview_content_hash": "14a1dce9342718aee47705fe5a2e7c722c3f54d8d2091341c9a64ed62893c4f8",
+    "overview_content_hash": "5dd910472f01cb5a2804d76ba314ccf447c665f5deb18be11b18663f3ee429af",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],
