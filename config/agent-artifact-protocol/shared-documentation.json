@@ -4,10 +4,10 @@
   "collection_slug": "collections/mission-control-documentation",
   "system_overview_slug": "docs/f2516aa8-89ae-4570-a205-118d5c038ad7",
   "documentation_manager_thread": "019fcb77-2886-7f31-a4d2-0b8bbe7e1477",
-  "last_verified_version": "V0.0.223",
-  "last_verified_commit": "c5c0024251c8d55453711a2f29935fc07396c43f",
-  "source_evidence_base_commit": "559c3a7f88d200472069791628595ed323218723",
-  "last_verified_date": "2026-08-31",
+  "last_verified_version": "V0.0.224",
+  "last_verified_commit": "7b709ae8e36782e95d35a26cce146e105182f3c8",
+  "source_evidence_base_commit": "9ac2143c8a9acd60517d9a4fdcc9646f508c1dc2",
+  "last_verified_date": "2026-09-01",
   "identity_isolation": "Reference the shared collection; do not copy documents into Agent pages, work collections, Artifact collections, or identity-specific prompts.",
   "consultation_roles": [
     {
@@ -18,15 +18,15 @@
     }
   ],
   "cross_host_readback": {
-    "verified_at": "2026-08-31T08:38:30-07:00",
-    "verification_scope": "canonical remote-MCP page/link/backlink readback for V0.0.223 documentation; V0.0.222 three-machine Codex fleet receipt preserved",
+    "verified_at": "2026-09-01T09:21:00-07:00",
+    "verification_scope": "canonical remote-MCP page/link/backlink readback for V0.0.224 normal-task duplicate prevention documentation; V0.0.222 three-machine Codex fleet receipt preserved",
     "agents": [
       "tammy",
       "timmy",
       "toddy"
     ],
     "collection_content_hash": "bc65429b11bb8cb30b31ac7b2fd3c49933d47304d7854034fc0cc424ce3c1888",
-    "overview_content_hash": "200947ac92d545243323d9e03183b0e2857ab5d11f8bb67e655c18027c372ecd",
+    "overview_content_hash": "ae9f0d047efc87b0a1ef8bd81c2e2fc4d2bd99a05a0ed1dcbe81d09e7a9d5d92",
     "exact_discovery_edges_observed": 1
   },
   "data_quality_issues": [],
