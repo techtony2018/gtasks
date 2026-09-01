@@ -83,6 +83,19 @@ def stargraph_url(slug: str) -> str:
     return "http://127.0.0.1:8788/?slug=" + quote(slug, safe="")
 
 
+def open_task_creation_matches(candidate, requested) -> bool:
+    return (
+        candidate.status not in {"completed", "cancelled"}
+        and candidate.lifecycle_root == requested.lifecycle_root
+        and candidate.owner_agent == requested.owner_agent
+        and candidate.title.strip() == requested.title.strip()
+        and candidate.due_day == requested.due_day
+        and candidate.project == requested.project
+        and candidate.goal == requested.goal
+        and candidate.parent == requested.parent
+    )
+
+
 def default_gtasks_repo() -> Path:
     for candidate in DEFAULT_GTASKS_REPO_CANDIDATES:
         if (candidate / "gtasks" / "gbrain.py").exists():
@@ -97,6 +110,8 @@ def main() -> int:
     parser.add_argument("--detail", required=True)
     parser.add_argument("--due-day", required=True, type=parse_due_day)
     parser.add_argument("--owner-agent", type=resolve_owner_agent, default=None)
+    parser.add_argument("--project-slug", default=None)
+    parser.add_argument("--goal-slug", default=None)
     parser.add_argument("--priority", default="normal", choices=["low", "normal", "high", "urgent"])
     parser.add_argument("--next-action", default="")
     parser.add_argument("--identity", default="codex-mc-add-task")
@@ -110,7 +125,7 @@ def main() -> int:
     sys.path.insert(0, str(repo))
 
     from gtasks.domain import AGENT_SCOPES, new_task
-    from gtasks.gbrain import GBrainAdapter, SubprocessCommandRunner
+    from gtasks.gbrain import GBrainAdapter
     from gtasks.markdown_policy import (
         MarkdownContractError,
         extract_system_ticket_slugs,
@@ -124,6 +139,8 @@ def main() -> int:
         title=args.title,
         detail=args.detail,
         due_day=args.due_day,
+        project=args.project_slug or None,
+        goal=args.goal_slug or None,
         priority=args.priority,
         next_action=args.next_action,
         now=now,
@@ -168,6 +185,8 @@ def main() -> int:
                 "rendered_body": None,
                 "owner": owner,
                 "lifecycle_root": task.lifecycle_root,
+                "project": task.project,
+                "goal": task.goal,
                 "message": (
                     "Live canonical System Ticket title and membership "
                     f"verification is required before rendering: {exc}"
@@ -189,11 +208,94 @@ def main() -> int:
             "due_day": task.due_day.isoformat() if task.due_day else None,
             "owner": owner,
             "lifecycle_root": task.lifecycle_root,
+            "project": task.project,
+            "goal": task.goal,
             "next_action": task.next_action,
         }, indent=2, sort_keys=True))
         return 0
 
-    adapter = GBrainAdapter(runner=SubprocessCommandRunner())
+    adapter = GBrainAdapter()
+    duplicate_read = adapter.list_collection_tasks(task.lifecycle_root)
+    duplicate_matches = [
+        existing
+        for existing in duplicate_read.tasks
+        if open_task_creation_matches(existing, task)
+    ]
+    if len(duplicate_matches) > 1:
+        print(json.dumps({
+            "ok": False,
+            "action": "ambiguous_duplicate",
+            "duplicate": True,
+            "message": (
+                "Multiple matching open tasks already exist. No new task was "
+                "created; review the existing canonical tasks before retrying."
+            ),
+            "matches": [
+                {
+                    "slug": existing.slug,
+                    "title": existing.title,
+                    "due_day": existing.due_day.isoformat() if existing.due_day else None,
+                    "lifecycle_root": existing.lifecycle_root,
+                    "project": existing.project,
+                    "goal": existing.goal,
+                    "parent": existing.parent,
+                }
+                for existing in duplicate_matches
+            ],
+        }, indent=2, sort_keys=True))
+        return 2
+    if len(duplicate_matches) == 1:
+        task = duplicate_matches[0]
+        owner = task.owner_agent or "Tony"
+        page = adapter.runner.run("get_page", {"slug": task.slug})
+        links = adapter.runner.run("get_links", {"slug": task.slug})
+        if not isinstance(page, dict):
+            raise SystemExit(
+                f"Existing task verification returned no canonical page for {task.slug}"
+            )
+        page_title = page.get("title")
+        if page_title != task.title:
+            raise SystemExit(
+                "Existing task duplicate verification failed for "
+                f"{task.slug}: expected {task.title!r}, got {page_title!r}."
+            )
+        compiled_body = page.get("compiled_markdown")
+        if compiled_body is None:
+            compiled_body = page.get("compiled_truth")
+        rendered_body = compiled_body if isinstance(compiled_body, str) else ""
+        typed = [
+            {
+                "from_slug": edge.get("from_slug"),
+                "to_slug": edge.get("to_slug"),
+                "link_type": edge.get("link_type"),
+            }
+            for edge in links
+            if isinstance(edge, dict)
+            and edge.get("from_slug") == task.slug
+            and edge.get("link_type") in {"member_of", "assigned_to", "advances_goal"}
+        ]
+        print(json.dumps({
+            "ok": True,
+            "action": "adopted_existing",
+            "duplicate": True,
+            "verified": True,
+            "markdown_contract": "unified-task-ticket-v1",
+            "slug": task.slug,
+            "title": task.title,
+            "summary": task.summary,
+            "status": task.status,
+            "priority": task.priority,
+            "due_day": task.due_day.isoformat() if task.due_day else None,
+            "owner": owner,
+            "lifecycle_root": task.lifecycle_root,
+            "project": task.project,
+            "goal": task.goal,
+            "rendered_body": rendered_body,
+            "stargraph_url": stargraph_url(task.slug),
+            "links": typed,
+            "page_title": page_title,
+        }, indent=2, sort_keys=True))
+        return 0
     if owner_agent:
         receipt = adapter.create_agent_task(task, owner_agent)
     else:
@@ -234,11 +336,15 @@ def main() -> int:
         for edge in links
         if isinstance(edge, dict)
         and edge.get("from_slug") == task.slug
-        and edge.get("link_type") in {"member_of", "assigned_to"}
+        and edge.get("link_type") in {"member_of", "assigned_to", "advances_goal"}
     ]
     expected_links = {(task.slug, task.lifecycle_root, "member_of")}
     if owner_agent:
         expected_links.add((task.slug, owner_agent, "assigned_to"))
+    if task.project:
+        expected_links.add((task.slug, task.project, "member_of"))
+    if task.goal:
+        expected_links.add((task.slug, task.goal, "advances_goal"))
     actual_links = {
         (edge["from_slug"], edge["to_slug"], edge["link_type"])
         for edge in typed
@@ -252,6 +358,7 @@ def main() -> int:
         )
     print(json.dumps({
         "ok": True,
+        "action": "created",
         "verified": True,
         "markdown_contract": "unified-task-ticket-v1",
         "slug": task.slug,
@@ -262,6 +369,8 @@ def main() -> int:
         "due_day": task.due_day.isoformat() if task.due_day else None,
         "owner": owner,
         "lifecycle_root": task.lifecycle_root,
+        "project": task.project,
+        "goal": task.goal,
         "rendered_body": rendered_body,
         "stargraph_url": stargraph_url(task.slug),
         "links": typed,

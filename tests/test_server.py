@@ -4623,6 +4623,87 @@ class FullTaskCreationApiTests(unittest.TestCase):
         self.assertEqual(payload["task"]["next_action"], "Choose the next company")
         self.assertEqual(payload["task"]["progress_metric"]["current"], 5)
 
+    def test_full_create_warns_and_adopts_matching_open_task_without_writing(self) -> None:
+        existing = new_task(
+            title="第四周读经与反思计划",
+            detail="Existing weekly Bible parent.",
+            due_day=date(2026, 9, 4),
+            project="projects/65c2f720-fb49-5403-9a9e-76228e285277",
+            goal="goals/755548a3-d556-513a-900c-45f90da5702e",
+            now=datetime(2026, 8, 30, 23, 8).astimezone(),
+            identity="bibleparent",
+        )
+        adapter = FakeAdapter(active=(existing,))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "第四周读经与反思计划",
+                "detail": "Retry should adopt the existing parent.",
+                "priority": "normal",
+                "initial_todo": "",
+                "due_day": "2026-09-04",
+                "project_slug": "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+                "goal_slug": "goals/755548a3-d556-513a-900c-45f90da5702e",
+                "progress_metric": None,
+                "assignee_slug": "tony",
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "duplicate_task_exists")
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual(payload["task"]["slug"], existing.slug)
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.todo_creates, [])
+
+    def test_full_create_fails_closed_when_multiple_open_tasks_match(self) -> None:
+        first = new_task(
+            title="第四周读经与反思计划",
+            detail="First weekly Bible parent.",
+            due_day=date(2026, 9, 4),
+            project="projects/65c2f720-fb49-5403-9a9e-76228e285277",
+            goal="goals/755548a3-d556-513a-900c-45f90da5702e",
+            now=datetime(2026, 8, 30, 23, 8).astimezone(),
+            identity="bibleone",
+        )
+        second = new_task(
+            title="第四周读经与反思计划",
+            detail="Second weekly Bible parent.",
+            due_day=date(2026, 9, 4),
+            project="projects/65c2f720-fb49-5403-9a9e-76228e285277",
+            goal="goals/755548a3-d556-513a-900c-45f90da5702e",
+            now=datetime(2026, 8, 30, 23, 9).astimezone(),
+            identity="bibletwo",
+        )
+        adapter = FakeAdapter(active=(first, second))
+        harness = ServerHarness(self, adapter)
+
+        status, payload, _ = harness.request(
+            "POST",
+            "/api/tasks",
+            {
+                "title": "第四周读经与反思计划",
+                "detail": "Retry must not create a third parent.",
+                "priority": "normal",
+                "initial_todo": "",
+                "due_day": "2026-09-04",
+                "project_slug": "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+                "goal_slug": "goals/755548a3-d556-513a-900c-45f90da5702e",
+                "progress_metric": None,
+                "assignee_slug": "tony",
+            },
+        )
+
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "ambiguous_duplicate_task")
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual([task["slug"] for task in payload["tasks"]], [first.slug, second.slug])
+        self.assertEqual(adapter.created, [])
+        self.assertEqual(adapter.todo_creates, [])
+
     def test_duplicate_review_resets_bound_progress_and_historical_receipts(self) -> None:
         source_metric = ProgressMetric.from_value(
             {

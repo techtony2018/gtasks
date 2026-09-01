@@ -1285,6 +1285,13 @@ status to Planned, current progress to zero, event evidence and receipts to
 empty, and completion time to none. The user reviews and chooses the new due
 day before the new GBrain task is created and read back.
 
+V0.0.224 adds a pre-write duplicate guard to normal task creation. If a retry
+requests the same open owner/lifecycle, title, due date, Project, Goal, and
+parent relationship, Mission Control returns the existing canonical task
+instead of creating another page; if multiple matching open tasks already
+exist, it fails closed with an ambiguous-duplicate warning so an operator can
+repair the data intentionally.
+
 New GTasks task pages use these fields:
 
 ```yaml

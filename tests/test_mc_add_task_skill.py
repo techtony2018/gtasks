@@ -49,6 +49,23 @@ class McAddTaskSourceContractTests(unittest.TestCase):
         self.assertNotIn("adapter._verified_system_ticket_references", helper)
         self.assertIn("rendered_body = compiled_body", helper)
 
+    def test_live_helper_uses_remote_adapter_and_adopt_before_create_guard(self):
+        helper = HELPER_PATH.read_text(encoding="utf-8")
+        self.assertIn("adapter = GBrainAdapter()", helper)
+        self.assertNotIn("adapter = GBrainAdapter(runner=SubprocessCommandRunner())", helper)
+        self.assertIn("adapter.list_collection_tasks(task.lifecycle_root)", helper)
+        self.assertIn('"action": "adopted_existing"', helper)
+        self.assertIn('"action": "ambiguous_duplicate"', helper)
+
+    def test_live_helper_supports_project_and_goal_relationship_arguments(self):
+        helper = HELPER_PATH.read_text(encoding="utf-8")
+        self.assertIn('parser.add_argument("--project-slug"', helper)
+        self.assertIn('parser.add_argument("--goal-slug"', helper)
+        self.assertIn("project=args.project_slug or None", helper)
+        self.assertIn("goal=args.goal_slug or None", helper)
+        self.assertIn('expected_links.add((task.slug, task.project, "member_of"))', helper)
+        self.assertIn('expected_links.add((task.slug, task.goal, "advances_goal"))', helper)
+
     def test_live_helper_accepts_canonical_compiled_truth_projection(self):
         helper = HELPER_PATH.read_text(encoding="utf-8")
         self.assertIn('compiled_body = page.get("compiled_markdown")', helper)
@@ -92,6 +109,23 @@ class McAddTaskHelperDryRunTests(unittest.TestCase):
         )
         self.assertIn(f"System Ticket unavailable: {TICKET_SLUG}", result["rendered_body"])
         self.assertNotIn("#system-ticket/", result["rendered_body"])
+
+    def test_dry_run_reports_project_and_goal_relationship_targets(self):
+        result = self._dry_run(
+            "--project-slug",
+            "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+            "--goal-slug",
+            "goals/755548a3-d556-513a-900c-45f90da5702e",
+        )
+
+        self.assertEqual(
+            result["project"],
+            "projects/65c2f720-fb49-5403-9a9e-76228e285277",
+        )
+        self.assertEqual(
+            result["goal"],
+            "goals/755548a3-d556-513a-900c-45f90da5702e",
+        )
 
     def test_retired_openclaw_owner_alias_is_rejected(self):
         result = subprocess.run(

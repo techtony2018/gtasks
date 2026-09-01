@@ -581,6 +581,57 @@ def _dedupe_tasks(tasks: list[Task]) -> list[Task]:
     return result
 
 
+def _open_task_creation_matches(candidate: Task, requested: Task) -> bool:
+    return (
+        candidate.status not in {"completed", "cancelled"}
+        and candidate.lifecycle_root == requested.lifecycle_root
+        and candidate.owner_agent == requested.owner_agent
+        and candidate.title.strip() == requested.title.strip()
+        and candidate.due_day == requested.due_day
+        and candidate.project == requested.project
+        and candidate.goal == requested.goal
+        and candidate.parent == requested.parent
+    )
+
+
+def _task_duplicate_warning_payload(
+    matches: list[Task],
+    *,
+    requested: Task,
+) -> dict[str, Any]:
+    if len(matches) == 1:
+        return {
+            "error": "A matching open task already exists. The existing canonical task was not duplicated.",
+            "code": "duplicate_task_exists",
+            "duplicate": True,
+            "task": matches[0].to_dict(),
+            "requested": {
+                "title": requested.title,
+                "due_day": requested.due_day.isoformat() if requested.due_day else None,
+                "lifecycle_root": requested.lifecycle_root,
+                "owner_agent": requested.owner_agent,
+                "project": requested.project,
+                "goal": requested.goal,
+                "parent": requested.parent,
+            },
+        }
+    return {
+        "error": "Multiple matching open tasks already exist. No new task was created; review the existing canonical tasks before retrying.",
+        "code": "ambiguous_duplicate_task",
+        "duplicate": True,
+        "tasks": [task.to_dict() for task in matches],
+        "requested": {
+            "title": requested.title,
+            "due_day": requested.due_day.isoformat() if requested.due_day else None,
+            "lifecycle_root": requested.lifecycle_root,
+            "owner_agent": requested.owner_agent,
+            "project": requested.project,
+            "goal": requested.goal,
+            "parent": requested.parent,
+        },
+    }
+
+
 def _parent_slug_from_request(
     payload: dict[str, Any],
     *,
@@ -4396,15 +4447,33 @@ def _handler_class(
                         identity=identity_factory(),
                     )
                     task = replace(task, parent=parent_slug)
-                    if assignee_slug == "tony":
-                        receipt = adapter.create_task(task)
-                    else:
+                    if assignee_slug != "tony":
                         work_root = available_agents[assignee_slug]
                         task = replace(
                             task,
                             lifecycle_root=work_root,
                             owner_agent=assignee_slug,
                         )
+                    duplicate_read = adapter.list_collection_tasks(
+                        task.lifecycle_root
+                    )
+                    duplicate_matches = [
+                        existing
+                        for existing in duplicate_read.tasks
+                        if _open_task_creation_matches(existing, task)
+                    ]
+                    if duplicate_matches:
+                        self._json(
+                            HTTPStatus.CONFLICT,
+                            _task_duplicate_warning_payload(
+                                duplicate_matches,
+                                requested=task,
+                            ),
+                        )
+                        return
+                    if assignee_slug == "tony":
+                        receipt = adapter.create_task(task)
+                    else:
                         receipt = adapter.create_agent_task(
                             task,
                             assignee_slug,
@@ -4432,6 +4501,23 @@ def _handler_class(
                         identity=identity_factory(),
                         due_day=due_day,
                     )
+                    duplicate_read = adapter.list_collection_tasks(
+                        task.lifecycle_root
+                    )
+                    duplicate_matches = [
+                        existing
+                        for existing in duplicate_read.tasks
+                        if _open_task_creation_matches(existing, task)
+                    ]
+                    if duplicate_matches:
+                        self._json(
+                            HTTPStatus.CONFLICT,
+                            _task_duplicate_warning_payload(
+                                duplicate_matches,
+                                requested=task,
+                            ),
+                        )
+                        return
                     receipt = adapter.create_inbox(task)
             except LifecycleIntegrityError as exc:
                 self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.223",
+  "current_version": "V0.0.224",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1338,6 +1338,12 @@
       "date": "2026-08-31",
       "title": "Fast System Ticket metadata refresh",
       "summary": "System Ticket direct canonical reads now use root backlink membership plus bounded list_pages updated_at metadata to reuse unchanged last-verified tickets and hydrate only changed or missing members, removing completed-ticket get_page fan-out while preserving reopened-ticket detection. Remote MCP reads also honor the owner-only GBRAIN_CREDENTIALS_FILE used by the dashboard launcher."
+    },
+    {
+      "version": "V0.0.224",
+      "date": "2026-09-01",
+      "title": "Prevent duplicate Bible parent task retries",
+      "summary": "Normal task creation now checks the target owner/lifecycle root for an existing open task with the same title, due date, Project, Goal, and parent before writing. A single match is returned as an adopted duplicate warning, while multiple matches fail closed with an ambiguous-duplicate warning so weekly Bible parent retries cannot create another Tony task without operator review."
     }
   ]
 }
