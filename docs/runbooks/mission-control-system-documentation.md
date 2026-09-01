@@ -136,17 +136,18 @@ to the reviewed source before updating relationships.
 
 ## Current verification baseline
 
-- Last verified released baseline date: `2026-08-31`
+- Last verified released baseline date: `2026-09-01`
   (`America/Los_Angeles`)
-- Last verified pushed release: `V0.0.223`
+- Last verified pushed release: `V0.0.224`
 - Release commits:
   `8eaa96611607974d4b2489645aeaa804d30f4378`,
   `978b2e35c128ee7e1a22322543794d6c9616613a`,
   `215cb9f1a9285809e16f56fcb4fab8459281b964`,
   `aff0803d98b3bf96e2f962576d5e657a57378123`,
   `fa44fd7bc91b7cd47b6d3c27c75d9274cb5cc2be`, and terminal Mission Control
-  fleet commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`; current System Ticket read
-  release commit `559c3a7f88d200472069791628595ed323218723`
+  fleet commit `35c15c38afffd0bf28e5a24c2d688b0039bc6478`; System Ticket read release
+  commit `559c3a7f88d200472069791628595ed323218723`; and terminal normal-task
+  duplicate-guard release commit `9ac2143c8a9acd60517d9a4fdcc9646f508c1dc2`
 - Service: `http://127.0.0.1:4179/`
 - Health: `http://127.0.0.1:4179/api/health`
 - Canonical store: `gbrain`
@@ -1377,6 +1378,20 @@ to the reviewed source before updating relationships.
   `RemoteHttpCommandRunner` also honors the owner-only
   `GBRAIN_CREDENTIALS_FILE` when `GBRAIN_HOME` selects a `remote_mcp` config;
   no secret value is embedded in source, config, receipts, or documentation.
+- V0.0.224 evidence: terminal pushed release commit
+  `9ac2143c8a9acd60517d9a4fdcc9646f508c1dc2`; the earlier candidate hash
+  `a45a9bf7bbd89ff69e6d1ff90f6698ed1fdca75c` was superseded only by removal
+  of an unused helper import. Dashboard-managed `/api/health` read back
+  `V0.0.224` with `gbrain 0.46.28.0`. Developer release verification reported
+  `python3 -m unittest discover -s tests` passed `1154` tests with `5` skipped.
+  Durable evidence: `docs/release-evidence/v0.0.224.md`.
+- Verified V0.0.224 behavior: normal `POST /api/tasks` and the repository
+  `mc-add-task` helper inspect the requested owner/lifecycle root before any
+  write. An open exact match on normalized title, `due_day`, Project, Goal,
+  and parent is adopted rather than duplicated; multiple exact matches fail
+  closed without a write. The helper uses the default remote-MCP adapter,
+  supports `--project-slug` and `--goal-slug`, and verifies the corresponding
+  `member_of` and `advances_goal` relationships.
 - GBrain documentation readback during this refresh found the canonical
   Overview and exactly one
   `member_of -> collections/mission-control-documentation` discovery edge.
@@ -1679,3 +1694,10 @@ last-verified completed-inclusive snapshot; changed, missing, or unverifiable
 members hydrate canonically. The owner-only `GBRAIN_CREDENTIALS_FILE` is a
 runtime credential path, not a value to copy into version control, logs, or
 receipts.
+V0.0.224 adds an idempotency guard to normal task creation, not a general task
+merge operation. Equality is limited to one owner/lifecycle root plus title,
+`due_day`, Project, Goal, and parent; detail, priority, and next action do not
+authorize creating a second matching task. A single match may be adopted only
+after canonical readback. Multiple matches are an integrity condition that
+requires operator review; clients must not choose one arbitrarily or retry a
+write. Completed and cancelled tasks remain outside the open-task match set.

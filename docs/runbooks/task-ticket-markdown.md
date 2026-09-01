@@ -137,6 +137,22 @@ formatter and return `markdown_contract == "unified-task-ticket-v1"` plus
 Dry-run internal routes that need a live title/membership read report
 `verification_required: true` with no rendered body; they are not falsely
 reported as failed writes or verified links.
+
+As of V0.0.224, live normal-task creation is adopt-before-create. Both
+`POST /api/tasks` and the repository `mc-add-task` helper first read the target
+owner/lifecycle collection and compare open tasks by normalized title,
+`due_day`, Project, Goal, and parent. A single exact match is the existing
+canonical task: the API responds `409` with `code=duplicate_task_exists` and
+the task projection, while the helper verifies the existing page and links and
+returns `action=adopted_existing` without writing. Multiple exact matches are
+an integrity ambiguity: the API returns `code=ambiguous_duplicate_task`, the
+helper returns `action=ambiguous_duplicate`, and neither path writes a page.
+Completed and cancelled tasks do not match this guard.
+
+The helper uses the default remote-MCP `GBrainAdapter` and accepts optional
+`--project-slug` and `--goal-slug` arguments. Project membership is verified as
+`member_of`; Goal advancement is verified as `advances_goal`. Do not replace
+the adapter with a local subprocess runner or retry an ambiguous result.
 Synchronize the active copy only after the candidate is otherwise authorized,
 then verify both source/installed pairs by hash:
 
