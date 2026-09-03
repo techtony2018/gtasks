@@ -130,6 +130,20 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_226_records_in_flight_expiry_before_force_cooldown(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.226")
+
+        self.assertIn("before force cooldown", release["title"])
+        for contract in (
+            "expired in-flight background reads",
+            "recent-payload cooldown",
+            "/api/proposals?refresh=1",
+            "/api/tasks?refresh=1",
+            "/api/agent-work?refresh=1",
+            "ordinary non-force cooldown",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.222")
 

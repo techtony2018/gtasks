@@ -168,6 +168,7 @@ class ReadSurfaceCache:
                 and age <= force_cooldown_seconds
                 and name not in self._dirty
                 and name not in self._errors
+                and name not in self._loading
             ):
                 needs_refresh = False
             recent_cold_error = (

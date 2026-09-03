@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.225",
+  "current_version": "V0.0.226",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1350,6 +1350,12 @@
       "date": "2026-09-03",
       "title": "Retry expired proposal read refreshes on demand",
       "summary": "Explicit forced read-cache refreshes now immediately retry after an expired background refresh while preserving last-valid payloads and ordinary non-force error cooldowns. This lets /api/proposals?refresh=1 recover from a bounded canonical GBrain timeout without staying stale for the full TTL after the original in-flight proposal read is fenced."
+    },
+    {
+      "version": "V0.0.226",
+      "date": "2026-09-03",
+      "title": "Fence expired read refreshes before force cooldown",
+      "summary": "Read-cache force refreshes now check expired in-flight background reads before applying the recent-payload cooldown, so /api/proposals?refresh=1, /api/tasks?refresh=1, and /api/agent-work?refresh=1 can fence a stuck generation and start a bounded replacement refresh while preserving the ordinary non-force cooldown contract."
     }
   ]
 }

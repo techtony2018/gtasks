@@ -344,6 +344,79 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 release_replacement.set()
                 self.assertTrue(cache.wait_for_idle("tasks"))
 
+    def test_force_cooldown_does_not_hide_expired_in_flight_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "read-snapshots.json"
+            store = ReadSnapshotStore(path)
+            store.save(
+                {
+                    "proposals": {
+                        "payload": {"proposals": [{"slug": "tasks/recent"}]},
+                        "last_valid_at": 1.0,
+                    }
+                }
+            )
+            now = 100.0
+            stalled_entered = threading.Event()
+            release_stalled = threading.Event()
+            replacement_entered = threading.Event()
+            release_replacement = threading.Event()
+            calls = 0
+
+            def clock() -> float:
+                return now
+
+            def loader() -> dict:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    stalled_entered.set()
+                    release_stalled.wait(timeout=2)
+                    return {"proposals": [{"slug": "tasks/stalled"}]}
+                replacement_entered.set()
+                release_replacement.wait(timeout=2)
+                return {"proposals": [{"slug": "tasks/recovered"}]}
+
+            cache = ReadSurfaceCache(
+                store,
+                clock=clock,
+                max_refresh_seconds=5,
+            )
+            try:
+                first = cache.read(
+                    "proposals",
+                    loader,
+                    ttl_seconds=300,
+                    force=True,
+                    force_cooldown_seconds=0,
+                )
+                self.assertEqual(first.state["status"], "refreshing")
+                self.assertTrue(stalled_entered.wait(timeout=1))
+
+                now = 106.0
+                retrying = cache.read(
+                    "proposals",
+                    loader,
+                    ttl_seconds=300,
+                    force=True,
+                    force_cooldown_seconds=120,
+                )
+                self.assertEqual(retrying.state["status"], "refreshing")
+                self.assertTrue(retrying.state["refreshing"])
+                self.assertEqual(retrying.payload["proposals"][0]["slug"], "tasks/recent")
+                self.assertTrue(replacement_entered.wait(timeout=1))
+                release_replacement.set()
+                self.assertTrue(cache.wait_for_idle("proposals"))
+
+                refreshed = cache.read("proposals", loader, ttl_seconds=300)
+                self.assertEqual(refreshed.state["status"], "fresh")
+                self.assertEqual(refreshed.payload["proposals"][0]["slug"], "tasks/recovered")
+                self.assertEqual(calls, 2)
+            finally:
+                release_stalled.set()
+                release_replacement.set()
+                self.assertTrue(cache.wait_for_idle("proposals"))
+
     def test_force_refresh_respects_cooldown_after_verified_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "read-snapshots.json"
