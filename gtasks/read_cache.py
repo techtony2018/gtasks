@@ -188,12 +188,13 @@ class ReadSurfaceCache:
                     self._error_at[name] = self._clock()
                     self._generations[name] = self._generations.get(name, 0) + 1
                     self._loading.pop(name, None)
-                    needs_refresh = False
+                    needs_refresh = force
                 else:
                     needs_refresh = False
             recent_refresh_error = (
                 record is not None
                 and name in self._errors
+                and not force
                 and self._clock() - self._error_at.get(name, 0.0)
                 < ttl_seconds
             )

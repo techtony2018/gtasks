@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.224",
+  "current_version": "V0.0.225",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1344,6 +1344,12 @@
       "date": "2026-09-01",
       "title": "Prevent duplicate Bible parent task retries",
       "summary": "Normal task creation now checks the target owner/lifecycle root for an existing open task with the same title, due date, Project, Goal, and parent before writing. A single match is returned as an adopted duplicate warning, while multiple matches fail closed with an ambiguous-duplicate warning so weekly Bible parent retries cannot create another Tony task without operator review."
+    },
+    {
+      "version": "V0.0.225",
+      "date": "2026-09-03",
+      "title": "Retry expired proposal read refreshes on demand",
+      "summary": "Explicit forced read-cache refreshes now immediately retry after an expired background refresh while preserving last-valid payloads and ordinary non-force error cooldowns. This lets /api/proposals?refresh=1 recover from a bounded canonical GBrain timeout without staying stale for the full TTL after the original in-flight proposal read is fenced."
     }
   ]
 }

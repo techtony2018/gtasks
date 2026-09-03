@@ -117,6 +117,19 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_225_records_proposal_force_refresh_retry(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.225")
+
+        self.assertIn("proposal read refreshes", release["title"])
+        for contract in (
+            "Explicit forced read-cache refreshes",
+            "expired background refresh",
+            "last-valid payloads",
+            "non-force error cooldowns",
+            "/api/proposals?refresh=1",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.222")
 
