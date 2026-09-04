@@ -1945,9 +1945,52 @@ class CollectionReadTests(unittest.TestCase):
             [
                 ("get_backlinks", {"slug": ACTIVE_ROOT}),
                 ("get_page", {"slug": task.slug}),
-                ("get_links", {"slug": task.slug}),
             ],
         )
+
+    def test_typed_member_collection_read_preserves_frontmatter_relationships_without_get_links(self) -> None:
+        task = replace(
+            new_inbox_task(
+                "Linked task",
+                datetime(2026, 7, 30, tzinfo=timezone.utc),
+                "linked01",
+            ),
+            project="projects/mission",
+            goal="goals/focus",
+            parent="tasks/parent",
+        )
+        page = stored_page(task)
+        page["frontmatter"]["project"] = task.project
+        page["frontmatter"]["links"] = [
+            {"to": ACTIVE_ROOT, "type": "member_of"},
+            {"to": task.project, "type": "member_of"},
+            {"to": task.goal, "type": "advances_goal"},
+            {"to": task.parent, "type": "child_of"},
+        ]
+        runner = FakeRunner(
+            {
+                "get_backlinks": [
+                    [
+                        {
+                            "from_slug": task.slug,
+                            "to_slug": ACTIVE_ROOT,
+                            "link_type": "member_of",
+                        }
+                    ]
+                ],
+                "get_page": [page],
+                "get_links": [GBrainCommandError("unexpected fan-out")],
+            }
+        )
+
+        result = GBrainAdapter(runner).list_collection_tasks(ACTIVE_ROOT)
+
+        self.assertEqual([item.slug for item in result.tasks], [task.slug])
+        self.assertEqual(result.tasks[0].project, task.project)
+        self.assertEqual(result.tasks[0].goal, task.goal)
+        self.assertEqual(result.tasks[0].parent, task.parent)
+        self.assertEqual(result.issues, ())
+        self.assertNotIn("get_links", [tool for tool, _ in runner.calls])
 
 
 class AgentProfileReadTests(unittest.TestCase):
@@ -3570,12 +3613,15 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
         self.assertEqual(result.issues[0].severity, "warning")
         self.assertIn("concept", result.issues[0].message)
 
-    def test_optional_goal_read_failure_does_not_hide_core_valid_task(self) -> None:
+    def test_legacy_optional_goal_read_failure_does_not_hide_core_valid_task(self) -> None:
         task = new_inbox_task(
             "Core-valid task",
             datetime(2026, 7, 30, tzinfo=timezone.utc),
             "a1b2c3",
         )
+        page = stored_page(task)
+        page["frontmatter"].pop("links")
+        page["frontmatter"]["collection"] = ACTIVE_ROOT
         runner = FakeRunner(
             {
                 "get_backlinks": [
@@ -3583,11 +3629,11 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
                         {
                             "from_slug": task.slug,
                             "to_slug": ACTIVE_ROOT,
-                            "link_type": "member_of",
+                            "link_type": "",
                         }
                     ]
                 ],
-                "get_page": [stored_page(task)],
+                "get_page": [page],
                 "get_links": [GBrainCommandError("relationship service unavailable")],
             }
         )
@@ -3596,8 +3642,12 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
 
         self.assertEqual([item.slug for item in result.tasks], [task.slug])
         self.assertEqual(result.tasks[0].goal, None)
-        self.assertEqual(result.issues[0].severity, "warning")
-        self.assertIn("relationships", result.issues[0].message)
+        self.assertTrue(
+            any(
+                issue.severity == "warning" and "relationships" in issue.message
+                for issue in result.issues
+            )
+        )
 
     def test_multiple_optional_goal_edges_warn_and_do_not_hide_task(self) -> None:
         task = new_inbox_task(
@@ -3605,6 +3655,12 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
             datetime(2026, 7, 30, tzinfo=timezone.utc),
             "a1b2c3",
         )
+        page = stored_page(task)
+        page["frontmatter"]["links"] = [
+            {"to": ACTIVE_ROOT, "type": "member_of"},
+            {"to": "goals/one", "type": "advances_goal"},
+            {"to": "goals/two", "type": "advances_goal"},
+        ]
         runner = FakeRunner(
             {
                 "get_backlinks": [
@@ -3616,21 +3672,7 @@ class ProjectPersistenceContinuationTests(unittest.TestCase):
                         }
                     ]
                 ],
-                "get_page": [stored_page(task)],
-                "get_links": [
-                    [
-                        {
-                            "from_slug": task.slug,
-                            "to_slug": "goals/one",
-                            "link_type": "advances_goal",
-                        },
-                        {
-                            "from_slug": task.slug,
-                            "to_slug": "goals/two",
-                            "link_type": "advances_goal",
-                        },
-                    ]
-                ],
+                "get_page": [page],
             }
         )
 

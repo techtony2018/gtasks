@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.226",
+  "current_version": "V0.0.227",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1356,6 +1356,12 @@
       "date": "2026-09-03",
       "title": "Fence expired read refreshes before force cooldown",
       "summary": "Read-cache force refreshes now check expired in-flight background reads before applying the recent-payload cooldown, so /api/proposals?refresh=1, /api/tasks?refresh=1, and /api/agent-work?refresh=1 can fence a stuck generation and start a bounded replacement refresh while preserving the ordinary non-force cooldown contract."
+    },
+    {
+      "version": "V0.0.227",
+      "date": "2026-09-04",
+      "title": "Reduce direct task hydration fan-out",
+      "summary": "Direct canonical task collection reads now use the verified typed root member_of backlink plus task frontmatter links instead of issuing a per-task get_links call for every typed member. Legacy untyped memberships still fall back to get_links, while active and completed Tony task roots keep the same canonical identities and optional project, goal, parent, dependency, and blocker projections with materially fewer remote MCP calls."
     }
   ]
 }

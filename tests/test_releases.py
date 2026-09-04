@@ -144,6 +144,20 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_227_records_direct_task_hydration_fanout_reduction(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.227")
+
+        self.assertIn("direct task hydration fan-out", release["title"])
+        for contract in (
+            "Direct canonical task collection reads",
+            "typed root member_of backlink",
+            "task frontmatter links",
+            "per-task get_links",
+            "Legacy untyped memberships",
+            "fewer remote MCP calls",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.222")
 

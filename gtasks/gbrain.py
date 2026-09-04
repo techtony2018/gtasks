@@ -2078,6 +2078,33 @@ def _require_single_lifecycle_edge(
     return edges[0]
 
 
+def _frontmatter_link_edges(
+    task_slug: str,
+    frontmatter: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """Project compiled task frontmatter links into read-only edge records."""
+    raw_links = frontmatter.get("links", [])
+    if not isinstance(raw_links, list):
+        return []
+    edges: list[Mapping[str, Any]] = []
+    for link in raw_links:
+        if (
+            isinstance(link, Mapping)
+            and isinstance(link.get("to"), str)
+            and str(link.get("to")).strip()
+            and isinstance(link.get("type"), str)
+            and str(link.get("type")).strip()
+        ):
+            edges.append(
+                {
+                    "from_slug": task_slug,
+                    "to_slug": str(link["to"]).strip(),
+                    "link_type": str(link["type"]).strip(),
+                }
+            )
+    return edges
+
+
 def _parse_required_archive_completed_at(frontmatter: Mapping[str, Any]) -> datetime:
     raw_completed_at = frontmatter.get("completed_at")
     if not isinstance(raw_completed_at, str) or not raw_completed_at.strip():
@@ -4146,7 +4173,12 @@ class GBrainAdapter:
             ),
         )
 
-    def list_collection_tasks(self, root_slug: str) -> CollectionRead:
+    def list_collection_tasks(
+        self,
+        root_slug: str,
+        *,
+        hydrate_graph_relationships: bool = False,
+    ) -> CollectionRead:
         if root_slug not in APPROVED_ROOTS:
             raise ValueError("collection root is not approved for GTasks")
         try:
@@ -4207,22 +4239,34 @@ class GBrainAdapter:
                 ):
                     return None, []
                 relationship_warning: CollectionIssue | None = None
-                try:
-                    raw_edges = self.runner.run("get_links", {"slug": slug})
-                    if not isinstance(raw_edges, list):
-                        raise GBrainProtocolError("get_links did not return a list")
-                    edges = raw_edges
-                except GBrainError:
-                    edges = []
-                    relationship_warning = _visible_warning(
-                        slug,
-                        "Optional task relationships could not be read from GBrain.",
-                        category="optional_relationship",
-                        impact=(
-                            "The task is shown from its core fields, but goal, project, "
-                            "dependency, and blocker links may be incomplete."
-                        ),
-                    )
+                if legacy_untyped or hydrate_graph_relationships:
+                    try:
+                        raw_edges = self.runner.run("get_links", {"slug": slug})
+                        if not isinstance(raw_edges, list):
+                            raise GBrainProtocolError("get_links did not return a list")
+                        edges = raw_edges
+                    except GBrainError:
+                        edges = []
+                        relationship_warning = _visible_warning(
+                            slug,
+                            "Optional task relationships could not be read from GBrain.",
+                            category="optional_relationship",
+                            impact=(
+                                "The task is shown from its core fields, but goal, "
+                                "project, dependency, and blocker links may be "
+                                "incomplete."
+                            ),
+                        )
+                else:
+                    edges = [
+                        {
+                            "from_slug": slug,
+                            "to_slug": root_slug,
+                            "link_type": "member_of",
+                        },
+                    ]
+                    if isinstance(frontmatter, Mapping):
+                        edges.extend(_frontmatter_link_edges(slug, frontmatter))
                 normalized_page, normalized_edges, warnings = (
                     _normalize_collection_task(
                         page,
@@ -7424,7 +7468,10 @@ class GBrainAdapter:
 
     def _approved_task(self, task_slug: str) -> Task:
         for root_slug in (ACTIVE_ROOT, COMPLETED_ROOT):
-            result = self.list_collection_tasks(root_slug)
+            result = self.list_collection_tasks(
+                root_slug,
+                hydrate_graph_relationships=True,
+            )
             for task in result.tasks:
                 if task.slug == task_slug:
                     return task
