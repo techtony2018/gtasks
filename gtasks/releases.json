@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.229",
+  "current_version": "V0.0.230",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1374,6 +1374,12 @@
       "date": "2026-09-07",
       "title": "Run explicit read-cache refreshes in the foreground",
       "summary": "Explicit Mission Control refresh requests now run the selected read-cache refresh in the request foreground, so /api/tasks?refresh=1, /api/proposals?refresh=1, /api/projects?refresh=1, /api/agent-work?refresh=1, and /api/system-tickets refreshes return the verified fresh payload or a bounded stale/error state instead of leaving another background worker advertised as indefinitely refreshing."
+    },
+    {
+      "version": "V0.0.230",
+      "date": "2026-09-07",
+      "title": "Keep task edits ahead of older refreshes",
+      "summary": "Invalidated refreshes can no longer replace newer verified data or clear a replacement refresh. Cache persistence preserves the newest snapshot across overlapping reads."
     }
   ]
 }

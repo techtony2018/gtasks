@@ -6,7 +6,7 @@ import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Condition, Thread
+from threading import Condition, Lock, Thread
 from time import time
 from typing import Any, Callable, Mapping
 
@@ -123,6 +123,7 @@ class ReadSurfaceCache:
         self._background = background
         self._max_refresh_seconds = max_refresh_seconds
         self._condition = Condition()
+        self._persistence_lock = Lock()
         self._records = store.load()
         self._loading: dict[str, float] = {}
         self._generations: dict[str, int] = {}
@@ -133,6 +134,12 @@ class ReadSurfaceCache:
     def invalidate(self, *names: str) -> None:
         with self._condition:
             self._dirty.update(names)
+            for name in set(names):
+                # A read started before a verified mutation cannot publish or
+                # clear the replacement worker's loading/error state.
+                self._generations[name] = self._generations.get(name, 0) + 1
+                self._loading.pop(name, None)
+            self._condition.notify_all()
 
     def read(
         self,
@@ -283,9 +290,14 @@ class ReadSurfaceCache:
                 }
                 self._dirty.discard(name)
                 self._errors.pop(name, None)
-                persisted = deepcopy(self._records)
             try:
-                self._store.save(persisted)
+                # Capture after acquiring the save lane so a delayed writer
+                # cannot overwrite a newer snapshot already persisted by another
+                # surface or generation. Disk I/O never holds the read lock.
+                with self._persistence_lock:
+                    with self._condition:
+                        persisted = deepcopy(self._records)
+                    self._store.save(persisted)
             except OSError:
                 # A private performance cache must never take Mission Control down.
                 pass

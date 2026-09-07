@@ -66,6 +66,144 @@ class ReadSnapshotStoreTests(unittest.TestCase):
 
 
 class ReadSurfaceCacheTests(unittest.TestCase):
+    def test_overlapping_refresh_persistence_keeps_newest_snapshot_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            old_saving, new_saved = threading.Event(), threading.Event()
+
+            class SlowStore(ReadSnapshotStore):
+                def save(self, records) -> None:
+                    revision = records["tasks"]["payload"]["revision"]
+                    if revision == "old":
+                        old_saving.set()
+                        # Without serialization, the newer snapshot finishes
+                        # first and the delayed save overwrites it afterward.
+                        new_saved.wait(timeout=0.2)
+                    super().save(records)
+                    if revision == "new":
+                        new_saved.set()
+
+            store = SlowStore(Path(temporary) / "reads.json")
+            cache = ReadSurfaceCache(store, background=False)
+            old = threading.Thread(target=lambda: cache.read(
+                "tasks", lambda: {"revision": "old"}, ttl_seconds=30,
+            ))
+            old.start()
+            try:
+                self.assertTrue(old_saving.wait(timeout=1))
+                cache.invalidate("tasks")
+                current = cache.read(
+                    "tasks", lambda: {"revision": "new"}, ttl_seconds=30,
+                )
+                old.join(timeout=2)
+                self.assertFalse(old.is_alive())
+                self.assertEqual(current.payload, {"revision": "new"})
+                self.assertEqual(store.load()["tasks"]["payload"], {"revision": "new"})
+            finally:
+                new_saved.set()
+                old.join(timeout=2)
+
+    def test_invalidated_refresh_cannot_replace_new_value_or_persist_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ReadSnapshotStore(Path(temporary) / "reads.json")
+            cache = ReadSurfaceCache(store, background=False)
+            cache.read("tasks", lambda: {"revision": "seed"}, ttl_seconds=30)
+            entered, release = threading.Event(), threading.Event()
+
+            def old_loader() -> dict:
+                entered.set()
+                release.wait(timeout=3)
+                return {"revision": "before-edit"}
+
+            old = threading.Thread(target=lambda: cache.read(
+                "tasks", old_loader, ttl_seconds=30, force=True,
+            ))
+            old.start()
+            try:
+                self.assertTrue(entered.wait(timeout=1))
+                cache.invalidate("tasks")
+                current = cache.read(
+                    "tasks", lambda: {"revision": "after-edit"}, ttl_seconds=30,
+                    force=True, force_cooldown_seconds=300,
+                )
+                self.assertEqual(current.payload, {"revision": "after-edit"})
+                release.set()
+                old.join(timeout=2)
+                self.assertFalse(old.is_alive())
+                final = cache.read("tasks", old_loader, ttl_seconds=30)
+                self.assertEqual(final.payload, {"revision": "after-edit"})
+                self.assertEqual(final.state["status"], "fresh")
+                self.assertEqual(store.load()["tasks"]["payload"], final.payload)
+            finally:
+                release.set()
+                old.join(timeout=2)
+
+    def test_old_refresh_finishing_after_invalidation_requires_new_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ReadSnapshotStore(Path(temporary) / "reads.json")
+            cache = ReadSurfaceCache(store, background=False)
+            cache.read("tasks", lambda: {"revision": "seed"}, ttl_seconds=30)
+
+            def invalidated_loader() -> dict:
+                cache.invalidate("tasks")
+                return {"revision": "obsolete"}
+
+            invalidated = cache.read("tasks", invalidated_loader, ttl_seconds=30, force=True)
+            self.assertTrue(invalidated.state["stale"])
+            self.assertEqual(invalidated.payload, {"revision": "seed"})
+            current = cache.read(
+                "tasks", lambda: {"revision": "current"}, ttl_seconds=30,
+                force=True, force_cooldown_seconds=300,
+            )
+            self.assertEqual(current.payload, {"revision": "current"})
+            self.assertEqual(current.state["status"], "fresh")
+
+    def test_invalidated_failure_cannot_clear_or_poison_replacement_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ReadSnapshotStore(Path(temporary) / "reads.json")
+            cache = ReadSurfaceCache(store, background=False)
+            cache.read("tasks", lambda: {"revision": "seed"}, ttl_seconds=30)
+            old_entered, old_release = threading.Event(), threading.Event()
+            new_entered, new_release = threading.Event(), threading.Event()
+
+            def failed_old_loader() -> dict:
+                old_entered.set()
+                old_release.wait(timeout=3)
+                raise RuntimeError("obsolete failure")
+
+            def replacement_loader() -> dict:
+                new_entered.set()
+                new_release.wait(timeout=3)
+                return {"revision": "current"}
+
+            old = threading.Thread(target=lambda: cache.read(
+                "tasks", failed_old_loader, ttl_seconds=30, force=True,
+            ))
+            new = threading.Thread(target=lambda: cache.read(
+                "tasks", replacement_loader, ttl_seconds=30, force=True,
+            ))
+            old.start()
+            try:
+                self.assertTrue(old_entered.wait(timeout=1))
+                cache.invalidate("tasks")
+                new.start()
+                self.assertTrue(new_entered.wait(timeout=1))
+                old_release.set()
+                old.join(timeout=2)
+                held = cache.read("tasks", replacement_loader, ttl_seconds=30)
+                self.assertTrue(held.state["refreshing"])
+                self.assertIsNone(held.state["error"])
+                new_release.set()
+                new.join(timeout=2)
+                self.assertFalse(new.is_alive())
+                self.assertEqual(cache.read("tasks", replacement_loader, ttl_seconds=30).payload,
+                                 {"revision": "current"})
+            finally:
+                old_release.set()
+                new_release.set()
+                old.join(timeout=2)
+                if new.ident is not None:
+                    new.join(timeout=2)
+
     def test_cold_failure_is_reported_without_immediate_retry_loop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             calls = 0

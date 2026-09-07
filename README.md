@@ -56,6 +56,12 @@ favicon, artwork sources, guidance, and review previews live in
 
 ## Versioning and releases
 
+V0.0.230 fences cache refreshes started before a verified mutation so they cannot
+replace newer task data, report obsolete data as fresh, or clear a replacement
+worker. Serialized snapshot writes prevent an older disk write from undoing a
+newer cached result after restart. The staged reliability and daily-mission work
+is tracked in [the iteration plan](docs/superpowers/plans/2026-09-07-mission-control-iterations.md).
+
 GTasks starts at `V0.0.1`. The canonical current version and complete
 user-facing release history live together in `gtasks/releases.json`; runtime
 health, the sidebar About control, and the About dialog all read that catalog.
