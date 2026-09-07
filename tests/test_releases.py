@@ -158,6 +158,20 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_228_records_dispatcher_handoff_attention_scoping(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.228")
+
+        self.assertIn("dispatcher handoff attention", release["title"])
+        for contract in (
+            "only when the canonical task has explicit Agent execution authority",
+            "Agent owner",
+            "canonical handoff resume owner",
+            "Goal derivation",
+            "Ordinary Tony tasks",
+            "remain editable",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.222")
 

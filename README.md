@@ -1091,6 +1091,12 @@ store has a latest dispatcher status but the canonical task `handoff` field is
 empty. The projection helps operators see recovery evidence in Agents and
 fallback Task details; it never overwrites canonical handoff data, and
 completed rows suppress it.
+V0.0.228 scopes the fallback Task-detail projection more narrowly: stale
+dispatcher history is shown as repair attention only when the canonical task
+has explicit Agent execution authority through an Agent owner, canonical
+handoff resume owner, or Goal derivation. Ordinary Tony tasks with old
+suppressed handoff history stay editable and do not inherit the Agent repair
+banner.
 
 V0.0.178 keeps `/api/agent-work` on the same bounded last-verified cache model
 as the other slow read surfaces: cold Agent Work reads return `202`/`loading`,

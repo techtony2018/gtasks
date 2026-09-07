@@ -647,6 +647,19 @@ def _parent_slug_from_request(
     return raw_parent
 
 
+def _has_agent_execution_authority(payload: dict[str, Any]) -> bool:
+    """Return true only when task detail has explicit Agent execution authority."""
+    owner_agent = payload.get("owner_agent")
+    if isinstance(owner_agent, str) and owner_agent.startswith("agents/"):
+        return True
+    handoff = payload.get("handoff")
+    if isinstance(handoff, dict):
+        resume_owner = handoff.get("resume_owner")
+        if isinstance(resume_owner, str) and resume_owner.startswith("agents/"):
+            return True
+    return isinstance(payload.get("goal_derivation"), dict)
+
+
 def exact_task_api_payload(
     adapter: GBrainAdapter,
     task_slug: str,
@@ -661,7 +674,11 @@ def exact_task_api_payload(
         payload = adapter.get_task(task_slug).to_dict()
     if handoff_store is not None:
         status = handoff_store.latest_task_handoff_status(task_slug)
-        if status is not None and payload.get("status") != "completed":
+        if (
+            status is not None
+            and payload.get("status") != "completed"
+            and _has_agent_execution_authority(payload)
+        ):
             payload["dispatcher_handoff"] = {"status": status}
     return payload
 

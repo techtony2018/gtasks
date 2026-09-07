@@ -3239,6 +3239,42 @@ class HandoffDispatcherApiTests(unittest.TestCase):
             {"status": "dead_letter"},
         )
 
+    def test_exact_task_api_suppresses_dispatcher_handoff_for_normal_tony_task(self) -> None:
+        task = replace(
+            new_task(
+                title="Normal Tony task",
+                detail="This task has stale dispatcher history only.",
+                due_day=date(2026, 9, 2),
+                now=self.NOW,
+                identity="normal-tony-task",
+            ),
+            slug=self.TASK,
+            status="planned",
+            owner_agent=None,
+            handoff=None,
+            goal_derivation=None,
+        )
+
+        class StatusStore:
+            def latest_task_handoff_status(self, slug):
+                return "suppressed" if slug == task.slug else None
+
+        harness = ServerHarness(
+            self,
+            FakeAdapter(active=(task,)),
+            handoff_store=StatusStore(),
+        )
+
+        encoded = self.TASK.replace("/", "%2F")
+        status, payload, _ = harness.request("GET", f"/api/tasks/{encoded}")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["task"]["status"], "planned")
+        self.assertIsNone(payload["task"]["owner_agent"])
+        self.assertIsNone(payload["task"]["handoff"])
+        self.assertIsNone(payload["task"]["goal_derivation"])
+        self.assertNotIn("dispatcher_handoff", payload["task"])
+
     def test_exact_task_api_suppresses_dispatcher_recovery_for_completed_task(self) -> None:
         task = replace(
             new_task(

@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.227",
+  "current_version": "V0.0.228",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1362,6 +1362,12 @@
       "date": "2026-09-04",
       "title": "Reduce direct task hydration fan-out",
       "summary": "Direct canonical task collection reads now use the verified typed root member_of backlink plus task frontmatter links instead of issuing a per-task get_links call for every typed member. Legacy untyped memberships still fall back to get_links, while active and completed Tony task roots keep the same canonical identities and optional project, goal, parent, dependency, and blocker projections with materially fewer remote MCP calls."
+    },
+    {
+      "version": "V0.0.228",
+      "date": "2026-09-07",
+      "title": "Scope dispatcher handoff attention to Agent-authorized tasks",
+      "summary": "Exact task detail now projects stale dispatcher handoff repair attention only when the canonical task has explicit Agent execution authority, such as an Agent owner, canonical handoff resume owner, or Goal derivation. Ordinary Tony tasks with stale suppressed handoff history remain editable, while Agent work and active Agent-owned task details still surface dispatcher recovery evidence."
     }
   ]
 }
