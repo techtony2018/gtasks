@@ -94,7 +94,37 @@ Before each later iteration, inspect its current implementation and append its e
 - Relocation verification: the isolated retry/browser subset passed14 tests in4.851s. No temporary QA server remains running.
 - Documentation Manager completed review of the pushed repository docs and confirmed the release/state distinctions. Canonical Overview mirror remains blocked: its authenticated remote-MCP writes timed out and direct readback still reported V0.0.224. Do not call that mirror updated; repo docs are current. Documentation Manager task: `019fcb77-2886-7f31-a4d2-0b8bbe7e1477`.
 
-## Completion audit
+### Iteration 2 continuation — review repairs
+
+- Canonical edit revision guard and browser reload draft/identity recovery are
+  implemented in the isolated candidate. The affected gate reached 237 PASS.
+- Independent code review then found four Important issues: exact GET lacked
+  the event-progress revision, adapter token normalization differed from GET,
+  blocked session storage lost in-tab retry state on dialog reopen, and the
+  first uncertain transport error omitted the original task reference.
+- First repair wave passed243 targeted tests, including a newly reproduced
+  delayed A/B editor-response race. Re-review found one remaining legacy
+  project repair defect hidden by predetermined test readback. A second
+  bounded repair uses persisted actual writes. Additional stateful coverage
+  exposed and repaired supported agent/QA scope preservation and project
+  graph reconciliation. Latest relationship gate:39 PASS. Final combined
+  affected/release gate:339 PASS in28.838s; syntax/diff checks clean. Final
+  re-review returned spec PASS and quality PASS with no findings. Independent
+  managed/synthetic UI QA returned PASS against the unchanged frozen V231
+  candidate at1440x1000 and390x844. Runtime aggregate
+  `fd3b635fd792d79af180492ada56ff0c53ba90a3460533af646b461ad010656c`
+  is now commit-authorized; release/deploy verification follows.
+- Synthetic QA fixture smoke test verified a genuinely dropped response after
+  receipt persistence and same-task retry readback. The fixture was stopped
+  after the check; it uses no production GBrain data or transport.
+- Managed health readback remains V0.0.230, gbrain 0.46.28.0. Root runtime is
+  unchanged; unrelated `.gitignore` remains preserved.
+- The frozen first repair candidate was briefly staged/restarted on the
+  managed service for the pre-commit boundary, then restored to V0.0.230 when
+  the re-review finding arrived, before UI QA dispatch or production writes.
+  Full gate history is in `docs/release-evidence/v0.0.231.md`.
+
+## Completion audit (full goal)
 
 - [ ] All nine iteration acceptance rows verified against code and behavior.
 - [ ] Targeted tests recorded for every iteration; integration suite passes at final milestone.

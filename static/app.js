@@ -454,6 +454,11 @@ const state = {
   showDismissedWarnings: false,
   taskEditorMode: "create",
   taskEditorSourceSlug: null,
+  taskEditorOpenToken: 0,
+  taskCreateOperationKey: null,
+  taskCreatePendingPayload: null,
+  taskEditorBase: null,
+  taskCreationStorageAvailable: true,
   taskEditorMetricContext: null,
   agents: [],
   agentsLoaded: false,
@@ -969,6 +974,7 @@ const elements = {
   taskEditorSubmit: document.querySelector("#task-editor-submit"),
   taskEditorSaveApprove: document.querySelector("#task-editor-save-approve"),
   taskEditorSafety: document.querySelector("#task-editor-safety"),
+  taskEditorDiscardDraft: document.querySelector("#task-editor-discard-draft"),
   agentProfileDialog: document.querySelector("#agent-profile-dialog"),
   agentProfileHeading: document.querySelector("#agent-profile-heading"),
   agentProfileSummary: document.querySelector("#agent-profile-summary"),
@@ -9701,6 +9707,7 @@ async function loadTaskEditorReferenceData() {
 function showTaskEditorLoading(mode, heading) {
   state.taskEditorMode = mode;
   elements.taskEditorForm.reset();
+  elements.taskEditorDiscardDraft.classList.add("is-hidden");
   elements.taskEditorMode.textContent = "Reading canonical choices";
   elements.taskEditorHeading.textContent = heading;
   elements.taskEditorSafety.textContent =
@@ -9715,6 +9722,8 @@ async function openCreateTask() {
   await loadTaskEditorReferenceData();
   state.taskEditorMode = "create";
   state.taskEditorSourceSlug = null;
+  const pending = readPendingTaskCreation();
+  state.taskCreateOperationKey = pending?.key || null;
   elements.taskEditorForm.reset();
   elements.taskEditorMode.textContent = "New canonical task";
   elements.taskEditorHeading.textContent = "Create Task";
@@ -9733,9 +9742,74 @@ async function openCreateTask() {
   elements.taskEditorHandoffReason.classList.add("is-hidden");
   populateTaskEditorRelationships();
   resetTaskEditorMetric();
+  if (pending) {
+    const draft = pending.payload;
+    elements.taskEditorTitle.value = draft.title || "";
+    elements.taskEditorDetail.value = draft.detail || "";
+    elements.taskEditorPriority.value = draft.priority || "normal";
+    elements.taskEditorDue.value = draft.due_day || "";
+    elements.taskEditorInitialTodo.value = draft.initial_todo || "";
+    populateTaskEditorAssignees(draft.assignee_slug || "tony");
+    populateTaskEditorRelationships({ project: draft.project_slug, goal: draft.goal_slug });
+    resetTaskEditorMetric(draft.progress_metric);
+    elements.taskEditorSafety.textContent = "Restored the last submitted draft and its retry ID in this tab. Retry unchanged to read back the original result. Discarding this local draft does not delete any saved task.";
+  }
+  elements.taskEditorDiscardDraft.classList.toggle("is-hidden", !pending);
   elements.taskEditorError.classList.add("is-hidden");
   elements.taskEditorDialog.showModal();
   window.setTimeout(() => elements.taskEditorTitle.focus(), 0);
+}
+
+const PENDING_TASK_CREATION_KEY = "gtasks.pendingTaskCreation.v1";
+
+function readPendingTaskCreation() {
+  try {
+    const value = JSON.parse(window.sessionStorage.getItem(PENDING_TASK_CREATION_KEY) || "null");
+    if (value?.schema === 1 && typeof value.key === "string" && value.key.length <= 200
+      && value.payload && typeof value.payload.title === "string") {
+      state.taskCreateOperationKey = value.key;
+      state.taskCreatePendingPayload = value.payload;
+      return value;
+    }
+  } catch {
+    // Fall through to the same-tab copy when browser storage is blocked.
+  }
+  return state.taskCreateOperationKey && state.taskCreatePendingPayload
+    ? { schema: 1, key: state.taskCreateOperationKey, payload: state.taskCreatePendingPayload }
+    : null;
+}
+
+function taskCreationAttempt(payload) {
+  const pending = readPendingTaskCreation();
+  state.taskCreateOperationKey = pending?.key || state.taskCreateOperationKey || window.crypto.randomUUID();
+  state.taskCreatePendingPayload = pending?.payload || payload;
+  if (!pending) {
+    try {
+      window.sessionStorage.setItem(PENDING_TASK_CREATION_KEY, JSON.stringify({
+        schema: 1, key: state.taskCreateOperationKey, payload,
+      }));
+      state.taskCreationStorageAvailable = true;
+    } catch {
+      state.taskCreationStorageAvailable = false;
+      elements.taskEditorSafety.textContent = "Browser storage is unavailable. In-tab retry protection still works; keep this tab open until the result is verified.";
+    }
+  }
+  elements.taskEditorDiscardDraft.classList.remove("is-hidden");
+  return state.taskCreateOperationKey;
+}
+
+function clearTaskCreationAttempt() {
+  state.taskCreateOperationKey = null;
+  state.taskCreatePendingPayload = null;
+  try { window.sessionStorage.removeItem(PENDING_TASK_CREATION_KEY); } catch { /* in-tab state is still cleared */ }
+  elements.taskEditorDiscardDraft.classList.add("is-hidden");
+}
+
+async function discardPendingTaskCreation() {
+  if (!window.confirm("Discard this local draft and start a different task? A previous save may already exist. Inspect its result first; this does not delete any task in GBrain.")) return;
+  clearTaskCreationAttempt();
+  elements.taskEditorDialog.close();
+  await openCreateTask();
 }
 
 async function openDuplicateTask() {
@@ -9784,11 +9858,32 @@ async function openDuplicateTask() {
 
 async function openEditTask() {
   if (state.selectedKind !== "task" || !state.selectedSlug) return;
-  const task = findTaskBySlug(state.selectedSlug);
-  if (!task) return;
+  const sourceSlug = state.selectedSlug;
+  const openToken = state.taskEditorOpenToken + 1;
+  state.taskEditorOpenToken = openToken;
   showTaskEditorLoading("edit", "Preparing Edit…");
   await loadTaskEditorReferenceData();
-  if (!elements.taskEditorDialog.open) return;
+  if (!elements.taskEditorDialog.open || state.taskEditorMode !== "edit"
+    || state.taskEditorOpenToken !== openToken || state.selectedSlug !== sourceSlug) return;
+  let task;
+  try {
+    const response = await fetch(`/api/tasks/${encodeURIComponent(sourceSlug)}`, {
+      headers: { Accept: "application/json" },
+    });
+    const result = await response.json();
+    if (!response.ok || result.task?.slug !== sourceSlug || !/^[a-f0-9]{64}$/.test(result.task.edit_revision || "")) {
+      throw new Error(result.error || "A current task revision could not be verified. Close and reopen Edit to retry.");
+    }
+    task = result.task;
+  } catch (error) {
+    if (state.taskEditorOpenToken !== openToken || state.selectedSlug !== sourceSlug) return;
+    elements.taskEditorError.textContent = error.message;
+    elements.taskEditorError.classList.remove("is-hidden");
+    return;
+  }
+  if (!elements.taskEditorDialog.open || state.taskEditorMode !== "edit"
+    || state.taskEditorOpenToken !== openToken || state.selectedSlug !== sourceSlug) return;
+  state.taskEditorBase = JSON.parse(JSON.stringify(task));
   state.taskEditorMode = "edit";
   state.taskEditorSourceSlug = task.slug;
   elements.taskEditorForm.reset();
@@ -9873,7 +9968,8 @@ async function submitTaskEditor(event) {
         }
         : {}),
       ...(state.taskEditorMode === "edit" ? {
-        status: findTaskBySlug(state.taskEditorSourceSlug)?.status === "proposed" ? "proposed" : elements.taskEditorStatus.value,
+        status: state.taskEditorBase?.status === "proposed" ? "proposed" : elements.taskEditorStatus.value,
+        expected_revision: state.taskEditorBase?.edit_revision || null,
         assignee_slug: elements.taskEditorAssignee.value,
         handoff_reason: elements.taskEditorHandoffReason.value,
         progress_metric_revision: state.taskEditorMetricContext?.revision || null,
@@ -9895,22 +9991,31 @@ async function submitTaskEditor(event) {
         ? `/api/tasks/${encodeURIComponent(state.taskEditorSourceSlug)}/duplicate`
         : "/api/tasks";
     showMutationStatus(taskStatus, "pending", { persistent: true });
+    if (state.taskEditorMode === "create") taskCreationAttempt(payload);
     const response = await fetch(endpoint, {
       method: state.taskEditorMode === "edit" ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
+        ...(state.taskEditorMode === "create"
+          ? { "Idempotency-Key": state.taskCreateOperationKey }
+          : {}),
       },
       body: JSON.stringify(payload),
     });
     const result = await response.json();
     const savedTask = result.task || result.receipt?.task;
     if (!response.ok || !result.receipt?.verified || !savedTask) {
+      if (state.taskEditorMode === "create" && response.status === 422 && result.code === "invalid_task") {
+        // The server reserves this code for validation before any write.
+        clearTaskCreationAttempt();
+      }
       const error = new Error(
         result.error || "Task creation did not include verified GBrain readback.",
       );
       error.code = result.code;
       error.slug = result.slug;
+      error.currentTask = result.current_task;
       throw error;
     }
     if (state.taskEditorMode === "edit") {
@@ -9918,6 +10023,7 @@ async function submitTaskEditor(event) {
         requestedStatus: payload.status,
       });
     }
+    if (state.taskEditorMode === "create") clearTaskCreationAttempt();
     elements.taskEditorDialog.close();
     if (savedTask.owner_agent) {
       await Promise.all([
@@ -9954,7 +10060,9 @@ async function submitTaskEditor(event) {
     }
   } catch (error) {
     elements.taskEditorError.textContent =
-      error.code === "partial_write" && error.slug
+      error.code === "task_edit_conflict"
+        ? taskEditConflictMessage(error.currentTask)
+        : ["partial_write", "task_operation_unconfirmed", "task_operation_readback_unavailable"].includes(error.code) && error.slug
         ? `${error.message} Do not retry yet; inspect ${error.slug} first.`
         : error.message;
     elements.taskEditorError.classList.remove("is-hidden");
@@ -9969,6 +10077,21 @@ async function submitTaskEditor(event) {
     elements.taskEditorSubmit.disabled = false;
     elements.taskEditorSubmit.textContent = originalLabel;
   }
+}
+
+function taskEditConflictMessage(current) {
+  const base = state.taskEditorBase;
+  const fields = [
+    ["title", "Title"], ["detail", "Description"], ["status", "Status"],
+    ["priority", "Priority"], ["due_day", "Due date"], ["project", "Project"],
+    ["goal", "Goal"], ["parent", "Parent task"], ["owner_agent", "Assignee"],
+    ["progress_metric", "Progress"],
+  ];
+  const changed = current && base ? fields.filter(([key]) =>
+    JSON.stringify(base[key] ?? null) !== JSON.stringify(current[key] ?? null),
+  ).map(([, label]) => label) : [];
+  const detail = changed.length ? ` Changed since you opened Edit: ${changed.join(", ")}.` : "";
+  return `The saved task changed.${detail} Your draft is kept here. Copy any edits you want to retain, then close and reopen Edit to compare the latest saved version. Nothing was overwritten.`;
 }
 
 async function saveAndApproveProposedTask() {
@@ -9999,6 +10122,7 @@ elements.taskEditorClose.addEventListener("click", () => {
   elements.taskEditorDialog.close();
 });
 elements.taskEditorForm.addEventListener("submit", submitTaskEditor);
+elements.taskEditorDiscardDraft.addEventListener("click", discardPendingTaskCreation);
 elements.taskTodoAddToggle.addEventListener("click", () => {
   setTodoAddOpen(true);
 });

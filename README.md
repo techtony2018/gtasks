@@ -56,6 +56,21 @@ favicon, artwork sources, guidance, and review previews live in
 
 ## Versioning and releases
 
+V0.0.231 adds stable retry identities to ordinary task creation and canonical
+revision checks to the full task editor. A same-request retry reads the original
+verified task; changing values under the same identity conflicts. An uncertain
+write keeps its original task reference and is not automatically replayed.
+Creation drafts and retry identities survive tab reloads when session storage
+is available; when it is blocked, keep the tab open for in-memory recovery.
+Edit conflicts retain the form and identify changed fields. These are optimistic
+checks: the remote MCP service does not expose atomic conditional writes, so
+simultaneous independent writers still require upstream concurrency support.
+The private retry journal defaults to
+`~/Library/Application Support/GTasks/task-operations.sqlite3` (override with
+`GTASKS_TASK_OPERATION_FILE`). It stores request hashes and operation receipts,
+not a replacement canonical task database. Current verification/release status
+is recorded in [the V0.0.231 evidence](docs/release-evidence/v0.0.231.md).
+
 V0.0.230 fences cache refreshes started before a verified mutation so they cannot
 replace newer task data, report obsolete data as fresh, or clear a replacement
 worker. Serialized snapshot writes prevent an older disk write from undoing a
@@ -82,7 +97,7 @@ This is a deliberate release step, not a git hook and not a restart-time bump.
 Tests and server startup reject skipped, repeated, major, or minor version
 drift.
 
-Latest verified pushed release baseline: V0.0.223 at commit
+A prior verified pushed release baseline was V0.0.223 at commit
 `559c3a7f88d200472069791628595ed323218723`. Mission Control has exactly
 three execution Agents, Tammy, Timmy, and Toddy, with one fixed Codex task and
 one singleton Dispatcher on each registered machine; the fleet verifier reads

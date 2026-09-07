@@ -91,6 +91,10 @@ from .operational_logs import (
 )
 from .releases import release_payload
 from .read_cache import ReadSnapshotStore, ReadSurfaceCache
+from .task_operations import (
+    TaskOperation, TaskOperationConflict, TaskOperationStore, default_task_operation_path,
+)
+from .task_revisions import TaskEditConflict, task_edit_revision
 from .warnings import WarningDismissalStore
 
 
@@ -668,10 +672,12 @@ def exact_task_api_payload(
 ) -> dict[str, Any]:
     """Expose an optional display projection without changing Task authority."""
     projector = getattr(adapter, "get_task_api_payload", None)
+    task = None
     if callable(projector):
         payload = dict(projector(task_slug))
     else:
-        payload = adapter.get_task(task_slug).to_dict()
+        task = adapter.get_task(task_slug)
+        payload = task.to_dict()
     if handoff_store is not None:
         status = handoff_store.latest_task_handoff_status(task_slug)
         if (
@@ -680,6 +686,10 @@ def exact_task_api_payload(
             and _has_agent_execution_authority(payload)
         ):
             payload["dispatcher_handoff"] = {"status": status}
+    payload["edit_revision"] = task_edit_revision(payload)
+    if "progress_metric_revision" not in payload:
+        task = task or adapter.get_task(task_slug)
+        payload["progress_metric_revision"] = progress_revision(task)
     return payload
 
 
@@ -720,6 +730,7 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         {
             **task.to_dict(),
             "progress_metric_revision": progress_revision(task),
+            "edit_revision": task_edit_revision(task.to_dict()),
             "in_default_display_window": task_is_in_default_display_window(
                 task,
                 today,
@@ -840,6 +851,7 @@ def _handler_class(
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
     gbrain_version_provider: Callable[[], str | None] | None = None,
+    task_operation_store: TaskOperationStore | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     active_read_cache = read_cache or ReadSurfaceCache(ReadSnapshotStore())
     active_ical_reader = ical_reader or ICalendarReader()
@@ -4379,7 +4391,55 @@ def _handler_class(
             if payload is None:
                 return
 
-            now = clock()
+            operation = None
+            key = self.headers.get("Idempotency-Key")
+            if key is not None:
+                if task_operation_store is None:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                        "error": "Task retry identity storage is unavailable. No write started.",
+                        "code": "task_operation_unavailable",
+                    })
+                    return
+                try:
+                    operation = task_operation_store.reserve(key, payload, clock())
+                except TaskOperationConflict as exc:
+                    self._json(HTTPStatus.CONFLICT, {
+                        "error": str(exc), "code": "task_operation_conflict",
+                    })
+                    return
+                except ValueError as exc:
+                    self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc)})
+                    return
+                except (OSError, sqlite3.Error):
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                        "error": "Task retry identity storage is unavailable. No write started.",
+                        "code": "task_operation_unavailable",
+                    })
+                    return
+                if not operation.is_new:
+                    if not operation.verified:
+                        self._json(HTTPStatus.CONFLICT, {
+                            "error": "This creation is running or its result is unconfirmed. Inspect the original task before starting another creation. Your draft is unchanged.",
+                            "code": "task_operation_unconfirmed", "slug": operation.slug,
+                        })
+                        return
+                    try:
+                        current = exact_task_api_payload(adapter, operation.slug)
+                    except (DomainValidationError, GBrainError):
+                        self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                            "error": "The original creation was verified, but current canonical readback is unavailable. No new task was created.",
+                            "code": "task_operation_readback_unavailable", "slug": operation.slug,
+                        })
+                        return
+                    self._json(HTTPStatus.OK, {
+                        "task": current, "receipt": {"slug": operation.slug, "verified": True},
+                        "recovered": True,
+                    })
+                    return
+            self._create_task(payload, operation)
+
+        def _create_task(self, payload: dict[str, Any], operation: TaskOperation | None) -> None:
+            now = operation.created_at if operation is not None else clock()
             raw_due_day = payload.get("due_day")
             due_source = "task_creation_day"
             due_day = now.date()
@@ -4431,6 +4491,7 @@ def _handler_class(
                 return
             is_full_creation = bool(set(payload) - quick_add_fields)
             initial_todo_payload = None
+            remote_write_started = False
             try:
                 if is_full_creation:
                     initial_todo = payload.get("initial_todo", "")
@@ -4469,6 +4530,8 @@ def _handler_class(
                         identity=identity_factory(),
                     )
                     task = replace(task, parent=parent_slug)
+                    if operation is not None:
+                        task = replace(task, slug=operation.slug)
                     if assignee_slug != "tony":
                         work_root = available_agents[assignee_slug]
                         task = replace(
@@ -4493,6 +4556,7 @@ def _handler_class(
                             ),
                         )
                         return
+                    remote_write_started = True
                     if assignee_slug == "tony":
                         receipt = adapter.create_task(task)
                     else:
@@ -4500,6 +4564,8 @@ def _handler_class(
                             task,
                             assignee_slug,
                         )
+                    if not receipt.verified:
+                        raise PartialMutationError(task.slug, "Task creation was not verified. Inspect the original task before retrying.")
                     if initial_todo.strip():
                         todo_receipt = adapter.create_todo(
                             task.slug,
@@ -4511,6 +4577,8 @@ def _handler_class(
                             idempotency_key="task-create-initial-todo",
                             now=now,
                         )
+                        if not todo_receipt.verified or not getattr(todo_receipt, "parent_relationship_verified", True):
+                            raise PartialMutationError(task.slug, "The initial TODO was not verified. Inspect this task before retrying.")
                         initial_todo_payload = (
                             todo_receipt.todo.to_dict()
                             if hasattr(todo_receipt.todo, "to_dict")
@@ -4523,6 +4591,8 @@ def _handler_class(
                         identity=identity_factory(),
                         due_day=due_day,
                     )
+                    if operation is not None:
+                        task = replace(task, slug=operation.slug)
                     duplicate_read = adapter.list_collection_tasks(
                         task.lifecycle_root
                     )
@@ -4540,11 +4610,20 @@ def _handler_class(
                             ),
                         )
                         return
+                    remote_write_started = True
                     receipt = adapter.create_inbox(task)
+                    if not receipt.verified:
+                        raise PartialMutationError(task.slug, "Task creation was not verified. Inspect the original task before retrying.")
             except LifecycleIntegrityError as exc:
                 self._json(HTTPStatus.CONFLICT, _lifecycle_attention_payload(exc))
                 return
             except (DomainValidationError, ValueError) as exc:
+                if remote_write_started:
+                    self._json(HTTPStatus.BAD_GATEWAY, {
+                        "error": str(exc), "code": "partial_write", "slug": task.slug,
+                    })
+                    invalidate_snapshot()
+                    return
                 self._json(
                     HTTPStatus.UNPROCESSABLE_ENTITY,
                     {"error": str(exc), "code": "invalid_task"},
@@ -4559,14 +4638,36 @@ def _handler_class(
                         "slug": exc.slug,
                     },
                 )
+                invalidate_snapshot()
                 return
             except GBrainError as exc:
+                if remote_write_started:
+                    self._json(
+                        HTTPStatus.BAD_GATEWAY,
+                        {
+                            "error": str(exc),
+                            "code": "task_operation_unconfirmed",
+                            "slug": task.slug,
+                        },
+                    )
+                    invalidate_snapshot()
+                    return
                 self._json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     {"error": str(exc), "code": "gbrain_unavailable"},
                 )
                 return
 
+            if operation is not None and receipt.verified:
+                try:
+                    task_operation_store.mark_verified(operation)
+                except (OSError, sqlite3.Error):
+                    self._json(HTTPStatus.BAD_GATEWAY, {
+                        "error": "Task was written but its retry receipt could not be saved. Inspect this task before retrying.",
+                        "code": "task_operation_unconfirmed", "slug": task.slug,
+                    })
+                    invalidate_snapshot()
+                    return
             invalidate_snapshot()
             self._json(
                 HTTPStatus.CREATED,
@@ -5009,6 +5110,7 @@ def _handler_class(
                     "title", "detail", "priority", "due_day",
                     "project_slug", "goal_slug", "parent_slug", "status", "assignee_slug",
                     "progress_metric", "progress_metric_revision", "handoff_reason", "complete_when_target_reached",
+                    "expected_revision",
                 }
                 if set(payload) - allowed:
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": "task edit contains unsupported fields.", "code": "invalid_task_edit"})
@@ -5016,6 +5118,12 @@ def _handler_class(
                 try:
                     due_day = date.fromisoformat(payload.get("due_day", ""))
                     current = adapter.get_task(task_slug)
+                    supplied_task_revision = payload.get("expected_revision")
+                    if "expected_revision" in payload and (
+                        not isinstance(supplied_task_revision, str)
+                        or supplied_task_revision != task_edit_revision(current.to_dict())
+                    ):
+                        raise TaskEditConflict()
                     before_snapshot = mutation_snapshot(current)
                     raw_metric = payload.get("progress_metric")
                     existing_verified_history = bool(
@@ -5117,7 +5225,17 @@ def _handler_class(
                         assignee_slug=payload.get("assignee_slug", "tony"),
                         progress_metric=progress_metric, event_progress=event_progress,
                         handoff_reason=payload.get("handoff_reason", ""), now=clock(),
+                        **({"expected_revision": supplied_task_revision} if "expected_revision" in payload else {}),
                     )
+                except TaskEditConflict as exc:
+                    try:
+                        latest = exact_task_api_payload(adapter, task_slug)
+                    except (DomainValidationError, GBrainError, ValueError):
+                        latest = None
+                    self._json(HTTPStatus.CONFLICT, {
+                        "error": str(exc), "code": "task_edit_conflict", "current_task": latest,
+                    })
+                    return
                 except (DomainValidationError, TypeError, ValueError) as exc:
                     self._json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(exc), "code": "invalid_task_edit"})
                     return
@@ -5617,6 +5735,7 @@ def build_server(
     handoff_event_bridge: CanonicalHandoffEventBridge | None = None,
     goal_execution_scheduler: GoalExecutionScheduler | None = None,
     gbrain_version_provider: Callable[[], str | None] | None = None,
+    task_operation_store: TaskOperationStore | None = None,
 ) -> ThreadingHTTPServer:
     if not stargraph_url.startswith("http://127.0.0.1:"):
         raise ValueError("avatar attachment service must use a local 127.0.0.1 URL")
@@ -5645,6 +5764,7 @@ def build_server(
         handoff_event_bridge,
         goal_execution_scheduler,
         gbrain_version_provider,
+        task_operation_store,
     )
     return ThreadingHTTPServer((host, port), handler)
 
@@ -5722,6 +5842,7 @@ def main() -> None:
         handoff_dispatcher_auth=handoff_dispatcher_auth,
         handoff_event_bridge=handoff_event_bridge,
         goal_execution_scheduler=goal_execution_scheduler,
+        task_operation_store=TaskOperationStore(default_task_operation_path()),
     )
     print(f"GTasks listening on http://{args.host}:{server.server_address[1]}")
     try:

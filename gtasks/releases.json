@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.230",
+  "current_version": "V0.0.231",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1380,6 +1380,12 @@
       "date": "2026-09-07",
       "title": "Keep task edits ahead of older refreshes",
       "summary": "Invalidated refreshes can no longer replace newer verified data or clear a replacement refresh. Cache persistence preserves the newest snapshot across overlapping reads."
+    },
+    {
+      "version": "V0.0.231",
+      "date": "2026-09-07",
+      "title": "Keep task drafts and make save retries safer",
+      "summary": "Create retries retain their original task identity, and edits preserve drafts when canonical task fields change. Uncertain saves point to the original task for verification."
     }
   ]
 }

@@ -79,6 +79,8 @@ from .markdown_policy import (
     render_system_ticket_body,
     render_task_body,
 )
+from .job_application_binding import progress_revision
+from .task_revisions import TaskEditConflict, task_edit_revision
 
 if TYPE_CHECKING:
     from .goal_execution import GoalExecutionCandidate, GoalExecutionSnapshot
@@ -7485,6 +7487,15 @@ class GBrainAdapter:
         links = self.runner.run("get_links", {"slug": task_slug})
         if not isinstance(page, Mapping) or not isinstance(links, list):
             raise GBrainProtocolError("task readback was not structured")
+        return self._normalize_task_readback(task_slug, page, links)
+
+    def _normalize_task_readback(
+        self,
+        task_slug: str,
+        page: Mapping[str, Any],
+        links: list[Any],
+    ) -> tuple[Task, Mapping[str, Any]]:
+        """Apply the canonical read projection without mutating write inputs."""
         if page.get("type") != "task":
             raise ValueError(
                 f"task has unexpected page type {page.get('type') or 'missing'}; repair the task type before editing"
@@ -7545,6 +7556,7 @@ class GBrainAdapter:
                     ),
                 )
         payload = task.to_dict()
+        payload["progress_metric_revision"] = progress_revision(task)
         if todo_issues:
             payload["todo_issues"] = [issue.to_dict() for issue in todo_issues]
         display_markdown = self._validated_task_display_markdown(task, page)
@@ -7570,6 +7582,7 @@ class GBrainAdapter:
         handoff_reason: str,
         now: datetime,
         parent_slug: str | None = None,
+        expected_revision: str | None = None,
     ) -> TaskEditReceipt:
         """Apply the full detail form through verified canonical mutations.
 
@@ -7585,7 +7598,14 @@ class GBrainAdapter:
             raise ValueError(
                 f"task has unexpected page type {raw_page.get('type') or 'missing'}; repair the task type before editing"
             )
-        task = Task.from_page(raw_page, edges=raw_links)
+        task, _normalized_page = self._normalize_task_readback(
+            task_slug, raw_page, raw_links
+        )
+        if (
+            expected_revision is not None
+            and task_edit_revision(task.to_dict()) != expected_revision
+        ):
+            raise TaskEditConflict()
         if status not in EDITABLE_TASK_STATUSES | {"proposed"}:
             raise ValueError("task status is not supported")
         if task.status == "proposed" and status == "proposed" and assignee_slug != (task.owner_agent or "tony"):
@@ -7626,10 +7646,22 @@ class GBrainAdapter:
             raw_frontmatter_links = []
         if not isinstance(raw_frontmatter_links, list):
             raise GBrainProtocolError("task frontmatter links must be a list")
+        repair_unverified_project = task.project is None and project_slug is None
         retained_links = [
             link
             for link in raw_frontmatter_links
-            if not (isinstance(link, Mapping) and link.get("type") == "child_of")
+            if not (
+                isinstance(link, Mapping)
+                and (
+                    link.get("type") == "child_of"
+                    or (
+                        repair_unverified_project
+                        and
+                        link.get("type") == "member_of"
+                        and link.get("to") not in TASK_SCOPE_ROOTS
+                    )
+                )
+            )
         ]
         if parent_slug:
             retained_links.append(
@@ -7663,6 +7695,8 @@ class GBrainAdapter:
                 "updated_at": now.isoformat(),
             }
         )
+        if repair_unverified_project:
+            frontmatter["project"] = None
         marked_unified = self._has_unified_markdown_contract(raw_page)
         expected_body: str | None = None
         if marked_unified:
@@ -8536,7 +8570,7 @@ class GBrainAdapter:
             if not (
                 isinstance(link, Mapping)
                 and link.get("type") == "member_of"
-                and link.get("to") not in LIFECYCLE_ROOTS
+                and link.get("to") not in TASK_SCOPE_ROOTS
             )
         ]
         if project_slug is not None:
@@ -8589,7 +8623,7 @@ class GBrainAdapter:
                 if isinstance(edge, Mapping)
                 and edge.get("from_slug") == task_slug
                 and edge.get("link_type") == "member_of"
-                and edge.get("to_slug") not in APPROVED_ROOTS
+                and edge.get("to_slug") not in TASK_SCOPE_ROOTS
             ]
             expected_projects = [project_slug] if project_slug else []
             if (

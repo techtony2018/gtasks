@@ -16,6 +16,7 @@ from pathlib import Path
 
 import gtasks.gbrain as gbrain
 import gtasks.server as server_module
+from gtasks.task_operations import TaskOperationStore
 
 from gtasks.domain import (
     ACTIVE_ROOT,
@@ -852,6 +853,7 @@ class ServerHarness:
         goal_execution_scheduler=None,
         clock=None,
         gbrain_version_provider=None,
+        task_operation_store=None,
     ) -> None:
         self.closed = False
         self.runtime_directory = tempfile.TemporaryDirectory()
@@ -892,6 +894,9 @@ class ServerHarness:
             read_cache=read_cache or ReadSurfaceCache(
                 ReadSnapshotStore(runtime_path / "read-snapshots.json"),
                 background=False,
+            ),
+            task_operation_store=task_operation_store or TaskOperationStore(
+                runtime_path / "task-operations.sqlite3"
             ),
             artifact_publisher_auth=ArtifactPublisherAuth.from_plaintext_tokens_for_tests(
                 {
@@ -1054,6 +1059,7 @@ class HandoffRuntimeConstructionTests(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
+                patch.object(server_module, "default_task_operation_path", return_value=Path(temporary) / "task-operations.sqlite3"),
                 patch.object(server_module, "GBrainAdapter", return_value=adapter),
                 patch.object(
                     server_module,

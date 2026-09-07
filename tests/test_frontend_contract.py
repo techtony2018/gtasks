@@ -97,6 +97,141 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_pending_creation_identity_and_draft_survive_reload(self) -> None:
+        result = run_app_runtime_probe(r"""
+const assert = (value, message) => { if (!value) throw new Error(message); };
+assert(typeof taskCreationAttempt === "function", "missing durable browser creation attempt");
+const storage = new Map();
+window.sessionStorage = { getItem: key => storage.get(key) || null, setItem: (key,value) => storage.set(key,value), removeItem: key => storage.delete(key) };
+let identities = 0;
+window.crypto = { randomUUID: () => `qa-${++identities}` };
+const payload = { title: "Unsaved synthetic title", detail: "Keep this private draft", due_day: "2026-09-07" };
+const first = taskCreationAttempt(payload);
+state.taskCreateOperationKey = null; // page memory lost, session storage remains
+const second = taskCreationAttempt(payload);
+assert(first === second, "reload allocated another creation identity");
+assert(readPendingTaskCreation().payload.detail === payload.detail, "draft not recoverable");
+clearTaskCreationAttempt();
+assert(readPendingTaskCreation() === null, "verified completion did not clear local draft");
+assert(taskCreationAttempt(payload) !== first, "new explicit creation reused a completed identity");
+window.sessionStorage = { getItem() { throw Error("blocked"); }, setItem() { throw Error("blocked"); }, removeItem() { throw Error("blocked"); } };
+assert(taskCreationAttempt(payload) === state.taskCreateOperationKey, "storage failure broke in-tab retry");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_blocked_storage_pending_creation_survives_close_and_reopen_until_clear(self) -> None:
+        result = run_app_runtime_probe(r"""
+const assert = (value, message) => { if (!value) throw new Error(message); };
+window.sessionStorage = { getItem() { throw Error("blocked"); }, setItem() { throw Error("blocked"); }, removeItem() { throw Error("blocked"); } };
+let identities = 0;
+window.crypto = { randomUUID: () => `blocked-${++identities}` };
+state.projectsLoaded = true;
+state.agentsLoaded = true;
+elements.taskEditorDialog.open = true;
+elements.taskEditorDialog.showModal = () => { elements.taskEditorDialog.open = true; };
+elements.taskEditorAssignee.options = [];
+elements.taskMetricEventBinding.options = [];
+const payload = { title: "Blocked storage draft", detail: "Retain me", due_day: "2026-09-07" };
+const first = taskCreationAttempt(payload);
+await openCreateTask();
+assert(state.taskCreateOperationKey === first, "close/reopen replaced in-memory operation identity");
+assert(elements.taskEditorTitle.value === payload.title, "close/reopen lost submitted in-memory draft");
+clearTaskCreationAttempt();
+await openCreateTask();
+assert(state.taskCreateOperationKey === null, "verified/discard clear retained identity");
+assert(state.taskCreatePendingPayload === null, "verified/discard clear retained draft");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_out_of_order_exact_edit_reads_cannot_overwrite_newer_editor(self) -> None:
+        result = run_app_runtime_probe(r"""
+const assert = (value, message) => { if (!value) throw new Error(message); };
+state.projectsLoaded = true;
+state.agentsLoaded = true;
+elements.taskEditorDialog.open = true;
+elements.taskEditorDialog.showModal = () => { elements.taskEditorDialog.open = true; };
+elements.taskEditorAssignee.options = [];
+elements.taskMetricEventBinding.options = [];
+const pending = {};
+globalThis.fetch = (url) => new Promise((resolve) => { pending[url] = resolve; });
+const task = (slug, title) => ({ slug, title, summary: title, detail: "", priority: "normal",
+  status: "planned", due_day: "2026-09-07", edit_revision: "a".repeat(64) });
+state.selectedKind = "task";
+state.selectedSlug = "tasks/a";
+const first = openEditTask();
+for (let i = 0; i < 10 && !pending["/api/tasks/tasks%2Fa"]; i += 1) await Promise.resolve();
+state.selectedSlug = "tasks/b";
+const second = openEditTask();
+for (let i = 0; i < 10 && !pending["/api/tasks/tasks%2Fb"]; i += 1) await Promise.resolve();
+pending["/api/tasks/tasks%2Fb"]({ ok: true, json: async () => ({ task: task("tasks/b", "Task B") }) });
+await second;
+pending["/api/tasks/tasks%2Fa"]({ ok: true, json: async () => ({ task: task("tasks/a", "Task A") }) });
+await first;
+assert(state.taskEditorSourceSlug === "tasks/b", "older A response replaced B editor source");
+assert(elements.taskEditorTitle.value === "Task B", "older A response replaced B draft");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_edit_conflict_retains_draft_and_explains_changed_fields(self) -> None:
+        result = run_app_runtime_probe(r"""
+const assert = (value, message) => { if (!value) throw new Error(message); };
+window.setTimeout = () => 1;
+state.taskEditorMode = "edit";
+state.taskEditorSourceSlug = "tasks/qa-edit";
+state.taskEditorBase = { slug: "tasks/qa-edit", title: "Original", priority: "normal", status: "planned", edit_revision: "revision-at-open" };
+state.snapshot = { tasks: [{...state.taskEditorBase, edit_revision: "later-cache-revision"}] };
+elements.taskEditorTitle.value = "Keep my draft title";
+elements.taskEditorDetail.value = "Keep my draft description";
+elements.taskEditorPriority.value = "normal";
+elements.taskEditorStatus.value = "planned";
+elements.taskEditorDue.value = "2026-09-07";
+elements.taskEditorAssignee.value = "tony";
+elements.taskTrackMetric.checked = false;
+let sent;
+globalThis.fetch = async (_url, options) => {
+  sent = JSON.parse(options.body);
+  return { ok: false, status: 409, json: async () => ({
+    code: "task_edit_conflict", error: "Task changed after Edit opened.",
+    current_task: {...state.taskEditorBase, priority: "high", edit_revision: "latest"},
+  }) };
+};
+await submitTaskEditor({ preventDefault() {} });
+assert(sent.expected_revision === "revision-at-open", "submit used refreshed cache revision instead of editor revision");
+assert(elements.taskEditorTitle.value === "Keep my draft title", "draft title lost");
+assert(elements.taskEditorDetail.value === "Keep my draft description", "draft detail lost");
+assert(/Priority/.test(elements.taskEditorError.textContent), "missing changed field explanation");
+assert(/draft/i.test(elements.taskEditorError.textContent), "missing draft retention explanation");
+assert(!elements.taskEditorSubmit.disabled, "save stayed disabled");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_create_retry_reuses_request_key_and_preserves_entered_values(self) -> None:
+        result = run_app_runtime_probe(r"""
+const assert = (value, message) => { if (!value) throw new Error(message); };
+window.setTimeout = () => 1;
+window.crypto = { randomUUID: () => "synthetic-request-uuid" };
+state.taskEditorMode = "create";
+elements.taskEditorTitle.value = "Preserve my entered title";
+elements.taskEditorDetail.value = "Keep this draft after a lost response";
+elements.taskEditorPriority.value = "normal";
+elements.taskEditorAssignee.value = "tony";
+elements.taskTrackMetric.checked = false;
+const requests = [];
+globalThis.fetch = async (_url, options) => {
+  requests.push(options);
+  throw new Error("Synthetic network response lost");
+};
+await submitTaskEditor({ preventDefault() {} });
+await submitTaskEditor({ preventDefault() {} });
+assert(requests.length === 2, "expected two attempts");
+assert(requests[0].headers["Idempotency-Key"] === "synthetic-request-uuid", "missing stable key");
+assert(requests[1].headers["Idempotency-Key"] === requests[0].headers["Idempotency-Key"], "retry changed identity");
+assert(elements.taskEditorTitle.value === "Preserve my entered title", "title draft was erased");
+assert(elements.taskEditorDetail.value === "Keep this draft after a lost response", "detail draft was erased");
+assert(elements.taskEditorSubmit.disabled === false, "retry control stayed disabled");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_goal_execution_stays_inside_agents_and_goal_project_details(self) -> None:
         html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
