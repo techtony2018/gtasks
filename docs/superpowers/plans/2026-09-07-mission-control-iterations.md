@@ -114,6 +114,14 @@ Before each later iteration, inspect its current implementation and append its e
   candidate at1440x1000 and390x844. Runtime aggregate
   `fd3b635fd792d79af180492ada56ff0c53ba90a3460533af646b461ad010656c`
   is now commit-authorized; release/deploy verification follows.
+- Iteration2 shipped as V0.0.231, commit
+  `0a2e9504db874902cb7c4e4bf85c03383bfcedc2`, pushed to origin/main and
+  deployed through Dashboard after independent managed/synthetic PASS. Exact
+  canonical readback includes valid edit/progress revisions, browser shows
+  V231, runtime hashes match QA. System Tickets/Projects are fresh with zero
+  issues; Tasks/Proposals initially still refresh/stale with zero issues.
+  Refresh deadlines and readiness remain iteration3/4 work. Full goal remains
+  active. Synthetic server and dedicated QA/release browsers were closed.
 - Synthetic QA fixture smoke test verified a genuinely dropped response after
   receipt persistence and same-task retry readback. The fixture was stopped
   after the check; it uses no production GBrain data or transport.
