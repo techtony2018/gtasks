@@ -39,11 +39,11 @@
 
 **Interface:** Preserve `ReadSurfaceCache.read`, `invalidate`, and `SurfaceRead`; invalidation revokes the in-flight generation for each named surface and releases its loading ownership. Existing `_refresh` generation checks must fence its result, failure and cleanup.
 
-- [ ] Add a held old-loader regression: seed a verified payload; start refresh; invalidate; synchronously publish the new value; release the old loader; assert subsequent value and persisted snapshot remain new/fresh.
-- [ ] Add the reverse ordering: old loader returns after invalidation but before replacement starts; its result must not publish; replacement must execute even with a long force cooldown.
-- [ ] Add stale-error/cleanup coverage while the replacement is held: obsolete failure cannot poison or clear the new worker.
-- [ ] Run `python3 -m unittest tests.test_read_cache` and observe the new race tests fail for the intended reason.
-- [ ] Implement the narrow fence inside `invalidate`:
+- [x] Add a held old-loader regression: seed a verified payload; start refresh; invalidate; synchronously publish the new value; release the old loader; assert subsequent value and persisted snapshot remain new/fresh.
+- [x] Add the reverse ordering: old loader returns after invalidation but before replacement starts; its result must not publish; replacement must execute even with a long force cooldown.
+- [x] Add stale-error/cleanup coverage while the replacement is held: obsolete failure cannot poison or clear the new worker.
+- [x] Run `python3 -m unittest tests.test_read_cache` and observe the new race tests fail for the intended reason.
+- [x] Implement the narrow fence inside `invalidate`:
 
 ```python
 with self._condition:
@@ -54,10 +54,10 @@ with self._condition:
     self._condition.notify_all()
 ```
 
-- [ ] Review publication-to-disk ordering as well as in-memory ordering; cover any same-surface persistence race exposed by the regression.
-- [ ] Run `python3 -m unittest tests.test_read_cache tests.test_server.TasksApiTests tests.test_server.SystemTicketApiTests tests.test_server.ProposalApiTests` (localhost tests require network permission).
-- [ ] Obtain independent candidate review/QA as required, record outcome, and only then commit the exact tested candidate.
-- [ ] Push/deploy through Dashboard and verify version/health and affected read-state convergence using read-only requests.
+- [x] Review publication-to-disk ordering as well as in-memory ordering; cover any same-surface persistence race exposed by the regression.
+- [x] Run `python3 -m unittest tests.test_read_cache tests.test_server.TasksApiTests tests.test_server.SystemTicketApiTests tests.test_server.ProposalApiTests` (localhost tests require network permission).
+- [ ] Obtain independent candidate review/QA as required, record outcome, and only then commit the exact tested candidate. **Sequencing deviation:** synthetic pre-commit PASS occurred, but the stricter README managed-service verification occurred after commit. This ordering cannot be retroactively satisfied.
+- [x] Push/deploy through Dashboard and verify version/health and affected read-state convergence using read-only requests.
 
 ## Later iteration execution contracts
 
@@ -78,8 +78,17 @@ Before each later iteration, inspect its current implementation and append its e
 - Planning: full nine-iteration scope captured; execution begins with cache correctness.
 - Iteration 1 implementation verified: four regression tests demonstrated the original failures; cache and affected HTTP suites passed 46 tests, release checks passed 94 tests. `git diff --check` passed.
 - Independent pre-commit gate PASS: desktop 1440x1000 and genuine mobile 390x844; Today/Board/detail, refresh, H2 focus and keyboard Close restoration. Report: `/private/tmp/mc-iteration1-independent-qa/gate-report.md`. Frozen five-file manifest aggregate: `ba22e96697b5a53e2c24cc1294d00ff210cc6e182c2a641cbdeba0f82ef57c6d`. Synthetic timeline 503 and existing Escape behavior are documented scope caveats, not production readiness proof.
-- Current: iteration 1 ready to commit/deploy; production readback pending. QA-reviewed runtime files remain unchanged.
-- Iteration 2 preparation: private retry identity journal and four passing unit tests exist but are not integrated or included in iteration 1. Authenticated remote MCP `tools/list` exposes unconditional `put_page` and no atomic revision/compare-and-swap write. Cross-machine atomic edit protection remains an upstream capability dependency; local stale-draft checks must not be described as atomic protection against other machines.
+- Iteration 1 deployed: `5a34256627d4307dc532f7afe7e59aae0a2da583` on `main` and `origin/main`. Dashboard `POST /api/services/gtasks/restart` returned OK; health reports V0.0.230 and gbrain 0.46.28.0. Tasks, Proposals and open System Tickets subsequently converged to fresh/refreshing=false/stale=false/error=null/issues=0.
+- Independent managed-service post-deploy PASS: `/private/tmp/mc-iteration1-independent-qa/managed-postdeploy-report.md`; 1440x1000 and 390x844, Today/detail/focus/Close/refresh, no browser errors or writes. This is NOT a retroactive managed-service pre-commit PASS. Future candidates must use the managed environment before commit. Unrelated `.gitignore` was preserved and excluded; deployed runtime files matched the tested commit.
+- Iteration 2 initially started with a private retry identity journal and four unit tests; subsequent integration is detailed below and remains outside iteration 1. Authenticated remote MCP `tools/list` exposes unconditional `put_page` and no atomic revision/compare-and-swap write. Cross-machine atomic edit protection remains an upstream capability dependency; local stale-draft checks must not be described as atomic protection against other machines.
+
+### Iteration 2 checkpoint (uncommitted, not deployed)
+
+- Integrated opt-in `Idempotency-Key` support for `POST /api/tasks` in the working tree. Journal stores only request hash, UUID, creation timestamp and verified flag, not task text. Owner-only SQLite, transaction-serialized reservations; the reserved UUID explicitly controls the canonical slug because the legacy domain identity argument does not control `_opaque_slug`.
+- Verified original responses persist a receipt flag before HTTP output. Same-key retries read the current canonical task rather than rewriting it, preserving later enrichment. Changed payloads conflict. Concurrent or ambiguous attempts return the original slug with no second write. An interrupted operation before its verified receipt remains explicitly unconfirmed; automatic partial-write recovery is not yet implemented.
+- Red evidence: changed payload incorrectly returned201, lost-response retry returned409 instead of recovered200, ambiguous retry attempted the write again, and verified-record method was missing. After implementation, `python3 -m unittest tests.test_task_operations tests.test_server.TasksApiTests` passed22 tests in8.677s. No production write tests ran.
+- Files: `gtasks/task_operations.py`, `tests/test_task_operations.py`, `gtasks/server.py`, `tests/test_server.py`. NOT in commit5a34256. The running process still holds the deployed iteration1 modules; do not restart until the next candidate is deliberately prepared.
+- Next: complete full-creation/TODO/readback/restart failure coverage, decide controlled unconfirmed-operation recovery, integrate persistent browser request identity and draft-preserving conflict handling, add app-level revision guards without claiming remote atomicity. Then targeted tests, version/docs, freeze and managed independent desktop/mobile QA BEFORE commit.
 
 ## Completion audit
 
