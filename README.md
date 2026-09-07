@@ -1097,6 +1097,11 @@ has explicit Agent execution authority through an Agent owner, canonical
 handoff resume owner, or Goal derivation. Ordinary Tony tasks with old
 suppressed handoff history stay editable and do not inherit the Agent repair
 banner.
+V0.0.229 makes explicit `refresh=1` reads run the selected cache refresh in
+the request foreground. Task, Proposal, Project, Agent Work, and System Ticket
+refreshes now return a verified fresh payload or a bounded stale/error state
+instead of starting another background worker that can remain advertised as
+refreshing while foreground reads keep priority.
 
 V0.0.178 keeps `/api/agent-work` on the same bounded last-verified cache model
 as the other slow read surfaces: cold Agent Work reads return `202`/`loading`,

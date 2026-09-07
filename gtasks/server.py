@@ -1116,6 +1116,7 @@ def _handler_class(
             ttl_seconds=SNAPSHOT_CACHE_SECONDS,
             force=force,
             force_cooldown_seconds=SNAPSHOT_FORCE_REFRESH_COOLDOWN_SECONDS,
+            foreground_refresh=force,
         )
 
     def read_proposals(force: bool = False):
@@ -1135,6 +1136,7 @@ def _handler_class(
             ttl_seconds=PROPOSAL_CACHE_SECONDS,
             force=force,
             force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
+            foreground_refresh=force,
         )
 
     def read_system_tickets(
@@ -1151,6 +1153,7 @@ def _handler_class(
             ttl_seconds=SYSTEM_TICKET_CACHE_SECONDS,
             force=force,
             force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
+            foreground_refresh=force,
         )
 
     def read_projects(force: bool = False):
@@ -1160,6 +1163,7 @@ def _handler_class(
             ttl_seconds=PROJECT_CACHE_SECONDS,
             force=force,
             force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
+            foreground_refresh=force,
         )
 
     def read_agent_work(force: bool = False):
@@ -1169,6 +1173,7 @@ def _handler_class(
             ttl_seconds=AGENT_WORK_CACHE_SECONDS,
             force=force,
             force_cooldown_seconds=READ_SURFACE_FORCE_REFRESH_COOLDOWN_SECONDS,
+            foreground_refresh=force,
         )
 
     class GTasksHandler(BaseHTTPRequestHandler):

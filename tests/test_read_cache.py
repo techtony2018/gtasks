@@ -417,6 +417,44 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 release_replacement.set()
                 self.assertTrue(cache.wait_for_idle("proposals"))
 
+    def test_force_refresh_can_run_foreground_and_return_verified_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "read-snapshots.json"
+            store = ReadSnapshotStore(path)
+            store.save(
+                {
+                    "agent_work": {
+                        "payload": {"tasks": [{"slug": "tasks/old"}]},
+                        "last_valid_at": 1.0,
+                    }
+                }
+            )
+            calls = 0
+
+            def loader() -> dict:
+                nonlocal calls
+                calls += 1
+                return {"tasks": [{"slug": "tasks/fresh"}]}
+
+            cache = ReadSurfaceCache(
+                store,
+                clock=lambda: 100.0,
+            )
+
+            result = cache.read(
+                "agent_work",
+                loader,
+                ttl_seconds=300,
+                force=True,
+                foreground_refresh=True,
+            )
+
+            self.assertEqual(result.state["status"], "fresh")
+            self.assertFalse(result.state["refreshing"])
+            self.assertFalse(result.state["stale"])
+            self.assertEqual(result.payload["tasks"][0]["slug"], "tasks/fresh")
+            self.assertEqual(calls, 1)
+
     def test_force_refresh_respects_cooldown_after_verified_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "read-snapshots.json"

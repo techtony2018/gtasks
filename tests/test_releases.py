@@ -172,6 +172,21 @@ class ReleaseCatalogTests(unittest.TestCase):
         ):
             self.assertIn(contract, release["summary"])
 
+    def test_v0_0_229_records_foreground_explicit_read_cache_refreshes(self) -> None:
+        release = next(item for item in RELEASES if item["version"] == "V0.0.229")
+
+        self.assertIn("explicit read-cache refreshes", release["title"])
+        for contract in (
+            "Explicit Mission Control refresh requests",
+            "request foreground",
+            "/api/tasks?refresh=1",
+            "/api/proposals?refresh=1",
+            "/api/agent-work?refresh=1",
+            "verified fresh payload",
+            "indefinitely refreshing",
+        ):
+            self.assertIn(contract, release["summary"])
+
     def test_v0_0_222_records_three_codex_singleton_fleet(self) -> None:
         release = next(item for item in RELEASES if item["version"] == "V0.0.222")
 

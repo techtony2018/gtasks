@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.228",
+  "current_version": "V0.0.229",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1368,6 +1368,12 @@
       "date": "2026-09-07",
       "title": "Scope dispatcher handoff attention to Agent-authorized tasks",
       "summary": "Exact task detail now projects stale dispatcher handoff repair attention only when the canonical task has explicit Agent execution authority, such as an Agent owner, canonical handoff resume owner, or Goal derivation. Ordinary Tony tasks with stale suppressed handoff history remain editable, while Agent work and active Agent-owned task details still surface dispatcher recovery evidence."
+    },
+    {
+      "version": "V0.0.229",
+      "date": "2026-09-07",
+      "title": "Run explicit read-cache refreshes in the foreground",
+      "summary": "Explicit Mission Control refresh requests now run the selected read-cache refresh in the request foreground, so /api/tasks?refresh=1, /api/proposals?refresh=1, /api/projects?refresh=1, /api/agent-work?refresh=1, and /api/system-tickets refreshes return the verified fresh payload or a bounded stale/error state instead of leaving another background worker advertised as indefinitely refreshing."
     }
   ]
 }

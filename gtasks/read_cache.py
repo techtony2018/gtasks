@@ -142,6 +142,7 @@ class ReadSurfaceCache:
         ttl_seconds: float,
         force: bool = False,
         force_cooldown_seconds: float = 0.0,
+        foreground_refresh: bool = False,
     ) -> SurfaceRead:
         start_refresh = False
         with self._condition:
@@ -211,7 +212,7 @@ class ReadSurfaceCache:
             else:
                 generation = self._generations.get(name, 0)
 
-        if start_refresh and not self._background:
+        if start_refresh and (foreground_refresh or not self._background):
             self._refresh(name, loader, generation)
         elif start_refresh:
             Thread(
