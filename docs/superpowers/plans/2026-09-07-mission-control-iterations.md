@@ -125,8 +125,11 @@ Before each later iteration, inspect its current implementation and append its e
 - Synthetic QA fixture smoke test verified a genuinely dropped response after
   receipt persistence and same-task retry readback. The fixture was stopped
   after the check; it uses no production GBrain data or transport.
-- Managed health readback remains V0.0.230, gbrain 0.46.28.0. Root runtime is
-  unchanged; unrelated `.gitignore` remains preserved.
+- Earlier repair-stage managed health readback returned to V0.0.230 after the
+  unapproved first repair candidate was restored. The shipped V0.0.231 release
+  later passed its managed pre-commit gate, was committed, deployed and read
+  back as V0.0.231 with gbrain 0.46.28.0. Unrelated `.gitignore` remains
+  preserved.
 - The frozen first repair candidate was briefly staged/restarted on the
   managed service for the pre-commit boundary, then restored to V0.0.230 when
   the re-review finding arrived, before UI QA dispatch or production writes.
