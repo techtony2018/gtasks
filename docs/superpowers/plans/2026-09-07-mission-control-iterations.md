@@ -303,6 +303,15 @@ All browsers/private fixtures closed. No iteration6 work starts.
 
 - [x] Iterations1–5 acceptance reviewed against code and behavior;6–9 remain explicitly deferred and must not start.
 - [x] Targeted tests recorded for every iteration; final non-mobile integration milestone179 tests PASS16.092s.
-- [ ] Independent desktop QA PASS covers the current shipped candidate. Earlier desktop/mobile evidence is historical; no further mobile tests authorized.
-- [ ] Runtime version and deployed affected paths verified through the managed service.
+- [x] Independent desktop QA PASS covers the current shipped candidate. Earlier desktop/mobile evidence is historical; no further mobile tests authorized.
+- [x] Runtime version and deployed affected paths verified through the managed service.
 - [ ] README/release evidence and handoff ledger reflect actual results; notify the existing Documentation Manager of completed release work per Tony's standing request.
+
+Terminal iteration5 release: e036b324e392a8250c9ac544bd4f02ec20ec2478 pushed to
+origin/main and Dashboard-deployed V0.0.234. All seven runtime hashes match
+the precommit PASS. Initial45s cold observation remained refreshing; later
+GET-only readback converged all five required surfaces fresh/issues0/current
+process evidence without an explicit forced retry, readiness200/health200.
+Optional archive remains unverified. Postcommit desktop rendered Today3slots,
+visibleV234 and1440px containment; release browser and all fixtures closed.
+Implementation stops here. Iterations6–9 are deferred, not completed.
