@@ -305,7 +305,7 @@ All browsers/private fixtures closed. No iteration6 work starts.
 - [x] Targeted tests recorded for every iteration; final non-mobile integration milestone179 tests PASS16.092s.
 - [x] Independent desktop QA PASS covers the current shipped candidate. Earlier desktop/mobile evidence is historical; no further mobile tests authorized.
 - [x] Runtime version and deployed affected paths verified through the managed service.
-- [ ] README/release evidence and handoff ledger reflect actual results; notify the existing Documentation Manager of completed release work per Tony's standing request.
+- [x] README/release evidence and handoff ledger reflect actual results; existing Documentation Manager received the completed release work and verified the canonical Overview remains unresolved at document_version37 / V0.0.224.
 
 Terminal iteration5 release: e036b324e392a8250c9ac544bd4f02ec20ec2478 pushed to
 origin/main and Dashboard-deployed V0.0.234. All seven runtime hashes match
