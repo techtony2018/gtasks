@@ -154,7 +154,7 @@ Before each later iteration, inspect its current implementation and append its e
   UI, with focused rendering tests and no loss of currently usable cards.
 - [x] Independent code review; targeted combined gate; frozen managed candidate
   desktop1440x1000 and genuine390x844 QA PASS before commit.
-- [ ] Sequential release bump, commit/push, Dashboard deploy, read-only affected
+- [x] Sequential release bump, commit/push, Dashboard deploy, read-only affected
   surface verification and documentation handoff.
 
 ### Iteration 3 review checkpoint — not deployed
@@ -199,6 +199,13 @@ Before each later iteration, inspect its current implementation and append its e
   `0e5b8f63066e46cd89bab80d73c29cfdd73538ab9862e2c7a178337072ae1f88`.
   All candidate hashes verified and fixture52862/browser handles closed.
   Commit/push/post-commit Dashboard verification follows; full goal stays active.
+- Iteration3 shippedV232, commit9289ee5afb8da7b8fd2a1913acb834c6771fde28,
+  pushed and Dashboard-deployed after independentPASS. Postrestart three views
+  hit truthful terminal deadlines; explicit read-only retries recovered them.
+  Final all6 views fresh/refreshing=false/stale=false/errorsnull/issues0.
+  Runtime hashes matchQA; parent/QA browser/fixture/test handles closed.
+  Documentation Manager notified; its separate canonical mirror remains pending.
+  Next implementation: iteration4 fast liveness/readiness and failure scenarios.
 
 ## Completion audit (full goal)
 
