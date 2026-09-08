@@ -97,6 +97,17 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_daily_mission_controls_shrink_and_long_content_wraps(self):
+        stylesheet = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn(".daily-mission-grid", stylesheet)
+        section = stylesheet.split("/* Daily mission", 1)[1].split("/* End daily mission", 1)[0]
+        self.assertIn("minmax(0, 1fr)", section)
+        self.assertIn("overflow-wrap: anywhere", section)
+        self.assertIn("min-width: 0", section)
+        self.assertIn("width: 100%", section)
+        self.assertIn("min-height: 44px", section)
+        self.assertNotIn("text-overflow: ellipsis", section)
+
     def test_about_deferred_focus_cannot_reisolate_closed_or_superseded_dialog(self):
         javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
         # Execute the real close listener, normally omitted with startup wiring

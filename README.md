@@ -56,6 +56,31 @@ favicon, artwork sources, guidance, and review previews live in
 
 ## Versioning and releases
 
+### Daily mission selection
+
+V0.0.234 adds one main mission and up to two optional choices to Today, above
+the existing action lists. Choices are explicit and show the task's recorded
+next action; they do not create, reschedule or complete a task. Use Open task
+for its full detail, or Clear to remove only the local choice.
+
+The browser stores only the local day and task references, not task content.
+Selections survive reload on the same origin and expire on the next local
+day. Confirmed completed/cancelled choices retire; a reopened task requires
+explicit reselection. Missing or stale evidence remains labeled unverified,
+and known non-personal content is suppressed. If storage is unavailable,
+choices remain in the current tab with an inline warning. Separate tabs do
+not synchronize live; the last local write wins.
+
+New choices require a fresh personal-task read verified within five minutes.
+After that window, use Refresh to choose/change again; the normal automatic
+refresh interval is thirty minutes. Existing choices can still be opened or
+cleared. This conservative limit prevents stale data from appearing current.
+Release status and evidence: [V0.0.234](docs/release-evidence/v0.0.234.md).
+
+The September7 iteration batch ends after this release. Focus sessions, goal
+constellations, weekly mission logs and the Agent activity redesign remain
+deferred; they have not been implemented by this batch.
+
 ### Health and data-readiness diagnostics
 
 V0.0.233 separates app liveness from verified data readiness. Its independent
@@ -938,9 +963,11 @@ operators must repair canonical state before automatic Goal planning proceeds.
 ### Independent UI/UX release gate
 
 For every UI-affecting Mission Control change, independent UI/UX QA is a
-required pre-commit gate. QA verifies the frozen uncommitted candidate through
-the dashboard-managed service at desktop and a genuine 390px-wide mobile
-viewport. Restarting that managed process from the checkout is a candidate
+required pre-commit gate. Per Tony's September7 instruction, future QA is
+desktop-only at1440x1000; do not run mobile testing unless requested again.
+Existing responsive behavior is retained, and earlier mobile evidence remains
+historical. QA verifies the frozen uncommitted candidate through the
+dashboard-managed service. Restarting that managed process from the checkout is a candidate
 gate, not a release deployment. Only a documented QA **PASS** authorizes the
 commit. A QA **FAIL** or **INCONCLUSIVE** result requires repair and another
 independent retest before any commit; developer self-checks are not a

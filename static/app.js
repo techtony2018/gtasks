@@ -365,6 +365,9 @@ function setBoardDateWindowPreference(value) {
 }
 
 const state = {
+  dailyMission: null,
+  dailyMissionStorageWarning: "",
+  dailyMissionNotice: "",
   snapshot: null,
   activeView: "board",
   selectedSlug: null,
@@ -2052,6 +2055,7 @@ function startFreshnessClock() {
         const entry = stamp.freshnessEntry;
         if (entry) stamp.textContent = `${entry.label}: ${readFreshnessText(entry.readState, entry)}`;
       });
+      refreshDailyMissionSection({ onlyIfChanged: true });
     }
     startFreshnessClock();
   }, 60000);
@@ -2426,11 +2430,247 @@ function goalsHomeSection() {
   return wrapper;
 }
 
+const DAILY_MISSION_STORAGE_KEY = "mission-control.daily-mission";
+
+function validDailyMissionReference(value) {
+  return typeof value === "string" && /^tasks\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function saveDailyMissionPreference() {
+  try {
+    window.localStorage.setItem(DAILY_MISSION_STORAGE_KEY, JSON.stringify(state.dailyMission));
+  } catch {
+    state.dailyMissionStorageWarning = "Choices are kept in this tab only; browser storage is unavailable.";
+  }
+}
+
+function dailyMissionPreference(now = new Date()) {
+  const day = isoDay(now);
+  if (state.dailyMission?.day === day) return state.dailyMission;
+  let saved = state.dailyMission;
+  if (!saved) {
+    try {
+      const raw = window.localStorage.getItem(DAILY_MISSION_STORAGE_KEY);
+      if (raw && raw.length > 2048) throw new Error("Oversized preference");
+      saved = raw ? JSON.parse(raw) : null;
+      if (saved && (typeof saved !== "object" || !Array.isArray(saved.slots) || !Array.isArray(saved.retired))) {
+        throw new Error("Invalid preference");
+      }
+    } catch {
+      state.dailyMissionStorageWarning = "Saved choices could not be read; choices will be kept in this tab if browser storage is unavailable.";
+    }
+  }
+  const seen = new Set();
+  const preference = { day, slots: [null, null, null], retired: [null, null, null] };
+  if (saved?.day === day) {
+    for (let slot = 0; slot < 3; slot += 1) {
+      for (const field of ["slots", "retired"]) {
+        const ref = saved[field]?.[slot];
+        if (!preference.slots[slot] && validDailyMissionReference(ref) && !seen.has(ref)) {
+          preference[field][slot] = ref;
+          seen.add(ref);
+        }
+      }
+    }
+  }
+  state.dailyMission = preference;
+  state.dailyMissionNotice = "";
+  saveDailyMissionPreference();
+  return preference;
+}
+
+function dailyMissionEvidenceFresh(now = Date.now()) {
+  const evidence = state.tasksReadState || state.snapshot?.read_state;
+  const timestamp = verifiedReadTimestamp(evidence, now);
+  return Boolean(state.snapshot && !state.loading && evidence?.status === "fresh" &&
+    !evidence.stale && !evidence.refreshing && !evidence.error && timestamp !== null && now - timestamp <= 300000);
+}
+
+function eligibleDailyMissionTask(task) {
+  return validDailyMissionReference(task?.slug) && task.lifecycle_root === "collections/tonys-tasks" &&
+    ["planned", "active", "blocked"].includes(task.status) && !task.owner_agent && !task.qa_fixture;
+}
+
+function dailyMissionSlot(slot) {
+  const preference = dailyMissionPreference();
+  const ref = preference.slots[slot] || preference.retired[slot];
+  if (!ref) return { kind: "empty", ref: null, task: null };
+  const task = state.snapshot?.tasks?.find((item) => item.slug === ref) || null;
+  const personal = task && ["collections/tonys-tasks", "collections/tonys-completed-tasks"].includes(task.lifecycle_root) && !task.owner_agent && !task.qa_fixture;
+  if (!dailyMissionEvidenceFresh()) return { kind: "uncertain", ref, task: personal ? task : null, previous: Boolean(preference.retired[slot]) };
+  if (personal && ["completed", "cancelled"].includes(task.status)) {
+    if (preference.slots[slot]) {
+      preference.slots[slot] = null;
+      preference.retired[slot] = ref;
+      saveDailyMissionPreference();
+    }
+    return { kind: task.status, ref, task };
+  }
+  if (!eligibleDailyMissionTask(task)) return { kind: "unavailable", ref, task: null };
+  return { kind: preference.retired[slot] ? "previous" : "selected", ref, task };
+}
+
+function chooseDailyMission(slot, ref) {
+  if (!Number.isInteger(slot) || slot < 0 || slot > 2) return false;
+  const preference = dailyMissionPreference();
+  if (ref !== null) {
+    const task = state.snapshot?.tasks?.find((item) => item.slug === ref);
+    if (!dailyMissionEvidenceFresh() || !eligibleDailyMissionTask(task) ||
+        preference.slots.some((other, index) => index !== slot && other === ref)) return false;
+    // A previous choice is only reactivated by this explicit user action.
+    preference.retired = preference.retired.map((other) => other === ref ? null : other);
+  }
+  preference.slots[slot] = ref;
+  preference.retired[slot] = null;
+  saveDailyMissionPreference();
+  return true;
+}
+
+function dailyMissionFocusTarget(key, root = document) {
+  if (!/^(select|clear|open):[012]$/.test(key || "")) return null;
+  return root.querySelector(`[data-mission-focus="${key}"]`)
+    || root.querySelector(`[data-mission-focus="select:${key.slice(-1)}"]`);
+}
+
+function refreshDailyMissionSection({ focusKey = null, onlyIfChanged = false, announce = false } = {}) {
+  const section = document.querySelector("#daily-mission");
+  if (!section) return;
+  const day = isoDay(new Date());
+  const fresh = String(dailyMissionEvidenceFresh());
+  if (onlyIfChanged && section.dataset.day === day && section.dataset.fresh === fresh) return;
+  const origin = document.activeElement;
+  const key = focusKey || origin?.dataset?.missionFocus;
+  const replacement = renderDailyMission();
+  const content = section.querySelector(".daily-mission-content");
+  const notice = section.querySelector("#daily-mission-status");
+  if (content && notice) {
+    // Keep the already-registered live region connected while replacing the
+    // controls. Update its text only after the action's content is in place.
+    content.replaceChildren(...replacement.querySelector(".daily-mission-content").childNodes);
+    const copy = replacement.querySelector("#daily-mission-status").textContent;
+    if (notice.textContent !== copy) notice.textContent = copy;
+    else if (announce && copy) {
+      // Repeated action copy still needs one spoken update. Empty text is not
+      // an announcement; keep the registered node and refill on the next frame.
+      notice.textContent = "";
+      window.requestAnimationFrame(() => {
+        if (notice.isConnected && notice.textContent === "" &&
+            `Last local change: ${state.dailyMissionNotice}` === copy) notice.textContent = copy;
+      });
+    }
+  } else section.replaceChildren(...replacement.childNodes);
+  section.dataset.day = replacement.dataset.day;
+  section.dataset.fresh = replacement.dataset.fresh;
+  if (key) window.requestAnimationFrame(() => {
+    if (document.activeElement === document.body || document.activeElement === origin) {
+      dailyMissionFocusTarget(key, section)?.focus({ preventScroll: true });
+    }
+  });
+}
+
+function renderDailyMission() {
+  const preference = dailyMissionPreference();
+  const wrapper = node("section", "daily-mission");
+  wrapper.id = "daily-mission";
+  wrapper.dataset.day = preference.day;
+  wrapper.dataset.fresh = String(dailyMissionEvidenceFresh());
+  wrapper.setAttribute("aria-labelledby", "daily-mission-heading");
+  const heading = node("h2", "", "Today’s mission");
+  heading.id = "daily-mission-heading";
+  const help = node("p", "daily-mission-help", "Your local daily focus: one main mission and up to two optional tasks. Choices do not change task schedules or statuses and reset each local day.");
+  help.id = "daily-mission-help";
+  wrapper.append(heading, help);
+  const notice = node("p", "daily-mission-evidence daily-mission-notice", state.dailyMissionNotice ? `Last local change: ${state.dailyMissionNotice}` : "");
+  notice.id = "daily-mission-status";
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  notice.setAttribute("aria-atomic", "true");
+  const content = node("div", "daily-mission-content");
+  wrapper.append(notice, content);
+  const fresh = dailyMissionEvidenceFresh();
+  if (!fresh) content.append(node("p", "daily-mission-evidence", "Current task evidence is not verified. Refresh task data to choose; saved references remain available to clear."));
+  // Reconcile every slot before building options so terminal choices no longer
+  // reserve an active slot. Retired references are local history, not task state.
+  const slots = [0, 1, 2].map(dailyMissionSlot);
+  const choices = fresh ? (state.snapshot?.tasks || []).filter(eligibleDailyMissionTask) : [];
+  const grid = node("div", "daily-mission-grid");
+  const labels = ["Main mission", "Optional task 1", "Optional task 2"];
+  slots.forEach((selection, slot) => {
+    const card = node("article", `daily-mission-card${slot === 0 ? " daily-mission-main" : ""}`);
+    const label = node("label", "daily-mission-label", labels[slot]);
+    label.htmlFor = `daily-mission-select-${slot}`;
+    const select = node("select", "daily-mission-select");
+    select.id = label.htmlFor;
+    select.dataset.missionFocus = `select:${slot}`;
+    select.setAttribute("aria-describedby", "daily-mission-help");
+    const empty = node("option", "", "Choose a task…");
+    empty.value = "";
+    select.append(empty);
+    for (const task of choices) {
+      if (preference.slots.some((ref, index) => index !== slot && ref === task.slug)) continue;
+      const option = node("option", "", task.title || task.slug);
+      option.value = task.slug;
+      select.append(option);
+    }
+    const isCurrentChoice = selection.kind === "selected";
+    if (selection.ref && !isCurrentChoice) {
+      const unavailable = node("option", "", selection.previous || preference.retired[slot] ? "Previous choice — choose again or replace" : "Saved choice — not currently verified");
+      unavailable.value = "saved";
+      unavailable.disabled = true;
+      select.append(unavailable);
+    }
+    select.value = isCurrentChoice ? selection.ref : selection.ref ? "saved" : "";
+    select.addEventListener("change", () => {
+      const accepted = chooseDailyMission(slot, select.value || null);
+      state.dailyMissionNotice = accepted ? `${labels[slot]} ${select.value ? "chosen" : "cleared"}. Local focus only.` : "Choice unavailable or already selected. Refresh task data and try again.";
+      refreshDailyMissionSection({ focusKey: `select:${slot}`, announce: true });
+    });
+    card.append(label, select);
+    if (selection.ref) {
+      const title = selection.task?.title || selection.ref;
+      card.append(node("h3", "daily-mission-title", title));
+      const messages = {
+        completed: "Completed in the current task snapshot. Choose another task or clear this previous choice.",
+        cancelled: "Cancelled in the current task snapshot. Choose another task or clear this previous choice.",
+        previous: "Previous choice, not selected. This task is available again; choose it explicitly to use it today.",
+        unavailable: "Unavailable in the current task snapshot; this does not verify deletion. Replace or clear this choice.",
+        uncertain: `${selection.previous ? "Previous choice; not selected. " : ""}Last known content only; current status is not verified.`,
+      };
+      if (messages[selection.kind]) card.append(node("p", "daily-mission-evidence", messages[selection.kind]));
+      if (selection.kind === "selected" || (selection.kind === "uncertain" && selection.task)) {
+        const action = selection.task.next_action?.trim();
+        card.append(node("p", "daily-mission-next", `${selection.kind === "uncertain" ? "Last known next action" : "Next action"}: ${action || "No next action recorded"}`));
+      }
+      const actions = node("div", "daily-mission-actions");
+      const open = node("button", "secondary-button", "Open task details");
+      open.type = "button";
+      open.dataset.missionFocus = `open:${slot}`;
+      open.dataset.slug = selection.ref;
+      open.addEventListener("click", () => selectTask(selection.ref, selection.task, open));
+      const clear = node("button", "secondary-button", "Clear");
+      clear.type = "button";
+      clear.dataset.missionFocus = `clear:${slot}`;
+      clear.setAttribute("aria-label", `Clear ${labels[slot].toLowerCase()}`);
+      clear.addEventListener("click", () => {
+        chooseDailyMission(slot, null);
+        state.dailyMissionNotice = `${labels[slot]} cleared. Task unchanged.`;
+        refreshDailyMissionSection({ focusKey: `select:${slot}`, announce: true });
+      });
+      actions.append(open, clear);
+      card.append(actions);
+    } else card.append(node("p", "daily-mission-empty", slot === 0 ? "No main mission chosen." : "Optional — leave empty if not needed."));
+    grid.append(card);
+  });
+  content.append(grid);
+  if (state.dailyMissionStorageWarning) content.append(node("p", "daily-mission-evidence", state.dailyMissionStorageWarning));
+  return wrapper;
+}
+
 function renderToday() {
   const fragment = document.createDocumentFragment();
   const groups = state.snapshot.today;
   const blocked = visibleBlockedTasks();
-  fragment.append(creationEntry("today"));
+  fragment.append(creationEntry("today"), renderDailyMission());
   if (!allTodayTasks().length) fragment.append(emptyActionState());
   fragment.append(
     section(
@@ -6330,6 +6570,11 @@ function renderTaskSurfaceLoading(view) {
     retry.addEventListener("click", () => loadTasks({ reason: "manual" }));
     wrapper.append(retry);
   }
+  if (view === "today") {
+    const fragment = document.createDocumentFragment();
+    fragment.append(creationEntry("today"), renderDailyMission(), wrapper);
+    return fragment;
+  }
   return wrapper;
 }
 
@@ -6350,6 +6595,7 @@ function isHandoffTaskOrigin(element) {
 
 function detailReturnFocusAnchor(element, slug) {
   const anchor = { element, slug };
+  if (element?.dataset?.missionFocus) anchor.missionFocus = element.dataset.missionFocus;
   if (element?.dataset?.goalExecutionOrigin) {
     anchor.goalExecutionOrigin = element.dataset.goalExecutionOrigin;
   }
@@ -6390,6 +6636,7 @@ function restoreHandoffFocus(key = state.handoffLogFocusKey) {
 }
 
 function render() {
+  const focusedMissionControl = document.activeElement?.dataset?.missionFocus || null;
   const focusedFreshnessSurface = document.activeElement?.closest?.("[data-freshness-focus]")?.dataset.freshnessFocus || null;
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
   const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
@@ -6487,6 +6734,9 @@ function render() {
       content,
     ],
   );
+  if (focusedMissionControl) window.requestAnimationFrame(() => {
+    if (document.activeElement === document.body) dailyMissionFocusTarget(focusedMissionControl, elements.viewSurface)?.focus({ preventScroll: true });
+  });
   if (focusedFreshnessSurface) window.requestAnimationFrame(() => {
     // Restore only focus displaced by this render; never steal a newer focus
     // choice. Pending/success use the stamp, terminal failure restores Retry.
@@ -9334,6 +9584,10 @@ function restoreMarkdownSystemTicketReferenceFocus(returnContext) {
 function detailFocusReturnTarget(anchor) {
   if (!anchor) return null;
   if (anchor.element?.isConnected) return anchor.element;
+  if (anchor.missionFocus) {
+    const missionOrigin = dailyMissionFocusTarget(anchor.missionFocus);
+    if (missionOrigin) return missionOrigin;
+  }
   if (anchor.goalExecutionOrigin) {
     const exactGoalExecutionOrigin = document.querySelector(
       `[data-goal-execution-origin="${CSS.escape(anchor.goalExecutionOrigin)}"]`,
@@ -10603,6 +10857,7 @@ document.addEventListener("visibilitychange", () => {
     );
     return;
   }
+  refreshDailyMissionSection({ onlyIfChanged: true });
   if (
     state.refreshDeferred ||
     state.autoRefreshDueAt === null ||

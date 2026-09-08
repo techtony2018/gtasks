@@ -2,7 +2,11 @@
 
 > **For agentic workers:** Use superpowers:executing-plans for sequential execution. Steps use checkboxes for tracking. Independent UI/UX QA is required before committing each UI-affecting candidate.
 
-**Goal:** Deliver the nine recommendations from Tony's September 7 review in small, verified iterations: trustworthy reads and saves, bounded refresh and failure coverage, daily missions, focus mode, progress constellations, weekly mission log, and a useful agent crew panel.
+**Current goal scope:** Finish the already-started iteration5, including review,
+desktop QA and release verification, then stop. Tony explicitly requested no
+new iterations and no further mobile testing on September7. Iterations1–4 are
+shipped; iterations6–9 below are deferred, not completed or authorized to start.
+The original nine-row roadmap is retained for handoff only.
 
 **Architecture:** Keep GBrain remote MCP canonical. Extend the existing Python service and vanilla browser UI. Browser-only selections, focus timers, and recoverable drafts are preferences, never canonical task completion or agent execution authority. Fence stale reads before adding engagement surfaces that depend on them.
 
@@ -13,11 +17,11 @@
 - Work only in the existing fixed Developer task and `/Users/tony/work/gtasks` or its isolated `output/worktrees/` children; preserve unrelated changes, including `.gitignore` and existing artifacts. Never expose unfinished browser edits from the managed live checkout.
 - Use remote MCP; no replacement canonical task store, no production task/goal mutations in tests, no fake agent activity.
 - Each iteration has a targeted red/green regression, affected integration tests, documentation and an explicit evidence receipt.
-- UI-affecting candidates require independent PASS at desktop 1440x1000 and genuine mobile 390x844 before commit; FAIL/INCONCLUSIVE requires repair/retest.
+- UI-affecting candidates now require independent PASS at desktop1440x1000 before commit; FAIL/INCONCLUSIVE requires repair/retest. No further mobile testing per Tony's latest instruction. Preserve existing responsive code; past mobile results remain historical.
 - Keep existing keyboard/focus/accessibility behavior, reduced-motion/off controls, and verified-completion celebrations.
 - Release via the existing sequential patch-version tool. Deploy only through All Things Codex Dashboard; verify live version and affected read paths afterward.
 - Run the full suite only at meaningful integration milestones or when the change's breadth warrants it; do not repeat unrelated tests at every edit.
-- Every iteration is a checkpoint, not a redefinition of the full goal. The goal stays active until every acceptance item below is verified.
+- Finish iteration5 and its release/documentation checkpoint, then stop. Do not start6–9 without a new explicit request. This is Tony's scope change, not a claim that deferred features were delivered.
 
 ## Iteration map and acceptance
 
@@ -28,7 +32,8 @@ Shipped V233 at4d2d473b43e13263f5dd78c1dca13198c275ee1e via Dashboard. After one
 terminal Proposals deadline and explicit GET retry, all five required surfaces
 converged fresh/issues0/current_process_read; readiness200 and health200.
 The optional archive remains unverified and was not force-hydrated.
-Iterations5–9 remain pending; the full goal remains active.
+Iteration5 is the final currently authorized iteration. Iterations6–9 are
+deferred by Tony; desktop-only verification applies from this point forward.
 
 | Iteration | Scope and acceptance | Files / verification |
 |---|---|---|
@@ -37,10 +42,10 @@ Iterations5–9 remain pending; the full goal remains active.
 | 3 | Refresh has an overall deadline including queue wait; selected surface stays usable with honest last-verified age. Archived detail is lazy. No unbounded worker/retry growth or starvation. | read cache, GBrain transport, surface loaders, fetch helpers; deterministic slow-loader/queue/timeout/recovery tests |
 | 4 | Separate fast liveness from readiness; readiness reports per-surface age and verified canonical-read evidence without private content. Reusable failure tests cover expired auth, restart during recovery, overlapping refresh/write, and dropped response after save. | cache diagnostics, health/readiness handler, new `tests/test_reliability_scenarios.py`; readiness and privacy contracts |
 | 5 | Today offers one chosen main mission and up to two optional tasks; next action is prominent. Blocked/overdue lists remain accessible below. Selection does not reschedule, create or complete tasks. Missing/completed selections reconcile honestly. | new `static/mission.js` pure helpers if useful, `static/app.js`, `static/index.html`, `static/styles.css`; mission selection/render tests and independent responsive QA |
-| 6 | Focus mode offers 25/50-minute sessions, checklist and recoverable local notes. Pause/resume/reload preserve accurate remaining time; timer expiry never completes a task. Close restores focus; reduced motion supported. | mission module, focus dialog, styles; fake-clock timer tests, storage-failure test, keyboard/mobile QA |
-| 7 | Goal constellations visualize verified milestones; every lit milestone opens its real task. Unknown/stale data is labelled. Task completion counts do not claim actual goal attainment. | goal rendering/mission pure helpers/styles; deduplication, reopen, zero-link, stale and accessibility tests |
-| 8 | Weekly mission log shows verified personal wins, agent outputs separately, and decisions/blockers. Date boundaries use the user's local week; duplicate/reopened tasks cannot inflate wins. | mission aggregation and weekly view; fixed-date/timezone/week-boundary fixtures, personal/agent separation and no-data QA |
-| 9 | Existing Agents view presents actual registered machine, latest verified activity, artifact result and actionable blocker. Idle/stale/unknown stay distinct from active execution; no invented status/personality facts. | existing agent runtime API/rendering; host/authority/artifact fixtures and independent crew-view QA |
+| 6 — DEFERRED | Do not start. Original proposal: Focus mode with25/50-minute sessions, local checklist/notes, pause/resume/reload; timer expiry never completes tasks. | Future scope only; new explicit request required. |
+| 7 — DEFERRED | Do not start. Original proposal: verified task-linked goal constellations with honest stale/unknown evidence. | Future scope only; new explicit request required. |
+| 8 — DEFERRED | Do not start. Original proposal: local-week mission log separating personal wins from Agent outputs. | Future scope only; new explicit request required. |
+| 9 — DEFERRED | Do not start. Original proposal: actual registered Agent machine/activity/artifact/blocker presentation. | Future scope only; new explicit request required. |
 
 ## Iteration 1 execution details
 
@@ -74,7 +79,8 @@ with self._condition:
 
 - Isolated worktreeoutput/worktrees/mission-control-iteration5, branch
   codex/mission-control-iteration5, baseaaf4995. Baseline204 frontend tests PASS
-  in3.155s. Root remains releasedV233; no iteration5 runtime edits are live.
+  in3.155s. Reviewed V234 is now at the explicit uncommitted managed QA
+  boundary; this does not yet constitute a release.
 - Minimal implementation selected: three labeled native-select slots and
   section-only rerender with focus restoration; self-contained helpers in
   app.js avoid an additional script dependency. Only local-day/task references
@@ -280,10 +286,23 @@ Before each later iteration, inspect its current implementation and append its e
   incomplete remote-MCP response and exact readback still V224. Iteration5
   starts separately; full goal remains active.
 
-## Completion audit (full goal)
+## Completion audit (revised scope)
 
-- [ ] All nine iteration acceptance rows verified against code and behavior.
-- [ ] Targeted tests recorded for every iteration; integration suite passes at final milestone.
-- [ ] Independent desktop and 390px mobile QA PASS covers all shipped UI changes.
+Iteration5 checkpoint: repaired independent code/spec review PASS with zero
+findings; stale non-personal content and unreadable mission toast were fixed.
+Final affected213-test gate passed before the no-mobile instruction; final
+managed-root mission/release102-test NON-mobile gate PASS0.303s. Frozen runtime
+aggregate c14fe933177e33b18f8f76a34825987b1aefab6928fe95b17a9f2a95a27b8fd2
+is deployed only as an uncommitted Dashboard QA candidate. Independent desktop
+QA and final batch integration review have now passed. Initial desktop evidence
+was corrected to INCONCLUSIVE for two unproven assertions, then an independent
+two-case supplement proved original live-node identity and all six stale
+Agent/System/QA active/retired rendering cases. Combined desktop gate PASS
+report SHA75067caa05bf6de341cf2a2a24885c1c1c46181e1b29613095437667005ce7a3.
+All browsers/private fixtures closed. No iteration6 work starts.
+
+- [x] Iterations1–5 acceptance reviewed against code and behavior;6–9 remain explicitly deferred and must not start.
+- [x] Targeted tests recorded for every iteration; final non-mobile integration milestone179 tests PASS16.092s.
+- [ ] Independent desktop QA PASS covers the current shipped candidate. Earlier desktop/mobile evidence is historical; no further mobile tests authorized.
 - [ ] Runtime version and deployed affected paths verified through the managed service.
 - [ ] README/release evidence and handoff ledger reflect actual results; notify the existing Documentation Manager of completed release work per Tony's standing request.

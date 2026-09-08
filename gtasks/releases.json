@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.233",
+  "current_version": "V0.0.234",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1398,6 +1398,12 @@
       "date": "2026-09-07",
       "title": "Separate app health from verified data readiness",
       "summary": "Health stays responsive during GBrain version discovery. Readiness reports recent verified read evidence without fetching private content, while the visible version recovers through bounded checks. Failure tests cover restart, expired authentication and a dropped save response."
+    },
+    {
+      "version": "V0.0.234",
+      "date": "2026-09-07",
+      "title": "Daily main mission and optional focus tasks",
+      "summary": "Today supports one locally chosen main mission and up to two optional tasks, with recorded next actions, day-scoped selection, honest stale or unavailable states, and no schedule or status mutations."
     }
   ]
 }

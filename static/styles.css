@@ -6424,6 +6424,32 @@ button:active {
   }
 }
 
+/* Daily mission is a local preference, kept visually ahead of the task lists. */
+.daily-mission { margin: 16px 0 24px; min-width: 0; }
+.daily-mission h2 { margin: 0 0 6px; font-size: 20px; }
+.daily-mission-help, .daily-mission-evidence, .daily-mission-empty {
+  color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere;
+}
+.daily-mission-help { margin: 0 0 12px; }
+.daily-mission-notice { color: var(--accent-dark); }
+.daily-mission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.daily-mission-card {
+  min-width: 0; padding: 14px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--panel);
+}
+.daily-mission-main { grid-column: 1 / -1; border-color: var(--line-strong); }
+.daily-mission-label { display: block; margin-bottom: 8px; color: var(--accent-dark); font-weight: 600; }
+.daily-mission-select {
+  display: block; min-width: 0; width: 100%; max-width: 100%; min-height: 44px;
+  padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px;
+  font: inherit; color: var(--ink); background: var(--surface);
+}
+.daily-mission-title { margin: 12px 0 6px; font-size: 18px; overflow-wrap: anywhere; }
+.daily-mission-next { margin: 8px 0 12px; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+.daily-mission-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.daily-mission-actions .secondary-button { min-height: 44px; max-width: 100%; white-space: normal; }
+/* End daily mission base styles. */
+
 @media (max-width: 760px) {
   .app-shell,
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
@@ -6431,6 +6457,7 @@ button:active {
   }
 
   .agent-profile-grid { grid-template-columns: minmax(0, 1fr); }
+  .daily-mission-grid { grid-template-columns: minmax(0, 1fr); }
 
   .detail-resize-handle {
     display: none;
