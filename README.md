@@ -62,8 +62,8 @@ waiters are bounded; an uncooperative operation keeps its occupied slot until
 it returns, rather than spawning unlimited replacements. Failed refreshes keep
 last-verified data. Each selected surface shows its own verified timestamp/age
 and an explicit retry; archived task TODOs are deferred until detail is opened.
-No canonical data is replaced by a local store. Candidate tests, independent QA
-and deployment status are tracked in [the V0.0.232 evidence](docs/release-evidence/v0.0.232.md).
+No canonical data is replaced by a local store. Tests, independent QA, deployment
+and post-retry recovery status are tracked in [the V0.0.232 evidence](docs/release-evidence/v0.0.232.md).
 
 V0.0.231 adds stable retry identities to ordinary task creation and canonical
 revision checks to the full task editor. A same-request retry reads the original
