@@ -3553,6 +3553,16 @@ class CalendarApiTests(unittest.TestCase):
 
 
 class HealthApiTests(unittest.TestCase):
+    def settled_health(self, harness):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            status, payload, _ = harness.request("GET", "/api/health")
+            self.assertEqual(status, 200)
+            if not payload["gbrain_version_state"]["refreshing"]:
+                return payload
+            threading.Event().wait(0.001)
+        self.fail("asynchronous version readback did not settle")
+
     def test_task_snapshot_exposes_one_la_rolling_window_scope_for_all_tasks(self) -> None:
         inside = new_task(
             title="Inside rolling window",
@@ -3649,7 +3659,9 @@ class HealthApiTests(unittest.TestCase):
             ],
         )
         self.assertEqual(payload["version"], server_module.release_payload()["current_version"])
-        self.assertEqual(payload["gbrain_version"], "gbrain-test 1.2.3")
+        self.assertEqual(payload["gbrain_version"], "unavailable")
+        self.assertEqual(payload["gbrain_version_state"]["status"], "pending")
+        self.assertEqual(self.settled_health(harness)["gbrain_version"], "gbrain-test 1.2.3")
 
     def test_health_uses_safe_fallback_when_gbrain_version_is_unavailable(self) -> None:
         harness = ServerHarness(
@@ -3678,10 +3690,12 @@ class HealthApiTests(unittest.TestCase):
         )
 
         first_status, first_payload, _ = harness.request("GET", "/api/health")
+        settled = self.settled_health(harness)
         second_status, second_payload, _ = harness.request("GET", "/api/health")
 
         self.assertEqual((first_status, second_status), (200, 200))
-        self.assertEqual(first_payload["gbrain_version"], "gbrain-test 1")
+        self.assertEqual(first_payload["gbrain_version_state"]["status"], "pending")
+        self.assertEqual(settled["gbrain_version"], "gbrain-test 1")
         self.assertEqual(second_payload["gbrain_version"], "gbrain-test 1")
         self.assertEqual(calls, 1)
 

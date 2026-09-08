@@ -56,6 +56,31 @@ favicon, artwork sources, guidance, and review previews live in
 
 ## Versioning and releases
 
+### Health and data-readiness diagnostics
+
+V0.0.233 separates app liveness from verified data readiness. Its independent
+desktop/mobile pre-commit evidence is recorded in
+[`docs/release-evidence/v0.0.233.md`](docs/release-evidence/v0.0.233.md).
+
+`GET /api/health` answers whether the local app is alive. GBrain version
+discovery runs in one bounded background slot; a slow or unavailable provider
+does not block liveness. The sidebar and About distinguish a pending probe,
+an unavailable version, and a retained last-verified version. The browser uses
+a finite recovery sequence; opening About starts another check after that
+sequence has ended. A stuck provider is not replaced with unlimited workers.
+
+`GET /api/readiness` inspects existing read metadata without loading data or
+contacting GBrain. It returns HTTP200 only when Tasks, Projects, Proposals,
+Agent Work and open System Tickets have fresh, issue-free evidence verified
+in the current server process. Archived System Tickets are reported but are
+optional. Missing, restored-but-unverified, refreshing, stale, failed or invalid
+required evidence returns HTTP503; `/api/health` can still return HTTP200.
+Readiness includes age, observation time, provenance, issue counts and coarse
+error codes, never task content or raw transport errors. Evidence expires after
+five minutes. `ready` means recent verified reads, not a live connectivity or
+authentication guarantee: the diagnostics endpoint deliberately performs no
+remote probe, and a version string alone does not establish data readiness.
+
 V0.0.232 gives each surface refresh one monotonic60-second budget, including
 queue, dependency and OAuth waits. Refresh workers, queued work and foreground
 waiters are bounded; an uncooperative operation keeps its occupied slot until

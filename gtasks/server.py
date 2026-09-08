@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote
 from urllib.request import Request, urlopen
 
 from . import __version__
+from .diagnostics import GbrainVersionProbe
 from .domain import (
     ACTIVE_ROOT,
     AGENT_SCOPES,
@@ -895,27 +896,7 @@ def _handler_class(
     active_handoff_waiter = handoff_waiter or time.sleep
     active_handoff_event_bridge = handoff_event_bridge
     active_goal_execution_scheduler = goal_execution_scheduler
-    active_gbrain_version_provider = gbrain_version_provider or gbrain_version_string
-    gbrain_version_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
-    gbrain_version_cache_seconds = 300.0
-
-    def safe_gbrain_version() -> str:
-        now = time.time()
-        cached = gbrain_version_cache.get("value")
-        if isinstance(cached, str) and now < float(gbrain_version_cache["expires_at"]):
-            return cached
-        try:
-            value = active_gbrain_version_provider()
-        except Exception:
-            value = "unavailable"
-        if not isinstance(value, str):
-            value = "unavailable"
-        normalized = " ".join(value.split())
-        if not normalized:
-            normalized = "unavailable"
-        gbrain_version_cache["value"] = normalized
-        gbrain_version_cache["expires_at"] = now + gbrain_version_cache_seconds
-        return normalized
+    version_probe = GbrainVersionProbe(gbrain_version_provider or gbrain_version_string)
 
     def foreground_operation():
         runner = getattr(adapter, "runner", None)
@@ -1623,13 +1604,25 @@ def _handler_class(
 
         def do_GET(self) -> None:
             path = urlsplit(self.path).path
+            if path == "/api/readiness":
+                diagnostics = active_read_cache.inspect({
+                    "tasks": SNAPSHOT_CACHE_SECONDS,
+                    "projects": PROJECT_CACHE_SECONDS,
+                    "proposals": PROPOSAL_CACHE_SECONDS,
+                    "agent_work": AGENT_WORK_CACHE_SECONDS,
+                    "system_tickets": SYSTEM_TICKET_CACHE_SECONDS,
+                    "system_tickets_all": SYSTEM_TICKET_CACHE_SECONDS,
+                }, optional=frozenset({"system_tickets_all"}))
+                self._json(HTTPStatus.OK if diagnostics["ready"] else HTTPStatus.SERVICE_UNAVAILABLE,
+                           diagnostics)
+                return
             if path == "/api/health":
                 self._json(
                     HTTPStatus.OK,
                     {
                         "status": "ok",
                         "version": __version__,
-                        "gbrain_version": safe_gbrain_version(),
+                        **version_probe.snapshot(),
                         "canonical_store": "gbrain",
                         "default_due_day": "task_creation_day",
                         "default_goal_target_day": "end_of_creation_quarter",

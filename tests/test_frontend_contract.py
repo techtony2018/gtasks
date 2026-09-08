@@ -97,6 +97,122 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_about_deferred_focus_cannot_reisolate_closed_or_superseded_dialog(self):
+        javascript = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        # Execute the real close listener, normally omitted with startup wiring
+        # by the application-runtime harness.
+        listener = 'elements.aboutDialog.addEventListener("close", () => {' + javascript.split(
+            'elements.aboutDialog.addEventListener("close", () => {', 1
+        )[1].split('\nelements.logsButton.addEventListener', 1)[0]
+        result = run_app_runtime_probe(listener + r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const timers = []; const frames = [];
+window.setTimeout = (callback) => { timers.push(callback); return timers.length; };
+window.requestAnimationFrame = (callback) => frames.push(callback);
+loadHealth = () => Promise.resolve();
+elements.aboutDialog.showModal = () => { elements.aboutDialog.open = true; elements.aboutClose.focus(); };
+elements.aboutDialog.close = () => { elements.aboutDialog.open = false; for (const callback of elements.aboutDialog.listeners.close) callback(); };
+elements.aboutButton.focus();
+openAboutDialog();
+closeAboutDialog(); // Escape/close before the scheduled focus callback.
+assert(document.activeElement === elements.aboutButton, "fast close did not restore origin");
+timers.shift()();
+assert(!elements.appShell.inert, "late About callback left closed app inert");
+assert(document.activeElement === elements.aboutButton, "late callback focused closed dialog");
+// An old open callback must not steal focus from a newly opened dialog.
+openAboutDialog(); closeAboutDialog(); openAboutDialog();
+const currentControl = new FakeElement("button"); currentControl.focus();
+timers.shift()();
+assert(document.activeElement === currentControl, "superseded About callback stole focus");
+timers.shift()();
+assert(document.activeElement === elements.aboutClose && elements.appShell.inert, "current About open lost isolation/focus");
+closeAboutDialog();
+for (const frame of frames.splice(0)) frame();
+assert(!elements.appShell.inert && document.activeElement === elements.aboutButton, "closed reopened About left shell inert");
+// Normal settled open/close and another modal's isolation remain intact.
+openAboutDialog(); timers.shift()(); frames.shift()(); closeAboutDialog();
+assert(!elements.appShell.inert && document.activeElement === elements.aboutButton, "ordinary close regressed");
+openAboutDialog(); timers.shift()(); elements.logsDialog.open = true; closeAboutDialog();
+assert(elements.appShell.inert, "About close removed another modal isolation");
+elements.logsDialog.open = false;
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_health_pending_recovers_coalesced_version_in_footer_and_about(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const timers = new Map(); let timerId = 0;
+window.setTimeout = (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; };
+window.clearTimeout = (id) => timers.delete(id);
+let calls = 0; let resolveResponse;
+global.fetch = async () => {
+  calls += 1;
+  if (calls === 1) return { ok: true, json: async () => ({ gbrain_version: "unavailable", gbrain_version_state: { status: "pending", refreshing: true } }) };
+  return await new Promise((resolve) => { resolveResponse = resolve; });
+};
+await loadHealth();
+assert(elements.sidebarGbrainVersion.textContent.includes("checking"), "pending version not honestly visible");
+assert(timers.size === 1, "cold version did not schedule one recovery");
+const [timer, scheduled] = [...timers][0]; timers.delete(timer);
+scheduled.callback();
+const shared = loadHealth();
+await Promise.resolve();
+assert(calls === 2, `overlapping health calls were not coalesced: ${calls}`);
+resolveResponse({ ok: true, json: async () => ({ gbrain_version: "gbrain 1.2.3", gbrain_version_state: { status: "verified", refreshing: false, verified_at: 1000 } }) });
+await shared;
+assert(elements.sidebarGbrainVersion.textContent === "GBrain: gbrain 1.2.3", "footer stranded after probe success");
+assert(elements.aboutGbrainVersion.textContent === elements.sidebarGbrainVersion.textContent, "About version did not recover");
+assert(timers.size === 0, "verified version kept polling");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_health_recovery_is_finite_and_about_can_retry_later(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const timers = new Map(); let timerId = 0;
+window.setTimeout = (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; };
+window.clearTimeout = (id) => timers.delete(id);
+let calls = 0;
+global.fetch = async () => { calls += 1; return { ok: true, json: async () => ({ gbrain_version: "unavailable", gbrain_version_state: { status: "pending", refreshing: true } }) }; };
+await loadHealth();
+for (let i = 0; timers.size && i < 10; i += 1) {
+  const [id, timer] = [...timers][0]; timers.delete(id); timer.callback();
+  await loadHealth();
+}
+assert(calls === 7 && timers.size === 0, `recovery not capped at initial + 6 retries: ${calls}/${timers.size}`);
+global.fetch = async () => { calls += 1; return { ok: true, json: async () => ({ gbrain_version: "gbrain 2.0.0", gbrain_version_state: { status: "verified" } }) }; };
+elements.aboutDialog.showModal = () => {};
+openAboutDialog();
+await loadHealth();
+assert(calls === 8, "About did not start exactly one later recovery");
+assert(elements.aboutGbrainVersion.textContent.includes("gbrain 2.0.0"), "manual later recovery failed");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_health_timeout_aborts_and_preserves_last_verified_version(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const timers = new Map(); let timerId = 0;
+window.setTimeout = (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; };
+window.clearTimeout = (id) => timers.delete(id);
+state.health = { gbrain_version: "gbrain 1.2.3", gbrain_version_state: { status: "verified", verified_at: 1000 } };
+let signal; let release;
+global.fetch = async (_url, options) => { signal = options.signal; return { ok: true, json: () => new Promise((resolve) => { release = resolve; }) }; };
+const pending = loadHealth();
+await Promise.resolve(); await Promise.resolve();
+const entry = [...timers].find(([, timer]) => timer.delay === 5000);
+assert(entry, "health read has no bounded deadline");
+timers.delete(entry[0]); entry[1].callback();
+await pending;
+assert(signal.aborted, "health deadline failed to abort transport");
+assert(state.health.gbrain_version === "gbrain 1.2.3", "timeout discarded last verified version");
+assert(elements.sidebarGbrainVersion.textContent.includes("last verified"), "stale version looked current");
+release({ gbrain_version: "gbrain 9.9.9", gbrain_version_state: { status: "verified" } });
+await Promise.resolve(); await Promise.resolve();
+assert(state.health.gbrain_version === "gbrain 1.2.3", "late timed-out body changed version");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_mobile_sync_summary_wraps_both_labels_inside_shrinkable_grid(self):
         css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         mobile = css[css.rindex("@media (max-width: 760px)") :]
@@ -109,6 +225,35 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("grid-template-columns: minmax(0, 1fr)", stack)
         self.assertNotIn("overflow: hidden", labels + stack)
         self.assertNotIn("text-overflow: ellipsis", labels + stack)
+
+    def test_gbrain_footer_version_wraps_long_tokens_within_mobile_and_desktop_space(self):
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        label = css.split(".mission-gbrain-version {", 1)[1].split("}", 1)[0]
+        self.assertIn("white-space: normal", label)
+        self.assertIn("overflow-wrap: anywhere", label)
+        self.assertIn("min-width: 0", label)
+        self.assertIn("\n  width: max-content;", label)
+        self.assertIn("max-width: calc(50cqw - 50% - 216px)", label)
+        self.assertNotIn("max(12ch", label)
+        footer = css.split(".mission-art-footer {", 1)[1].split("}", 1)[0]
+        self.assertIn("container-type: inline-size", footer)
+        stacked = css.split("@media (max-width: 1240px)", 1)[1].split(
+            "@media (max-width: 760px)", 1
+        )[0]
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", stacked)
+        self.assertIn("grid-row: 2", stacked)
+        self.assertIn("display: grid", stacked)
+        center = stacked.split(".mission-art-center {", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", center)
+        self.assertIn("position: static", stacked)
+        self.assertIn("max-width: 100%", stacked)
+        self.assertNotIn(".app-shell", stacked)
+        self.assertNotIn(".nav-item", stacked)
+        mobile = css[css.rindex("@media (max-width: 760px)") :]
+        mobile_label = mobile.split(".mission-gbrain-version {", 1)[1].split("}", 1)[0]
+        self.assertIn("max-width: 100%", mobile_label)
+        self.assertNotIn("overflow: hidden", label + mobile_label)
+        self.assertNotIn("text-overflow: ellipsis", label + mobile_label)
 
     def test_archived_loading_shell_stays_unknown_until_authoritative_todo_response(self):
         result = run_app_runtime_probe(r"""
@@ -2873,7 +3018,7 @@ assert(state.lastMutation?.phase === "success", `unexpected mutation phase: ${st
         self.assertIn('elements.appShell.setAttribute("aria-hidden", isModal ? "true" : "false")', javascript)
         self.assertIn("elements.appShell.inert = isModal", javascript)
         self.assertIn("elements.aboutClose.focus();\n    setAppShellModalIsolation(true);", javascript)
-        self.assertIn("if (elements.aboutDialog.open) setAppShellModalIsolation(true);", javascript)
+        self.assertIn("if (elements.aboutDialog.open && focusToken === aboutDialogFocusToken) setAppShellModalIsolation(true);", javascript)
         self.assertIn('event.key === "Escape"', javascript)
         self.assertIn("release-history", javascript)
         about_dialog = html[html.index('id="about-dialog"') : html.index('<div class="toast', html.index('id="about-dialog"'))]

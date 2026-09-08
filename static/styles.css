@@ -4988,6 +4988,7 @@ a:focus-visible {
 }
 
 .mission-art-footer {
+  container-type: inline-size;
   position: relative;
   width: 100%;
   display: grid;
@@ -5062,7 +5063,12 @@ a:focus-visible {
 
 .mission-gbrain-version {
   left: calc(100% + 60px);
-  min-width: max-content;
+  min-width: 0;
+  width: max-content;
+  /* Reserve the 60px version-link offset, 144px controls and 12px gap. */
+  max-width: calc(50cqw - 50% - 216px);
+  white-space: normal;
+  overflow-wrap: anywhere;
   text-align: left;
 }
 
@@ -6383,6 +6389,41 @@ button:active {
   }
 }
 
+/* Keep the centered artwork's intrinsic width. When the side lane cannot
+   comfortably hold version text, give labels and controls separate rows. */
+@media (max-width: 1240px) {
+  .mission-art-footer {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 8px;
+  }
+
+  .mission-art-center {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .footer-controls-left,
+  .footer-controls-right {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .mission-version-link {
+    position: static;
+  }
+
+  .mission-gbrain-version {
+    max-width: 100%;
+  }
+}
+
 @media (max-width: 760px) {
   .app-shell,
   .app-shell:has(.detail-panel[aria-hidden="false"]) {
@@ -6486,6 +6527,7 @@ button:active {
 
   .mission-gbrain-version {
     min-width: 0;
+    max-width: 100%;
   }
 
   .topbar {

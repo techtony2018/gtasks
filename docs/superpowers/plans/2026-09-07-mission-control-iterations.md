@@ -21,6 +21,12 @@
 
 ## Iteration map and acceptance
 
+Latest checkpoint: iteration4 final independent desktop/mobile retest PASS,
+aggregate385401d49e6b338566ea884c4f40a4613fa0abf7aabcbd18d1ebc1ca4d2a3dbf;
+all seven managed runtime hashes verified and synthetic/browser handles closed.
+Release commit/push/post-deploy readiness verification follows. Iterations5–9
+remain pending; the full goal remains active.
+
 | Iteration | Scope and acceptance | Files / verification |
 |---|---|---|
 | 1 | A refresh begun before invalidation must never publish old payloads/errors as current, clear a newer worker, or persist obsolete data. A replacement can converge immediately. | `gtasks/read_cache.py`, `tests/test_read_cache.py`; cache + TasksApiTests + SystemTicketApiTests + ProposalApiTests |
@@ -206,6 +212,47 @@ Before each later iteration, inspect its current implementation and append its e
   Runtime hashes matchQA; parent/QA browser/fixture/test handles closed.
   Documentation Manager notified; its separate canonical mirror remains pending.
   Next implementation: iteration4 fast liveness/readiness and failure scenarios.
+
+### Iteration4 execution checkpoint
+
+- Isolated branchcodex/mission-control-iteration4 atbase2cbf30f; live rootV232
+  remains unchanged. HealthApiTests and test_task_operations baseline21 PASS
+  in8.121s. Worker actively implementing output/iteration4-brief.md, owning
+  health/readiness/cache diagnostics, focused failure tests and only the
+  health-version recovery portion of app.js. Parent owns docs/release/QA.
+- Acceptance: bounded nonblocking cold/expired version probe; preserved visible
+  version recovery; privacy-safe/read-only per-surface readiness distinct from
+  liveness; expired-auth/restart/refresh-write/dropped-response scenarios.
+- No iteration4 candidate commit/deploy yet. Documentation Manager's V232
+  repo-doc update is pushed separately as2ce080f; canonical mirror attempt
+  timed out at180s. Final exact readback remained document_version37 and
+  last_verified_versionV224; mirrored completion is not claimed.
+- Parent synthetic fixture smoke passed held-version health13.3ms,
+  readiness metadata0.57ms, optional archive not blocking readiness, expired
+  authentication reporting503 while health remains200, zero diagnostic
+  canonical reads and zero business writes. This is developer fixture
+  verification, not the independent managed-service UI gate. Fixture8807
+  was stopped and its process exited0.
+- Frozen implementation: worker279 targeted testsPASS, independent backend
+  and frontend specification/code-qualityPASS, parent managed-checkout111
+  smoke/release testsPASS. CandidateV233 manifestaggregate
+  9cf908910083024328d3a9e2176efb43d716d482e69d5a2a9bac3b9fecd9289e.
+  Exact runtime copied to root at the explicit Dashboard precommit QA boundary;
+  independent UI QA is executing on managed4179 and synthetic63235/63236.
+  Root remains uncommitted, unrelated.gitignore preserved. Parent GET-only
+  verification observed readiness200 with allfive required surfaces fresh;
+  archive correctly remains optional/unverified. No commit authorized yet.
+- Independent rendered gateFAIL: long GBrain version label escapes its370px
+  parent at390x844. Root exactHEAD runtime restored and Dashboard reverifiedV232;
+  all parent/QA fixtures and browsers closed. No commit. Isolated CSS repair
+  plus fresh early-version-recovery proof executing; frozen independent retest
+  is required. Report output/playwright/iteration4-independent/report.md.
+- Final repair code reviewsPASS: Aboutclose race guarded; footer nowstacks
+  below1240 instead ofoverlappingcontrols. Eightwidths/24geometrycases and32
+  controlhits passed developerchecks. Parentfinal315 testsPASS11.581s.
+  Repairedfrozenaggregate385401d49e6b338566ea884c4f40a4613fa0abf7aabcbd18d1ebc1ca4d2a3dbf
+  isonDashboardmanagedV233 forfreshindependentretet, plusfixtures65091/65092.
+  No commit authorizedyet. Latest evidence: docs/release-evidence/v0.0.233.md.
 
 ## Completion audit (full goal)
 

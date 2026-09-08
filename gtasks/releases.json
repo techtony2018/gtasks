@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.232",
+  "current_version": "V0.0.233",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1392,6 +1392,12 @@
       "date": "2026-09-07",
       "title": "Bound refreshes and show verified data age",
       "summary": "Refreshes share one deadline across queues and GBrain reads, retain verified data on failure, and bound background work. Views show their own verification age and retry action; archived TODO detail loads only when opened."
+    },
+    {
+      "version": "V0.0.233",
+      "date": "2026-09-07",
+      "title": "Separate app health from verified data readiness",
+      "summary": "Health stays responsive during GBrain version discovery. Readiness reports recent verified read evidence without fetching private content, while the visible version recovers through bounded checks. Failure tests cover restart, expired authentication and a dropped save response."
     }
   ]
 }

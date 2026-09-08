@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from copy import deepcopy
@@ -147,6 +148,9 @@ class ReadSurfaceCache:
         self._errors: dict[str, str] = {}
         self._error_at: dict[str, float] = {}
         self._error_codes: dict[str, str] = {}
+        # Deliberately process-local: disk snapshots are not new canonical reads.
+        self._verified_here: set[str] = set()
+        self._last_read_observed_at: dict[str, float] = {}
 
     def _stop_loading(self, name: str) -> None:
         budget = self._loading.pop(name, None)
@@ -162,6 +166,7 @@ class ReadSurfaceCache:
         )
         self._error_codes[name] = code
         self._error_at[name] = self._clock()
+        self._last_read_observed_at[name] = self._error_at[name]
         self._generations[name] = self._generations.get(name, 0) + 1
         self._stop_loading(name)
         self._condition.notify_all()
@@ -345,6 +350,76 @@ class ReadSurfaceCache:
             remaining_seconds()
             return True
 
+    def inspect(self, surfaces: Mapping[str, float], *, optional: frozenset[str] = frozenset()) -> dict:
+        """Inspect fixed-size metadata only; no loader, disk read or payload copy.
+
+        Readiness describes recent observed evidence, not a live connectivity
+        guarantee. Archive diagnostics can be optional without weakening the
+        required active surfaces. Restored payloads must be reverified here.
+        """
+        if not self._condition.acquire(timeout=0.05):
+            # Publication can copy a large payload under the existing cache
+            # lock. Diagnostics must not inherit that unbounded wait.
+            return {
+                "status": "not_ready", "ready": False, "observed_at": self._clock(),
+                "evidence": "recent_reads_not_live_probe",
+                "surfaces": {name: {
+                    "required": name not in optional, "status": "unavailable",
+                    "refreshing": None, "last_valid_at": None, "age_seconds": None,
+                    "max_age_seconds": ttl, "last_read_observed_at": None,
+                    "provenance": "none", "issue_count": None, "error_code": "inspection_busy",
+                } for name, ttl in surfaces.items()},
+            }
+        try:
+            now = self._clock()
+            result = {}
+            for name, ttl in surfaces.items():
+                record = self._records.get(name)
+                timestamp = record.get("last_valid_at") if record else None
+                valid_time = (type(timestamp) in (int, float) and math.isfinite(timestamp)
+                              and 0 < timestamp <= now)
+                age = now - timestamp if valid_time else None
+                payload = record.get("payload") if record else None
+                issues = payload.get("issues") if isinstance(payload, dict) else None
+                count = len(issues) if isinstance(issues, list) else None
+                loading = name in self._loading
+                code = self._error_codes.get(name)
+                if loading:
+                    try:
+                        self._loading[name].remaining()
+                    except ReadDeadlineExceeded:
+                        code = "refresh_deadline"
+                if code:
+                    status = "error"
+                elif loading:
+                    status = "refreshing"
+                elif record is None:
+                    status = "missing"
+                elif not valid_time or count is None:
+                    status, code = "invalid", "invalid_evidence"
+                elif name not in self._verified_here:
+                    status, code = "unverified", "restart_unverified"
+                elif name in self._dirty or age > ttl:
+                    status = "stale"
+                elif count:
+                    status, code = "error", "canonical_read_issues"
+                else:
+                    status = "fresh"
+                result[name] = {
+                    "required": name not in optional, "status": status,
+                    "refreshing": loading, "last_valid_at": timestamp if valid_time else None,
+                    "age_seconds": age, "max_age_seconds": ttl,
+                    "last_read_observed_at": self._last_read_observed_at.get(name),
+                    "provenance": ("current_process_read" if name in self._verified_here else
+                                   "persisted_snapshot" if record else "none"),
+                    "issue_count": count, "error_code": code,
+                }
+            ready = all(item["status"] == "fresh" for item in result.values() if item["required"])
+            return {"status": "ready" if ready else "not_ready", "ready": ready,
+                    "observed_at": now, "evidence": "recent_reads_not_live_probe", "surfaces": result}
+        finally:
+            self._condition.release()
+
     def _refresh(
         self,
         name: str,
@@ -364,6 +439,8 @@ class ReadSurfaceCache:
                     "payload": deepcopy(payload),
                     "last_valid_at": last_valid_at,
                 }
+                self._verified_here.add(name)
+                self._last_read_observed_at[name] = last_valid_at
                 self._dirty.discard(name)
                 self._errors.pop(name, None)
                 self._error_codes.pop(name, None)

@@ -1497,7 +1497,12 @@ function formatGbrainVersion(value) {
 }
 
 function renderGbrainVersion() {
-  const label = formatGbrainVersion(state.health?.gbrain_version);
+  const versionState = state.health?.gbrain_version_state;
+  let label = formatGbrainVersion(state.health?.gbrain_version);
+  if (versionState?.status === "pending") label = "GBrain: checking version…";
+  if (versionState?.status === "stale") {
+    label += versionState.refreshing ? " (last verified; checking…)" : " (last verified; unavailable)";
+  }
   elements.sidebarGbrainVersion.textContent = label;
   elements.aboutGbrainVersion.textContent = label;
 }
@@ -1519,29 +1524,79 @@ async function loadReleases() {
   }
 }
 
-async function loadHealth() {
-  try {
-    const response = await fetch("/api/health", {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Mission Control health unavailable.");
-    state.health = payload;
-  } catch (_error) {
-    state.health = { gbrain_version: "unavailable" };
-  }
-  renderGbrainVersion();
+const HEALTH_RECOVERY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 16000];
+let healthReadPromise = null;
+let healthRecoveryTimer = null;
+
+function loadHealth(attempt = 0) {
+  if (healthReadPromise) return healthReadPromise;
+  if (healthRecoveryTimer !== null) return Promise.resolve();
+  const controller = new AbortController();
+  let deadlineTimer;
+  const deadline = new Promise((_resolve, reject) => {
+    deadlineTimer = window.setTimeout(() => {
+      controller.abort();
+      reject(new Error("Health read timed out."));
+    }, 5000);
+  });
+  healthReadPromise = (async () => {
+    try {
+      // Include body consumption in the deadline; late responses never merge.
+      const payload = await Promise.race([deadline, (async () => {
+        const response = await fetch("/api/health", {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const value = await response.json();
+        if (!response.ok) throw new Error("Mission Control health unavailable.");
+        return value;
+      })()]);
+      state.health = payload;
+    } catch (_error) {
+      const previous = state.health;
+      const hasVerifiedVersion = Boolean(previous?.gbrain_version_state?.verified_at);
+      state.health = {
+        gbrain_version: hasVerifiedVersion ? previous.gbrain_version : "unavailable",
+        gbrain_version_state: {
+          ...previous?.gbrain_version_state,
+          status: hasVerifiedVersion ? "stale" : "unavailable",
+          refreshing: false,
+          error_code: "health_unavailable",
+        },
+      };
+    } finally {
+      window.clearTimeout(deadlineTimer);
+      healthReadPromise = null;
+    }
+    renderGbrainVersion();
+    const versionState = state.health?.gbrain_version_state;
+    const verified = versionState?.status === "verified" || (!versionState &&
+      state.health?.gbrain_version && state.health.gbrain_version !== "unavailable");
+    if (!verified && attempt < HEALTH_RECOVERY_DELAYS_MS.length) {
+      healthRecoveryTimer = window.setTimeout(() => {
+        healthRecoveryTimer = null;
+        loadHealth(attempt + 1);
+      }, HEALTH_RECOVERY_DELAYS_MS[attempt]);
+    }
+  })();
+  return healthReadPromise;
 }
 
+let aboutDialogFocusToken = 0;
+
 function openAboutDialog() {
+  const focusToken = ++aboutDialogFocusToken;
+  // Explicit user inspection permits another finite recovery cycle later.
+  loadHealth();
   state.aboutReturnFocus = document.activeElement;
   elements.aboutDialog.showModal();
   window.setTimeout(() => {
+    if (!elements.aboutDialog.open || focusToken !== aboutDialogFocusToken) return;
     elements.aboutClose.focus();
     setAppShellModalIsolation(true);
     window.requestAnimationFrame(() => {
-      if (elements.aboutDialog.open) setAppShellModalIsolation(true);
+      if (elements.aboutDialog.open && focusToken === aboutDialogFocusToken) setAppShellModalIsolation(true);
     });
   }, 0);
 }
