@@ -256,6 +256,14 @@ Before each later iteration, inspect its current implementation and append its e
   Repairedfrozenaggregate385401d49e6b338566ea884c4f40a4613fa0abf7aabcbd18d1ebc1ca4d2a3dbf
   isonDashboardmanagedV233 forfreshindependentretet, plusfixtures65091/65092.
   No commit authorizedyet. Latest evidence: docs/release-evidence/v0.0.233.md.
+- Iteration4 shippedV233 at commit4d2d473b43e13263f5dd78c1dca13198c275ee1e,
+  pushed to origin/main and Dashboard-deployed. Independent managed desktop and
+  genuine mobile QA passed after clipping repair. Postrestart cold recovery
+  was not instantaneous; an explicit read-only retry recovered required
+  surfaces, while optional archive stayed unverified. Documentation Manager
+  reviewed the repository docs; canonical Overview mirror attempt ended with
+  incomplete remote-MCP response and exact readback still V224. Iteration5
+  starts separately; full goal remains active.
 
 ## Completion audit (full goal)
 
