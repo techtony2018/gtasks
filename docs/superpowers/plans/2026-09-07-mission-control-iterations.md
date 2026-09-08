@@ -24,8 +24,11 @@
 Latest checkpoint: iteration4 final independent desktop/mobile retest PASS,
 aggregate385401d49e6b338566ea884c4f40a4613fa0abf7aabcbd18d1ebc1ca4d2a3dbf;
 all seven managed runtime hashes verified and synthetic/browser handles closed.
-Release commit/push/post-deploy readiness verification follows. Iterations5–9
-remain pending; the full goal remains active.
+Shipped V233 at4d2d473b43e13263f5dd78c1dca13198c275ee1e via Dashboard. After one
+terminal Proposals deadline and explicit GET retry, all five required surfaces
+converged fresh/issues0/current_process_read; readiness200 and health200.
+The optional archive remains unverified and was not force-hydrated.
+Iterations5–9 remain pending; the full goal remains active.
 
 | Iteration | Scope and acceptance | Files / verification |
 |---|---|---|
