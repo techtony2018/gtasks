@@ -70,6 +70,21 @@ with self._condition:
 
 ## Later iteration execution contracts
 
+### Iteration5 current execution
+
+- Isolated worktreeoutput/worktrees/mission-control-iteration5, branch
+  codex/mission-control-iteration5, baseaaf4995. Baseline204 frontend tests PASS
+  in3.155s. Root remains releasedV233; no iteration5 runtime edits are live.
+- Minimal implementation selected: three labeled native-select slots and
+  section-only rerender with focus restoration; self-contained helpers in
+  app.js avoid an additional script dependency. Only local-day/task references
+  persist. Confirmed terminal references retire as local selection state so a
+  reopened task requires explicit reselection; stale omission never retires.
+- Worker owns UI/helpers/tests per isolatedoutput/iteration5-brief.md, parent
+  owns docs/release and independent managedQA. No production task mutations.
+- Documentation Manager was notified of the V233 release and its exact QA/
+  post-deploy recovery evidence; canonical mirror remains a separate receipt.
+
 Before each later iteration, inspect its current implementation and append its exact failing test names and chosen interfaces here. This is a rolling implementation plan: the acceptance scope above is fixed, while adapter capabilities and the results of earlier iterations determine the smallest correct implementation.
 
 - Iteration 2 tests: lost response after successful create returns the same slug on retry; concurrent retries create one object; changed request hash returns conflict; a newer canonical edit causes conflict with draft retained. Use the real operation/revision logic against an isolated fake canonical backend, never production.
@@ -256,6 +271,14 @@ Before each later iteration, inspect its current implementation and append its e
   Repairedfrozenaggregate385401d49e6b338566ea884c4f40a4613fa0abf7aabcbd18d1ebc1ca4d2a3dbf
   isonDashboardmanagedV233 forfreshindependentretet, plusfixtures65091/65092.
   No commit authorizedyet. Latest evidence: docs/release-evidence/v0.0.233.md.
+- Iteration4 shippedV233 at commit4d2d473b43e13263f5dd78c1dca13198c275ee1e,
+  pushed to origin/main and Dashboard-deployed. Independent managed desktop and
+  genuine mobile QA passed after clipping repair. Postrestart cold recovery
+  was not instantaneous; an explicit read-only retry recovered required
+  surfaces, while optional archive stayed unverified. Documentation Manager
+  reviewed the repository docs; canonical Overview mirror attempt ended with
+  incomplete remote-MCP response and exact readback still V224. Iteration5
+  starts separately; full goal remains active.
 
 ## Completion audit (full goal)
 
