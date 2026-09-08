@@ -2,10 +2,12 @@ import json
 import stat
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from gtasks.read_cache import ReadSnapshotStore, ReadSurfaceCache
+from gtasks.read_budget import ReadBudget, ReadDeadlineExceeded, use_budget
 
 
 class ReadSnapshotStoreTests(unittest.TestCase):
@@ -66,6 +68,257 @@ class ReadSnapshotStoreTests(unittest.TestCase):
 
 
 class ReadSurfaceCacheTests(unittest.TestCase):
+    def test_short_or_cancelled_joining_budget_does_not_poison_shared_refresh(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as temporary:
+                cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                         max_refresh_seconds=0.4)
+                entered, release = threading.Event(), threading.Event()
+                def held():
+                    entered.set()
+                    release.wait(1)
+                    return {"shared": "verified"}
+                parent = ReadBudget(1 if cancel else 0.035)
+                timer = threading.Timer(0.035, parent.cancelled.set) if cancel else None
+                try:
+                    cache.read("tasks", held, ttl_seconds=30)
+                    self.assertTrue(entered.wait(1))
+                    if timer:
+                        timer.start()
+                    started = time.monotonic()
+                    with use_budget(parent):
+                        with self.assertRaises(ReadDeadlineExceeded):
+                            cache.read("tasks", held, ttl_seconds=30, force=True, foreground_refresh=True)
+                    self.assertLess(time.monotonic() - started, 0.15)
+                    shared = cache.read("tasks", held, ttl_seconds=30)
+                    self.assertTrue(shared.state["refreshing"])
+                    self.assertIsNone(shared.state["error"])
+                    release.set()
+                    self.assertTrue(cache.wait_for_idle("tasks"))
+                    self.assertEqual(cache.read("tasks", held, ttl_seconds=30).payload, {"shared": "verified"})
+                finally:
+                    release.set()
+                    if timer:
+                        timer.join(1)
+                    cache.wait_for_idle("tasks")
+
+    def test_waiter_slot_is_released_after_invalidation_and_loader_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                     max_waiters=1, background=False)
+            entered, release = threading.Event(), threading.Event()
+            def held():
+                entered.set()
+                release.wait(2)
+                return {"old": True}
+            client = threading.Thread(target=lambda: cache.read("tasks", held, ttl_seconds=30))
+            client.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                cache.invalidate("tasks")
+                client.join(1)
+                self.assertFalse(client.is_alive())
+                failed = cache.read("tasks", lambda: (_ for _ in ()).throw(RuntimeError("synthetic")),
+                                    ttl_seconds=30, force=True)
+                self.assertEqual(failed.state["status"], "error")
+                self.assertFalse(failed.state["wait_deferred"])
+                recovered = cache.read("tasks", lambda: {"new": True}, ttl_seconds=30, force=True)
+                self.assertEqual(recovered.state["status"], "fresh")
+                self.assertFalse(recovered.state["wait_deferred"])
+            finally:
+                release.set()
+                client.join(2)
+
+    def test_foreground_waiters_are_bounded_without_poisoning_running_refresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                     max_refresh_seconds=2)
+            entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+            results = []
+            def held():
+                entered.set()
+                release.wait(2)
+                return {"ok": True}
+            def read():
+                results.append(cache.read("tasks", held, ttl_seconds=30, force=True,
+                                          foreground_refresh=True))
+                returned.set()
+            clients = [threading.Thread(target=read) for _ in range(17)]
+            try:
+                cache.read("tasks", held, ttl_seconds=30)
+                self.assertTrue(entered.wait(1))
+                for client in clients:
+                    client.start()
+                self.assertTrue(returned.wait(0.2), "overflow must return without waiting")
+                self.assertTrue(results[0].state["wait_deferred"])
+                self.assertTrue(results[0].state["refreshing"])
+                self.assertIsNone(results[0].state["error"])
+                release.set()
+                for client in clients:
+                    client.join(1)
+                self.assertEqual(sum(bool(result.state.get("wait_deferred")) for result in results), 1)
+                self.assertEqual(len(results), 17)
+            finally:
+                release.set()
+                for client in clients:
+                    if client.ident is not None:
+                        client.join(2)
+                cache.wait_for_idle("tasks")
+
+    def test_queued_deadline_expires_before_loader_access_and_retry_converges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                     max_workers=1, max_queued=2, max_refresh_seconds=0.06)
+            entered, release = threading.Event(), threading.Event()
+            calls = []
+            def held():
+                entered.set()
+                release.wait(1)
+                return {"old": True}
+            def queued():
+                calls.append("queued")
+                return {"new": True}
+            try:
+                cache.read("held", held, ttl_seconds=30)
+                self.assertTrue(entered.wait(1))
+                started = time.monotonic()
+                result = cache.read("queued", queued, ttl_seconds=30, force=True,
+                                    foreground_refresh=True)
+                self.assertLess(time.monotonic() - started, 0.2)
+                self.assertEqual(result.state["status"], "error")
+                self.assertFalse(result.state["refreshing"])
+                self.assertEqual(calls, [])
+                release.set()
+                # Retry queues behind the now-released real worker, not a
+                # replacement thread for an abandoned call.
+                recovered = cache.read("queued", queued, ttl_seconds=30, force=True,
+                                       foreground_refresh=True)
+                self.assertEqual(recovered.state["status"], "fresh")
+                self.assertEqual(calls, ["queued"])
+            finally:
+                release.set()
+                cache.wait_for_idle("held")
+                cache.wait_for_idle("queued")
+
+    def test_fifo_queue_and_capacity_rejection_survive_repeated_first_surface(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                     max_workers=1, max_queued=2)
+            entered, release = threading.Event(), threading.Event()
+            calls = []
+            def held():
+                entered.set()
+                release.wait(2)
+                return {"ok": True}
+            def loader(name):
+                calls.append(name)
+                return {"name": name}
+            try:
+                cache.read("first", held, ttl_seconds=30)
+                self.assertTrue(entered.wait(1))
+                cache.read("second", lambda: loader("second"), ttl_seconds=30)
+                for _ in range(20):
+                    cache.invalidate("first")
+                    cache.read("first", lambda: loader("first"), ttl_seconds=30, force=True)
+                rejected = cache.read("third", lambda: loader("third"), ttl_seconds=30)
+                self.assertEqual(rejected.state["error_code"], "refresh_capacity")
+                self.assertFalse(rejected.state["refreshing"])
+                release.set()
+                self.assertTrue(cache.wait_for_idle("second"))
+                self.assertTrue(cache.wait_for_idle("first"))
+                self.assertEqual(calls, ["second", "first"])
+                third = cache.read("third", lambda: loader("third"), ttl_seconds=30,
+                                   force=True, foreground_refresh=True)
+                self.assertEqual(third.state["status"], "fresh")
+            finally:
+                release.set()
+                cache.wait_for_idle("first")
+                cache.wait_for_idle("second")
+
+    def test_late_completion_cannot_publish_even_without_timeout_poll(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ReadSnapshotStore(Path(temporary) / "reads.json")
+            store.save({"tasks": {"payload": {"revision": "old"}, "last_valid_at": 1.0}})
+            cache = ReadSurfaceCache(store, max_refresh_seconds=0.03)
+            finished = threading.Event()
+            def late():
+                time.sleep(0.08)
+                finished.set()
+                return {"revision": "late"}
+            cache.read("tasks", late, ttl_seconds=30, force=True)
+            self.assertTrue(finished.wait(1))
+            self.assertTrue(cache.wait_for_idle("tasks"))
+            result = cache.read("tasks", late, ttl_seconds=30)
+            self.assertEqual(result.payload, {"revision": "old"})
+            self.assertEqual(store.load()["tasks"]["payload"], result.payload)
+            self.assertEqual(result.state["error_code"], "refresh_deadline")
+
+    def test_coalesced_foreground_reader_waits_only_remaining_admitted_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"),
+                                     max_refresh_seconds=0.08)
+            entered, release = threading.Event(), threading.Event()
+            calls = []
+            def held():
+                calls.append("entered")
+                entered.set()
+                release.wait(1)
+                return {"ok": True}
+            try:
+                cache.read("tasks", held, ttl_seconds=30)
+                self.assertTrue(entered.wait(1))
+                time.sleep(0.04)
+                started = time.monotonic()
+                result = cache.read("tasks", held, ttl_seconds=30, force=True, foreground_refresh=True)
+                self.assertLess(time.monotonic() - started, 0.07)
+                self.assertEqual(result.state["status"], "error")
+                self.assertFalse(result.state["refreshing"])
+                self.assertEqual(calls, ["entered"])
+            finally:
+                release.set()
+
+    def test_slow_foreground_deadline_keeps_verified_payload_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ReadSnapshotStore(Path(temporary) / "reads.json")
+            store.save({"tasks": {"payload": {"revision": "old"}, "last_valid_at": 1.0}})
+            cache = ReadSurfaceCache(store, max_refresh_seconds=0.05)
+            release = threading.Event()
+            try:
+                started = time.monotonic()
+                result = cache.read("tasks", lambda: (release.wait(0.35) or {"revision": "late"}),
+                                    ttl_seconds=30, force=True, foreground_refresh=True)
+                self.assertLess(time.monotonic() - started, 0.2)
+                self.assertEqual(result.payload, {"revision": "old"})
+                self.assertEqual(result.state["last_valid_at"], 1.0)
+                self.assertFalse(result.state["refreshing"])
+                self.assertEqual(result.state["status"], "stale")
+                self.assertEqual(result.state["error_code"], "refresh_deadline")
+            finally:
+                release.set()
+
+    def test_repeated_invalidation_bounds_actual_loader_admissions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = ReadSurfaceCache(ReadSnapshotStore(Path(temporary) / "reads.json"))
+            release = threading.Event()
+            condition = threading.Condition()
+            calls = 0
+            def loader():
+                nonlocal calls
+                with condition:
+                    calls += 1
+                    condition.notify_all()
+                release.wait(2)
+                return {"ok": True}
+            try:
+                for _ in range(25):
+                    cache.invalidate("tasks")
+                    cache.read("tasks", loader, ttl_seconds=30, force=True)
+                    time.sleep(0.005)
+                self.assertLessEqual(calls, 4)
+            finally:
+                release.set()
+                cache.wait_for_idle("tasks")
+
     def test_overlapping_refresh_persistence_keeps_newest_snapshot_on_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             old_saving, new_saved = threading.Event(), threading.Event()
@@ -348,6 +601,7 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 store,
                 clock=clock,
                 max_refresh_seconds=5,
+                monotonic_clock=clock,
             )
             try:
                 first = cache.read("tasks", loader, ttl_seconds=30, force=True)
@@ -407,6 +661,7 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 store,
                 clock=clock,
                 max_refresh_seconds=5,
+                monotonic_clock=clock,
             )
             try:
                 first = cache.read("tasks", loader, ttl_seconds=30, force=True)
@@ -460,6 +715,7 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 store,
                 clock=clock,
                 max_refresh_seconds=5,
+                monotonic_clock=clock,
             )
             try:
                 first = cache.read("tasks", loader, ttl_seconds=30, force=True)
@@ -519,6 +775,7 @@ class ReadSurfaceCacheTests(unittest.TestCase):
                 store,
                 clock=clock,
                 max_refresh_seconds=5,
+                monotonic_clock=clock,
             )
             try:
                 first = cache.read(

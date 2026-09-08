@@ -1,5 +1,5 @@
 {
-  "current_version": "V0.0.231",
+  "current_version": "V0.0.232",
   "releases": [
     {
       "version": "V0.0.1",
@@ -1386,6 +1386,12 @@
       "date": "2026-09-07",
       "title": "Keep task drafts and make save retries safer",
       "summary": "Create retries retain their original task identity, and edits preserve drafts when canonical task fields change. Uncertain saves point to the original task for verification."
+    },
+    {
+      "version": "V0.0.232",
+      "date": "2026-09-07",
+      "title": "Bound refreshes and show verified data age",
+      "summary": "Refreshes share one deadline across queues and GBrain reads, retain verified data on failure, and bound background work. Views show their own verification age and retry action; archived TODO detail loads only when opened."
     }
   ]
 }

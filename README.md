@@ -56,6 +56,15 @@ favicon, artwork sources, guidance, and review previews live in
 
 ## Versioning and releases
 
+V0.0.232 gives each surface refresh one monotonic60-second budget, including
+queue, dependency and OAuth waits. Refresh workers, queued work and foreground
+waiters are bounded; an uncooperative operation keeps its occupied slot until
+it returns, rather than spawning unlimited replacements. Failed refreshes keep
+last-verified data. Each selected surface shows its own verified timestamp/age
+and an explicit retry; archived task TODOs are deferred until detail is opened.
+No canonical data is replaced by a local store. Candidate tests, independent QA
+and deployment status are tracked in [the V0.0.232 evidence](docs/release-evidence/v0.0.232.md).
+
 V0.0.231 adds stable retry identities to ordinary task creation and canonical
 revision checks to the full task editor. A same-request retry reads the original
 verified task; changing values under the same identity conflicts. An uncertain

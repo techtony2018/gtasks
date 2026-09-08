@@ -6,9 +6,14 @@ import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Condition, Lock, Thread
-from time import time
+from threading import Condition, Lock
+from time import monotonic, time
 from typing import Any, Callable, Mapping
+
+from .read_budget import (
+    BoundedReadExecutor, ReadBudget, ReadCapacityExceeded, ReadDeadlineExceeded,
+    current_budget, remaining_seconds, use_budget,
+)
 
 
 READ_CACHE_SCHEMA_VERSION = 2
@@ -117,19 +122,57 @@ class ReadSurfaceCache:
         clock: Callable[[], float] = time,
         background: bool = True,
         max_refresh_seconds: float = 60.0,
+        monotonic_clock: Callable[[], float] = monotonic,
+        max_workers: int = 4,
+        max_queued: int = 8,
+        max_waiters: int = 16,
     ) -> None:
         self._store = store
         self._clock = clock
         self._background = background
         self._max_refresh_seconds = max_refresh_seconds
+        self._monotonic = monotonic_clock
+        self._executor = BoundedReadExecutor(max_workers, max_queued, name="gtasks-cache-refresh")
+        if max_waiters < 1:
+            raise ValueError("Read waiter limit must be positive")
+        self._max_waiters = max_waiters
+        self._waiters = 0
         self._condition = Condition()
         self._persistence_lock = Lock()
         self._records = store.load()
-        self._loading: dict[str, float] = {}
+        self._loading: dict[str, ReadBudget] = {}
+        self._futures: dict[str, Any] = {}
         self._generations: dict[str, int] = {}
         self._dirty: set[str] = set()
         self._errors: dict[str, str] = {}
         self._error_at: dict[str, float] = {}
+        self._error_codes: dict[str, str] = {}
+
+    def _stop_loading(self, name: str) -> None:
+        budget = self._loading.pop(name, None)
+        if budget is not None:
+            budget.cancelled.set()
+        future = self._futures.pop(name, None)
+        if future is not None:
+            future.cancel()
+
+    def _fail(self, name: str, code: str) -> None:
+        self._errors[name] = (
+            "The canonical GBrain refresh did not complete. Last verified data is kept."
+        )
+        self._error_codes[name] = code
+        self._error_at[name] = self._clock()
+        self._generations[name] = self._generations.get(name, 0) + 1
+        self._stop_loading(name)
+        self._condition.notify_all()
+
+    def _expire(self, name: str) -> None:
+        budget = self._loading.get(name)
+        if budget is not None:
+            try:
+                budget.remaining()
+            except ReadDeadlineExceeded:
+                self._fail(name, "refresh_deadline")
 
     def invalidate(self, *names: str) -> None:
         with self._condition:
@@ -138,7 +181,7 @@ class ReadSurfaceCache:
                 # A read started before a verified mutation cannot publish or
                 # clear the replacement worker's loading/error state.
                 self._generations[name] = self._generations.get(name, 0) + 1
-                self._loading.pop(name, None)
+                self._stop_loading(name)
             self._condition.notify_all()
 
     def read(
@@ -152,7 +195,10 @@ class ReadSurfaceCache:
         foreground_refresh: bool = False,
     ) -> SurfaceRead:
         start_refresh = False
+        wait_deferred = False
         with self._condition:
+            remaining_seconds()
+            self._expire(name)
             record = self._records.get(name)
             last_valid_at = (
                 float(record["last_valid_at"]) if record is not None else None
@@ -189,17 +235,7 @@ class ReadSurfaceCache:
             if recent_cold_error:
                 needs_refresh = False
             if needs_refresh and name in self._loading:
-                started_at = self._loading[name]
-                if self._clock() - started_at >= self._max_refresh_seconds:
-                    self._errors[name] = (
-                        "The canonical GBrain refresh did not complete. Last verified data is kept."
-                    )
-                    self._error_at[name] = self._clock()
-                    self._generations[name] = self._generations.get(name, 0) + 1
-                    self._loading.pop(name, None)
-                    needs_refresh = force
-                else:
-                    needs_refresh = False
+                needs_refresh = False
             recent_refresh_error = (
                 record is not None
                 and name in self._errors
@@ -210,26 +246,53 @@ class ReadSurfaceCache:
             if recent_refresh_error:
                 needs_refresh = False
             if needs_refresh and name not in self._loading:
-                self._loading[name] = self._clock()
+                seconds = remaining_seconds(self._max_refresh_seconds)
+                budget = ReadBudget(seconds, clock=self._monotonic)
+                self._loading[name] = budget
                 self._generations[name] = self._generations.get(name, 0) + 1
                 generation = self._generations[name]
                 self._errors.pop(name, None)
                 self._error_at.pop(name, None)
+                self._error_codes.pop(name, None)
                 start_refresh = True
             else:
                 generation = self._generations.get(name, 0)
 
-        if start_refresh and (foreground_refresh or not self._background):
-            self._refresh(name, loader, generation)
-        elif start_refresh:
-            Thread(
-                target=self._refresh,
-                args=(name, loader, generation),
-                name=f"gtasks-{name}-refresh",
-                daemon=True,
-            ).start()
+            if start_refresh:
+                try:
+                    with use_budget(budget):
+                        self._futures[name] = self._executor.submit(
+                            self._refresh, name, loader, generation,
+                            wait_for_capacity=False,
+                        )
+                except (ReadCapacityExceeded, ReadDeadlineExceeded) as exc:
+                    self._fail(name, "refresh_capacity" if isinstance(exc, ReadCapacityExceeded)
+                               else "refresh_deadline")
+            # Coalesced foreground readers share the admitted generation's
+            # remaining deadline; they never grant it another full budget.
+            if foreground_refresh or (not self._background and (start_refresh or force)):
+                if name in self._loading and self._waiters >= self._max_waiters:
+                    wait_deferred = True
+                else:
+                    self._waiters += 1
+                    try:
+                        while name in self._loading and self._generations.get(name) == generation:
+                            # A joining caller may have less time than this
+                            # useful shared refresh. End only its own wait;
+                            # never fail/cancel the admitted job on its behalf.
+                            remaining_seconds()
+                            self._expire(name)
+                            if name not in self._loading:
+                                break
+                            budget = self._loading[name]
+                            remaining = max(0.0, budget.deadline - budget.clock())
+                            self._condition.wait(timeout=remaining_seconds(min(remaining, 0.05)))
+                        remaining_seconds()
+                    finally:
+                        self._waiters -= 1
 
         with self._condition:
+            self._expire(name)
             record = self._records.get(name)
             loading = name in self._loading
             error = self._errors.get(name)
@@ -243,6 +306,10 @@ class ReadSurfaceCache:
                         "refreshing": loading,
                         "stale": False,
                         "last_valid_at": None,
+                        "age_seconds": None,
+                        "error_code": self._error_codes.get(name),
+                        "retryable": bool(error),
+                        "wait_deferred": wait_deferred,
                         "error": error,
                     },
                 )
@@ -256,18 +323,26 @@ class ReadSurfaceCache:
                     "refreshing": loading,
                     "stale": stale,
                     "last_valid_at": float(record["last_valid_at"]),
+                    "age_seconds": age,
+                    "error_code": self._error_codes.get(name),
+                    "retryable": bool(error),
+                    "wait_deferred": wait_deferred,
                     "error": error,
                 },
             )
 
     def wait_for_idle(self, name: str, timeout_seconds: float = 5.0) -> bool:
-        deadline = self._clock() + timeout_seconds
+        deadline = self._monotonic() + remaining_seconds(timeout_seconds)
         with self._condition:
             while name in self._loading:
-                remaining = deadline - self._clock()
+                self._expire(name)
+                if name not in self._loading:
+                    break
+                remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     return False
                 self._condition.wait(timeout=min(remaining, 0.05))
+            remaining_seconds()
             return True
 
     def _refresh(
@@ -284,12 +359,14 @@ class ReadSurfaceCache:
             with self._condition:
                 if self._generations.get(name) != generation:
                     return
+                current_budget().remaining()
                 self._records[name] = {
                     "payload": deepcopy(payload),
                     "last_valid_at": last_valid_at,
                 }
                 self._dirty.discard(name)
                 self._errors.pop(name, None)
+                self._error_codes.pop(name, None)
             try:
                 # Capture after acquiring the save lane so a delayed writer
                 # cannot overwrite a newer snapshot already persisted by another
@@ -301,16 +378,15 @@ class ReadSurfaceCache:
             except OSError:
                 # A private performance cache must never take Mission Control down.
                 pass
-        except Exception:
+        except Exception as exc:
             with self._condition:
                 if self._generations.get(name) != generation:
                     return
-                self._errors[name] = (
-                    "The canonical GBrain refresh did not complete. Last verified data is kept."
-                )
-                self._error_at[name] = self._clock()
+                self._fail(name, "refresh_deadline" if isinstance(exc, ReadDeadlineExceeded)
+                           else "refresh_failed")
         finally:
             with self._condition:
                 if self._generations.get(name) == generation:
                     self._loading.pop(name, None)
+                    self._futures.pop(name, None)
                 self._condition.notify_all()

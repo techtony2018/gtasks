@@ -97,6 +97,352 @@ const HTMLSelectElement = FakeElement;
 
 
 class FrontendContractTests(unittest.TestCase):
+    def test_mobile_sync_summary_wraps_both_labels_inside_shrinkable_grid(self):
+        css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        mobile = css[css.rindex("@media (max-width: 760px)") :]
+        labels = mobile.split(".sync-label,", 1)[1].split("}", 1)[0]
+        self.assertIn("white-space: normal", labels)
+        self.assertIn("overflow-wrap: anywhere", labels)
+        self.assertIn("max-width: 100%", labels)
+        stack = mobile.split(".sync-stack {", 1)[1].split("}", 1)[0]
+        self.assertIn("min-width: 0", stack)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", stack)
+        self.assertNotIn("overflow: hidden", labels + stack)
+        self.assertNotIn("text-overflow: ellipsis", labels + stack)
+
+    def test_archived_loading_shell_stays_unknown_until_authoritative_todo_response(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+render = () => {};
+for (const populated of [false, true]) {
+ const slug = "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const summary = {slug, title: "Archived", status: "completed", priority: "normal", due_day: "2026-09-07", todos: [], open_todos: [], todos_deferred: true};
+ const todos = populated ? [{slug: "todos/loaded", parent_task: slug, status: "not_done", kind: "action", text: "Loaded archive action", comments: [], events: []}] : [];
+ state.snapshot = {as_of: "2026-09-07", tasks: [summary], goals: [], today: {}, views: {completed: [summary], inbox: [], blocked: [], projects: []}};
+ let resolveExact, resolveTodos;
+ const exactResponse = {ok: true, json: async () => ({task: {...summary, todos_deferred: undefined, display_markdown: "Exact archive"}})};
+ const todoResponse = {ok: true, json: async () => ({todos, next_cursor: null})};
+ fetch = async url => {
+  if (String(url) === `/api/tasks/${encodeURIComponent(slug)}`) return new Promise(resolve => { resolveExact = resolve; });
+  if (String(url).includes("/todos?")) return new Promise(resolve => { resolveTodos = resolve; });
+  return {ok: true, json: async () => ({artifacts: [], events: [], entries: []})};
+ };
+ const pending = selectTask(slug, null, new FakeElement("button"));
+ try {
+  assert(elements.detailPanel.getAttribute("aria-busy") === "true", "selection did not enter real loading shell");
+  assert(elements.taskTodoEmpty.textContent === "TODOs have not been loaded", `exact pending claims empty: ${elements.taskTodoEmpty.textContent}`);
+  resolveExact(exactResponse);
+  for (let i = 0; i < 10 && !resolveTodos; i += 1) await Promise.resolve();
+  assert(resolveTodos, "exact read did not advance to TODO hydration");
+  assert(elements.taskTodoEmpty.textContent === "TODOs have not been loaded", `TODO pending claims empty: ${elements.taskTodoEmpty.textContent}`);
+  assert(summary.todos_deferred === true, "pending hydration cleared unknown summary");
+ } finally {
+  resolveExact?.(exactResponse);
+  for (let i = 0; i < 10 && !resolveTodos; i += 1) await Promise.resolve();
+  resolveTodos?.(todoResponse);
+  await pending;
+ }
+ assert(summary.todos_deferred === false, "complete TODO response did not clear deferred state");
+ assert(todoSummary(summary) === (populated ? "TODO: Loaded archive action" : "No open TODOs"), "authoritative loaded summary regressed");
+ if (!populated) assert(elements.taskTodoEmpty.textContent === "No TODO yet", "verified-empty detail did not replace unknown state");
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deferred_archive_retains_unknown_on_todo_failure_issues_or_partial_page(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+render = () => {};
+for (const mode of ["transport", "issues", "partial", "missing_cursor"]) {
+ const slug = "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const summary = {slug, title: "Archived", status: "completed", priority: "normal", due_day: "2026-09-07", todos: [], todos_deferred: true};
+ state.snapshot = {as_of: "2026-09-07", tasks: [summary], goals: [], today: {}, views: {completed: [summary], inbox: [], blocked: [], projects: []}};
+ let pages = 0;
+ fetch = async (url, options = {}) => {
+  assert(!options.method || options.method === "GET", "detail hydration attempted write");
+  if (String(url).includes("/todos?")) {
+   pages += 1;
+   if (mode === "transport") throw new Error("synthetic transport failure");
+   if (mode === "missing_cursor") return {ok: true, json: async () => ({todos: []})};
+   if (mode === "partial" && pages === 1) return {ok: true, json: async () => ({todos: [{slug: "todos/partial"}], next_cursor: 1})};
+   return {ok: true, json: async () => ({todos: [], issues: [{message: "incomplete canonical data"}]})};
+  }
+  if (String(url) === `/api/tasks/${encodeURIComponent(slug)}`) return {ok: true, json: async () => ({task: {...summary, todos_deferred: undefined, display_markdown: "Archive"}})};
+  return {ok: true, json: async () => ({artifacts: [], events: [], entries: []})};
+ };
+ await selectTask(slug, null, new FakeElement("button"));
+ assert(summary.todos_deferred === true && summary.todos.length === 0, `${mode}: incomplete TODO read claimed authoritative data`);
+ assert(todoSummary(summary) === "Open task to load TODOs", `${mode}: unknown shown empty`);
+ assert(elements.taskTodoEmpty.textContent === "TODOs have not been loaded", `${mode}: failed detail claims empty`);
+ assert(pages === (mode === "partial" ? 2 : 1), `${mode}: wrong page access`);
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deferred_archive_waits_for_all_pages_and_rejects_aborted_selection_merge(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+render = () => {};
+const firstSlug = "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const secondSlug = "tasks/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const task = slug => ({slug, title: slug, status: "completed", priority: "normal", due_day: "2026-09-07", todos: [], todos_deferred: true});
+const first = task(firstSlug), second = task(secondSlug);
+state.snapshot = {as_of: "2026-09-07", tasks: [first, second], goals: [], today: {}, views: {completed: [first, second], inbox: [], blocked: [], projects: []}};
+let resolveFirstPage;
+let firstSignal;
+const signals = [];
+fetch = async (url, options = {}) => {
+ const text = String(url);
+ if (text.startsWith(`/api/tasks/${encodeURIComponent(firstSlug)}/todos?`)) {
+  firstSignal = options.signal;
+  return new Promise(resolve => { resolveFirstPage = resolve; });
+ }
+ if (text.startsWith(`/api/tasks/${encodeURIComponent(secondSlug)}/todos?`)) {
+  signals.push(options.signal);
+  return {ok: true, json: async () => text.endsWith("cursor=0")
+   ? {todos: [{slug: "todos/one", parent_task: secondSlug, text: "First page TODO", status: "not_done", kind: "action", comments: [], events: []}], next_cursor: 1}
+   : {todos: [], next_cursor: null}};
+ }
+ const summary = text === `/api/tasks/${encodeURIComponent(firstSlug)}` ? first : text === `/api/tasks/${encodeURIComponent(secondSlug)}` ? second : null;
+ if (summary) return {ok: true, json: async () => ({task: {...summary, todos_deferred: undefined, display_markdown: "Exact detail"}})};
+ return {ok: true, json: async () => ({artifacts: [], events: [], entries: []})};
+};
+const pending = selectTask(firstSlug);
+for (let i = 0; i < 10 && !resolveFirstPage; i += 1) await Promise.resolve();
+assert(resolveFirstPage, "first TODO request did not start");
+await selectTask(secondSlug);
+assert(firstSignal.aborted, "selection switch did not abort original detail budget");
+resolveFirstPage({ok: true, json: async () => ({todos: []})});
+await pending;
+assert(first.todos_deferred === true, "aborted old selection cleared deferred flag");
+assert(state.selectedSlug === secondSlug, "stale detail replaced newer selection");
+assert(second.todos_deferred === false && second.todos.length === 1, "complete paginated TODO read did not hydrate");
+assert(signals.length === 2 && signals[0] === signals[1], "TODO pages did not share detail abort signal");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_freshness_retry_focus_survives_real_render_pending_and_error_transitions(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const flatten = el => [el, ...(el.children || []).flatMap(flatten)];
+document.createDocumentFragment = () => new FakeElement();
+FakeElement.prototype.closest = function(selector) {
+ return selector === "[data-freshness-focus]" && this.dataset.freshnessFocus ? this : null;
+};
+FakeElement.prototype.replaceChildren = function(...children) {
+ if (flatten(this).includes(document.activeElement)) document.activeElement = document.body;
+ this.children = children;
+};
+elements.viewSurface.querySelector = selector => flatten(elements.viewSurface).find(el =>
+ el.dataset?.freshnessFocus === "Projects" && (!selector.startsWith("button") || el.tagName === "BUTTON")) || null;
+const frames = [];
+window.requestAnimationFrame = callback => frames.push(callback);
+const flush = () => { while (frames.length) frames.shift()(); };
+state.snapshot = {as_of: "2026-09-07", tasks: [], goals: [], today: {in_progress: [], todays_actions: [], overdue: [], waiting_and_blocked: []}, views: {inbox: [], blocked: [], completed: [], projects: []}, issues: []};
+state.activeView = "projects";
+state.projectsReadState = {status: "stale", stale: true, refreshing: false, last_valid_at: 1234, error: "synthetic"};
+state.projectsError = "synthetic";
+render(); flush();
+const retry = flatten(elements.viewSurface).find(el => el.getAttribute?.("aria-label") === "Retry Projects refresh");
+assert(retry, "real render did not expose retry");
+retry.focus();
+let rejectRead;
+fetch = () => new Promise((_resolve, reject) => { rejectRead = reject; });
+retry.click(); flush();
+assert(document.activeElement.dataset.freshnessFocus === "Projects" && document.activeElement.tagName === "P", "pending real render lost meaningful focus");
+rejectRead(new Error("terminal synthetic failure"));
+await state.projectsLoadPromise; flush();
+assert(document.activeElement.dataset.freshnessFocus === "Projects" && document.activeElement.tagName === "BUTTON", "terminal real render did not restore retry focus");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_flagged_archived_selection_loads_authoritative_todos_and_clears_deferred(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+render = () => {};
+for (const todos of [[{slug: "todos/loaded", parent_task: "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", status: "not_done", kind: "action", text: "Read archived TODO", comments: [], events: []}], []]) {
+ const slug = "tasks/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+ const summary = {slug, title: "Archived", status: "completed", priority: "normal", due_day: "2026-09-07", todos: [], open_todos: [], todos_deferred: true};
+ state.snapshot = {as_of: "2026-09-07", tasks: [summary], goals: [], today: {}, views: {completed: [summary], inbox: [], blocked: [], projects: []}};
+ const urls = [];
+ fetch = async url => {
+  urls.push(String(url));
+  if (String(url).includes("/todos?")) return {ok: true, json: async () => ({todos, next_cursor: null})};
+  if (String(url) === `/api/tasks/${encodeURIComponent(slug)}`) return {ok: true, json: async () => ({task: {...summary, todos_deferred: undefined, display_markdown: "Canonical archive"}})};
+  return {ok: true, json: async () => ({artifacts: [], events: [], entries: []})};
+ };
+ await selectTask(slug, null, new FakeElement("button"));
+ assert(urls.filter(url => url.includes("/todos?")).length === 1, `opening deferred archive did not read TODOs: ${urls}`);
+ assert(summary.todos_deferred === false, "authoritative exact merge retained deferred flag");
+ assert(todoSummary(summary) === (todos.length ? "TODO: Read archived TODO" : "No open TODOs"), todoSummary(summary));
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_terminal_surface_loader_failures_preserve_payload_time_and_offer_targeted_retry(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const flatten = el => [el, ...(el.children || []).flatMap(flatten)];
+render = () => {};
+const cases = [
+ ["agent-work", "agentWorkReadState", "agentTasks", "agentWorkLoading", () => loadAgentWork(), "/api/agent-work?refresh=1"],
+ ["inbox", "proposalsReadState", "proposals", "proposalsLoading", () => loadProposals(), "/api/proposals?refresh=1"],
+ ["projects", "projectsReadState", "projects", "projectsLoading", () => loadProjects(), "/api/projects?refresh=1"],
+ ["system-tickets", "systemTicketsReadState", "systemTickets", "systemTicketsLoading", () => loadSystemTickets(), "/api/system-tickets?include_completed=0&refresh=1"],
+];
+for (const [view, readKey, payloadKey, loadingKey, load, retryUrl] of cases) {
+ state.activeView = view;
+ const retained = [{slug: "synthetic/retained"}];
+ state[payloadKey] = retained;
+ state[readKey] = {status: "refreshing", refreshing: true, stale: true, last_valid_at: 1234};
+ fetch = async () => { throw new Error("terminal transport failure"); };
+ await load();
+ assert(state[payloadKey] === retained, `${view}: retained cards lost`);
+ assert(state[readKey].last_valid_at === 1234, `${view}: verification timestamp changed`);
+ assert(state[readKey].refreshing === false && state[readKey].stale === true, `${view}: obsolete busy state retained`);
+ const entry = surfaceFreshnessEntries().find(entry => entry.readState === state[readKey]);
+ assert(readFreshnessText(entry.readState, entry).startsWith("Refresh delayed"), `${view}: no terminal label`);
+ const retry = flatten(renderSurfaceFreshness()).find(el => el.getAttribute?.("aria-label") === `Retry ${entry.label} refresh`);
+ assert(retry && !retry.disabled, `${view}: targeted retry unavailable`);
+ let resolveRead;
+ let calledUrl;
+ fetch = url => { calledUrl = url; return new Promise(resolve => { resolveRead = resolve; }); };
+ retry.click();
+ const busyEntry = surfaceFreshnessEntries().find(candidate => candidate.readState === state[readKey]);
+ assert(calledUrl === retryUrl, `${view}: retry targeted wrong request`);
+ assert(readFreshnessText(busyEntry.readState, busyEntry).startsWith("Refreshing"), `${view}: newer real request shown terminal`);
+ resolveRead({ok: true, status: 200, json: async () => ({tasks: [], proposals: [], projects: [], tickets: [], read_state: {status: "fresh", refreshing: false, stale: false, last_valid_at: 2345}})});
+ await load();
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_deferred_archived_todos_do_not_claim_verified_empty(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+assert(todoSummary({todos: [], todos_deferred: true}) === "Open task to load TODOs", "deferred archive falsely claims no TODOs");
+assert(todoSummary({todos: []}) === "No open TODOs", "known active empty list regressed");
+assert(todoSummary({todos: [{status: "not_done", text: "Read verified TODO"}]}) === "TODO: Read verified TODO", "loaded detail regressed");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_task_verification_timestamp_is_not_replaced_with_browser_now(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+state.snapshot = {tasks: []};
+render = () => {};
+setConnection = () => {};
+fetch = async () => ({ok: true, status: 200, json: async () => ({tasks: [], goals: [], read_state: {status: "fresh"}})});
+await performTaskLoad("manual");
+assert(state.lastSyncedAt === null, "browser clock invented canonical verification time");
+assert(elements.syncLabel.textContent.includes("verification time unavailable"), "header claims timestamp despite missing evidence");
+assert(!readFreshnessText({status: "fresh"}).includes("No verified data yet"), "missing timestamp incorrectly claims missing data");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_agent_work_explicit_retry_forces_only_one_read(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const urls = [];
+render = () => {};
+fetch = async url => { urls.push(url); return {ok: true, status: 200,
+ json: async () => ({tasks: [], issues: [], read_state: {status: "fresh", stale: false, refreshing: false}})}; };
+await loadAgentWork();
+await loadAgentWork({refresh: true});
+assert(JSON.stringify(urls) === JSON.stringify(["/api/agent-work", "/api/agent-work?refresh=1"]), JSON.stringify(urls));
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_task_transport_failure_preserves_data_but_invalidates_fresh_claim(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+const snapshot = {tasks: [{slug: "tasks/qa"}]};
+state.snapshot = snapshot;
+state.tasksReadState = {status: "fresh", stale: false, refreshing: false, last_valid_at: 1234};
+render = () => {};
+setConnection = () => {};
+fetch = async () => { throw new Error("Synthetic transport failure"); };
+await performTaskLoad("manual");
+assert(state.snapshot === snapshot, "verified cards lost");
+assert(state.tasksReadState.stale === true && state.tasksReadState.refreshing === false, "old fresh claim retained after failure");
+assert(state.tasksReadState.last_valid_at === 1234 && state.tasksReadState.error, "timestamp/error lost");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_surface_freshness_uses_verified_timestamp_and_truthful_terminal_state(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+assert(typeof readFreshnessText === "function", "missing freshness presentation");
+const now = 1800000000000;
+const old = {last_valid_at: now / 1000 - 480, status: "stale", stale: true, refreshing: false, error: "deadline"};
+const text = readFreshnessText(old, {}, now);
+assert(text.includes("8 min ago") && text.includes("Refresh delayed"), text);
+assert(!text.includes("Refreshing…"), "terminal error looks in progress");
+for (const value of [null, undefined, "wrong", Infinity, now / 1000 + 500]) {
+  const unknown = readFreshnessText({last_valid_at: value, status: "fresh"}, {}, now);
+  assert(unknown.includes("Verification time unavailable"), unknown);
+  assert(!unknown.startsWith("Fresh"), "unknown timestamp claims fresh");
+}
+assert(readFreshnessText({...old, status: "refreshing", refreshing: true, error: null}, {}, now).includes("Refreshing"), "missing busy state");
+assert(readFreshnessText(null, {loading: true}, now).includes("No verified data yet"), "cold data appears verified");
+assert(readFreshnessText({...old, status: "fresh", stale: false, error: null}, {}, now).startsWith("Fresh"), "fresh evidence not represented");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_selected_surface_freshness_and_retry_do_not_use_unrelated_tasks(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+assert(typeof surfaceFreshnessEntries === "function", "missing selected surface mapping");
+state.tasksReadState = {surface: "tasks", last_valid_at: 100};
+state.projectsReadState = {surface: "projects", last_valid_at: 200};
+state.proposalsReadState = {surface: "proposals", last_valid_at: 300};
+state.activeView = "projects";
+const projects = surfaceFreshnessEntries();
+assert(projects.length === 1 && projects[0].readState === state.projectsReadState, "Projects borrows Tasks freshness");
+let retryOptions;
+loadProjects = options => { retryOptions = options; };
+projects[0].retry();
+assert(retryOptions.refresh === true, "Retry did not force the selected surface");
+state.activeView = "inbox";
+const inbox = surfaceFreshnessEntries();
+assert(inbox.length === 2 && inbox[0].readState !== inbox[1].readState, "Inbox conflates Tasks and Proposals");
+for (const view of ["settings", "artifacts"]) {
+ state.activeView = view;
+ assert(surfaceFreshnessEntries().length === 0, "Unrelated view claims Tasks freshness");
+}
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_cached_projects_stay_visible_on_terminal_refresh_error(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+document.createDocumentFragment = () => new FakeElement();
+const flatten = el => (el.textContent || "") + (el.children || []).map(flatten).join(" ");
+state.projectsLoaded = true;
+state.projectsError = "Synthetic refresh deadline";
+state.projects = [{slug: "projects/qa", title: "Retained project", status: "active", supporting_goal_slugs: []}];
+state.snapshot = {tasks: [], goals: []};
+const content = flatten(renderProjectsView());
+assert(content.includes("Retained project"), "refresh failure hid verified project cards");
+assert(content.includes("Synthetic refresh deadline"), "failure not visible");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_freshness_clock_is_single_bounded_text_only_timer(self):
+        result = run_app_runtime_probe(r"""
+const assert = (ok, message) => { if (!ok) throw new Error(message); };
+assert(typeof startFreshnessClock === "function", "missing bounded freshness clock");
+let timers = [], fetches = 0, renders = 0;
+window.setTimeout = (callback, delay) => { timers.push({callback, delay}); return timers.length; };
+fetch = () => { fetches++; throw new Error("freshness tick fetched"); };
+render = () => { renders++; };
+for (let index=0; index<100; index++) startFreshnessClock();
+assert(timers.length === 1 && timers[0].delay >= 60000, "unbounded/fast freshness timers");
+timers[0].callback();
+assert(timers.length === 2 && fetches === 0 && renders === 0, "tick did more than text refresh");
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_pending_creation_identity_and_draft_survive_reload(self) -> None:
         result = run_app_runtime_probe(r"""
 const assert = (value, message) => { if (!value) throw new Error(message); };
@@ -2753,7 +3099,7 @@ assert(appShell.getAttribute("aria-hidden") === "false", "app shell stayed hidde
         self.assertIn("function setAgentTasksVisible(visible)", javascript)
         self.assertIn("window.localStorage.setItem", javascript)
         self.assertIn('fetch("/api/agents"', javascript)
-        self.assertIn('fetch("/api/agent-work"', javascript)
+        self.assertIn('"/api/agent-work"', javascript)
         self.assertIn("function agentBoardCard", javascript)
         self.assertIn("function ownerBadge", javascript)
         self.assertIn("ownerBadge(state.snapshot?.owner", javascript)

@@ -6630,8 +6630,18 @@ button:active {
     padding-inline: 8px;
   }
 
+  .sync-stack {
+    min-width: 0;
+    max-width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: start;
+  }
+
   .sync-label,
   .auto-refresh-label {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
     overflow-wrap: anywhere;
   }
 
@@ -6765,3 +6775,8 @@ button:active {
     width: min(312px, calc(100vw - 36px));
   }
 }
+/* Freshness remains readable without replacing cached cards or moving focus. */
+.selected-surface-freshness { margin-bottom: 12px; }
+.surface-freshness-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.surface-freshness-stamp { flex: 1 1 220px; min-width: 0; margin: 4px 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.surface-freshness-row .secondary-button { flex: 0 0 auto; }

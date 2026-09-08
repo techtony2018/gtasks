@@ -5749,6 +5749,32 @@ class ProposalDecisionTimelineTests(unittest.TestCase):
 
 
 class TodoAdapterTests(unittest.TestCase):
+    def test_exact_archived_task_todo_read_retains_canonical_detail(self) -> None:
+        runner, task = self._fixture()
+        adapter = GBrainAdapter(runner)
+        todo = adapter.create_todo(
+            task.slug, text="Archived detail remains readable", detail="Synthetic detail",
+            kind="action", actor="people/tony-guan", source="mission_control",
+            idempotency_key="archived-lazy-detail",
+            now=datetime.fromisoformat("2026-08-01T10:00:00-07:00"),
+        ).todo
+        page = runner.pages[task.slug]
+        page["frontmatter"]["status"] = "completed"
+        page["frontmatter"]["completed_at"] = "2026-08-02T10:00:00-07:00"
+        for link in page["frontmatter"].get("links", []):
+            if link.get("to") == ACTIVE_ROOT:
+                link["to"] = COMPLETED_ROOT
+        for link in runner.links:
+            if link.get("from_slug") == task.slug and link.get("to_slug") == ACTIVE_ROOT:
+                link["to_slug"] = COMPLETED_ROOT
+        runner.calls.clear()
+        readback = GBrainAdapter(runner).list_task_todos(task.slug, limit=100)
+        self.assertEqual([item.slug for item in readback.todos], [todo.slug])
+        self.assertEqual(readback.todos[0].detail, "Synthetic detail")
+        self.assertTrue(any(tool == "get_backlinks" for tool, _ in runner.calls))
+        self.assertTrue(all(tool in {"get_page", "get_links", "get_backlinks", "list_pages"}
+                            for tool, _ in runner.calls))
+
     def _fixture(
         self,
         *,

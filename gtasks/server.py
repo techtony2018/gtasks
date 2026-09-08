@@ -91,6 +91,7 @@ from .operational_logs import (
 )
 from .releases import release_payload
 from .read_cache import ReadSnapshotStore, ReadSurfaceCache
+from .read_budget import BoundedReadExecutor, check_budget, current_budget, read_result
 from .task_operations import (
     TaskOperation, TaskOperationConflict, TaskOperationStore, default_task_operation_path,
 )
@@ -99,6 +100,7 @@ from .warnings import WarningDismissalStore
 
 
 MAX_REQUEST_BYTES = 16 * 1024
+_SNAPSHOT_READS = BoundedReadExecutor(4, 16, name="gtasks-snapshot-refresh")
 MAX_ARTIFACT_REQUEST_BYTES = 256 * 1024
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
 ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -694,19 +696,26 @@ def exact_task_api_payload(
 
 
 def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    bounded = current_budget() is not None
+    executor = _SNAPSHOT_READS if bounded else ThreadPoolExecutor(max_workers=4)
+    futures = []
+    try:
         active_future = executor.submit(adapter.list_collection_tasks, ACTIVE_ROOT)
+        futures.append(active_future)
         completed_future = executor.submit(
             adapter.list_collection_tasks,
             COMPLETED_ROOT,
         )
+        futures.append(completed_future)
         goals_future = executor.submit(adapter.list_goals)
+        futures.append(goals_future)
         owner_future = executor.submit(adapter.get_tony_profile)
-        active_read = active_future.result()
-        completed_read = completed_future.result()
-        goal_read = goals_future.result()
+        futures.append(owner_future)
+        active_read = read_result(active_future)
+        completed_read = read_result(completed_future)
+        goal_read = read_result(goals_future)
         try:
-            owner = owner_future.result()
+            owner = read_result(owner_future)
         except (DomainValidationError, GBrainError):
             # Personal-avatar presentation must never block canonical tasks.
             owner = {
@@ -714,21 +723,36 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
                 "name": "Tony",
                 "avatar": {"kind": "initials", "value": "T"},
             }
+    finally:
+        for future in futures:
+            future.cancel()
+        if not bounded:
+            executor.shutdown(wait=True)
+    check_budget()
     active = _dedupe_tasks(list(active_read.tasks))
     archived = _dedupe_tasks(list(completed_read.tasks))
     todo_issues = ()
     enrich_todos = getattr(adapter, "enrich_tasks_with_todos", None)
     if callable(enrich_todos):
         active, active_todo_issues = enrich_todos(active)
-        archived, archived_todo_issues = enrich_todos(archived)
         active = list(active)
-        archived = list(archived)
-        todo_issues = active_todo_issues + archived_todo_issues
+        todo_issues = active_todo_issues
+    check_budget()
     all_tasks = _dedupe_tasks(active + archived)
+    deferred_todos = {task.slug for task in archived} - {task.slug for task in active}
+
+    def snapshot_task(task: Task) -> dict[str, Any]:
+        payload = task.to_dict()
+        if task.slug in deferred_todos:
+            # Unloaded TODOs are unknown, not a verified empty list. This
+            # projection flag never participates in canonical edit revisions.
+            payload["todos_deferred"] = True
+        return payload
+
     display_start, display_end = task_display_window(today)
     all_task_payloads = [
         {
-            **task.to_dict(),
+            **snapshot_task(task),
             "progress_metric_revision": progress_revision(task),
             "edit_revision": task_edit_revision(task.to_dict()),
             "in_default_display_window": task_is_in_default_display_window(
@@ -764,9 +788,9 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
                 **goal.to_dict(),
                 "legacy_one_way_tasks": [],
                 "relationship_warning": False,
-                "active_tasks": [task.to_dict() for task in active_goal_tasks],
+                "active_tasks": [snapshot_task(task) for task in active_goal_tasks],
                 "completed_tasks": [
-                    task.to_dict() for task in completed_goal_tasks
+                    snapshot_task(task) for task in completed_goal_tasks
                 ],
                 "progress": {
                     "active": len(active_goal_tasks),
@@ -803,19 +827,19 @@ def build_task_snapshot(adapter: GBrainAdapter, today: date) -> dict[str, Any]:
         "today": group_today(active, today).to_dict(),
         "views": {
             "inbox": [
-                task.to_dict()
+                snapshot_task(task)
                 for task in active
                 if task.inbox and task.status not in {"completed", "cancelled"}
             ],
             "blocked": [
-                task.to_dict()
+                snapshot_task(task)
                 for task in active
                 if task.status == "blocked"
             ],
             "projects": [
-                task.to_dict() for task in active if task.project is not None
+                snapshot_task(task) for task in active if task.project is not None
             ],
-            "completed": [task.to_dict() for task in completed],
+            "completed": [snapshot_task(task) for task in completed],
         },
         "issues": [
             issue.to_dict()
@@ -1140,6 +1164,7 @@ def _handler_class(
                 "tasks",
                 timeout_seconds=35,
             )
+            check_budget()
             return adapter.list_proposals().to_dict()
 
         return active_read_cache.read(

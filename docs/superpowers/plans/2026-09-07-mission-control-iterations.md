@@ -82,7 +82,7 @@ Before each later iteration, inspect its current implementation and append its e
 - Independent managed-service post-deploy PASS: `/private/tmp/mc-iteration1-independent-qa/managed-postdeploy-report.md`; 1440x1000 and 390x844, Today/detail/focus/Close/refresh, no browser errors or writes. This is NOT a retroactive managed-service pre-commit PASS. Future candidates must use the managed environment before commit. Unrelated `.gitignore` was preserved and excluded; deployed runtime files matched the tested commit.
 - Iteration 2 initially started with a private retry identity journal and four unit tests; subsequent integration is detailed below and remains outside iteration 1. Authenticated remote MCP `tools/list` exposes unconditional `put_page` and no atomic revision/compare-and-swap write. Cross-machine atomic edit protection remains an upstream capability dependency; local stale-draft checks must not be described as atomic protection against other machines.
 
-### Iteration 2 checkpoint (uncommitted, not deployed)
+### Iteration 2 historical checkpoint (subsequently shipped below)
 
 - Integrated opt-in `Idempotency-Key` support for `POST /api/tasks` in the working tree. Journal stores only request hash, UUID, creation timestamp and verified flag, not task text. Owner-only SQLite, transaction-serialized reservations; the reserved UUID explicitly controls the canonical slug because the legacy domain identity argument does not control `_opaque_slug`.
 - Verified original responses persist a receipt flag before HTTP output. Same-key retries read the current canonical task rather than rewriting it, preserving later enrichment. Changed payloads conflict. Concurrent or ambiguous attempts return the original slug with no second write. An interrupted operation before its verified receipt remains explicitly unconfirmed; automatic partial-write recovery is not yet implemented.
@@ -125,12 +125,80 @@ Before each later iteration, inspect its current implementation and append its e
 - Synthetic QA fixture smoke test verified a genuinely dropped response after
   receipt persistence and same-task retry readback. The fixture was stopped
   after the check; it uses no production GBrain data or transport.
-- Managed health readback remains V0.0.230, gbrain 0.46.28.0. Root runtime is
-  unchanged; unrelated `.gitignore` remains preserved.
+- At the earlier pre-candidate checkpoint, managed health was V0.0.230,
+  gbrain0.46.28.0 and root runtime was unchanged. This observation is superseded
+  by the V0.0.231 shipped receipt above; unrelated `.gitignore` remains preserved.
 - The frozen first repair candidate was briefly staged/restarted on the
   managed service for the pre-commit boundary, then restored to V0.0.230 when
   the re-review finding arrived, before UI QA dispatch or production writes.
   Full gate history is in `docs/release-evidence/v0.0.231.md`.
+
+### Iteration 3 execution — bounded refresh and lazy archive reads
+
+- Isolated worktree `output/worktrees/mission-control-iteration3`, branch
+  `codex/mission-control-iteration3`, base `08e44de`. Previous iteration2
+  worktree remains preserved. Baseline cache suite:17 PASS in0.214s.
+- Iteration2 deployment receipt committed/pushed as08e44de; existing
+  Documentation Manager received the terminal evidence. Its canonical mirror
+  verification remains separate from message delivery.
+- Backend ownership: `gtasks/read_cache.py`, optional small read-budget module,
+  GBrain transport and task-snapshot integration, with targeted Python tests.
+  Parent owns UI age presentation, docs/release/QA. No production task writes.
+- [x] RED/GREEN for overall monotonic deadline including worker/dependency/token
+  waits and multiple canonical calls, retaining last-verified payload.
+- [x] Bound running/queued refresh work, preserve generation/persistence fences,
+  demonstrate fair recovery under repeated invalidation and force requests.
+- [x] Stop archived TODO enrichment in summary; preserve active TODOs and exact
+  archived detail read capability with regression coverage.
+- [x] Show last-verified age and recoverable terminal refresh state in affected
+  UI, with focused rendering tests and no loss of currently usable cards.
+- [x] Independent code review; targeted combined gate; frozen managed candidate
+  desktop1440x1000 and genuine390x844 QA PASS before commit.
+- [ ] Sequential release bump, commit/push, Dashboard deploy, read-only affected
+  surface verification and documentation handoff.
+
+### Iteration 3 review checkpoint — not deployed
+
+- Backend initial implementation:431 combined regression tests PASS, then84
+  focused final tests PASS. Frontend and release checks286 PASS before V232
+  catalog bump. Preliminary synthetic390px view retained cards with honest age.
+- Independent backend review found2 Important nested-budget composition gaps;
+  frontend review found3 Important state/focus/hydration gaps. All5 are held as
+  release blockers. One repair worker owns the complete wave; no candidate
+  commit or Dashboard deployment has occurred.
+- Repair also verified that clearing an archive's deferred flag alone is not
+  enough: opening flagged detail must actually fetch authoritative TODOs under
+  the existing detail timeout, and retain unknown state if that read fails.
+- Full reports and exact test evidence are in this worktree's
+  `output/iteration3-{backend,ui}-review.md` and the pending
+  `output/iteration3-repair-report.md`. Independent rendered QA remains pending.
+
+- Repair wave frozen:337 covering tests PASS in33.787s, syntax/compilation/diff
+  checks pass, worker browser/fixture/test handles closed. Independent UI and
+  backend re-reviews dispatched with updated full diff packages and exact hashes.
+  No V232 commit or managed candidate deployment yet; root remains V231.
+- Backend re-review specification/code-quality PASS. Frontend re-review found
+  one remaining Important pending archive loading-shell false-empty label.
+  Same worker owns only app.js/frontend tests for a bounded transition repair.
+  No candidate deployment occurred; temporary fixture58922 closed cleanly.
+- Final bounded UI repair198 frontend tests PASS; terminal independent UI
+  specification/code-quality PASS, no findings. Backend review stays PASS.
+  Release checks94 PASS. Final7-file runtime manifest aggregate
+  `521e5a705be943f3ac2c29138b56b708a439c24679c5b5b665eb8fd56047824b`.
+  Exact uncommitted candidate staged/restarted through Dashboard; healthV232,
+  gbrain0.46.28.0. Independent managed/synthetic desktop/mobile QA dispatched;
+  not yet commit-authorized. Parent synthetic fixture59598 is live for QA.
+- Independent QA returnedFAIL on390px top sync text clipping (457px text in
+  348px stack). Other required tested scenarios passed. Runtime restored to
+  HEADV231 via Dashboard and fixture59598 closed. Bounded CSS repair now
+  isolated; original candidate remains uncommitted and not release-approved.
+- CSS repair199 tests PASS; parent final333-test integration PASS. Independent
+  terminal desktop1440x1000/mobile390x844 retestPASS authorizes aggregate
+  `c6532e9de8ccfa6719f89cb0c5824024640ac2907ee63ad90fbb406d01867cd0`.
+  Report `output/playwright/iteration3-independent-retest/report.md`, SHA256
+  `0e5b8f63066e46cd89bab80d73c29cfdd73538ab9862e2c7a178337072ae1f88`.
+  All candidate hashes verified and fixture52862/browser handles closed.
+  Commit/push/post-commit Dashboard verification follows; full goal stays active.
 
 ## Completion audit (full goal)
 

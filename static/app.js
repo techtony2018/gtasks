@@ -428,6 +428,7 @@ const state = {
   logsLoading: false,
   tasksLoadPromise: null,
   tasksReadState: null,
+  freshnessTimer: null,
   taskDetailReadSlug: null,
   taskDetailReadPromise: null,
   taskDetailReadToken: 0,
@@ -1909,6 +1910,98 @@ function reconcileVerifiedTask(task) {
   }
 }
 
+function verifiedReadTimestamp(readState, now = Date.now()) {
+  const timestamp = readState?.last_valid_at;
+  return typeof timestamp === "number" && Number.isFinite(timestamp) &&
+    timestamp > 0 && timestamp * 1000 <= now && timestamp * 1000 <= 8640000000000000
+    ? timestamp * 1000 : null;
+}
+
+function readFreshnessText(readState, { loading = false, error = "" } = {}, now = Date.now()) {
+  const timestamp = verifiedReadTimestamp(readState, now);
+  const verified = timestamp !== null;
+  const busy = loading || readState?.refreshing === true;
+  const failed = Boolean(error || readState?.error || readState?.status === "error");
+  const status = busy ? "Refreshing" : failed ? "Refresh delayed" :
+    readState?.stale || readState?.status === "stale" ? "Last verified data kept" :
+      verified && readState?.status === "fresh" ? "Fresh" : "Verification time unavailable";
+  if (!verified) {
+    return `${status === "Verification time unavailable" ? status : `${status} · Verification time unavailable`}${readState ? "" : " · No verified data yet"}`;
+  }
+  const minutes = Math.floor(Math.max(0, now - timestamp) / 60000);
+  const age = minutes < 1 ? "less than a minute ago" : minutes < 60
+    ? `${minutes} min ago` : minutes < 1440
+      ? `${Math.floor(minutes / 60)} hr ago` : `${Math.floor(minutes / 1440)} days ago`;
+  return `${status} · Last verified ${age} (${new Date(timestamp).toLocaleString()})`;
+}
+
+function terminalSurfaceReadState(readState, error) {
+  return { ...readState, refreshing: false, stale: true,
+    status: readState?.last_valid_at != null ? "stale" : "error", error };
+}
+
+function surfaceFreshnessEntries() {
+  const taskEntry = () => ({ label: "Tasks", readState: state.tasksReadState,
+    loading: state.loading, retry: () => loadTasks({ reason: "manual" }) });
+  switch (state.activeView) {
+    case "settings": case "artifacts": return [];
+    case "projects": return [{ label: "Projects", readState: state.projectsReadState,
+      loading: state.projectsLoading, error: state.projectsError,
+      retry: () => loadProjects({ refresh: true }) }];
+    case "agent-work": return [{ label: "Agent Work", readState: state.agentWorkReadState,
+      loading: state.agentWorkLoading, error: state.agentWorkError,
+      retry: () => loadAgentWork({ refresh: true }) }];
+    case "system-tickets": return [{ label: "Open System Tickets", readState: state.systemTicketsReadState,
+      loading: state.systemTicketsLoading, error: state.systemTicketsError,
+      retry: () => loadSystemTickets({ force: true }) }];
+    case "inbox": return [taskEntry(), { label: "Proposals", readState: state.proposalsReadState,
+      loading: state.proposalsLoading, error: state.proposalsError,
+      retry: () => loadProposals({ refresh: true }) }];
+    default: return [taskEntry()];
+  }
+}
+
+function renderSurfaceFreshness() {
+  const entries = surfaceFreshnessEntries();
+  if (!entries.length) return null;
+  const panel = node("section", "selected-surface-freshness");
+  panel.setAttribute("aria-label", "Data freshness");
+  for (const entry of entries) {
+    const row = node("div", "surface-freshness-row");
+    const stamp = node("p", "surface-freshness-stamp",
+      `${entry.label}: ${readFreshnessText(entry.readState, entry)}`);
+    stamp.dataset.freshnessFocus = entry.label;
+    stamp.tabIndex = -1;
+    stamp.freshnessEntry = entry;
+    row.append(stamp);
+    const busy = entry.loading || entry.readState?.refreshing;
+    if (!busy && (entry.error || entry.readState?.error || entry.readState?.stale || entry.readState?.status === "error")) {
+      const retry = node("button", "secondary-button", "Try again");
+      retry.type = "button";
+      retry.dataset.freshnessFocus = entry.label;
+      retry.setAttribute("aria-label", `Retry ${entry.label} refresh`);
+      retry.addEventListener("click", () => { void entry.retry(); });
+      row.append(retry);
+    }
+    panel.append(row);
+  }
+  return panel;
+}
+
+function startFreshnessClock() {
+  if (state.freshnessTimer !== null) return;
+  state.freshnessTimer = window.setTimeout(() => {
+    state.freshnessTimer = null;
+    if (!document.hidden) {
+      document.querySelectorAll(".surface-freshness-stamp").forEach((stamp) => {
+        const entry = stamp.freshnessEntry;
+        if (entry) stamp.textContent = `${entry.label}: ${readFreshnessText(entry.readState, entry)}`;
+      });
+    }
+    startFreshnessClock();
+  }, 60000);
+}
+
 function navCounts() {
   if (!state.snapshot) return {
     artifacts: state.artifacts.length,
@@ -2039,6 +2132,7 @@ function actionIcon(symbol, label, { primary = false, className = "" } = {}) {
 }
 
 function todoSummary(task) {
+  if (task.todos_deferred === true) return "Open task to load TODOs";
   const todos = Array.isArray(task.open_todos)
     ? task.open_todos
     : (Array.isArray(task.todos) ? task.todos : []).filter(
@@ -4805,10 +4899,10 @@ function renderProjectsView() {
     const error = node("div", "section-empty", state.projectsError);
     const retry = node("button", "secondary-button", "Try again");
     retry.type = "button";
-    retry.addEventListener("click", loadProjects);
+    retry.addEventListener("click", () => loadProjects({ refresh: true }));
     error.append(retry);
     fragment.append(error);
-    return fragment;
+    if (!state.projects.length) return fragment;
   }
   if (!state.projects.length) {
     fragment.append(
@@ -4960,14 +5054,14 @@ async function loadAgents() {
   return state.agentsLoadPromise;
 }
 
-function loadAgentWork() {
+function loadAgentWork({ refresh = false } = {}) {
   if (state.agentWorkLoadPromise) return state.agentWorkLoadPromise;
   state.agentWorkLoadPromise = (async () => {
     state.agentWorkLoading = true;
     state.agentWorkError = "";
     render();
     try {
-      const response = await fetch("/api/agent-work", {
+      const response = await fetch(refresh ? "/api/agent-work?refresh=1" : "/api/agent-work", {
         headers: { Accept: "application/json" },
         cache: "no-store",
       });
@@ -4990,6 +5084,7 @@ function loadAgentWork() {
       if (payload.read_state?.refreshing) scheduleSurfacePoll("agent_work");
     } catch (error) {
       state.agentWorkError = error.message || "Agent work could not be read.";
+      state.agentWorkReadState = terminalSurfaceReadState(state.agentWorkReadState, state.agentWorkError);
     } finally {
       state.agentWorkLoading = false;
       render();
@@ -5055,6 +5150,7 @@ async function performProposalLoad({ refresh = false } = {}) {
   } catch (error) {
     state.proposalsError =
       error.message || "Proposed tasks could not be read.";
+    state.proposalsReadState = terminalSurfaceReadState(state.proposalsReadState, state.proposalsError);
   } finally {
     state.proposalsLoading = false;
     render();
@@ -5073,7 +5169,7 @@ async function loadProjects() {
   const { refresh = false, poll = false } = arguments[0] || {};
   if (state.projectsLoadPromise) return state.projectsLoadPromise;
   state.projectsLoadPromise = (async () => {
-    state.projectsLoading = !state.projects.length;
+    state.projectsLoading = true;
     state.projectsError = "";
     if (state.snapshot) render();
     try {
@@ -5103,6 +5199,7 @@ async function loadProjects() {
     } catch (error) {
       state.projectsError =
         error.message || "Projects could not be read from GBrain.";
+      state.projectsReadState = terminalSurfaceReadState(state.projectsReadState, state.projectsError);
     } finally {
       state.projectsLoading = false;
       if (state.snapshot) render();
@@ -6238,6 +6335,7 @@ function restoreHandoffFocus(key = state.handoffLogFocusKey) {
 }
 
 function render() {
+  const focusedFreshnessSurface = document.activeElement?.closest?.("[data-freshness-focus]")?.dataset.freshnessFocus || null;
   const focusedTooltipTarget = document.activeElement?.closest?.(".has-tooltip") || null;
   const focusedSystemTicketSlug = document.activeElement?.closest?.(".system-ticket-card")?.dataset.slug || null;
   if (state.activeView === "agent-work" && state.agentHandoffHistoryOpen) {
@@ -6323,8 +6421,10 @@ function render() {
     ? renderGoalExecutionInboxActions()
     : null;
   const proposals = view === "inbox" ? renderProposedWork() : null;
+  const freshness = renderSurfaceFreshness();
   elements.viewSurface.replaceChildren(
     ...[
+      ...(freshness ? [freshness] : []),
       ...(canonicalRootIssues ? [canonicalRootIssues] : []),
       ...(goalExecutionAttention ? [goalExecutionAttention] : []),
       ...(attention ? [attention] : []),
@@ -6332,6 +6432,15 @@ function render() {
       content,
     ],
   );
+  if (focusedFreshnessSurface) window.requestAnimationFrame(() => {
+    // Restore only focus displaced by this render; never steal a newer focus
+    // choice. Pending/success use the stamp, terminal failure restores Retry.
+    if (document.activeElement !== document.body) return;
+    const key = CSS.escape(focusedFreshnessSurface);
+    const target = elements.viewSurface.querySelector(`button[data-freshness-focus="${key}"]`)
+      || elements.viewSurface.querySelector(`[data-freshness-focus="${key}"]`);
+    target?.focus({ preventScroll: true });
+  });
   if (view === "agent-work" && state.agentHandoffHistoryOpen) restoreHandoffFocus();
   if (view === "artifacts") {
     elements.dateLabel.textContent = "Canonical GBrain deliverables";
@@ -6690,7 +6799,9 @@ function loadSystemTickets({ force = false, poll = false } = {}) {
 }
 
 async function performSystemTicketLoad({ force = false } = {}) {
-  state.systemTicketsLoading = !state.systemTickets.length;
+  state.systemTicketsLoading = true;
+  state.systemTicketsError = "";
+  if (state.activeView === "system-tickets") render();
   try {
     const previousSystemTicketsRefreshing = Boolean(state.systemTicketsReadState?.refreshing);
     const options = { headers: { Accept: "application/json" }, cache: "no-store" };
@@ -6717,7 +6828,10 @@ async function performSystemTicketLoad({ force = false } = {}) {
     }
     if (payload.read_state?.refreshing) scheduleSurfacePoll("system_tickets");
   }
-  catch (error) { state.systemTicketsError = error.message || "System Tickets could not be read."; }
+  catch (error) {
+    state.systemTicketsError = error.message || "System Tickets could not be read.";
+    state.systemTicketsReadState = terminalSurfaceReadState(state.systemTicketsReadState, state.systemTicketsError);
+  }
   finally { state.systemTicketsLoading = false; if (state.activeView === "system-tickets") render(); }
 }
 
@@ -7037,7 +7151,8 @@ function renderTaskTodos(task) {
     ? todos
     : todos.filter((todo) => todo.status === "not_done");
   elements.taskTodoList.replaceChildren(...filtered.map(todoCard));
-  elements.taskTodoEmpty.textContent = todos.length ? "No open TODOs." : "No TODO yet";
+  elements.taskTodoEmpty.textContent = task.todos_deferred === true
+    ? "TODOs have not been loaded" : todos.length ? "No open TODOs." : "No TODO yet";
   elements.taskTodoEmpty.classList.toggle("is-hidden", filtered.length > 0);
   elements.taskTodoAddForm.classList.toggle("is-hidden", !state.todoAddOpen);
   elements.taskTodoAddToggle.setAttribute(
@@ -8547,7 +8662,8 @@ function openTaskDetailLoading(slug, returnFocus = null, fallback = null) {
   elements.taskGoalValue.textContent = "Loading";
   elements.detailGbrainLink.href = `http://127.0.0.1:8788/?slug=${encodeURIComponent(slug)}`;
   elements.detailSlug.textContent = slug;
-  renderTaskTodos({ slug, todos: [], open_todos: [] });
+  renderTaskTodos({ slug, todos: [], open_todos: [],
+    todos_deferred: fallback?.todos_deferred === true });
   renderTaskArtifacts(slug);
   renderTaskHandoffTimeline(slug);
   render();
@@ -8560,6 +8676,7 @@ function openTaskDetailLoading(slug, returnFocus = null, fallback = null) {
 }
 
 async function readExactTaskForDetail(slug, signal) {
+  const todosDeferred = findTaskBySlug(slug)?.todos_deferred === true;
   const response = await fetch(`/api/tasks/${encodeURIComponent(slug)}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -8569,7 +8686,31 @@ async function readExactTaskForDetail(slug, signal) {
   if (!response.ok || payload?.task?.slug !== slug) {
     throw new Error(payload?.error || "Canonical Task could not be read.");
   }
-  return payload.task;
+  if (!todosDeferred) return payload.task;
+  // A task page's empty TODO array is not a verified empty archive. Load the
+  // complete canonical TODO list on demand under the same detail watchdog.
+  const todos = [];
+  let cursor = 0;
+  while (true) {
+    signal?.throwIfAborted();
+    const todoResponse = await fetch(`/api/tasks/${encodeURIComponent(slug)}/todos?limit=100&cursor=${cursor}`, {
+      headers: { Accept: "application/json" }, cache: "no-store", signal,
+    });
+    const page = await todoResponse.json();
+    signal?.throwIfAborted();
+    if (!todoResponse.ok || !Array.isArray(page.todos) || page.issues?.length
+        || !Object.prototype.hasOwnProperty.call(page, "next_cursor")) {
+      throw new Error(page.error || "Archived TODOs could not be fully verified. Try again.");
+    }
+    todos.push(...page.todos);
+    if (page.next_cursor == null) break;
+    if (!Number.isInteger(page.next_cursor) || page.next_cursor <= cursor) {
+      throw new Error("Archived TODO pagination could not be verified. Try again.");
+    }
+    cursor = page.next_cursor;
+  }
+  return { ...payload.task, todos,
+    open_todos: todos.filter(todo => todo.status === "not_done"), todos_deferred: false };
 }
 
 function cancelTaskDetailRead({ invalidate = false } = {}) {
@@ -8724,7 +8865,7 @@ function selectTask(
   const task = knownTask || taskFallback;
   if (
     !exactHydrated &&
-    (!task || !Object.prototype.hasOwnProperty.call(task, "display_markdown"))
+    (!task || task.todos_deferred === true || !Object.prototype.hasOwnProperty.call(task, "display_markdown"))
   ) return selectTaskWithCanonicalRead(slug, returnFocus, task, { focusTarget, todoSlug });
   if (!task) return selectTaskWithCanonicalRead(slug, returnFocus, null, { focusTarget, todoSlug });
   state.detailReturnFocus = returnFocus
@@ -9504,9 +9645,7 @@ async function performTaskLoad(reason) {
     if (response.status === 202) scheduleSurfacePoll("tasks");
     if (response.status === 200 && Array.isArray(payload.tasks)) {
       state.snapshot = payload;
-      state.lastSyncedAt = payload.read_state?.last_valid_at
-        ? payload.read_state.last_valid_at * 1000
-        : Date.now();
+      state.lastSyncedAt = verifiedReadTimestamp(payload.read_state);
       if (
         snapshotHasProjectReferences(state.snapshot) &&
         !state.projectsLoaded &&
@@ -9525,7 +9664,7 @@ async function performTaskLoad(reason) {
           : "";
       elements.syncLabel.textContent =
         `Synced ${state.snapshot.tasks.length} task${state.snapshot.tasks.length === 1 ? "" : "s"} ` +
-        `at ${formatSyncTime(state.lastSyncedAt)}${suffix}`;
+        `${state.lastSyncedAt === null ? "· verification time unavailable" : `at ${formatSyncTime(state.lastSyncedAt)}`}${suffix}`;
       scheduleAutoRefresh({ reset: !payload.read_state?.refreshing });
     } else {
       setConnection(
@@ -9538,6 +9677,8 @@ async function performTaskLoad(reason) {
   } catch (error) {
     if (previousSnapshot) {
       state.snapshot = previousSnapshot;
+      state.tasksReadState = { ...state.tasksReadState, status: "stale", stale: true,
+        refreshing: false, error: error.message || "Unable to refresh GBrain." };
       setConnection("connected", "GBrain connected");
       elements.syncLabel.textContent =
         reason === "automatic" ? "Auto-refresh delayed" : "Refresh delayed";
@@ -10449,6 +10590,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 bindHudTooltipEvents();
+startFreshnessClock();
 initializeDetailPanelResize();
 initializeMobileDetailSheet();
 loadHealth();

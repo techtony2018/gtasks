@@ -23,6 +23,15 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from .read_budget import (
+    BoundedReadExecutor,
+    ReadDeadlineExceeded,
+    budget_lock,
+    check_budget,
+    current_budget,
+    remaining_seconds,
+)
+
 from .domain import (
     ACTIVE_ROOT,
     ARTIFACTS_ROOT,
@@ -181,6 +190,9 @@ class PartialMutationError(GBrainError):
         super().__init__(f"{message} Page slug: {slug}")
 
 
+_HYDRATION_READS = BoundedReadExecutor(8, 32, name="gtasks-hydration-refresh")
+
+
 class CommandRunner(Protocol):
     def run(self, tool: str, params: dict[str, Any]) -> object: ...
 
@@ -217,14 +229,18 @@ class SubprocessCommandRunner:
     @contextmanager
     def _lane(self):
         is_background_refresh = (
-            current_thread().name.startswith("gtasks-")
-            and current_thread().name.endswith("-refresh")
+            current_budget() is not None
+            or (
+                current_thread().name.startswith("gtasks-")
+                and current_thread().name.endswith("-refresh")
+            )
         )
         with self._lane_condition:
             while self._lane_active or (
                 is_background_refresh and self._foreground_operations
             ):
-                self._lane_condition.wait()
+                self._lane_condition.wait(timeout=remaining_seconds())
+            check_budget()
             self._lane_active = True
         try:
             yield
@@ -444,14 +460,36 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
 
     def _read_json_response(self, request: Request) -> object:
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
+            with urlopen(request, timeout=remaining_seconds(self.timeout_seconds)) as response:
+                check_budget()
+                if current_budget() is not None and callable(getattr(response, "read1", None)):
+                    chunks = []
+                    while True:
+                        timeout = remaining_seconds(self.timeout_seconds)
+                        # urllib's HTTPResponse exposes its socket through fp.
+                        # Reset each chunk's socket timeout to the *remaining*
+                        # budget, not the original per-request timeout.
+                        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+                        if sock is not None:
+                            sock.settimeout(timeout)
+                        chunk = response.read1(65536)
+                        check_budget()
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    raw = b"".join(chunks).decode("utf-8")
+                else:
+                    raw = response.read().decode("utf-8")
+                check_budget()
                 content_type = response.headers.get("Content-Type", "")
+        except ReadDeadlineExceeded:
+            raise
         except HTTPError as exc:
             raise GBrainCommandError(
                 f"GBrain remote request failed with HTTP {exc.code}"
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
+            check_budget()
             raise GBrainCommandError("GBrain remote request failed") from exc
         try:
             if "text/event-stream" in content_type:
@@ -468,7 +506,7 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
             raise GBrainProtocolError("GBrain remote response was invalid") from exc
 
     def _access_token(self, remote: Mapping[str, str]) -> str:
-        with self._token_lock:
+        with budget_lock(self._token_lock):
             if self._token is not None and self._token_expires_at > time() + 30:
                 return self._token
             if self._token_endpoint is None:
@@ -561,6 +599,7 @@ class RemoteHttpCommandRunner(SubprocessCommandRunner):
             ) from exc
 
     def run(self, tool: str, params: dict[str, Any]) -> object:
+        check_budget()
         remote = self._remote_config()
         with self._lane():
             token = self._access_token(remote)
@@ -4134,7 +4173,14 @@ class GBrainAdapter:
 
     def _bounded_map(self, function: Any, values: list[Any]) -> list[Any]:
         if len(values) < 2 or isinstance(self.runner, SubprocessCommandRunner):
-            return [function(value) for value in values]
+            result = []
+            for value in values:
+                check_budget()
+                result.append(function(value))
+                check_budget()
+            return result
+        if current_budget() is not None:
+            return _HYDRATION_READS.map(function, values)
         with ThreadPoolExecutor(max_workers=min(8, len(values))) as executor:
             return list(executor.map(function, values))
 
